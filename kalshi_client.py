@@ -41,12 +41,21 @@ class KalshiClient:
     def __init__(self):
         self.base_url   = config.KALSHI_BASE_URL
         # Validate that the base URL contains the expected API root so
-        # signature paths are correct.
+        # signature paths are correct. Warn instead of fail to allow
+        # non-standard URLs (e.g., local proxies) with explicit opt-in.
         if "/trade-api/v2" not in self.base_url:
-            raise ValueError(
-                f"KALSHI_BASE_URL ({self.base_url}) must contain '/trade-api/v2' "
-                f"so that signature paths are computed correctly."
+            log.warning(
+                "KALSHI_BASE_URL (%s) does not contain '/trade-api/v2' — "
+                "signature paths may be incorrect. Set KALSHI_ALLOW_NONSTANDARD_URL=true "
+                "to suppress this warning.",
+                self.base_url,
             )
+            if not getattr(config, "KALSHI_ALLOW_NONSTANDARD_URL", False):
+                raise ValueError(
+                    f"KALSHI_BASE_URL ({self.base_url}) must contain '/trade-api/v2' "
+                    f"so that signature paths are computed correctly. "
+                    f"Set KALSHI_ALLOW_NONSTANDARD_URL=true to override."
+                )
         self._api_path  = urlparse(self.base_url).path
         self.key_id     = config.KALSHI_KEY_ID
         self._privkey   = self._load_private_key()

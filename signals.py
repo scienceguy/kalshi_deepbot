@@ -240,9 +240,6 @@ def _evaluate_common(
     source: str,
     strength: float,
     skip_stability: bool = False,
-    skip_spot_gate: bool = True,
-    z_required: Optional[float] = None,
-    z_fav: Optional[float] = None,
 ):
     """
     Shared evaluation logic. Returns TradeSignal or None.
@@ -279,12 +276,6 @@ def _evaluate_common(
         n = min(n, float(avail))
     if n <= 0:
         return _pass(f"Budget ${max_dollars:.2f} too low for {ep}c entry")
-
-    # Spot gate (optional)
-    if not skip_spot_gate and z_fav is not None and z_required is not None:
-        if z_fav > z_required:
-            direction = "YES" if bullish else "NO"
-            return _pass(f"Spot z={z_fav:+.2f} > {z_required:+.2f} (entry={ep}c)")
 
     direction = "YES" if bullish else "NO"
     side = "yes" if bullish else "no"

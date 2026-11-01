@@ -38,19 +38,16 @@ def test_sell_cash_in_basic():
 def test_net_profit_roundtrip_win():
     """Buy 10 YES at 60c, sell at 100c (win)."""
     profit, pct = net_profit_roundtrip(10, 60, 100)
-    # cost = 10 * 0.60 = 6.00, fee_buy = 0.07*10*0.6*0.4 = 0.168 → ceil(6.168*100)/100 = 6.17
-    # proceeds = 10 * 1.00 = 10.00, fee_sell = 0.07*10*1.0*0.0 = 0.0 → floor(10.00*100)/100 = 10.00
-    # pnl = 10.00 - 6.17 = 3.83
-    assert profit > 0
+    # entry_value = 6.00, exit_value = 10.00, fee ≈ 0.168, pnl ≈ 3.832
+    assert abs(profit - 3.832) < 0.001
     assert pct > 0
 
 
 def test_net_profit_roundtrip_loss():
     """Buy 10 YES at 60c, sell at 0c (loss)."""
     profit, pct = net_profit_roundtrip(10, 60, 0)
-    # cost = 6.17, proceeds = 0.00 - fee_sell(0.07*10*0*1.0=0) = 0.00
-    # pnl = 0.00 - 6.17 = -6.17
-    assert profit < 0
+    # entry_value = 6.00, exit_value = 0.00, fee ≈ 0.168, pnl ≈ -6.168
+    assert abs(profit + 6.168) < 0.001
     assert pct < 0
 
 

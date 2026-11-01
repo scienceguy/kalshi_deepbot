@@ -81,6 +81,40 @@ class TestExecuteWebhook:
             result = client.execute_webhook("superbot-trade", {"action": "settlement"})
             assert result == {}
 
+    def test_execute_webhook_retries_on_5xx(self, monkeypatch):
+        """execute_webhook retries on 5xx and returns the successful response."""
+        import requests
+        client = N8nClient(api_key="test_key")
+        fail_resp = MagicMock()
+        fail_resp.status_code = 500
+        http_error = requests.HTTPError("Server error")
+        http_error.response = fail_resp
+        fail_resp.raise_for_status.side_effect = http_error
+        ok_resp = MagicMock()
+        ok_resp.json.return_value = {"status": "ok"}
+        ok_resp.status_code = 200
+        ok_resp.content = b'{"status": "ok"}'
+
+        with patch.object(client.session, "request", side_effect=[fail_resp, ok_resp]) as mock_req:
+            result = client.execute_webhook("superbot-trade", {"action": "settlement"})
+            assert result == {"status": "ok"}
+            assert mock_req.call_count == 2
+
+    def test_execute_webhook_no_retry_on_4xx(self, monkeypatch):
+        """execute_webhook does not retry on 4xx client errors."""
+        import requests
+        client = N8nClient(api_key="test_key")
+        bad_resp = MagicMock()
+        bad_resp.status_code = 400
+        http_error = requests.HTTPError("Bad request")
+        http_error.response = bad_resp
+        bad_resp.raise_for_status.side_effect = http_error
+
+        with patch.object(client.session, "request", return_value=bad_resp) as mock_req:
+            with pytest.raises(Exception):
+                client.execute_webhook("superbot-trade", {"action": "settlement"})
+            assert mock_req.call_count == 1
+
 
 class TestRunBacktest:
     """Tests for run_backtest convenience method."""

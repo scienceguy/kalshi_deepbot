@@ -26,8 +26,8 @@ def _load_env():
     Files are loaded in order: .env, then .env.{MODE} (later files can
     override earlier ones only if the key isn't already in the environment).
 
-    Supports: `export KEY=VALUE`, inline `KEY=VALUE # comment`, and quoted
-    values (`KEY="value"` or `KEY='value'`).
+    Supports: simple `KEY=VALUE` lines. Existing environment variables win
+    over .env values.
     """
     global _load_done
     if _load_done:
@@ -43,9 +43,6 @@ def _load_env():
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                # Strip inline comment (everything after unquoted #)
-                if " #" in line:
-                    line = line[:line.index(" #")].strip()
                 if "=" not in line:
                     continue
                 # Strip optional `export ` prefix
@@ -96,6 +93,7 @@ KALSHI_KEY_ID = os.environ.get("KALSHI_KEY_ID", "")
 KALSHI_KEY_FILE = os.environ.get("KALSHI_KEY_FILE", "")
 KALSHI_PRIVATE_KEY_CONTENT = os.environ.get("KALSHI_PRIVATE_KEY", "")
 KALSHI_BASE_URL = os.environ.get("KALSHI_BASE_URL", "https://external-api.kalshi.com/trade-api/v2")
+KALSHI_ALLOW_NONSTANDARD_URL = _env_bool("KALSHI_ALLOW_NONSTANDARD_URL", False)
 
 # ═════════════════════════════════════════════════════════════════════
 # MARKET TARGETING (from kalshi_live_bot — expanded series list)

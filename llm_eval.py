@@ -373,7 +373,7 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
         # LLM can't blow the cycle timeout.
         if time.time() >= deadline:
             log.warning(
-                "LLM evaluation deadline (%.0fs) reached — stopping after %d layers",
+                "LLM evaluation deadline (%.0fs) reached — stopping after %d completed layers",
                 config.LLM_EVAL_DEADLINE_SECONDS, layer_idx,
             )
             break

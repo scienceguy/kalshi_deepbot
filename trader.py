@@ -390,7 +390,7 @@ def _replay_settlement_queue():
     for entry in queue:
         try:
             n8n_client = get_n8n_client()
-            n8n_client.execute_webhook("superbot-trade", entry["payload"])
+            n8n_client.execute_webhook("superbot-trade", entry["payload"], max_retries=1)
             pnl = entry["payload"].get("pnl_dollars")
             if pnl is not None:
                 state.session_pnl += pnl
@@ -573,7 +573,7 @@ def cycle(client: KalshiClient):
                     "ticker": t,
                     "side": side,
                     "contracts": contracts,
-                })
+                }, max_retries=1)  # No retry — on failure, queue for replay instead of double-counting
                 state.session_pnl += realized_pnl  # add realized P&L only after successful record
                 # Sync session_pnl to Supabase immediately so n8n and Supabase
                 # stay in sync even if the process crashes before the end-of-cycle

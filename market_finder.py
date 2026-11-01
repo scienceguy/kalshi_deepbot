@@ -154,7 +154,7 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
         if ml <= 0 or ml > 15.5: continue
 
         yb, ya, nb, na, yq, nq = _parse_market_prices(mkt)
-        mid = (yb + ya) / 2 if (yb and ya) else (ya or yb or 0)
+        mid = round((yb + ya) / 2) if (yb and ya) else (ya or yb or 0)
 
         log.debug("  %s ml=%.1f mid=%.1fc ya=%dc yb=%dc", ticker, ml, mid, ya, yb)
 
@@ -173,8 +173,9 @@ def find_active_markets(client: KalshiClient):
     MAX_P = config.MAX_YES_PRICE_CENTS
     HMAX  = config.HEDGE_YES_ASK_MAX
 
-    # Fetch markets for all series sequentially (KalshiClient._lock serializes
-    # all requests anyway, so concurrent fetching provides no benefit).
+    # Fetch markets for all series concurrently (bounded pool), then
+    # fetch orderbooks concurrently below. This avoids spending several
+    # seconds on sequential per-series fetches inside the 30s cycle timeout.
     all_mains = []; all_hedges = []; seen = set()
     seen_lock = threading.Lock()
 
