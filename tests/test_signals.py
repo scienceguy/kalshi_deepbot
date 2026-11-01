@@ -59,8 +59,9 @@ def make_mock_signal(ticker, side="yes", entry_price=50, strength=50.0, confiden
     market = MagicMock(spec=MarketInfo)
     market.ticker = ticker
     market.bracket_role = bracket_role
+    direction = "YES" if side == "yes" else ("NO" if side == "no" else "PASS")
     return TradeSignal(
-        direction="YES",
+        direction=direction,
         side=side,
         entry_price=entry_price,
         contracts=1.0,
@@ -109,3 +110,21 @@ class TestRankSignals:
         result = rank_signals([sig_yes, sig_no])
         assert result[0].market.ticker == "TEST2"
         assert result[1].market.ticker == "TEST1"
+
+    def test_rank_signals_empty(self):
+        """Empty list returns empty list."""
+        assert rank_signals([]) == []
+
+    def test_rank_signals_non_trade_filtered(self):
+        """PASS signals are filtered out of ranking."""
+        sig = make_mock_signal("TEST1", side="", strength=50.0, confidence=1.0)
+        result = rank_signals([sig])
+        assert result == []
+
+    def test_rank_signals_tie_breaker(self):
+        """Ties broken by ticker name (reverse alphabetical due to reverse=True sort)."""
+        sig1 = make_mock_signal("BBB", strength=50.0, confidence=1.0)  # score = 50
+        sig2 = make_mock_signal("AAA", strength=50.0, confidence=1.0)   # score = 50
+        result = rank_signals([sig1, sig2])
+        assert result[0].market.ticker == "BBB"
+        assert result[1].market.ticker == "AAA"

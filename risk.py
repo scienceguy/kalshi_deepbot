@@ -142,6 +142,10 @@ class RiskManager:
         if self.state.consecutive_losses >= 3:
             return False, "consecutive loss cooldown"
 
+        # Per-market daily loss limit check
+        if self.market_loss_exceeded(ticker, config.MARKET_DAILY_LOSS_PCT):
+            return False, f"market daily loss limit reached: {self.state.market_daily_losses.get(ticker, 0.0):.2f} >= {cash * config.MARKET_DAILY_LOSS_PCT:.2f}"
+
         max_trade = self.max_trade_dollars(cash, exposure, resting_orders_value)
 
         if trade_cost > max_trade:
