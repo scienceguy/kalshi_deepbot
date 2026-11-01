@@ -229,6 +229,9 @@ class SupabaseClient:
                 log.warning("Supabase %s %s failed: %s %s",
                             method, path, resp.status_code, resp.text[:200])
                 _supabase_record_failure()
+                if resp.status_code in (400, 403, 404):
+                    log.error("Supabase schema/auth error on %s %s — audit trail may be incomplete",
+                              method, path)
                 return None
             except requests.RequestException as e:
                 last_err = e

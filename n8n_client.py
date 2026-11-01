@@ -280,13 +280,15 @@ def run_monitor_webhook(data: Optional[Dict] = None) -> Dict[str, Any]:
 
 
 def n8n_health_check() -> bool:
-    """Verify n8n is reachable and the superbot-trade webhook responds.
+    """Verify n8n is reachable via a read-only GET.
 
-    Returns False if the API key is missing, n8n is down, or the webhook
-    errors — so startup can fail fast instead of mid-trade.
+    Returns False if n8n is down — so startup can fail fast instead of
+    mid-trade. Does NOT write through the settlement webhook (avoids
+    side effects during a health check).
     """
     try:
-        get_client().execute_webhook("superbot-trade", {"action": "health_check"})
-        return True
+        client = get_client()
+        resp = client.session.get(f"{client.base_url}/", timeout=5)
+        return resp.status_code < 500
     except Exception:
         return False

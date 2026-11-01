@@ -634,7 +634,7 @@ def cycle(client: KalshiClient):
             mark_to_market_exposure += yes_pos * yes_avg_price / 100.0
             mark_to_market_exposure += no_pos * no_avg_price / 100.0
 
-    state.risk.update_balance(cash, exposure, mark_to_market_exposure=mark_to_market_exposure)
+    state.risk.update_balance(cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
     _touch_window(datetime.now(timezone.utc), cash)
 
     # Reset daily order counter on new day
@@ -653,7 +653,7 @@ def cycle(client: KalshiClient):
 
     log.info(
         "%s | window $%.2f/%.2f | trades=%d cycles=%d",
-        state.risk.summary(cash if cash_available else 0.0, exposure),
+        state.risk.summary(cash if cash_available else 0.0, mark_to_market_exposure),
         state.window["used"], state.window["budget"],
         state.trades_placed, state.cycles,
     )
@@ -663,7 +663,7 @@ def cycle(client: KalshiClient):
     current_state = {
         "cycles": state.cycles,
         "cash": cash if cash_available else None,
-        "exposure": exposure,
+        "exposure": mark_to_market_exposure,
         "session_pnl": state.session_pnl,
     }
     if current_state != last_logged:
@@ -692,10 +692,10 @@ def cycle(client: KalshiClient):
         return
 
     max_trade = state.risk.max_trade_dollars(
-        cash if cash_available else 0.0, exposure,
+        cash if cash_available else 0.0, mark_to_market_exposure,
         resting_orders_value=sum(state.resting_value.values()),
     )
-    if max_trade < 0.20:
+    if cash_available and max_trade < 0.20:
         log.info("Max trade $%.2f too small — protecting cash floor", max_trade)
         return
 
@@ -751,7 +751,7 @@ def cycle(client: KalshiClient):
 
     slots = min(config.MAX_OPEN_POSITIONS - open_count, config.MAX_ORDERS_PER_CYCLE)
     placed = 0
-    current_exposure = exposure  # computed once; updated after each placement
+    current_exposure = mark_to_market_exposure  # computed once; updated after each placement
     for sig in ranked[:slots]:
         # Daily order limit check
         if state.orders_today >= config.MAX_ORDERS_PER_DAY:
@@ -771,13 +771,17 @@ def cycle(client: KalshiClient):
             )
             continue
 
+        if not cash_available:
+            log.info("Cash unknown — evaluating only, skipping order for %s", sig.market.ticker)
+            continue
+
         max_trade = state.risk.max_trade_dollars(
             cash, current_exposure,
             resting_orders_value=sum(state.resting_value.values()),
         )
 
-        total_value = cash + exposure
-        if not state._pre_trade_check(sig, sig.market, cash, exposure, total_value, client):
+        total_value = cash + current_exposure
+        if not state._pre_trade_check(sig, sig.market, cash, current_exposure, total_value, client):
             continue
 
         coid = _coid(sig.market.ticker, sig.side)

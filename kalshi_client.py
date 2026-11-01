@@ -173,24 +173,25 @@ class KalshiClient:
         """Execute a rate-limited, signed request. Returns parsed JSON."""
         # Verify key on first use (fails fast with clear error if key is wrong)
         self._ensure_verified()
-        # Rate limiting (thread-safe)
-        with self._lock:
-            gap = time.time() - self._last_req
-            if gap < _MIN_REQUEST_GAP:
-                time.sleep(_MIN_REQUEST_GAP - gap)
 
-            full_path = path if path.startswith("/") else f"/{path}"
-            url       = self.base_url + full_path
-            headers   = self._auth_header(method, full_path)
+        full_path = path if path.startswith("/") else f"/{path}"
+        url       = self.base_url + full_path
+        headers   = self._auth_header(method, full_path)
 
-            # Default timeout: 10s connect/read; overridable per call
-            if timeout is None:
-                timeout = config.REQUEST_TIMEOUT_SECONDS
-            kwargs.setdefault("timeout", timeout)
-
-            self._last_req = time.time()
+        # Default timeout: 10s connect/read; overridable per call
+        if timeout is None:
+            timeout = config.REQUEST_TIMEOUT_SECONDS
+        kwargs.setdefault("timeout", timeout)
 
         for _attempt in range(5):
+            # Rate limiting (thread-safe) — re-checked before every attempt
+            # including 429 retries so backoff isn't bypassed.
+            with self._lock:
+                gap = time.time() - self._last_req
+                if gap < _MIN_REQUEST_GAP:
+                    time.sleep(_MIN_REQUEST_GAP - gap)
+                self._last_req = time.time()
+
             try:
                 resp = self.session.request(method, url, headers=headers, **kwargs)
             except requests.RequestException as e:
