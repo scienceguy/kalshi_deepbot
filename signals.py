@@ -316,6 +316,66 @@ def _evaluate_common(
 # TWO-SIDED FAVOURITE MAKER (Approach D — from kalshi_live_bot)
 # ═════════════════════════════════════════════════════════════════════
 
+# HEDGE_NO (from kalshi_15m_bot)
+# ═════════════════════════════════════════════════════════════════════
+
+def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int = 0):
+    """
+    HEDGE_NO: buy NO when YES is very cheap (protective hedge).
+
+    When YES ask <= HEDGE_NO_ASK_MAX, YES is a longshot. Buying NO at
+    1c under its ask is a maker trade with high win probability but
+    low edge per contract.
+    """
+    results = []
+
+    def _pass(r):
+        results.append(TradeSignal("PASS", "", 0, 0, 0.0, r, market))
+
+    minutes_in = 15.0 - market.minutes_left
+    if minutes_in < config.ENTRY_WINDOW_START_MIN:
+        _pass(f"Early ({minutes_in:.1f}min)")
+        return results
+    if minutes_in > config.ENTRY_WINDOW_END_MIN:
+        _pass(f"Late ({minutes_in:.1f}min)")
+        return results
+
+    no_ask = market.no_ask
+    if not no_ask:
+        _pass("No NO ask")
+        return results
+
+    # Buy NO at 1c under NO ask (maker order)
+    ep = no_ask - 1
+    ep = max(1, min(99, ep))
+
+    # NO entry band check
+    if ep < config.MIN_NO_ENTRY_CENTS or ep > config.MAX_NO_ENTRY_CENTS:
+        _pass(
+            f"NO price {ep}c outside hedge band "
+            f"{config.MIN_NO_ENTRY_CENTS}-{config.MAX_NO_ENTRY_CENTS}c"
+        )
+        return results
+
+    n = _size(ep, max_dollars, max_contracts)
+    avail = market.no_liquidity
+    if avail and n > avail:
+        n = min(n, float(avail))
+    if n <= 0:
+        _pass(f"Budget ${max_dollars:.2f} too low for {ep}c entry")
+        return results
+
+    risk_ = n * ep / 100
+    confidence = float(ep) / 100.0
+    reason = (
+        f"HEDGE_NO str=0 conf={confidence:.2f} "
+        f"{minutes_in:.1f}min {n:.4f}x@{ep}c=${risk_:.2f}"
+    )
+    log.info("SIGNAL: %s — %s", market.ticker, reason)
+    results.append(TradeSignal("NO", "no", ep, n, risk_, reason, market, 0.0, confidence))
+    return results
+
+
 def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: int = 0):
     """
     Two-sided favourite maker strategy (Approach D).
