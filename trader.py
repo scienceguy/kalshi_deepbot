@@ -674,6 +674,9 @@ def cycle(client: KalshiClient):
 
         oid = (resp.get("order") or {}).get("order_id") or resp.get("order_id", "")
         if oid:
+            # Track reserved cash for this resting order so intra-cycle cash
+            # tracking doesn't overspend on orders already placed this cycle.
+            state.resting_value[oid] = sig.dollar_risk
             fill_count = float(resp.get("filledCount", 1))
             fees_dollars = fees.taker_fee_cents(
                 sig.contracts, sig.entry_price / 100.0
@@ -740,6 +743,57 @@ def main():
                   "Start n8n (http://127.0.0.1:5678) and try again.")
         sys.exit(1)
     log.info("n8n health check ✓")
+
+    # Seed resting orders from Kalshi so intra-cycle cash tracking accounts
+    # for orders already resting from a previous run.
+    try:
+        resting_orders = client.get_orders(status="resting")
+        for o in resting_orders:
+            oid = o.get("order_id") or o.get("id")
+            side = o.get("side", "")
+            price_cents = o.get("price_cents", 0)
+            count = o.get("count", 0)
+            if oid and price_cents and count:
+                # NO side price is stored as complement (100 - no_price_cents)
+                if side == "no":
+                    price_cents = 100 - price_cents
+                state.resting_value[oid] = int(count) * price_cents / 100.0
+        if state.resting_value:
+            log.info("Seeded %d resting orders worth $%.2f reserved cash",
+                     len(state.resting_value), sum(state.resting_value.values()))
+    except Exception as e:
+        log.warning("Could not seed resting orders from Kalshi: %s", e)
+
+    # Seed positions from Kalshi exchange so the bot knows about existing
+    # positions and doesn't try to re-enter them on restart.
+    try:
+        positions = client.get_positions()
+        for p in positions:
+            ticker = p.get("ticker", "")
+            if "15M" not in ticker.upper():
+                continue
+            yes_pos = int(p.get("yes_position", 0) or 0)
+            no_pos = int(p.get("no_position", 0) or 0)
+            if not yes_pos and not no_pos:
+                continue
+            side = "yes" if yes_pos else "no"
+            contracts = yes_pos or no_pos
+            entry_price = int(round(float(p.get("yes_avg_price_dollars", 0) or 0) * 100))
+            if side == "no":
+                entry_price = int(round(float(p.get("no_avg_price_dollars", 0) or 0) * 100))
+            order_id = p.get("order_id", ticker)
+            state.positions[ticker] = {
+                "side": side,
+                "entry_price": entry_price,
+                "contracts": contracts,
+                "order_id": order_id,
+            }
+            state.position_risk[ticker] = contracts * entry_price / 100.0
+        if state.positions:
+            log.info("Seeded %d existing positions from exchange",
+                     len(state.positions))
+    except Exception as e:
+        log.warning("Could not seed positions from Kalshi: %s", e)
 
     # Reconcile session_pnl from Supabase on startup — prevents P&L drift
     # if n8n webhook settlement writes failed in a previous run.
