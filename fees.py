@@ -18,6 +18,9 @@ import os
 # Configurable via KALSHI_FEE_RATE env var in case the fee schedule changes.
 FEE_RATE = float(os.environ.get("KALSHI_FEE_RATE", "0.07"))
 
+if not 0 <= FEE_RATE <= 1:
+    raise ValueError(f"KALSHI_FEE_RATE={FEE_RATE} must be in [0, 1]")
+
 
 def taker_fee_dollars(contracts: float, price_dollars: float, multiplier: float = 1.0) -> float:
     """Raw trade fee, rounded up to 6 decimal places (no balance-grid rounding)."""

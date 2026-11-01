@@ -8,8 +8,11 @@ Consolidation strategy: take the best-performing parameters from each bot's
 backtests, with environment-variable overrides for live tuning.
 """
 
+import logging
 import os
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 _MODE = os.environ.get("KALSHI_MODE", "live")
 _load_done = False
@@ -66,7 +69,10 @@ def _env_bool(name, default):
             "Unrecognized boolean value for %s: '%r'. Using default %s.",
             name, val, default,
         )
-    return val in ("1", "true", "yes", "on") if os.environ.get(name) else default
+        return default
+    # Unset or empty → safe default; a recognized value → its boolean meaning.
+    # An unrecognized value must NOT silently flip DRY_RUN into live mode.
+    return val in ("1", "true", "yes", "on") if val else default
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -119,6 +125,10 @@ MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 88)
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 82)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 
+# NO side price format: Kalshi returns NO prices directly (not complemented).
+# Set NO_PRICE_IS_COMPLEMENT=False for production. Default True for backward compat.
+NO_PRICE_IS_COMPLEMENT = _env_bool("NO_PRICE_IS_COMPLEMENT", True)
+
 # ═════════════════════════════════════════════════════════════════════
 # HEDGE SETTINGS
 # ═════════════════════════════════════════════════════════════════════
@@ -149,10 +159,9 @@ TOTAL_CASH_TRADABLE_PCT = _env_float("TOTAL_CASH_TRADABLE_PCT", 0.70)
 CASH_FLOOR_PCT = _env_float("CASH_FLOOR_PCT", 0.70)
 EXPOSURE_CEILING_PCT = _env_float("EXPOSURE_CEILING_PCT", 0.30)
 if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0:
-    log.warning(
-        "CASH_FLOOR_PCT (%.2f) + EXPOSURE_CEILING_PCT (%.2f) > 1.0. "
-        "Risk checks may allow trades that exceed available cash.",
-        CASH_FLOOR_PCT, EXPOSURE_CEILING_PCT,
+    raise ValueError(
+        f"CASH_FLOOR_PCT ({CASH_FLOOR_PCT:.2f}) + EXPOSURE_CEILING_PCT ({EXPOSURE_CEILING_PCT:.2f}) > 1.0. "
+        f"Sum must be <= 1.0 to avoid over-reserving cash."
     )
 PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.20)
 MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)

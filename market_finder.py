@@ -170,13 +170,6 @@ def find_active_markets(client: KalshiClient):
     MAX_P = config.MAX_YES_PRICE_CENTS
     HMAX  = config.HEDGE_YES_ASK_MAX
 
-def find_active_markets(client: KalshiClient):
-    now = datetime.now(timezone.utc)
-    result = []
-    MIN_P = config.MIN_YES_PRICE_CENTS
-    MAX_P = config.MAX_YES_PRICE_CENTS
-    HMAX  = config.HEDGE_YES_ASK_MAX
-
     # Fetch markets for all series sequentially (KalshiClient._lock serializes
     # all requests anyway, so concurrent fetching provides no benefit).
     all_mains = []; all_hedges = []; seen = set()
