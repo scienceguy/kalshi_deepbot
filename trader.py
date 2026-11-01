@@ -266,6 +266,13 @@ class BotState:
             )
         except Exception as e:
             log.error("Order failed %s: %s", sig.market.ticker, e)
+            # Surface the failure to the resilience supervisor so repeated order
+            # errors (e.g. an expired key → 401) trigger backoff/rebuild instead
+            # of the bot silently trading zero orders forever. Auth errors are
+            # re-raised so the main loop stops rather than looping on a dead key.
+            self.resilience.mark_failure(e)
+            if self.resilience.is_auth_error():
+                raise
             return None
 
     def _record_filled_order(self, client, sig, oid, fill_count, status, fees_dollars, cycles):
@@ -380,21 +387,79 @@ def _save_settlement_queue(queue: list):
         pass
 
 
-def _replay_settlement_queue():
-    """Replay any pending settlements from the queue file via n8n webhook."""
+def _resolve_pending_settlement(client, payload):
+    """Compute realized PnL for a queued 'pending' settlement from the exchange.
+
+    Returns an updated payload dict with status/pnl filled in, or None if the
+    settlement price is still unavailable (the caller keeps the entry queued).
+    """
+    ticker = payload.get("ticker", "")
+    side = payload.get("side", "")
+    contracts = payload.get("contracts", 0)
+    entry_price = payload.get("entry_price", 0)
+    if not ticker or side not in ("yes", "no") or not contracts:
+        return None
+    try:
+        market = client.get_market(ticker)
+    except Exception:
+        return None
+    exp_val = market.get("expiration_value")
+    if exp_val is None:
+        return None
+    settled_yes = int(round(float(exp_val) * 100))
+    if settled_yes not in (0, 100):
+        return None
+    exit_price = (float(settled_yes) / 100.0 if side == "yes"
+                  else float(100 - settled_yes) / 100.0)
+    buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0)
+    sell_revenue = fees.sell_cash_in(contracts, exit_price)
+    return {
+        **payload,
+        "status": "settled",
+        "fill_price_cents": int(exit_price * 100),
+        "outcome_won": sell_revenue > buy_cost,
+        "pnl_dollars": sell_revenue - buy_cost,
+    }
+
+
+def _replay_settlement_queue(client=None):
+    """Replay pending settlements from the queue file via n8n webhook.
+
+    Entries with a known `pnl_dollars` are re-sent and credited. Entries recorded
+    as 'pending' (settlement price was unavailable at settle time) are resolved
+    by re-fetching the market's settlement via `client`, computing PnL, then
+    re-sent. Without `client`, pending entries are left queued rather than being
+    dropped — dropping them would silently lose realized PnL.
+    """
     queue = _load_settlement_queue()
     if not queue:
         return
     log.info("Replaying %d pending settlement(s) from queue", len(queue))
     remaining = []
-    for entry in queue:
+    for i, entry in enumerate(queue):
+        payload = entry.get("payload", {})
         try:
+            # A pending entry has no PnL yet — resolve it from the exchange.
+            if payload.get("pnl_dollars") is None:
+                if client is None:
+                    remaining.append(entry)  # can't resolve without a client
+                    continue
+                resolved = _resolve_pending_settlement(client, payload)
+                if resolved is None:
+                    remaining.append(entry)  # settlement still unavailable
+                    continue
+                payload = resolved
+                entry["payload"] = payload
             n8n_client = get_n8n_client()
-            n8n_client.execute_webhook("superbot-trade", entry["payload"], max_retries=1)
-            pnl = entry["payload"].get("pnl_dollars")
+            n8n_client.execute_webhook("superbot-trade", payload, max_retries=1)
+            # Persist the queue WITHOUT this entry before crediting PnL, so a
+            # crash between the webhook and the credit can't replay the same
+            # settlement and double-count on restart.
+            _save_settlement_queue(remaining + queue[i + 1:])
+            pnl = payload.get("pnl_dollars")
             if pnl is not None:
                 state.session_pnl += pnl
-            log.info("Replayed settlement for %s", entry["payload"].get("order_id"))
+            log.info("Replayed settlement for %s", payload.get("order_id"))
         except Exception:
             remaining.append(entry)
     _save_settlement_queue(remaining)
@@ -558,7 +623,7 @@ def cycle(client: KalshiClient):
             # Track consecutive losses and per-market daily loss for risk cooldown
             state.risk.record_trade_outcome(won, realized_pnl)
             if not won:
-                state.risk.record_market_loss(ticker, abs(realized_pnl))
+                state.risk.record_market_loss(t, abs(realized_pnl))
 
             # Record settlement to Supabase via n8n workflow
             try:
@@ -648,8 +713,12 @@ def cycle(client: KalshiClient):
             mark_to_market_exposure += yes_pos * yes_avg_price / 100.0
             mark_to_market_exposure += no_pos * no_avg_price / 100.0
 
-    state.risk.update_balance(cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
-    _touch_window(datetime.now(timezone.utc), cash)
+    # Balance may be unknown if the fetch failed (cash is None) — skip the
+    # balance-dependent risk/window updates instead of crashing on None.
+    cash_available = cash is not None
+    if cash_available:
+        state.risk.update_balance(cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
+        _touch_window(datetime.now(timezone.utc), cash)
 
     # Reset daily order counter on new day
     today = datetime.now(timezone.utc).date().isoformat()
@@ -661,7 +730,6 @@ def cycle(client: KalshiClient):
     # If balance fetch failed, skip balance-dependent checks but continue
     # with market finding — we can still evaluate signals without knowing
     # exact cash.
-    cash_available = cash is not None
     if not cash_available:
         log.warning("Balance unknown — skipping balance-dependent risk checks")
 
@@ -948,10 +1016,11 @@ def main():
         log.warning("Could not reconcile session_pnl from Supabase — starting at $0.00")
 
     # Replay any pending settlements from the queue file
-    _replay_settlement_queue()
+    _replay_settlement_queue(client)
 
     if args.once:
         cycle(client)
+        client.close()
         return
 
     def _shutdown_handler(signum, frame):
@@ -1012,6 +1081,19 @@ def main():
         if elapsed > args.interval:
             log.warning("Cycle took %.1fs (> %ds interval)", elapsed, args.interval)
         time.sleep(sleep_for)
+
+    # Persist bid history on clean shutdown so the stability gate doesn't have
+    # to re-warm for STABILITY_LOOKBACK_MIN on the next start.
+    try:
+        se._force_save_bid_hist()
+    except Exception as e:
+        log.warning("Could not save bid history on shutdown: %s", e)
+
+    # Release the HTTP session's sockets on clean shutdown.
+    try:
+        client.close()
+    except Exception:
+        pass
 
     log.info("Done. P&L=$%.2f | Cycles=%d | Trades=%d",
              state.session_pnl, state.cycles, state.trades_placed)

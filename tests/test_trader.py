@@ -161,3 +161,147 @@ def test_resting_value_kept_for_resting_order(fresh_state, mock_client):
     fresh_state.resting_value["test_oid"] = 10.0
     assert "test_oid" in fresh_state.resting_value
     assert fresh_state.resting_value["test_oid"] == 10.0
+
+
+# ── cycle() regression tests (money path) ───────────────────────────────────
+
+def _reset_cycle_state(monkeypatch):
+    """Give the module-level trader.state a clean, isolated snapshot."""
+    from risk import RiskManager
+    monkeypatch.setattr(trader.state, "positions", {})
+    monkeypatch.setattr(trader.state, "resting_value", {})
+    monkeypatch.setattr(trader.state, "position_risk", {})
+    monkeypatch.setattr(trader.state, "window", {
+        "id": None, "start_cash": 0.0, "budget": 0.0, "used": 0.0,
+        "reserved_cash": 0.0, "entered": set(),
+    })
+    monkeypatch.setattr(trader.state, "risk", RiskManager())
+    monkeypatch.setattr(trader.state, "cycles", 0)
+    monkeypatch.setattr(trader.state, "orders_today", 0)
+    monkeypatch.setattr(trader.state, "today", "")
+
+
+def _mkts():
+    from market_finder import MarketInfo
+    return [MarketInfo(
+        ticker="KXBTC15M-TEST", series="KXBTC15M",
+        close_time=datetime.now(timezone.utc), strike=0, strike_type="",
+        yes_bid=85, yes_ask=86, no_bid=14, no_ask=15,
+        yes_liquidity=100, no_liquidity=100, minutes_left=5.0,
+        bracket_role="MAIN",
+    )]
+
+
+def test_cycle_does_not_crash_on_unknown_balance(monkeypatch):
+    """cycle() must not crash when the balance fetch fails (cash=None).
+
+    Regression: update_balance(None, ...) and _touch_window(..., None) raised
+    TypeError, crashing the whole cycle on a transient balance fetch failure.
+    """
+    client = MagicMock()
+    client.get_balance.side_effect = RuntimeError("network blip")
+    client.get_positions.return_value = []
+    client.invalidate_markets.return_value = None
+
+    monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
+    _reset_cycle_state(monkeypatch)
+
+    trader.cycle(client)  # must not raise
+
+
+def test_resolve_pending_settlement_yes_win():
+    """_resolve_pending_settlement computes PnL for a winning YES."""
+    client = MagicMock()
+    client.get_market.return_value = {"expiration_value": 1.0}
+    payload = {"ticker": "T", "side": "yes", "contracts": 10,
+               "entry_price": 60, "pnl_dollars": None}
+    out = trader._resolve_pending_settlement(client, payload)
+    assert out is not None
+    assert out["status"] == "settled"
+    assert out["outcome_won"] is True
+    assert out["pnl_dollars"] > 0
+
+
+def test_resolve_pending_settlement_unavailable_returns_none():
+    """Pending settlement with no price yet returns None (stay queued)."""
+    client = MagicMock()
+    client.get_market.return_value = {"expiration_value": None}
+    payload = {"ticker": "T", "side": "yes", "contracts": 10,
+               "entry_price": 60, "pnl_dollars": None}
+    assert trader._resolve_pending_settlement(client, payload) is None
+
+
+def test_replay_resolves_pending_and_credits(monkeypatch, tmp_path):
+    """A queued pending settlement is resolved, credited, and drained."""
+    import json
+    qfile = tmp_path / "q.json"
+    qfile.write_text(json.dumps([{"order_id": "oid1", "payload": {
+        "action": "settlement", "order_id": "oid1", "status": "pending",
+        "fill_price_cents": None, "outcome_won": None, "pnl_dollars": None,
+        "ticker": "KXBTC15M-TEST", "side": "yes", "contracts": 10, "entry_price": 60,
+    }}]))
+    monkeypatch.setattr(trader, "SETTLEMENT_QUEUE_FILE", qfile)
+    monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
+    monkeypatch.setattr(trader.state, "session_pnl", 0.0)
+    client = MagicMock()
+    client.get_market.return_value = {"expiration_value": 1.0}
+
+    trader._replay_settlement_queue(client)
+
+    assert trader.state.session_pnl > 0
+    assert json.loads(qfile.read_text()) == []  # drained
+
+
+def test_replay_keeps_unresolvable_pending_queued(monkeypatch, tmp_path):
+    """A pending settlement that can't be resolved is kept, not dropped."""
+    import json
+    qfile = tmp_path / "q.json"
+    entry = {"order_id": "oid1", "payload": {
+        "action": "settlement", "order_id": "oid1", "status": "pending",
+        "fill_price_cents": None, "outcome_won": None, "pnl_dollars": None,
+        "ticker": "KXBTC15M-TEST", "side": "yes", "contracts": 10, "entry_price": 60,
+    }}
+    qfile.write_text(json.dumps([entry]))
+    monkeypatch.setattr(trader, "SETTLEMENT_QUEUE_FILE", qfile)
+    monkeypatch.setattr(trader.state, "session_pnl", 0.0)
+    client = MagicMock()
+    client.get_market.return_value = {"expiration_value": None}
+
+    trader._replay_settlement_queue(client)
+
+    assert trader.state.session_pnl == 0.0
+    assert len(json.loads(qfile.read_text())) == 1  # still queued
+
+
+def test_settlement_records_market_loss_to_correct_ticker(monkeypatch):
+    """Settlement of a losing position books the loss to the settled ticker.
+
+    Regression: the loss was recorded against `ticker` (only defined by an
+    unrelated positions loop) instead of the loop variable `t`, causing a
+    NameError (empty positions) or mis-attribution to the wrong ticker.
+    """
+    ticker = "KXBTC15M-TEST"
+    client = MagicMock()
+    client.get_balance.return_value = 100.0
+    client.get_positions.return_value = []          # position has settled (gone)
+    client.invalidate_markets.return_value = None
+    client.get_market.return_value = {"expiration_value": 0.0}  # YES loses
+    client.get_orders.return_value = []
+
+    monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
+    monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
+    _reset_cycle_state(monkeypatch)
+
+    # A previously-recorded YES position that has now settled as a loss.
+    trader.state.positions[ticker] = {
+        "side": "yes", "entry_price": 85, "contracts": 1, "order_id": "oid1",
+    }
+    trader.state.position_risk[ticker] = 0.85
+
+    trader.cycle(client)
+
+    # The loss must be recorded against the settled ticker, not a stray one.
+    assert ticker in trader.state.risk.state.market_daily_losses
+    assert ticker not in trader.state.positions

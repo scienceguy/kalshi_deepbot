@@ -154,7 +154,9 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
         if ml <= 0 or ml > 15.5: continue
 
         yb, ya, nb, na, yq, nq = _parse_market_prices(mkt)
-        mid = round((yb + ya) / 2) if (yb and ya) else (ya or yb or 0)
+        # Float mid matches MarketInfo.mid_yes so the pre-filter and the final
+        # band check agree on the same value (no rounding boundary flips).
+        mid = (yb + ya) / 2 if (yb and ya) else (ya or yb or 0)
 
         log.debug("  %s ml=%.1f mid=%.1fc ya=%dc yb=%dc", ticker, ml, mid, ya, yb)
 

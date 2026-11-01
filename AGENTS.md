@@ -31,10 +31,14 @@ routes settlement P&L through n8n webhooks.
 
 ## Environment
 
-- `.env` is gitignored. Copy from `.env.example` and fill in real credentials.
-- `kalshi_private.pem` is gitignored; place your real key there (chmod 600).
+- `.env` is gitignored (`chmod 600`). Copy from `.env.example` and fill in real credentials.
+- Kalshi private key lives at **`~/.secrets/kalshi_private.pem`** (`chmod 600`),
+  pointed to by `KALSHI_KEY_FILE`. It must match `KALSHI_KEY_ID` exactly.
+  (It used to be `kalshi_private.pem` in the repo root — do not put secrets in the repo.)
 - `DRY_RUN=true` by default. `python trader.py --live` requires `KALSHI_CONFIRM_LIVE=true` in `.env`.
 - `KALSHI_BASE_URL` must contain `/trade-api/v2` (validated at client construction).
+- Other secrets: `~/.secrets/n8n_api_key`, `~/.secrets/supabase_service_key`,
+  `~/.secrets/bw/` (durable credential mirror). See the Credentials section below.
 
 ## How to run
 
@@ -66,12 +70,43 @@ python trader.py --live
 - `n8n_client.py` webhook timeout = `CYCLE_TIMEOUT_SECONDS - 5` (25s) so webhooks never block a cycle.
 - n8n REST API returns 401 (upstream bug #31011); webhooks + direct DB injection are the working path.
 
+## Credentials — durable store (READ THIS BEFORE TOUCHING SECRETS)
+
+Agents keep deleting n8n credentials. The secrets are NOT stored in n8n or in
+this repo as the source of truth. They live in two places, both outside the repo:
+
+1. **Bitwarden** (ultimate source) — every "secure note" in the vault.
+2. **`~/.secrets/bw/`** — durable local mirror, one protected JSON per item
+   (`chmod 600`, dir `chmod 700`) plus `index.json`. Outside the repo, so repo
+   cleanups and `git` operations cannot delete it.
+
+n8n holds a **copy** of every credential, recreated from the mirror at any time.
+
+| Task | Command |
+|------|---------|
+| Recreate every credential in n8n (idempotent, safe to re-run) | `python scripts/n8n_creds_sync.py` |
+| Verify all are present | `python scripts/n8n_creds_sync.py --check` |
+| List mirror items | `python scripts/n8n_creds_sync.py --list` |
+| Also delete n8n creds not in the mirror | `python scripts/n8n_creds_sync.py --prune` |
+| Refresh mirror from Bitwarden | `BW_PASSWORD=... python scripts/bw_pull_secure_notes.py` |
+| Move the Kalshi PEM / n8n key into `~/.secrets/` | already done — see `.env` `*_FILE` vars |
+
+- **If a credential is missing from n8n: run `python scripts/n8n_creds_sync.py`.** That is the whole fix.
+- A background guard (`scripts/n8n_creds_guard.sh`, termux-job-scheduler job
+  **7001**, every 15 min, persisted) re-runs the sync automatically.
+- `add_n8n_credentials.py` is deprecated; use `scripts/n8n_creds_sync.py`.
+- **Never hardcode a secret in source.** A pre-commit hook
+  (`scripts/install-pre-commit.sh`) blocks `.env`/`*.pem` and scans staged
+  additions for key patterns. Re-install it on a fresh clone.
+- Secret files: `~/.secrets/kalshi_private.pem`, `~/.secrets/n8n_api_key`,
+  `~/.secrets/supabase_service_key`, `~/.secrets/bw/`.
+
 ## Kalshi API (production)
 
 - Base URL: `https://external-api.kalshi.com/trade-api/v2`
 - Auth: RSA-PSS over `timestamp_ms + METHOD + /trade-api/v2/path` (path prefix included).
 - `/markets` is public (200 without auth). `/portfolio/balance`, `/portfolio/positions`, `/portfolio/orders` require valid key + signature.
-- `kalshi_private.pem` must match `KALSHI_KEY_ID` exactly; mismatched keys return `INCORRECT_API_KEY_SIGNATURE`.
+- `~/.secrets/kalshi_private.pem` must match `KALSHI_KEY_ID` exactly; mismatched keys return `INCORRECT_API_KEY_SIGNATURE`.
 - Balance returned in cents; divide by 100 for dollars.
 
 ## MemPalace shared brain

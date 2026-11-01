@@ -70,3 +70,5 @@ monitor_result.json
 trade_result.json
 hf_data/
 collected_data/
+# Bid-history runtime state
+bid_hist_*.json
