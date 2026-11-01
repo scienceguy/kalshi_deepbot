@@ -11,6 +11,7 @@ import logging
 import requests
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -38,6 +39,10 @@ class KalshiClient:
 
     def __init__(self):
         self.base_url   = config.KALSHI_BASE_URL
+        # Full path from the API root (e.g. "/trade-api/v2") — Kalshi requires
+        # signing this prefix together with the request path, without host and
+        # without query string. See docs: quick_start_authenticated_requests.md
+        self._api_path  = urlparse(self.base_url).path
         self.key_id     = config.KALSHI_KEY_ID
         self._privkey   = self._load_private_key()
         self._last_req  = 0.0
@@ -126,12 +131,15 @@ class KalshiClient:
     def _auth_header(self, method: str, path: str) -> dict:
         """
         Build the KALSHI-ACCESS-* headers required for every request.
-        Signature = RSA-PSS(SHA-256, f"{timestamp}{method}{path}")
-        Signs the request path only (query string is appended by requests
-        separately and is not part of the signature).
+        Signature = RSA-PSS(SHA-256, f"{timestamp}{method}{sign_path}")
+        where sign_path is the FULL path from the API root (e.g.
+        "/trade-api/v2/portfolio/balance") — Kalshi signs this, not just the
+        request path. Query string is appended by requests separately and is
+        not part of the signature.
         """
         ts_ms  = str(int(time.time() * 1000))
-        msg    = f"{ts_ms}{method.upper()}{path}".encode()
+        sign_path = self._api_path + path
+        msg    = f"{ts_ms}{method.upper()}{sign_path}".encode()
         sig    = self._privkey.sign(msg, padding.PSS(
             mgf=padding.MGF1(hashes.SHA256()),
             salt_length=padding.PSS.DIGEST_LENGTH,
