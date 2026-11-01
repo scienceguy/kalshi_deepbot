@@ -691,7 +691,8 @@ def main():
     except ValueError as e:
         log.error("Credential validation failed: %s", e)
         sys.exit(1)
-    config.validate_dry_run(live_explicit=args.live)
+    if not config.validate_dry_run(live_explicit=args.live):
+        sys.exit(1)
     config.validate_bands()
 
     client = KalshiClient()

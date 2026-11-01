@@ -50,13 +50,15 @@ class KalshiClient:
     def _verify_key(self):
         """Confirm the loaded private key corresponds to KALSHI_KEY_ID.
 
-        Makes a read-only balance request; if the key is wrong the API returns 401.
+        Makes a read-only markets request; if the key is wrong the API returns 401.
         Catches the mismatch at startup with a clear message instead of failing
         later with an opaque auth error on the first trade.
+        Uses get_markets instead of get_balance because some key types lack
+        portfolio/balance permission but can read public market data.
         """
-        self._verified = True  # Set first to prevent recursion via get_balance()
+        self._verified = True  # Set first to prevent recursion via get_markets()
         try:
-            self.get_balance()
+            self.get_markets(limit=1)
         except Exception as e:
             raise RuntimeError(
                 f"Kalshi key verification failed: key_id={self.key_id} does not "
@@ -125,12 +127,16 @@ class KalshiClient:
     def _auth_header(self, method: str, path: str) -> dict:
         """
         Build the KALSHI-ACCESS-* headers required for every request.
-        Signature = RSA-PSS(SHA-256, f"{timestamp}{method}{path}")
+        Signature = RSA-PSS(SHA-256, f"{timestamp}{method}{path_with_query}")
+        Signs the FULL path including query string so Kalshi's server-side
+        signature verification matches.
         """
         ts_ms  = str(int(time.time() * 1000))
-        # Strip query string from path for signature
-        sig_path = path.split("?")[0]
-        msg    = f"{ts_ms}{method.upper()}{sig_path}".encode()
+        full_path = path if path.startswith("/") else f"/{path}"
+        url       = self.base_url + full_path
+        # Sign the full path INCLUDING query string — Kalshi signs the full
+        # request path, not just the path component.
+        msg    = f"{ts_ms}{method.upper()}{full_path}".encode()
         sig    = self._privkey.sign(msg, padding.PSS(
             mgf=padding.MGF1(hashes.SHA256()),
             salt_length=padding.PSS.DIGEST_LENGTH,
@@ -154,7 +160,7 @@ class KalshiClient:
 
         full_path = path if path.startswith("/") else f"/{path}"
         url       = self.base_url + full_path
-        headers   = self._auth_header(method, urlparse(url).path)
+        headers   = self._auth_header(method, full_path)
 
         # Default timeout: 10s connect/read; overridable per call
         if timeout is None:

@@ -326,8 +326,10 @@ class SupabaseClient:
         """Get a bot state value by key."""
         try:
             result = self._request("GET", f"bot_state?key=eq.{key}&select=value_json")
-            if result and len(result) > 0:
-                return json.loads(result[0]["value_json"])
+            # Supabase returns either a list [{"value_json": "..."}] or a dict {"value_json": "..."}
+            rows = result if isinstance(result, list) else ([result] if result else [])
+            if rows:
+                return json.loads(rows[0]["value_json"])
             return None
         except Exception as e:
             log.warning("get_bot_state error: %s", e)

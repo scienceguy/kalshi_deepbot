@@ -286,35 +286,33 @@ def validate_credentials():
         )
 
 
-def validate_dry_run(live_explicit: bool = False):
+def validate_dry_run(live_explicit: bool = False) -> bool:
     """Block live trading unless --live is explicitly passed AND KALSHI_CONFIRM_LIVE=true.
 
-    Raises SystemExit if DRY_RUN is False and --live was not passed,
-    preventing accidental live trading from a misconfigured .env.
-    Raises SystemExit if --live is passed but KALSHI_CONFIRM_LIVE is not set,
-    requiring a second environment confirmation for live trading.
+    Returns True if dry-run mode is OK to proceed, False if live trading is
+    blocked and the caller should exit.
 
     Intended to be called by trader.py at startup — not automatically on import.
     """
     if not DRY_RUN and not live_explicit:
         import logging
-        import sys
         logging.getLogger(__name__).error(
             "DRY_RUN is False but --live was not passed. "
             "Refusing to start in live mode. "
             "Set DRY_RUN=true in .env, or pass --live to confirm live trading."
         )
-        sys.exit(1)
+        return False
 
     if live_explicit and os.environ.get("KALSHI_CONFIRM_LIVE", "").strip().lower() != "true":
         import logging
-        import sys
         logging.getLogger(__name__).error(
             "--live passed but KALSHI_CONFIRM_LIVE is not set to 'true'. "
             "Refusing to start in live mode. "
             "Set KALSHI_CONFIRM_LIVE=true to confirm you intend live trading."
         )
-        sys.exit(1)
+        return False
+
+    return True
 
 
 def validate_bands():

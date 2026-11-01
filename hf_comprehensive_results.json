@@ -1,0 +1,2882 @@
+[
+  {
+    "band": "85-88",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-88",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-88",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-90",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-90",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-90",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-92",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-92",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-92",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-95",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-95",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "85-95",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.87,
+    "total_pnl": -1.74,
+    "final_balance": 8.260000000000002
+  },
+  {
+    "band": "88-90",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.8849999999999999,
+    "total_pnl": -1.7699999999999998,
+    "final_balance": 8.23
+  },
+  {
+    "band": "88-90",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.8849999999999999,
+    "total_pnl": -1.7699999999999998,
+    "final_balance": 8.23
+  },
+  {
+    "band": "88-90",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.8849999999999999,
+    "total_pnl": -1.7699999999999998,
+    "final_balance": 8.23
+  },
+  {
+    "band": "88-92",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.8849999999999999,
+    "total_pnl": -1.7699999999999998,
+    "final_balance": 8.23
+  },
+  {
+    "band": "88-92",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.8849999999999999,
+    "total_pnl": -1.7699999999999998,
+    "final_balance": 8.23
+  },
+  {
+    "band": "88-92",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.8849999999999999,
+    "total_pnl": -1.7699999999999998,
+    "final_balance": 8.23
+  },
+  {
+    "band": "88-95",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.9049999999999999,
+    "total_pnl": -1.8099999999999998,
+    "final_balance": 8.190000000000001
+  },
+  {
+    "band": "88-95",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.9049999999999999,
+    "total_pnl": -1.8099999999999998,
+    "final_balance": 8.190000000000001
+  },
+  {
+    "band": "88-95",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.9049999999999999,
+    "total_pnl": -1.8099999999999998,
+    "final_balance": 8.190000000000001
+  },
+  {
+    "band": "82-98",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.91,
+    "total_pnl": -1.82,
+    "final_balance": 8.18
+  },
+  {
+    "band": "82-98",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.91,
+    "total_pnl": -1.82,
+    "final_balance": 8.18
+  },
+  {
+    "band": "82-98",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.91,
+    "total_pnl": -1.82,
+    "final_balance": 8.18
+  },
+  {
+    "band": "85-98",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.91,
+    "total_pnl": -1.82,
+    "final_balance": 8.18
+  },
+  {
+    "band": "85-98",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.91,
+    "total_pnl": -1.82,
+    "final_balance": 8.18
+  },
+  {
+    "band": "85-98",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.91,
+    "total_pnl": -1.82,
+    "final_balance": 8.18
+  },
+  {
+    "band": "88-98",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.9199999999999999,
+    "total_pnl": -1.8399999999999999,
+    "final_balance": 8.16
+  },
+  {
+    "band": "88-98",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.9199999999999999,
+    "total_pnl": -1.8399999999999999,
+    "final_balance": 8.16
+  },
+  {
+    "band": "88-98",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -0.9199999999999999,
+    "total_pnl": -1.8399999999999999,
+    "final_balance": 8.16
+  },
+  {
+    "band": "75-98",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -1.385,
+    "total_pnl": -2.77,
+    "final_balance": 7.229999999999999
+  },
+  {
+    "band": "75-98",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -1.385,
+    "total_pnl": -2.77,
+    "final_balance": 7.229999999999999
+  },
+  {
+    "band": "75-98",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -1.385,
+    "total_pnl": -2.77,
+    "final_balance": 7.229999999999999
+  },
+  {
+    "band": "80-98",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -1.385,
+    "total_pnl": -2.77,
+    "final_balance": 7.229999999999999
+  },
+  {
+    "band": "80-98",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -1.385,
+    "total_pnl": -2.77,
+    "final_balance": 7.229999999999999
+  },
+  {
+    "band": "80-98",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -1.385,
+    "total_pnl": -2.77,
+    "final_balance": 7.229999999999999
+  },
+  {
+    "band": "82-88",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-88",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-88",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-90",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-90",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-90",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-92",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-92",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-92",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-95",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-95",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "82-95",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -1.1733333333333333,
+    "total_pnl": -3.52,
+    "final_balance": 6.48
+  },
+  {
+    "band": "75-88",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-88",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-88",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-90",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-90",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-90",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-92",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-92",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-92",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-95",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-95",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "75-95",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.29,
+    "total_pnl": -4.58,
+    "final_balance": 5.42
+  },
+  {
+    "band": "80-88",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-88",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-88",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-90",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-90",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-90",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-92",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-92",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-92",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-95",
+    "pct": 0.1,
+    "max_dollars": 2.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-95",
+    "pct": 0.1,
+    "max_dollars": 3.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "80-95",
+    "pct": 0.1,
+    "max_dollars": 5.0,
+    "trades": 2,
+    "win_rate": 0.0,
+    "ev": -2.3049999999999997,
+    "total_pnl": -4.609999999999999,
+    "final_balance": 5.39
+  },
+  {
+    "band": "82-92",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0183333333333333,
+    "total_pnl": -6.11,
+    "final_balance": 3.8899999999999997
+  },
+  {
+    "band": "82-92",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0183333333333333,
+    "total_pnl": -6.11,
+    "final_balance": 3.8899999999999997
+  },
+  {
+    "band": "82-92",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0183333333333333,
+    "total_pnl": -6.11,
+    "final_balance": 3.8899999999999997
+  },
+  {
+    "band": "82-88",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.224,
+    "total_pnl": -6.12,
+    "final_balance": 3.8799999999999994
+  },
+  {
+    "band": "82-88",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.224,
+    "total_pnl": -6.12,
+    "final_balance": 3.8799999999999994
+  },
+  {
+    "band": "82-88",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.224,
+    "total_pnl": -6.12,
+    "final_balance": 3.8799999999999994
+  },
+  {
+    "band": "80-98",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.234,
+    "total_pnl": -6.17,
+    "final_balance": 3.83
+  },
+  {
+    "band": "80-98",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.234,
+    "total_pnl": -6.17,
+    "final_balance": 3.83
+  },
+  {
+    "band": "80-98",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.234,
+    "total_pnl": -6.17,
+    "final_balance": 3.83
+  },
+  {
+    "band": "82-95",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0283333333333333,
+    "total_pnl": -6.17,
+    "final_balance": 3.83
+  },
+  {
+    "band": "82-95",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0283333333333333,
+    "total_pnl": -6.17,
+    "final_balance": 3.83
+  },
+  {
+    "band": "82-95",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0283333333333333,
+    "total_pnl": -6.17,
+    "final_balance": 3.83
+  },
+  {
+    "band": "85-92",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.03,
+    "total_pnl": -6.18,
+    "final_balance": 3.8199999999999994
+  },
+  {
+    "band": "85-92",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.03,
+    "total_pnl": -6.18,
+    "final_balance": 3.8199999999999994
+  },
+  {
+    "band": "85-92",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.03,
+    "total_pnl": -6.18,
+    "final_balance": 3.8199999999999994
+  },
+  {
+    "band": "80-95",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.238,
+    "total_pnl": -6.19,
+    "final_balance": 3.8100000000000005
+  },
+  {
+    "band": "80-95",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.238,
+    "total_pnl": -6.19,
+    "final_balance": 3.8100000000000005
+  },
+  {
+    "band": "80-95",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.238,
+    "total_pnl": -6.19,
+    "final_balance": 3.8100000000000005
+  },
+  {
+    "band": "85-90",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.24,
+    "total_pnl": -6.2,
+    "final_balance": 3.7999999999999994
+  },
+  {
+    "band": "85-90",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.24,
+    "total_pnl": -6.2,
+    "final_balance": 3.7999999999999994
+  },
+  {
+    "band": "85-90",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.24,
+    "total_pnl": -6.2,
+    "final_balance": 3.7999999999999994
+  },
+  {
+    "band": "82-98",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0383333333333333,
+    "total_pnl": -6.23,
+    "final_balance": 3.7700000000000005
+  },
+  {
+    "band": "82-98",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0383333333333333,
+    "total_pnl": -6.23,
+    "final_balance": 3.7700000000000005
+  },
+  {
+    "band": "82-98",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0383333333333333,
+    "total_pnl": -6.23,
+    "final_balance": 3.7700000000000005
+  },
+  {
+    "band": "85-95",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0416666666666667,
+    "total_pnl": -6.25,
+    "final_balance": 3.75
+  },
+  {
+    "band": "85-95",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0416666666666667,
+    "total_pnl": -6.25,
+    "final_balance": 3.75
+  },
+  {
+    "band": "85-95",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0416666666666667,
+    "total_pnl": -6.25,
+    "final_balance": 3.75
+  },
+  {
+    "band": "88-92",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0516666666666665,
+    "total_pnl": -6.31,
+    "final_balance": 3.6900000000000004
+  },
+  {
+    "band": "88-92",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0516666666666665,
+    "total_pnl": -6.31,
+    "final_balance": 3.6900000000000004
+  },
+  {
+    "band": "88-92",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0516666666666665,
+    "total_pnl": -6.31,
+    "final_balance": 3.6900000000000004
+  },
+  {
+    "band": "88-95",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -0.9014285714285714,
+    "total_pnl": -6.31,
+    "final_balance": 3.6900000000000013
+  },
+  {
+    "band": "88-95",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -0.9014285714285714,
+    "total_pnl": -6.31,
+    "final_balance": 3.6900000000000013
+  },
+  {
+    "band": "88-95",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -0.9014285714285714,
+    "total_pnl": -6.31,
+    "final_balance": 3.6900000000000013
+  },
+  {
+    "band": "85-98",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0616666666666668,
+    "total_pnl": -6.37,
+    "final_balance": 3.63
+  },
+  {
+    "band": "85-98",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0616666666666668,
+    "total_pnl": -6.37,
+    "final_balance": 3.63
+  },
+  {
+    "band": "85-98",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.0616666666666668,
+    "total_pnl": -6.37,
+    "final_balance": 3.63
+  },
+  {
+    "band": "88-98",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -0.9214285714285714,
+    "total_pnl": -6.449999999999999,
+    "final_balance": 3.5500000000000007
+  },
+  {
+    "band": "88-98",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -0.9214285714285714,
+    "total_pnl": -6.449999999999999,
+    "final_balance": 3.5500000000000007
+  },
+  {
+    "band": "88-98",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -0.9214285714285714,
+    "total_pnl": -6.449999999999999,
+    "final_balance": 3.5500000000000007
+  },
+  {
+    "band": "82-92",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.1583333333333334,
+    "total_pnl": -6.95,
+    "final_balance": 3.05
+  },
+  {
+    "band": "82-92",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.1583333333333334,
+    "total_pnl": -6.95,
+    "final_balance": 3.05
+  },
+  {
+    "band": "82-92",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.1583333333333334,
+    "total_pnl": -6.95,
+    "final_balance": 3.05
+  },
+  {
+    "band": "82-88",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.392,
+    "total_pnl": -6.96,
+    "final_balance": 3.0399999999999996
+  },
+  {
+    "band": "82-88",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.392,
+    "total_pnl": -6.96,
+    "final_balance": 3.0399999999999996
+  },
+  {
+    "band": "82-88",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.392,
+    "total_pnl": -6.96,
+    "final_balance": 3.0399999999999996
+  },
+  {
+    "band": "80-95",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.4,
+    "total_pnl": -7.0,
+    "final_balance": 3.0
+  },
+  {
+    "band": "80-95",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.4,
+    "total_pnl": -7.0,
+    "final_balance": 3.0
+  },
+  {
+    "band": "82-90",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.1683333333333332,
+    "total_pnl": -7.01,
+    "final_balance": 2.9899999999999998
+  },
+  {
+    "band": "82-90",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.1683333333333332,
+    "total_pnl": -7.01,
+    "final_balance": 2.9899999999999998
+  },
+  {
+    "band": "82-90",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.1683333333333332,
+    "total_pnl": -7.01,
+    "final_balance": 2.9899999999999998
+  },
+  {
+    "band": "82-95",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.002857142857143,
+    "total_pnl": -7.02,
+    "final_balance": 2.9800000000000004
+  },
+  {
+    "band": "82-95",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.002857142857143,
+    "total_pnl": -7.02,
+    "final_balance": 2.9800000000000004
+  },
+  {
+    "band": "82-95",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.002857142857143,
+    "total_pnl": -7.02,
+    "final_balance": 2.9800000000000004
+  },
+  {
+    "band": "80-95",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.4100000000000001,
+    "total_pnl": -7.050000000000001,
+    "final_balance": 2.95
+  },
+  {
+    "band": "75-88",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.353333333333333,
+    "total_pnl": -7.06,
+    "final_balance": 2.94
+  },
+  {
+    "band": "75-88",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.353333333333333,
+    "total_pnl": -7.06,
+    "final_balance": 2.94
+  },
+  {
+    "band": "75-90",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.353333333333333,
+    "total_pnl": -7.06,
+    "final_balance": 2.94
+  },
+  {
+    "band": "75-90",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.353333333333333,
+    "total_pnl": -7.06,
+    "final_balance": 2.94
+  },
+  {
+    "band": "75-92",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.353333333333333,
+    "total_pnl": -7.06,
+    "final_balance": 2.94
+  },
+  {
+    "band": "75-92",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.353333333333333,
+    "total_pnl": -7.06,
+    "final_balance": 2.94
+  },
+  {
+    "band": "75-95",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.353333333333333,
+    "total_pnl": -7.06,
+    "final_balance": 2.94
+  },
+  {
+    "band": "75-95",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.353333333333333,
+    "total_pnl": -7.06,
+    "final_balance": 2.94
+  },
+  {
+    "band": "85-92",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.1766666666666665,
+    "total_pnl": -7.06,
+    "final_balance": 2.9399999999999995
+  },
+  {
+    "band": "85-92",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.1766666666666665,
+    "total_pnl": -7.06,
+    "final_balance": 2.9399999999999995
+  },
+  {
+    "band": "85-92",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.1766666666666665,
+    "total_pnl": -7.06,
+    "final_balance": 2.9399999999999995
+  },
+  {
+    "band": "85-95",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.01,
+    "total_pnl": -7.07,
+    "final_balance": 2.9300000000000006
+  },
+  {
+    "band": "85-95",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.01,
+    "total_pnl": -7.07,
+    "final_balance": 2.9300000000000006
+  },
+  {
+    "band": "85-95",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.01,
+    "total_pnl": -7.07,
+    "final_balance": 2.9300000000000006
+  },
+  {
+    "band": "85-90",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.416,
+    "total_pnl": -7.08,
+    "final_balance": 2.9199999999999995
+  },
+  {
+    "band": "85-90",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.416,
+    "total_pnl": -7.08,
+    "final_balance": 2.9199999999999995
+  },
+  {
+    "band": "85-90",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.416,
+    "total_pnl": -7.08,
+    "final_balance": 2.9199999999999995
+  },
+  {
+    "band": "75-88",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.37,
+    "total_pnl": -7.11,
+    "final_balance": 2.89
+  },
+  {
+    "band": "75-90",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.37,
+    "total_pnl": -7.11,
+    "final_balance": 2.89
+  },
+  {
+    "band": "75-92",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.37,
+    "total_pnl": -7.11,
+    "final_balance": 2.89
+  },
+  {
+    "band": "75-95",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.37,
+    "total_pnl": -7.11,
+    "final_balance": 2.89
+  },
+  {
+    "band": "80-98",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.185,
+    "total_pnl": -7.11,
+    "final_balance": 2.8899999999999997
+  },
+  {
+    "band": "80-98",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.185,
+    "total_pnl": -7.11,
+    "final_balance": 2.8899999999999997
+  },
+  {
+    "band": "80-98",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.185,
+    "total_pnl": -7.11,
+    "final_balance": 2.8899999999999997
+  },
+  {
+    "band": "80-88",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.78,
+    "total_pnl": -7.12,
+    "final_balance": 2.88
+  },
+  {
+    "band": "80-88",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.78,
+    "total_pnl": -7.12,
+    "final_balance": 2.88
+  },
+  {
+    "band": "80-88",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.78,
+    "total_pnl": -7.12,
+    "final_balance": 2.88
+  },
+  {
+    "band": "80-90",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.78,
+    "total_pnl": -7.12,
+    "final_balance": 2.88
+  },
+  {
+    "band": "80-90",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.78,
+    "total_pnl": -7.12,
+    "final_balance": 2.88
+  },
+  {
+    "band": "80-90",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.78,
+    "total_pnl": -7.12,
+    "final_balance": 2.88
+  },
+  {
+    "band": "80-92",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.78,
+    "total_pnl": -7.12,
+    "final_balance": 2.88
+  },
+  {
+    "band": "80-92",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.78,
+    "total_pnl": -7.12,
+    "final_balance": 2.88
+  },
+  {
+    "band": "80-92",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.78,
+    "total_pnl": -7.12,
+    "final_balance": 2.88
+  },
+  {
+    "band": "88-95",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.0185714285714285,
+    "total_pnl": -7.129999999999999,
+    "final_balance": 2.870000000000002
+  },
+  {
+    "band": "88-95",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.0185714285714285,
+    "total_pnl": -7.129999999999999,
+    "final_balance": 2.870000000000002
+  },
+  {
+    "band": "88-95",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.0185714285714285,
+    "total_pnl": -7.129999999999999,
+    "final_balance": 2.870000000000002
+  },
+  {
+    "band": "75-98",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.7925,
+    "total_pnl": -7.17,
+    "final_balance": 2.8299999999999996
+  },
+  {
+    "band": "75-98",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.7925,
+    "total_pnl": -7.17,
+    "final_balance": 2.8299999999999996
+  },
+  {
+    "band": "75-98",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.7925,
+    "total_pnl": -7.17,
+    "final_balance": 2.8299999999999996
+  },
+  {
+    "band": "75-98",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.7925,
+    "total_pnl": -7.17,
+    "final_balance": 2.8299999999999996
+  },
+  {
+    "band": "75-98",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.7925,
+    "total_pnl": -7.17,
+    "final_balance": 2.8299999999999996
+  },
+  {
+    "band": "75-98",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.7925,
+    "total_pnl": -7.17,
+    "final_balance": 2.8299999999999996
+  },
+  {
+    "band": "85-88",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.434,
+    "total_pnl": -7.17,
+    "final_balance": 2.829999999999999
+  },
+  {
+    "band": "85-88",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.434,
+    "total_pnl": -7.17,
+    "final_balance": 2.829999999999999
+  },
+  {
+    "band": "85-88",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.434,
+    "total_pnl": -7.17,
+    "final_balance": 2.829999999999999
+  },
+  {
+    "band": "88-90",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.2016666666666664,
+    "total_pnl": -7.209999999999999,
+    "final_balance": 2.7900000000000014
+  },
+  {
+    "band": "88-90",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.2016666666666664,
+    "total_pnl": -7.209999999999999,
+    "final_balance": 2.7900000000000014
+  },
+  {
+    "band": "88-90",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.2016666666666664,
+    "total_pnl": -7.209999999999999,
+    "final_balance": 2.7900000000000014
+  },
+  {
+    "band": "82-98",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.03,
+    "total_pnl": -7.21,
+    "final_balance": 2.7900000000000005
+  },
+  {
+    "band": "82-98",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.03,
+    "total_pnl": -7.21,
+    "final_balance": 2.7900000000000005
+  },
+  {
+    "band": "82-98",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.03,
+    "total_pnl": -7.21,
+    "final_balance": 2.7900000000000005
+  },
+  {
+    "band": "88-92",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.2049999999999998,
+    "total_pnl": -7.2299999999999995,
+    "final_balance": 2.7700000000000005
+  },
+  {
+    "band": "88-92",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.2049999999999998,
+    "total_pnl": -7.2299999999999995,
+    "final_balance": 2.7700000000000005
+  },
+  {
+    "band": "88-92",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.2049999999999998,
+    "total_pnl": -7.2299999999999995,
+    "final_balance": 2.7700000000000005
+  },
+  {
+    "band": "85-98",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.032857142857143,
+    "total_pnl": -7.23,
+    "final_balance": 2.7699999999999996
+  },
+  {
+    "band": "85-98",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.032857142857143,
+    "total_pnl": -7.23,
+    "final_balance": 2.7699999999999996
+  },
+  {
+    "band": "85-98",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.032857142857143,
+    "total_pnl": -7.23,
+    "final_balance": 2.7699999999999996
+  },
+  {
+    "band": "88-98",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 8,
+    "win_rate": 0.0,
+    "ev": -0.91375,
+    "total_pnl": -7.31,
+    "final_balance": 2.6900000000000013
+  },
+  {
+    "band": "88-98",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 8,
+    "win_rate": 0.0,
+    "ev": -0.91375,
+    "total_pnl": -7.31,
+    "final_balance": 2.6900000000000013
+  },
+  {
+    "band": "88-98",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 8,
+    "win_rate": 0.0,
+    "ev": -0.91375,
+    "total_pnl": -7.31,
+    "final_balance": 2.6900000000000013
+  },
+  {
+    "band": "82-90",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.3083333333333333,
+    "total_pnl": -7.85,
+    "final_balance": 2.15
+  },
+  {
+    "band": "82-90",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.3083333333333333,
+    "total_pnl": -7.85,
+    "final_balance": 2.15
+  },
+  {
+    "band": "82-90",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.3083333333333333,
+    "total_pnl": -7.85,
+    "final_balance": 2.15
+  },
+  {
+    "band": "80-88",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.9825,
+    "total_pnl": -7.93,
+    "final_balance": 2.0700000000000003
+  },
+  {
+    "band": "80-88",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.9825,
+    "total_pnl": -7.93,
+    "final_balance": 2.0700000000000003
+  },
+  {
+    "band": "80-90",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.9825,
+    "total_pnl": -7.93,
+    "final_balance": 2.0700000000000003
+  },
+  {
+    "band": "80-90",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.9825,
+    "total_pnl": -7.93,
+    "final_balance": 2.0700000000000003
+  },
+  {
+    "band": "80-92",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.9825,
+    "total_pnl": -7.93,
+    "final_balance": 2.0700000000000003
+  },
+  {
+    "band": "80-92",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.9825,
+    "total_pnl": -7.93,
+    "final_balance": 2.0700000000000003
+  },
+  {
+    "band": "80-88",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.995,
+    "total_pnl": -7.98,
+    "final_balance": 2.0200000000000005
+  },
+  {
+    "band": "80-90",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.995,
+    "total_pnl": -7.98,
+    "final_balance": 2.0200000000000005
+  },
+  {
+    "band": "80-92",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -1.995,
+    "total_pnl": -7.98,
+    "final_balance": 2.0200000000000005
+  },
+  {
+    "band": "75-88",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-88",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-88",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-90",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-90",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-90",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-92",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-92",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-92",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-95",
+    "pct": 0.2,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-95",
+    "pct": 0.2,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "75-95",
+    "pct": 0.2,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.0,
+    "total_pnl": -8.0,
+    "final_balance": 1.9999999999999996
+  },
+  {
+    "band": "85-88",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.61,
+    "total_pnl": -8.05,
+    "final_balance": 1.949999999999999
+  },
+  {
+    "band": "85-88",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.61,
+    "total_pnl": -8.05,
+    "final_balance": 1.949999999999999
+  },
+  {
+    "band": "85-88",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.61,
+    "total_pnl": -8.05,
+    "final_balance": 1.949999999999999
+  },
+  {
+    "band": "88-90",
+    "pct": 0.25,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.3499999999999999,
+    "total_pnl": -8.1,
+    "final_balance": 1.9000000000000017
+  },
+  {
+    "band": "88-90",
+    "pct": 0.25,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.3499999999999999,
+    "total_pnl": -8.1,
+    "final_balance": 1.9000000000000017
+  },
+  {
+    "band": "88-90",
+    "pct": 0.25,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.3499999999999999,
+    "total_pnl": -8.1,
+    "final_balance": 1.9000000000000017
+  },
+  {
+    "band": "80-88",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.8066666666666666,
+    "total_pnl": -8.42,
+    "final_balance": 1.5800000000000003
+  },
+  {
+    "band": "80-90",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.8066666666666666,
+    "total_pnl": -8.42,
+    "final_balance": 1.5800000000000003
+  },
+  {
+    "band": "80-92",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.8066666666666666,
+    "total_pnl": -8.42,
+    "final_balance": 1.5800000000000003
+  },
+  {
+    "band": "80-95",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.8366666666666664,
+    "total_pnl": -8.51,
+    "final_balance": 1.4900000000000004
+  },
+  {
+    "band": "82-88",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.14,
+    "total_pnl": -8.56,
+    "final_balance": 1.4399999999999997
+  },
+  {
+    "band": "82-90",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.14,
+    "total_pnl": -8.56,
+    "final_balance": 1.4399999999999997
+  },
+  {
+    "band": "82-92",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.14,
+    "total_pnl": -8.56,
+    "final_balance": 1.4399999999999997
+  },
+  {
+    "band": "82-90",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.722,
+    "total_pnl": -8.61,
+    "final_balance": 1.3900000000000003
+  },
+  {
+    "band": "82-92",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.7279999999999998,
+    "total_pnl": -8.639999999999999,
+    "final_balance": 1.3600000000000003
+  },
+  {
+    "band": "80-98",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.16,
+    "total_pnl": -8.64,
+    "final_balance": 1.3599999999999983
+  },
+  {
+    "band": "80-95",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.73,
+    "total_pnl": -8.65,
+    "final_balance": 1.3500000000000003
+  },
+  {
+    "band": "82-95",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.445,
+    "total_pnl": -8.67,
+    "final_balance": 1.3299999999999998
+  },
+  {
+    "band": "82-95",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.24,
+    "total_pnl": -8.68,
+    "final_balance": 1.3199999999999994
+  },
+  {
+    "band": "82-92",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.4483333333333333,
+    "total_pnl": -8.69,
+    "final_balance": 1.3099999999999998
+  },
+  {
+    "band": "82-95",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.7380000000000002,
+    "total_pnl": -8.690000000000001,
+    "final_balance": 1.3099999999999996
+  },
+  {
+    "band": "85-90",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.1725000000000003,
+    "total_pnl": -8.690000000000001,
+    "final_balance": 1.3099999999999994
+  },
+  {
+    "band": "82-88",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.7399999999999998,
+    "total_pnl": -8.7,
+    "final_balance": 1.2999999999999998
+  },
+  {
+    "band": "85-95",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.7420000000000002,
+    "total_pnl": -8.71,
+    "final_balance": 1.2899999999999994
+  },
+  {
+    "band": "85-92",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.18,
+    "total_pnl": -8.72,
+    "final_balance": 1.2799999999999994
+  },
+  {
+    "band": "88-90",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.185,
+    "total_pnl": -8.74,
+    "final_balance": 1.26
+  },
+  {
+    "band": "85-92",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.75,
+    "total_pnl": -8.75,
+    "final_balance": 1.2500000000000002
+  },
+  {
+    "band": "85-95",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.25,
+    "total_pnl": -8.75,
+    "final_balance": 1.2500000000000002
+  },
+  {
+    "band": "80-98",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.752,
+    "total_pnl": -8.76,
+    "final_balance": 1.2400000000000015
+  },
+  {
+    "band": "82-98",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 8,
+    "win_rate": 0.0,
+    "ev": -1.095,
+    "total_pnl": -8.76,
+    "final_balance": 1.24
+  },
+  {
+    "band": "88-92",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.752,
+    "total_pnl": -8.76,
+    "final_balance": 1.2400000000000004
+  },
+  {
+    "band": "82-98",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.4649999999999999,
+    "total_pnl": -8.79,
+    "final_balance": 1.2100000000000009
+  },
+  {
+    "band": "85-88",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.1975,
+    "total_pnl": -8.79,
+    "final_balance": 1.21
+  },
+  {
+    "band": "85-95",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.4649999999999999,
+    "total_pnl": -8.79,
+    "final_balance": 1.21
+  },
+  {
+    "band": "82-98",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.4666666666666668,
+    "total_pnl": -8.8,
+    "final_balance": 1.1999999999999988
+  },
+  {
+    "band": "80-98",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.26,
+    "total_pnl": -8.82,
+    "final_balance": 1.1800000000000002
+  },
+  {
+    "band": "85-90",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.766,
+    "total_pnl": -8.83,
+    "final_balance": 1.169999999999999
+  },
+  {
+    "band": "85-92",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.4733333333333334,
+    "total_pnl": -8.84,
+    "final_balance": 1.1599999999999995
+  },
+  {
+    "band": "85-98",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.4733333333333334,
+    "total_pnl": -8.84,
+    "final_balance": 1.1599999999999993
+  },
+  {
+    "band": "85-98",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.2642857142857142,
+    "total_pnl": -8.85,
+    "final_balance": 1.150000000000001
+  },
+  {
+    "band": "88-90",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.7719999999999998,
+    "total_pnl": -8.86,
+    "final_balance": 1.1400000000000006
+  },
+  {
+    "band": "85-98",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 8,
+    "win_rate": 0.0,
+    "ev": -1.1099999999999999,
+    "total_pnl": -8.879999999999999,
+    "final_balance": 1.12
+  },
+  {
+    "band": "75-88",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.9600000000000004,
+    "total_pnl": -8.88,
+    "final_balance": 1.12
+  },
+  {
+    "band": "75-90",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.9600000000000004,
+    "total_pnl": -8.88,
+    "final_balance": 1.12
+  },
+  {
+    "band": "75-92",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.9600000000000004,
+    "total_pnl": -8.88,
+    "final_balance": 1.12
+  },
+  {
+    "band": "75-95",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -2.9600000000000004,
+    "total_pnl": -8.88,
+    "final_balance": 1.12
+  },
+  {
+    "band": "88-92",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.7779999999999998,
+    "total_pnl": -8.889999999999999,
+    "final_balance": 1.1100000000000005
+  },
+  {
+    "band": "85-88",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.225,
+    "total_pnl": -8.9,
+    "final_balance": 1.0999999999999988
+  },
+  {
+    "band": "88-95",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.784,
+    "total_pnl": -8.92,
+    "final_balance": 1.0799999999999998
+  },
+  {
+    "band": "88-95",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.2771428571428571,
+    "total_pnl": -8.94,
+    "final_balance": 1.0600000000000023
+  },
+  {
+    "band": "88-95",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.796,
+    "total_pnl": -8.98,
+    "final_balance": 1.0200000000000011
+  },
+  {
+    "band": "88-98",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.4966666666666668,
+    "total_pnl": -8.98,
+    "final_balance": 1.0199999999999996
+  },
+  {
+    "band": "88-98",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 7,
+    "win_rate": 0.0,
+    "ev": -1.2885714285714285,
+    "total_pnl": -9.02,
+    "final_balance": 0.9800000000000011
+  },
+  {
+    "band": "88-92",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.505,
+    "total_pnl": -9.03,
+    "final_balance": 0.9700000000000013
+  },
+  {
+    "band": "88-98",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 8,
+    "win_rate": 0.0,
+    "ev": -1.13625,
+    "total_pnl": -9.09,
+    "final_balance": 0.9100000000000013
+  },
+  {
+    "band": "82-88",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.908,
+    "total_pnl": -9.54,
+    "final_balance": 0.4600000000000004
+  },
+  {
+    "band": "82-90",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.5983333333333334,
+    "total_pnl": -9.59,
+    "final_balance": 0.4099999999999997
+  },
+  {
+    "band": "85-88",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.4125,
+    "total_pnl": -9.65,
+    "final_balance": 0.3499999999999992
+  },
+  {
+    "band": "85-90",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 5,
+    "win_rate": 0.0,
+    "ev": -1.936,
+    "total_pnl": -9.68,
+    "final_balance": 0.31999999999999984
+  },
+  {
+    "band": "75-98",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.45,
+    "total_pnl": -9.8,
+    "final_balance": 0.20000000000000018
+  },
+  {
+    "band": "88-90",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.6466666666666665,
+    "total_pnl": -9.879999999999999,
+    "final_balance": 0.12000000000000188
+  },
+  {
+    "band": "75-88",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -3.4499999999999997,
+    "total_pnl": -10.35,
+    "final_balance": -0.34999999999999964
+  },
+  {
+    "band": "75-90",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -3.4499999999999997,
+    "total_pnl": -10.35,
+    "final_balance": -0.34999999999999964
+  },
+  {
+    "band": "75-92",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -3.4499999999999997,
+    "total_pnl": -10.35,
+    "final_balance": -0.34999999999999964
+  },
+  {
+    "band": "75-95",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -3.4499999999999997,
+    "total_pnl": -10.35,
+    "final_balance": -0.34999999999999964
+  },
+  {
+    "band": "75-98",
+    "pct": 0.5,
+    "max_dollars": 5.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.62,
+    "total_pnl": -10.48,
+    "final_balance": -0.48000000000000176
+  },
+  {
+    "band": "80-88",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.6225,
+    "total_pnl": -10.49,
+    "final_balance": -0.48999999999999977
+  },
+  {
+    "band": "80-90",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.6225,
+    "total_pnl": -10.49,
+    "final_balance": -0.48999999999999977
+  },
+  {
+    "band": "80-92",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.6225,
+    "total_pnl": -10.49,
+    "final_balance": -0.48999999999999977
+  },
+  {
+    "band": "75-88",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -3.516666666666667,
+    "total_pnl": -10.55,
+    "final_balance": -0.5499999999999998
+  },
+  {
+    "band": "75-90",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -3.516666666666667,
+    "total_pnl": -10.55,
+    "final_balance": -0.5499999999999998
+  },
+  {
+    "band": "75-92",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -3.516666666666667,
+    "total_pnl": -10.55,
+    "final_balance": -0.5499999999999998
+  },
+  {
+    "band": "75-95",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 3,
+    "win_rate": 0.0,
+    "ev": -3.516666666666667,
+    "total_pnl": -10.55,
+    "final_balance": -0.5499999999999998
+  },
+  {
+    "band": "80-95",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 6,
+    "win_rate": 0.0,
+    "ev": -1.76,
+    "total_pnl": -10.56,
+    "final_balance": -0.5599999999999992
+  },
+  {
+    "band": "80-88",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.6550000000000002,
+    "total_pnl": -10.620000000000001,
+    "final_balance": -0.6199999999999997
+  },
+  {
+    "band": "80-90",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.6550000000000002,
+    "total_pnl": -10.620000000000001,
+    "final_balance": -0.6199999999999997
+  },
+  {
+    "band": "80-92",
+    "pct": 0.5,
+    "max_dollars": 2.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.6550000000000002,
+    "total_pnl": -10.620000000000001,
+    "final_balance": -0.6199999999999997
+  },
+  {
+    "band": "75-98",
+    "pct": 0.5,
+    "max_dollars": 3.0,
+    "trades": 4,
+    "win_rate": 0.0,
+    "ev": -2.8575,
+    "total_pnl": -11.43,
+    "final_balance": -1.4299999999999988
+  }
+]
