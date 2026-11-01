@@ -266,6 +266,30 @@ class KalshiClient:
         self._markets_cache[key] = (now, result)
         return result
 
+    def invalidate_markets(self, series_ticker: str | None = None,
+                           status: str | None = None) -> None:
+        """Invalidate cached market data.
+
+        Call this after order placement or settlement so that subsequent
+        get_markets() calls fetch fresh data from the API rather than
+        returning stale cached results.
+        """
+        if series_ticker is None and status is None:
+            # Invalidate all markets
+            self._markets_cache.clear()
+        else:
+            # Invalidate specific key(s)
+            keys_to_remove = []
+            for key in self._markets_cache:
+                series, stat, limit = key
+                if series_ticker is not None and series != series_ticker:
+                    continue
+                if status is not None and stat != status:
+                    continue
+                keys_to_remove.append(key)
+            for key in keys_to_remove:
+                del self._markets_cache[key]
+
     def get_market(self, ticker: str) -> dict:
         """Fetch a single market's details including expiration_value for settlement."""
         data = self._request("GET", f"/markets/{ticker}")

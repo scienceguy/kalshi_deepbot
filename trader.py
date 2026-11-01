@@ -426,6 +426,17 @@ def cycle(client: KalshiClient):
         log.warning("Positions fetch failed: %s", e)
         positions = []
 
+    # Invalidate cached market data so subsequent fetches return fresh data
+    # reflecting any market state changes (e.g., markets that settled since
+    # last fetch).
+    client.invalidate_markets()
+
+    # Fetch active markets for mark-to-market exposure computation
+    markets = find_active_markets(client)
+    if not markets:
+        log.info("No tradeable markets.")
+        return
+
     # Extended outage guard: if both balance and positions failed (cash=0,
     # no positions), skip the rest of the cycle to avoid wasted API calls.
     # Dry run is exempt — simulated cash may legitimately be 0.
@@ -435,6 +446,30 @@ def cycle(client: KalshiClient):
             "Skipping cycle %d.", state.cycles,
         )
         return
+
+    # Compute mark-to-market exposure using current orderbook data
+    mark_to_market_exposure = 0.0
+    for p in positions:
+        if "15M" not in p.get("ticker", "").upper():
+            continue
+        ticker = p.get("ticker", "")
+        yes_pos = p.get("yes_position", 0) or 0
+        no_pos = p.get("no_position", 0) or 0
+
+        # Find current market data for this ticker
+        mkt_info = next((m for m in markets if m.ticker == ticker), None)
+        if mkt_info:
+            mid = mkt_info.mid_yes
+            if yes_pos > 0:
+                mark_to_market_exposure += yes_pos * mid / 100.0
+            if no_pos > 0:
+                mark_to_market_exposure += no_pos * (100 - mid) / 100.0
+        else:
+            # Fall back to cost-basis exposure for markets not in current book
+            yes_avg_price = p.get("yes_avg_price_dollars", 0) or 0
+            no_avg_price = p.get("no_avg_price_dollars", 0) or 0
+            mark_to_market_exposure += yes_pos * yes_avg_price / 100.0
+            mark_to_market_exposure += no_pos * no_avg_price / 100.0
 
     # Reconcile resting orders: fetch open orders from Kalshi, sync into
     # state.resting_value for intra-cycle cash tracking, and cancel any
@@ -572,13 +607,34 @@ def cycle(client: KalshiClient):
             })
             _save_settlement_queue(queue)
 
-    exposure = sum(
-        (p.get("yes_position", 0) or 0) * (p.get("yes_avg_price_dollars", 0) or 0) / 100
-        + (p.get("no_position", 0) or 0) * (p.get("no_avg_price_dollars", 0) or 0) / 100
-        for p in positions if "15M" in p.get("ticker", "").upper()
-    )
+    # Compute mark-to-market exposure using current orderbook data for positions
+    mark_to_market_exposure = 0.0
+    for p in positions:
+        if "15M" not in p.get("ticker", "").upper():
+            continue
+        ticker = p.get("ticker", "")
+        yes_pos = p.get("yes_position", 0) or 0
+        no_pos = p.get("no_position", 0) or 0
+        yes_avg_price = p.get("yes_avg_price_dollars", 0) or 0
+        no_avg_price = p.get("no_avg_price_dollars", 0) or 0
 
-    state.risk.update_balance(cash, exposure)
+        # Find current market data for this ticker
+        mkt_info = next((m for m in markets if m.ticker == ticker), None)
+        if mkt_info:
+            # Use current mid price for mark-to-market
+            mid = mkt_info.mid_yes
+            if yes_pos > 0:
+                # YES position: current value = contracts * mid / 100 (YES price in cents)
+                mark_to_market_exposure += yes_pos * mid / 100.0
+            if no_pos > 0:
+                # NO position: current value = contracts * (100 - mid) / 100 (NO price complement)
+                mark_to_market_exposure += no_pos * (100 - mid) / 100.0
+        else:
+            # Fall back to cost-basis exposure for markets not in current book
+            mark_to_market_exposure += yes_pos * yes_avg_price / 100.0
+            mark_to_market_exposure += no_pos * no_avg_price / 100.0
+
+    state.risk.update_balance(cash, exposure, mark_to_market_exposure=mark_to_market_exposure)
     _touch_window(datetime.now(timezone.utc), cash)
 
     # Reset daily order counter on new day
@@ -639,8 +695,6 @@ def cycle(client: KalshiClient):
         log.info("Max trade $%.2f too small — protecting cash floor", max_trade)
         return
 
-    # Find + evaluate markets
-    markets = find_active_markets(client)
     if not markets:
         log.info("No tradeable markets.")
         return
