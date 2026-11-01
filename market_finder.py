@@ -170,19 +170,21 @@ def find_active_markets(client: KalshiClient):
     MAX_P = config.MAX_YES_PRICE_CENTS
     HMAX  = config.HEDGE_YES_ASK_MAX
 
-    # Fetch markets for all series concurrently (thread-safe via KalshiClient._lock)
+def find_active_markets(client: KalshiClient):
+    now = datetime.now(timezone.utc)
+    result = []
+    MIN_P = config.MIN_YES_PRICE_CENTS
+    MAX_P = config.MAX_YES_PRICE_CENTS
+    HMAX  = config.HEDGE_YES_ASK_MAX
+
+    # Fetch markets for all series sequentially (KalshiClient._lock serializes
+    # all requests anyway, so concurrent fetching provides no benefit).
     all_mains = []; all_hedges = []; seen = set()
-    with ThreadPoolExecutor(max_workers=len(config.TARGET_SERIES)) as ex:
-        futs = {ex.submit(_fetch_series_markets, client, series, now,
-                          MIN_P, MAX_P, HMAX, seen): series
-                for series in config.TARGET_SERIES}
-        for fut in as_completed(futs):
-            try:
-                mains, hedges = fut.result()
-                all_mains.extend(mains)
-                all_hedges.extend(hedges)
-            except Exception as e:
-                log.warning("Series fetch failed: %s", e)
+    for series in config.TARGET_SERIES:
+        mains, hedges = _fetch_series_markets(client, series, now,
+                                              MIN_P, MAX_P, HMAX, seen)
+        all_mains.extend(mains)
+        all_hedges.extend(hedges)
 
     # Fetch orderbooks concurrently for all mains passing the band filter,
     # plus up to MAX_HEDGE_PER_SERIES hedges per series.

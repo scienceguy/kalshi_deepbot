@@ -80,6 +80,9 @@ def simulate_trade(row, params, balance=10.0):
             ep = mid_proxy
             side_bullish = True
         else:
+            # YES above entry band — NO is favorite. Buy NO at complement price.
+            # NOTE: This backtest engine does not apply skew/trend/stability gates
+            # like the live signals.py does. It is a simplified model.
             ep = 100 - mid_proxy  # NO price complement
             side_bullish = False
     else:

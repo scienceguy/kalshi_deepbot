@@ -123,52 +123,6 @@ def evaluate_market(market: dict) -> dict | None:
     }
 
 
-def simulate_settlement(market: dict, signal: dict) -> dict | None:
-    """
-    Simulate settlement outcome for a closed market.
-    Returns P&L info or None if cannot determine.
-    """
-    exp_val = market.get("expiration_value")
-    if exp_val is None:
-        return None
-
-    settled_yes = int(round(float(exp_val) * 100))  # 0 or 100
-
-    contracts = signal["contracts"]
-    entry_price = signal["entry_price"] / 100.0  # cents to dollars
-    side = signal["side"]
-
-    # Calculate P&L
-    if side == "yes":
-        # Bought YES at entry_price, settles at settled_yes/100
-        buy_cost = buy_cash_out(contracts, entry_price)
-        # Sell at settlement: settled_yes/100 per contract
-        sell_price = settled_yes / 100.0
-        sell_revenue = sell_cash_in(contracts, sell_price)
-    else:
-        # Bought NO at entry_price, settles at (100 - settled_yes)/100
-        buy_cost = buy_cash_out(contracts, entry_price)
-        # Sell NO at settlement: (100 - settled_yes)/100 per contract
-        sell_price = (100 - settled_yes) / 100.0
-        sell_revenue = sell_cash_in(contracts, sell_price)
-
-    realized_pnl = sell_revenue - buy_cost
-    won = sell_revenue > buy_cost
-
-    return {
-        "order_id": signal.get("order_id", ""),
-        "ticker": signal["ticker"],
-        "side": side,
-        "entry_price": signal["entry_price"],
-        "exit_price": sell_price,
-        "contracts": contracts,
-        "settled_yes": settled_yes,
-        "won": won,
-        "realized_pnl": round(realized_pnl, 2),
-        "buy_cost": round(buy_cost, 2),
-        "sell_revenue": round(sell_revenue, 2),
-    }
-
 
 def run(markets=None):
     """
