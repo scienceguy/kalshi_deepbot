@@ -36,7 +36,9 @@ class TestN8nClientInit:
     def test_init_without_api_key_logs_warning(self, monkeypatch, caplog):
         """Client logs warning when no API key is found."""
         monkeypatch.delenv("N8N_API_KEY", raising=False)
-        with patch("n8n_client.Path", return_value=None):
+        mock_path = MagicMock()
+        mock_path.exists.return_value = False
+        with patch("n8n_client.Path", return_value=mock_path):
             client = N8nClient()
             assert client.api_key is None
             assert "No n8n API key found" in caplog.text

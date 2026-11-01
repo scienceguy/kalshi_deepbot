@@ -3,7 +3,8 @@
 These tests mock the KalshiClient to avoid making real network calls.
 """
 import pytest
-from unittest.mock import MagicMock
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 from market_finder import (
     _dollars_str_to_cents,
     _parse_api_time,
@@ -19,7 +20,7 @@ class TestDollarsStrToCents:
     """Tests for _dollars_str_to_cents helper."""
 
     def test_dollar_string(self):
-        """Dollar strings like '0.3900' convert to cents (39)."""
+        """Values < 1 are dollar amounts (0.39 → 39c)."""
         assert _dollars_str_to_cents("0.3900") == 39
         assert _dollars_str_to_cents("0.50") == 50
         assert _dollars_str_to_cents("0.01") == 1
@@ -161,12 +162,16 @@ class TestFindActiveMarkets:
         monkeypatch.setattr(config, "MAX_HEDGE_PER_SERIES", 0)
         monkeypatch.setattr(config, "TARGET_SERIES", ["KXBTC15M"])
 
+        # close_time within 15 minutes of now so minutes_left passes the filter
+        close_dt = datetime.now(timezone.utc) + timedelta(minutes=10)
+
         client = MagicMock()
+        client.get_orderbook.return_value = {}
         client.get_markets.return_value = [
             {
                 "ticker": "KXBTC15M",
                 "status": "active",
-                "close_time": "2024-01-01T23:59:59Z",
+                "close_time": close_dt.isoformat(),
                 "yes_bid_dollars": "0.50",
                 "yes_ask_dollars": "0.52",
                 "no_bid_dollars": "0.48",

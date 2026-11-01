@@ -458,8 +458,6 @@ def cycle(client: KalshiClient):
         realized_pnl = sell_revenue - buy_cost
         won = sell_revenue > buy_cost
 
-        state.session_pnl += reserved  # release capital at risk back to P&L
-
         log.info(
             "Cleared settled position: %s (side=%s, released $%.2f, realized P&L $%.2f, won=%s)",
             t, side, reserved, realized_pnl, won,
@@ -766,7 +764,7 @@ def main():
 
 
 if __name__ == "__main__":
-    lock_path = os.path.expanduser("~/kalshi_superbot/.lock")
+    lock_path = Path(__file__).resolve().parent / ".lock"
     lock_fd = None
     for attempt in range(5):
         try:

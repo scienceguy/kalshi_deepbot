@@ -54,6 +54,7 @@ class KalshiClient:
         Catches the mismatch at startup with a clear message instead of failing
         later with an opaque auth error on the first trade.
         """
+        self._verified = True  # Set first to prevent recursion via get_balance()
         try:
             self.get_balance()
         except Exception as e:
@@ -62,7 +63,6 @@ class KalshiClient:
                 f"match the loaded private key, or the key is invalid. "
                 f"Original error: {e}"
             )
-        self._verified = True
 
     def _ensure_verified(self):
         """Verify key on first use rather than in constructor."""

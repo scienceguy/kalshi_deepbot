@@ -93,15 +93,17 @@ def simulate_trade(market: dict, params: StratParams, balance: float = 10.0):
     """
     ticker = market.get("ticker", "")
     ct = _parse_api_time(market.get("close_time", ""))
-    if not ct:
+    ot = _parse_api_time(market.get("open_time", ""))
+    if not ct or not ot:
         return None
 
-    now = datetime.now(timezone.utc)
-    minutes_left = (ct - now).total_seconds() / 60
-    if minutes_left <= 0 or minutes_left > 15.5:
-        return None  # not in the 15-min window
+    # For closed markets, measure the 15-min window from open_time to close_time
+    # (not now→close_time, which is negative for settled markets).
+    minutes_in = (ct - ot).total_seconds() / 60
+    if minutes_in <= 0 or minutes_in > 15.5:
+        return None  # not a valid 15-min market window
 
-    minutes_in = 15.0 - minutes_left
+    minutes_left = 15.0 - minutes_in
 
     # ── Timing gate ─────────────────────────────────────────────────────────
     if minutes_in < params.ENTRY_WINDOW_START_MIN:

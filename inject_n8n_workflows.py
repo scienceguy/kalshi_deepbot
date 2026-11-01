@@ -22,9 +22,9 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-DB_PATH = "/data/data/com.termux/files/home/.n8n/database.sqlite"
-PROJECT_ID = "9WCli3nfVzBpxYqg"
-USER_ID = "user-gentry"
+DB_PATH = os.environ.get("N8N_DB_PATH", "/data/data/com.termux/files/home/.n8n/database.sqlite")
+PROJECT_ID = os.environ.get("N8N_PROJECT_ID", "9WCli3nfVzBpxYqg")
+USER_ID = os.environ.get("N8N_USER_ID", "user-gentry")
 
 now = datetime.now(timezone.utc).isoformat() + "Z"
 

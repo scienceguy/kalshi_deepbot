@@ -388,7 +388,7 @@ def should_block_trade(signal_info: dict, min_probability: float = 0.35) -> tupl
     """
     result = evaluate_trade(signal_info)
     if not result:
-        return False, None  # Can't evaluate — don't block
+        return True, None  # Can't evaluate — block by default (fail-safe)
     prob = result["probability_of_net_profit"]
     if prob < min_probability:
         return True, result

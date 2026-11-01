@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives import hashes
 import base64
 
 # Read n8n encryption key
-config_path = "/data/data/com.termux/files/home/.n8n/config"
+config_path = os.environ.get("N8N_CONFIG_PATH", "/data/data/com.termux/files/home/.n8n/config")
 with open(config_path) as f:
     config = json.load(f)
 encryption_key = config["encryptionKey"]

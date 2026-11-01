@@ -116,7 +116,7 @@ ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 # HEDGE SETTINGS
 # ═════════════════════════════════════════════════════════════════════
 HEDGE_YES_ASK_MAX = _env_int("HEDGE_YES_ASK_MAX", 12)
-HEDGE_NO_ASK_MAX = _env_int("HEDGE_NO_ASK_MAX", 0)
+HEDGE_NO_ASK_MAX = _env_int("HEDGE_NO_ASK_MAX", 12)
 HEDGE_BALANCE_PCT = _env_float("HEDGE_BALANCE_PCT", 0.0)
 MAX_HEDGE_PER_SERIES = _env_int("MAX_HEDGE_PER_SERIES", 0)
 

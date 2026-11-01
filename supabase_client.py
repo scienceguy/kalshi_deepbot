@@ -39,6 +39,7 @@ _SUPABASE_CIRCUIT_COOLDOWN = 60.0  # seconds
 
 def _supabase_circuit_open() -> bool:
     """Return True if Supabase writes are currently skipped due to outage."""
+    global _SUPABASE_SKIP_UNTIL
     if _SUPABASE_SKIP_UNTIL <= 0:
         return False
     if time.time() >= _SUPABASE_SKIP_UNTIL:
