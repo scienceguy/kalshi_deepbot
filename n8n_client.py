@@ -259,26 +259,6 @@ def get_client() -> N8nClient:
 
 
 # Convenience functions
-def run_backtest_webhook(data: Optional[Dict] = None) -> Dict[str, Any]:
-    """Run the SuperBot backtest via n8n webhook."""
-    return get_client().run_backtest(data)
-
-
-def run_collect_webhook(data: Optional[Dict] = None) -> Dict[str, Any]:
-    """Run the SuperBot data collection via n8n webhook."""
-    return get_client().run_data_collect(data)
-
-
-def run_trade_webhook(data: Optional[Dict] = None) -> Dict[str, Any]:
-    """Run the SuperBot trade via n8n webhook."""
-    return get_client().run_trade(data)
-
-
-def run_monitor_webhook(data: Optional[Dict] = None) -> Dict[str, Any]:
-    """Run the SuperBot monitor via n8n webhook."""
-    return get_client().run_monitor(data)
-
-
 def n8n_health_check() -> bool:
     """Verify n8n is reachable via a read-only GET.
 

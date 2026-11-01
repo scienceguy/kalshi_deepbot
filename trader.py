@@ -878,8 +878,9 @@ def main():
             price_cents = o.get("price_cents", 0)
             count = o.get("count", 0)
             if oid and price_cents and count:
-                # NO side price is stored as complement (100 - no_price_cents)
-                if side == "no":
+                # NO side price stored as complement (100 - no_price_cents)
+                # unless NO_PRICE_IS_COMPLEMENT=False (Kalshi stores NO price directly)
+                if side == "no" and config.NO_PRICE_IS_COMPLEMENT:
                     price_cents = 100 - price_cents
                 state.resting_value[oid] = int(count) * price_cents / 100.0
         if state.resting_value:
