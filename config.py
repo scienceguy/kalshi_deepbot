@@ -117,8 +117,6 @@ ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 # HEDGE SETTINGS
 # ═════════════════════════════════════════════════════════════════════
 HEDGE_YES_ASK_MAX = _env_int("HEDGE_YES_ASK_MAX", 12)
-HEDGE_NO_ASK_MAX = _env_int("HEDGE_NO_ASK_MAX", 12)
-HEDGE_BALANCE_PCT = _env_float("HEDGE_BALANCE_PCT", 0.0)
 MAX_HEDGE_PER_SERIES = _env_int("MAX_HEDGE_PER_SERIES", 0)
 
 # ═════════════════════════════════════════════════════════════════════
@@ -167,17 +165,6 @@ MIN_WIN_PROB = _env_float("MIN_WIN_PROB", 0.995)
 Z_MAX = _env_float("Z_MAX", -1.0)
 TRADING_FEE_PCT = _env_float("TRADING_FEE_PCT", 0.1)
 
-# ═════════════════════════════════════════════════════════════════════
-# STOP LOSS / PROFIT EXIT (from kalshi_live_bot)
-# ═════════════════════════════════════════════════════════════════════
-STOP_LOSS_ENABLED = _env_bool("STOP_LOSS_ENABLED", True)
-STOP_LOSS_PCT = _env_float("STOP_LOSS_PCT", 0.20)
-STOP_LOSS_GRACE_MIN = _env_float("STOP_LOSS_GRACE_MIN", 2.0)
-STOP_LOSS_SIZE_PCT = _env_float("STOP_LOSS_SIZE_PCT", 1.0)
-PROFIT_QUICK_EXIT_PCT = _env_float("PROFIT_QUICK_EXIT_PCT", 0.0)
-PROFIT_TARGET_PCT = _env_float("PROFIT_TARGET_PCT", 0.0)
-PROFIT_EXIT_MINUTES = _env_float("PROFIT_EXIT_MINUTES", 0.0)
-PROFIT_POSITIVE_EXIT_MINUTES = _env_float("PROFIT_POSITIVE_EXIT_MINUTES", 0.0)
 
 # ═════════════════════════════════════════════════════════════════════
 # CONFIDENCE SCORING (from kalshi_live_bot)
@@ -224,12 +211,8 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4")
 OPENROUTER_TIMEOUT_SECONDS = _env_float("OPENROUTER_TIMEOUT_SECONDS", 5.0)
-LLM_HOLD_ENABLED = _env_bool("LLM_HOLD_ENABLED", False)
-LLM_HOLD_TRIGGER_MINUTES = _env_float("LLM_HOLD_TRIGGER_MINUTES", 2.0)
-LLM_HOLD_MAX_POSITIONS = _env_int("LLM_HOLD_MAX_POSITIONS", 5)
 LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", False)
 LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.35)
-LLM_EVAL_MIN_HOLD_CONFIDENCE = _env_float("LLM_EVAL_MIN_HOLD_CONFIDENCE", 0.45)
 LLM_EVAL_FAIL_OPEN = _env_bool("LLM_EVAL_FAIL_OPEN", False)
 
 # ═════════════════════════════════════════════════════════════════════

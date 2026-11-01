@@ -33,8 +33,13 @@ def load_api_key() -> Optional[str]:
     if api_key:
         return api_key
 
-    # Check n8n api key file
-    key_file = Path("/data/data/com.termux/files/home/.n8n/n8n_api_key.txt")
+    # Check n8n api key file (path overridable via N8N_API_KEY_FILE)
+    key_file = Path(
+        os.environ.get(
+            "N8N_API_KEY_FILE",
+            "/data/data/com.termux/files/home/.n8n/n8n_api_key.txt",
+        )
+    )
     if key_file.exists():
         try:
             # Refuse to read if the file is world-readable (any "other" bit set)
@@ -53,7 +58,13 @@ def load_api_key() -> Optional[str]:
             pass
 
     # Also check the programmatic API key file created by n8n setup
-    key_file = Path("/data/data/com.termux/files/home/n8n-programmatic-api-key.txt")
+    # (path overridable via N8N_PROGRAMMATIC_API_KEY_FILE)
+    key_file = Path(
+        os.environ.get(
+            "N8N_PROGRAMMATIC_API_KEY_FILE",
+            "/data/data/com.termux/files/home/n8n-programmatic-api-key.txt",
+        )
+    )
     if key_file.exists():
         try:
             mode = stat.S_IMODE(os.stat(str(key_file)).st_mode)

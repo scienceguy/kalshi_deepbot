@@ -864,6 +864,7 @@ def main():
     log.info("Loop every %ds. Ctrl+C to stop.", args.interval)
     cycle_count = 0
     while state.running:
+        cycle_start = time.time()
         try:
             sig_mod.alarm(config.CYCLE_TIMEOUT_SECONDS)
             cycle(client)
@@ -891,7 +892,14 @@ def main():
             time.sleep(delay)
             continue
         state.resilience.mark_success()
-        time.sleep(args.interval)
+        # Drift-corrected sleep: measure cycle duration and sleep only the
+        # remaining time so the loop runs at a stable interval regardless of
+        # how long the cycle took.
+        elapsed = time.time() - cycle_start
+        sleep_for = max(0.0, args.interval - elapsed)
+        if elapsed > args.interval:
+            log.warning("Cycle took %.1fs (> %ds interval)", elapsed, args.interval)
+        time.sleep(sleep_for)
 
     log.info("Done. P&L=$%.2f | Cycles=%d | Trades=%d",
              state.session_pnl, state.cycles, state.trades_placed)

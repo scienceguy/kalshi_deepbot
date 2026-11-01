@@ -6,7 +6,7 @@ Pulls the best from all bots:
 - kalshi_live_bot: Two-sided favourite maker (Approach D), stability check,
   confidence scoring, entry bands, bid history tracking, spot z-score gating
 
-Returns a list of TradeSignal (0, 1, or 2 per market for two-sided mode).
+Returns a list of TradeSignal (0 or 1 per market).
 """
 
 import json
@@ -380,9 +380,10 @@ def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: i
     """
     Two-sided favourite maker strategy (Approach D).
 
-    Emit BOTH the YES and NO favourite signals when each side is in range
-    (82-88c), posting 1c under its ask so orders are always makers (zero fee).
-    Returns a list of TradeSignal (0, 1, or 2 per market).
+    Emit the favourite side (YES or NO) when it is in range (82-88c),
+    posting 1c under its ask so the order is always a maker.
+    Returns a list of TradeSignal (0 or 1 per market — when both sides are
+    in range, only the more extreme favourite is kept).
     """
     results = []
 
@@ -486,8 +487,7 @@ def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: i
 def evaluate(market: MarketInfo, cash: float = 10.0,
              max_trade_override: Optional[float] = None):
     """
-    Evaluate a market and return a list of TradeSignal (0, 1, or 2 per market
-    for the two-sided favourite maker strategy).
+    Evaluate a market and return a list of TradeSignal (0 or 1 per market).
     """
     now = time.time()
     _maybe_save_bid_hist(now)

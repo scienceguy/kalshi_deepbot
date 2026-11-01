@@ -3,7 +3,7 @@ data_collector.py — Collect market snapshots during dry-run trading for backte
 
 Runs the SuperBot in dry-run mode, recording every market snapshot at entry time
 with settlement outcomes. This data can then be used for proper parameter sweep
-backtesting without needing an external API key.
+backtesting. Requires Kalshi API credentials (KalshiClient authenticates on first use).
 
 Usage:
     python data_collector.py --days 7          # Collect 7 days of dry-run data

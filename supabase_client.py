@@ -227,6 +227,7 @@ class SupabaseClient:
                     continue
                 log.warning("Supabase %s %s failed: %s %s",
                             method, path, resp.status_code, resp.text[:200])
+                _supabase_record_failure()
                 return None
             except requests.RequestException as e:
                 last_err = e
