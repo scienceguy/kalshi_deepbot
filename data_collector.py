@@ -49,32 +49,58 @@ class MarketSnapshotCollector:
 
         with gzip.open(out_path, "wt") as f:
             for series in series_list:
-                markets = None
-                for attempt in range(3):
-                    try:
-                        markets = self.client.get_markets(
-                            series_ticker=series,
-                            status="closed",
-                            limit=limit
-                        )
-                        break
-                    except Exception as e:
-                        if attempt < 2:
-                            wait = 1.5 * (2 ** attempt)
-                            log.warning(
-                                "%s attempt %d/3 failed: %s — retrying in %.1fs",
-                                series, attempt + 1, e, wait,
-                            )
-                            time.sleep(wait)
-                        else:
-                            log.warning("%s failed after 3 attempts: %s", series, e)
+                series_markets = None
 
-                if markets is None:
+                # Historical tier: settled markets with expiration_value,
+                # close_time, floor_strike and other settlement fields.
+                try:
+                    fetched = []
+                    cursor = ""
+                    while len(fetched) < limit:
+                        page = min(100, limit - len(fetched))
+                        data = self.client.get_historical_markets(
+                            series_ticker=series, limit=page, cursor=cursor
+                        )
+                        page_markets = data.get("markets", [])
+                        if not page_markets:
+                            break
+                        fetched.extend(page_markets)
+                        cursor = data.get("cursor", "")
+                        if not cursor:
+                            break
+                    if fetched:
+                        series_markets = fetched
+                        log.info("%s: %d historical markets", series, len(fetched))
+                except Exception as e:
+                    log.warning("%s historical fetch failed: %s", series, e)
+
+                # Fall back to public /markets endpoint
+                if series_markets is None:
+                    for attempt in range(3):
+                        try:
+                            series_markets = self.client.get_markets(
+                                series_ticker=series,
+                                status="closed",
+                                limit=limit,
+                            )
+                            break
+                        except Exception as e:
+                            if attempt < 2:
+                                wait = 1.5 * (2 ** attempt)
+                                log.warning(
+                                    "%s attempt %d/3 failed: %s — retrying in %.1fs",
+                                    series, attempt + 1, e, wait,
+                                )
+                                time.sleep(wait)
+                            else:
+                                log.warning("%s failed after 3 attempts: %s", series, e)
+
+                if series_markets is None:
                     continue
 
-                log.info("%s: %d closed markets", series, len(markets))
+                log.info("%s: %d closed markets", series, len(series_markets))
 
-                for m in markets:
+                for m in series_markets:
                     snapshot = self._build_snapshot(m)
                     if snapshot:
                         all_snapshots.append(snapshot)

@@ -64,17 +64,54 @@ class StratParams:
 
 
 def fetch_closed_markets(client: KalshiClient, series_list, limit_per_series=100):
-    """Fetch closed (settled) markets for each series."""
+    """Fetch closed (settled) markets for each series.
+
+    Tries the historical tier (/historical/markets) first — it returns
+    settled markets with expiration_value, close_time, floor_strike and
+    other settlement fields, which is exactly what backtesting needs.
+    Falls back to the public /markets endpoint if the historical tier
+    is unavailable.
+    """
     all_markets = []
     for series in series_list:
+        series_markets = None
+
+        # Historical tier: settled markets with settlement fields (no auth required)
         try:
-            markets = client.get_markets(series_ticker=series, status="closed", limit=limit_per_series)
-            for m in markets:
-                m["_series"] = series
-            all_markets.extend(markets)
-            log.info("%s: %d closed markets fetched", series, len(markets))
+            fetched = []
+            cursor = ""
+            while len(fetched) < limit_per_series:
+                page = min(100, limit_per_series - len(fetched))
+                data = client.get_historical_markets(
+                    series_ticker=series, limit=page, cursor=cursor
+                )
+                page_markets = data.get("markets", [])
+                if not page_markets:
+                    break
+                fetched.extend(page_markets)
+                cursor = data.get("cursor", "")
+                if not cursor:
+                    break
+            if fetched:
+                series_markets = fetched
+                log.info("%s: %d historical markets fetched", series, len(fetched))
         except Exception as e:
-            log.warning("%s fetch failed: %s", series, e)
+            log.warning("%s historical fetch failed: %s", series, e)
+
+        # Fall back to public /markets endpoint
+        if series_markets is None:
+            try:
+                series_markets = client.get_markets(
+                    series_ticker=series, status="closed", limit=limit_per_series
+                )
+                log.info("%s: %d public markets fetched", series, len(series_markets))
+            except Exception as e:
+                log.warning("%s fetch failed: %s", series, e)
+                series_markets = []
+
+        for m in series_markets:
+            m["_series"] = series
+        all_markets.extend(series_markets)
         time.sleep(0.15)
     return all_markets
 

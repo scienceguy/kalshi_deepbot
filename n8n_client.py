@@ -261,3 +261,16 @@ def run_trade_webhook(data: Optional[Dict] = None) -> Dict[str, Any]:
 def run_monitor_webhook(data: Optional[Dict] = None) -> Dict[str, Any]:
     """Run the SuperBot monitor via n8n webhook."""
     return get_client().run_monitor(data)
+
+
+def n8n_health_check() -> bool:
+    """Verify n8n is reachable and the superbot-trade webhook responds.
+
+    Returns False if the API key is missing, n8n is down, or the webhook
+    errors — so startup can fail fast instead of mid-trade.
+    """
+    try:
+        get_client().execute_webhook("superbot-trade", {"action": "health_check"})
+        return True
+    except Exception:
+        return False
