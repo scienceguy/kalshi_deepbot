@@ -11,7 +11,6 @@ import logging
 import requests
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -127,16 +126,12 @@ class KalshiClient:
     def _auth_header(self, method: str, path: str) -> dict:
         """
         Build the KALSHI-ACCESS-* headers required for every request.
-        Signature = RSA-PSS(SHA-256, f"{timestamp}{method}{path_with_query}")
-        Signs the FULL path including query string so Kalshi's server-side
-        signature verification matches.
+        Signature = RSA-PSS(SHA-256, f"{timestamp}{method}{path}")
+        Signs the request path only (query string is appended by requests
+        separately and is not part of the signature).
         """
         ts_ms  = str(int(time.time() * 1000))
-        full_path = path if path.startswith("/") else f"/{path}"
-        url       = self.base_url + full_path
-        # Sign the full path INCLUDING query string — Kalshi signs the full
-        # request path, not just the path component.
-        msg    = f"{ts_ms}{method.upper()}{full_path}".encode()
+        msg    = f"{ts_ms}{method.upper()}{path}".encode()
         sig    = self._privkey.sign(msg, padding.PSS(
             mgf=padding.MGF1(hashes.SHA256()),
             salt_length=padding.PSS.DIGEST_LENGTH,
@@ -381,3 +376,56 @@ class KalshiClient:
         data = self._request("GET", "/portfolio/orders",
                               params={"status": status})
         return data.get("orders", [])
+
+    # ── Historical Markets (no auth required) ───────────────────────────
+
+    def get_historical_markets(self, series_ticker: str = "",
+                               limit: int = 100,
+                               cursor: str = "") -> dict:
+        """Fetch settled markets older than the cutoff from the historical tier.
+
+        GET /historical/markets — returns settled markets with expiration_value,
+        close_time, floor_strike, and other settlement fields.
+
+        Args:
+            series_ticker: Filter by series (e.g. "KXBTC15M").
+            limit: Max results per page.
+            cursor: Pagination cursor from a previous response.
+
+        Returns dict with "markets" list and optional "cursor" for next page.
+        """
+        params = {"limit": limit}
+        if series_ticker:
+            params["series_ticker"] = series_ticker
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", "/historical/markets", params=params)
+
+    def get_market_candlesticks(self, ticker: str,
+                                start_ts: int,
+                                end_ts: int,
+                                period_interval: int = 1,
+                                limit: int = 100) -> dict:
+        """Fetch candlestick (OHLCV) data for a historical market.
+
+        GET /historical/markets/{ticker}/candlesticks — returns time-series
+        price candles. Valid period_interval values: 1 (1 minute), 60 (1 hour),
+        1440 (1 day).
+
+        Args:
+            ticker: Market ticker (e.g. "KXBTC15M-26NOV011145-45").
+            start_ts: Start timestamp in seconds (UTC epoch).
+            end_ts: End timestamp in seconds (UTC epoch).
+            period_interval: Candle length in minutes (1, 60, or 1440).
+            limit: Max candles to return.
+
+        Returns dict with candlestick data.
+        """
+        path = f"/historical/markets/{ticker}/candlesticks"
+        params = {
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "period_interval": period_interval,
+            "limit": limit,
+        }
+        return self._request("GET", path, params=params)

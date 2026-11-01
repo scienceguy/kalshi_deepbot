@@ -105,3 +105,72 @@ class TestGetMarkets:
             assert result1 is result2  # Same cached object
             # First call makes the HTTP request, second call uses cache
             assert mock_request.call_count >= 1  # At least one HTTP call
+
+
+class TestHistoricalMarkets:
+    """Tests for get_historical_markets method."""
+
+    def test_get_historical_markets_returns_list(self, monkeypatch):
+        """get_historical_markets returns a list of historical market dicts."""
+        monkeypatch.setattr(config, "KALSHI_KEY_ID", "test_key_id")
+        monkeypatch.setattr(config, "REQUEST_MIN_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(config, "REQUEST_TIMEOUT_SECONDS", 10)
+
+        with patch.object(KalshiClient, "_load_private_key") as mock_load, \
+             patch.object(KalshiClient, "_verify_key"):
+            mock_load.return_value = MagicMock()
+            mock_load.return_value.sign.return_value = b"fake_sig"
+            client = KalshiClient()
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "markets": [
+                {"ticker": "KXBTC15M-26NOV011145-45", "status": "finalized",
+                 "expiration_value": "100", "close_time": "2026-11-01T11:45:00Z"}
+            ],
+            "cursor": "next_cursor_value"
+        }
+        mock_resp.status_code = 200
+
+        with patch.object(client.session, "request", return_value=mock_resp):
+            result = client.get_historical_markets(series_ticker="KXBTC15M", limit=100)
+            assert isinstance(result, dict)
+            assert "markets" in result
+            assert len(result["markets"]) == 1
+            assert result["markets"][0]["ticker"] == "KXBTC15M-26NOV011145-45"
+            assert result["cursor"] == "next_cursor_value"
+
+    def test_get_market_candlesticks_returns_data(self, monkeypatch):
+        """get_market_candlesticks returns candlestick data."""
+        monkeypatch.setattr(config, "KALSHI_KEY_ID", "test_key_id")
+        monkeypatch.setattr(config, "REQUEST_MIN_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(config, "REQUEST_TIMEOUT_SECONDS", 10)
+
+        with patch.object(KalshiClient, "_load_private_key") as mock_load, \
+             patch.object(KalshiClient, "_verify_key"):
+            mock_load.return_value = MagicMock()
+            mock_load.return_value.sign.return_value = b"fake_sig"
+            client = KalshiClient()
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "ticker": "KXBTC15M-26NOV011145-45",
+            "candlesticks": [
+                {"t": 1780380000, "o": 0.50, "h": 0.55, "l": 0.48, "c": 0.52, "v": 1000}
+            ]
+        }
+        mock_resp.status_code = 200
+
+        with patch.object(client.session, "request", return_value=mock_resp):
+            result = client.get_market_candlesticks(
+                ticker="KXBTC15M-26NOV011145-45",
+                start_ts=1780376400,
+                end_ts=1780380000,
+                period_interval=1,
+                limit=100
+            )
+            assert isinstance(result, dict)
+            assert "candlesticks" in result
+            assert result["ticker"] == "KXBTC15M-26NOV011145-45"
+            assert len(result["candlesticks"]) == 1
+            assert result["candlesticks"][0]["o"] == 0.50
