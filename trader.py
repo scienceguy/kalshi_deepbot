@@ -451,7 +451,10 @@ def cycle(client: KalshiClient):
             created = o.get("created_time", "")
             if not oid or not price_cents or not count:
                 continue
-            # NO side price is stored as complement (100 - no_price_cents)
+            # NOTE: Assumes Kalshi stores NO-side price as complement (100 - price_cents).
+            # This has NOT been verified against the Kalshi API — if Kalshi stores NO
+            # prices directly, entry_cents will be wrong (e.g. NO stored at 85c would
+            # be read as 15c). Verify against a live NO resting order before live trading.
             entry_cents = price_cents if side == "yes" else (100 - price_cents)
             state.resting_value[oid] = int(count) * entry_cents / 100.0
 
@@ -875,20 +878,17 @@ def main():
         log.info("%s received — shutting down gracefully", sig_name)
         state.running = False
 
-    def _cycle_timeout_handler(signum, frame):
-        raise TimeoutError(f"Cycle exceeded {config.CYCLE_TIMEOUT_SECONDS}s timeout")
-
     sig_mod.signal(sig_mod.SIGTERM, _shutdown_handler)
     sig_mod.signal(sig_mod.SIGINT, _shutdown_handler)
-    sig_mod.signal(sig_mod.SIGALRM, _cycle_timeout_handler)
+    # NOTE: No SIGALRM handler — per-request timeouts in kalshi_client.py
+    # protect individual HTTP calls from hanging. A cycle-level alarm can
+    # interrupt an in-flight request, leaving connections in a bad state.
     log.info("Loop every %ds. Ctrl+C to stop.", args.interval)
     cycle_count = 0
     while state.running:
         cycle_start = time.time()
         try:
-            sig_mod.alarm(config.CYCLE_TIMEOUT_SECONDS)
             cycle(client)
-            sig_mod.alarm(0)
             cycle_count += 1
             if args.cycle_limit and cycle_count >= args.cycle_limit:
                 log.info("Cycle limit %d reached — stopping", args.cycle_limit)
