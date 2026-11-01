@@ -128,16 +128,16 @@ def _maker_price(market: MarketInfo, bullish: bool) -> int:
 # ═════════════════════════════════════════════════════════════════════
 
 _bid_hist: dict[str, list[tuple[float, int]]] = {}
-_BID_HIST_FILE = Path(__file__).resolve().parent / "bid_hist.json"
+_BID_HIST_FILE = Path(__file__).resolve().parent / f"bid_hist_{'dry' if config.DRY_RUN else 'live'}.json"
 _bid_hist_dirty = False
 _last_bid_hist_save = 0.0
 _BID_HIST_SAVE_INTERVAL = 30.0
 
 # NOTE: This module-level bid history is single-process only. It is mutated by
-# _track_bid/_maybe_save_bid_hist and persisted to bid_hist.json. If the bot is
-# ever run in multiple processes, this state will diverge between processes and
-# must be moved into a shared store (e.g. Redis or a per-instance file with
-# file locking).
+# _track_bid/_maybe_save_bid_hist and persisted to bid_hist_{dry,live}.json.
+# If the bot is ever run in multiple processes, this state will diverge between
+# processes and must be moved into a shared store (e.g. Redis or a per-instance
+# file with file locking).
 
 
 def _load_bid_hist():
