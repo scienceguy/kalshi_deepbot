@@ -53,8 +53,9 @@ DEFAULT_HEADER = ("Authorization", "Bearer ")  # most LLM/provider APIs
 def header_for(name: str):
     low = name.lower()
     if "kalshi" in low:
-        # the RSA private key and the key id use different header names
-        return ("KALSHI_PRIVATE_KEY", "") if "rsa" in low else ("KALSHI-ACCESS-KEY", "")
+        # the private key and the key id use different header names
+        is_key = "rsa" in low or "private key" in low
+        return ("KALSHI_PRIVATE_KEY", "") if is_key else ("KALSHI-ACCESS-KEY", "")
     for key, val in HEADER_MAP:
         if key in low:
             return val
