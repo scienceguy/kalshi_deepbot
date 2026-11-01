@@ -70,12 +70,18 @@ class KalshiPriceDataClient:
                 "kalshi-price-data is not installed. "
                 "Install with: pip install kalshi-price-data"
             )
-        return self._client.get_historical_snapshots(
+        snapshots = self._client.get_historical_snapshots(
             series_ticker=series_ticker,
             start_time=start_time,
             end_time=end_time,
             market_ticker=market_ticker,
         )
+        if not isinstance(snapshots, list):
+            raise ValueError(
+                f"kalshi-price-data returned unexpected type {type(snapshots).__name__}, "
+                f"expected list of snapshots"
+            )
+        return snapshots
 
     def get_market_snapshots(self, market_ticker: str,
                              start_time: str,
@@ -94,11 +100,17 @@ class KalshiPriceDataClient:
                 "kalshi-price-data is not installed. "
                 "Install with: pip install kalshi-price-data"
             )
-        return self._client.get_market_snapshots(
+        snapshots = self._client.get_market_snapshots(
             market_ticker=market_ticker,
             start_time=start_time,
             end_time=end_time,
         )
+        if not isinstance(snapshots, list):
+            raise ValueError(
+                f"kalshi-price-data returned unexpected type {type(snapshots).__name__}, "
+                f"expected list of snapshots"
+            )
+        return snapshots
 
     def save_to_parquet(self, snapshots: list[Dict[str, Any]],
                         output_path: str) -> Path:

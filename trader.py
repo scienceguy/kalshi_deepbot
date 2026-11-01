@@ -52,7 +52,7 @@ if args.debug:
 
 import fees  # noqa: E402
 from supabase_client import get_supabase  # noqa: E402
-from n8n_client import get_client as get_n8n_client  # noqa: E402
+from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient  # noqa: E402
 from market_finder import find_active_markets, _parse_api_time, MarketInfo  # noqa: E402
 from risk import (  # noqa: E402
@@ -236,7 +236,7 @@ class BotState:
                         "blocked_reason": f"LLM prob {eval_result['probability_of_net_profit']:.2f}",
                     })
                 except Exception:
-                    pass
+                    log.debug("Supabase insert_signal failed for %s", ticker)
                 return False
 
             # Record LLM insight
@@ -286,7 +286,7 @@ class BotState:
                 "cycles": cycles,
             })
         except Exception:
-            pass
+            log.warning("Supabase insert_order failed for %s — order audit trail incomplete", ticker)
         # Track capital at risk per ticker — released on settlement, not booked as P&L
         state.position_risk[ticker] = sig.dollar_risk
 
@@ -382,7 +382,9 @@ def _replay_settlement_queue():
         try:
             n8n_client = get_n8n_client()
             n8n_client.execute_webhook("superbot-trade", entry["payload"])
-            state.session_pnl += entry["payload"].get("pnl_dollars", 0.0)
+            pnl = entry["payload"].get("pnl_dollars")
+            if pnl is not None:
+                state.session_pnl += pnl
             log.info("Replayed settlement for %s", entry["payload"].get("order_id"))
         except Exception:
             remaining.append(entry)
@@ -440,7 +442,7 @@ def cycle(client: KalshiClient):
         # Fetch actual settlement price from Kalshi market data.
         # Kalshi settles YES at 100 (yes wins) or 0 (yes loses);
         # NO settles at the complement (0 if yes wins, 100 if no wins).
-        exit_price = 0.0  # conservative fallback if market data unavailable
+        exit_price = None  # None means settlement data unavailable — don't book PnL
         try:
             market = client.get_market(t)
             exp_val = market.get("expiration_value")
@@ -451,39 +453,30 @@ def cycle(client: KalshiClient):
                 else:
                     exit_price = float(100 - settled_yes) / 100.0  # 0.0 or 1.0
         except Exception:
-            log.warning("Could not fetch settlement for %s — using conservative exit_price=0.0", t)
+            log.warning(
+                "Could not fetch settlement for %s — queuing for retry, not booking synthetic PnL",
+                t,
+            )
 
-        buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0)
-        sell_revenue = fees.sell_cash_in(contracts, exit_price)
-        realized_pnl = sell_revenue - buy_cost
-        won = sell_revenue > buy_cost
+        # Only book PnL when we have real settlement data.
+        if exit_price is not None:
+            buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0)
+            sell_revenue = fees.sell_cash_in(contracts, exit_price)
+            realized_pnl = sell_revenue - buy_cost
+            won = sell_revenue > buy_cost
 
-        log.info(
-            "Cleared settled position: %s (side=%s, released $%.2f, realized P&L $%.2f, won=%s)",
-            t, side, reserved, realized_pnl, won,
-        )
+            log.info(
+                "Cleared settled position: %s (side=%s, released $%.2f, realized P&L $%.2f, won=%s)",
+                t, side, reserved, realized_pnl, won,
+            )
 
-        # Record settlement to Supabase via n8n workflow
-        try:
-            n8n_client = get_n8n_client()
-            n8n_client.execute_webhook("superbot-trade", {
-                "action": "settlement",
-                "order_id": order_id,
-                "status": "settled",
-                "fill_price_cents": int(exit_price * 100),
-                "outcome_won": won,
-                "pnl_dollars": realized_pnl,
-                "ticker": t,
-                "side": side,
-                "contracts": contracts,
-            })
-            state.session_pnl += realized_pnl  # add realized P&L only after successful record
-        except Exception:
-            log.warning("Failed to record settlement for %s via n8n webhook — queuing", t)
-            queue = _load_settlement_queue()
-            queue.append({
-                "order_id": order_id,
-                "payload": {
+            # Track consecutive losses for risk cooldown
+            state.risk.record_trade_outcome(won, realized_pnl)
+
+            # Record settlement to Supabase via n8n workflow
+            try:
+                n8n_client = get_n8n_client()
+                n8n_client.execute_webhook("superbot-trade", {
                     "action": "settlement",
                     "order_id": order_id,
                     "status": "settled",
@@ -493,6 +486,43 @@ def cycle(client: KalshiClient):
                     "ticker": t,
                     "side": side,
                     "contracts": contracts,
+                })
+                state.session_pnl += realized_pnl  # add realized P&L only after successful record
+            except Exception:
+                log.warning("Failed to record settlement for %s via n8n webhook — queuing", t)
+                queue = _load_settlement_queue()
+                queue.append({
+                    "order_id": order_id,
+                    "payload": {
+                        "action": "settlement",
+                        "order_id": order_id,
+                        "status": "settled",
+                        "fill_price_cents": int(exit_price * 100),
+                        "outcome_won": won,
+                        "pnl_dollars": realized_pnl,
+                        "ticker": t,
+                        "side": side,
+                        "contracts": contracts,
+                    },
+                })
+                _save_settlement_queue(queue)
+        else:
+            # No settlement data available — queue for retry without booking PnL.
+            # Position is already released from state.positions above.
+            queue = _load_settlement_queue()
+            queue.append({
+                "order_id": order_id,
+                "payload": {
+                    "action": "settlement",
+                    "order_id": order_id,
+                    "status": "pending",
+                    "fill_price_cents": None,
+                    "outcome_won": None,
+                    "pnl_dollars": None,
+                    "ticker": t,
+                    "side": side,
+                    "contracts": contracts,
+                    "entry_price": entry_price,
                 },
             })
             _save_settlement_queue(queue)
@@ -520,14 +550,14 @@ def cycle(client: KalshiClient):
         state.trades_placed, state.cycles,
     )
 
-    # Record bot state to Supabase
+    # Record bot state to Supabase (non-critical state writes)
     try:
         get_supabase_client().set_bot_state("cycle", state.cycles)
         get_supabase_client().set_bot_state("cash", cash)
         get_supabase_client().set_bot_state("exposure", exposure)
         get_supabase_client().set_bot_state("session_pnl", state.session_pnl)
     except Exception:
-        pass
+        log.debug("Supabase bot_state writes failed")
 
     # Hard stops
     if state.risk.state.halted:
@@ -704,6 +734,13 @@ def main():
         log.error("Auth failed: %s", e)
         sys.exit(1)
 
+    # Fail fast if n8n is unreachable — all settlement PnL routing depends on it.
+    if not n8n_health_check():
+        log.error("n8n health check failed — settlement webhooks will not work. "
+                  "Start n8n (http://127.0.0.1:5678) and try again.")
+        sys.exit(1)
+    log.info("n8n health check ✓")
+
     # Reconcile session_pnl from Supabase on startup — prevents P&L drift
     # if n8n webhook settlement writes failed in a previous run.
     try:
@@ -752,9 +789,13 @@ def main():
                          state.resilience.settings.rebuild_threshold)
                 try:
                     client = KalshiClient()
+                    # Verify the new client works before resetting the error counter.
+                    # If verification fails, stop rather than looping on a broken client.
+                    client.get_markets(limit=1)
                     state.resilience.after_rebuild()
                 except Exception as rebuild_e:
-                    log.error("Client rebuild failed: %s", rebuild_e)
+                    log.error("Client rebuild failed: %s — stopping", rebuild_e)
+                    break
             time.sleep(delay)
             continue
         state.resilience.mark_success()

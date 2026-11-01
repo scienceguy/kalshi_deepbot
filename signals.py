@@ -133,6 +133,12 @@ _bid_hist_dirty = False
 _last_bid_hist_save = 0.0
 _BID_HIST_SAVE_INTERVAL = 30.0
 
+# NOTE: This module-level bid history is single-process only. It is mutated by
+# _track_bid/_maybe_save_bid_hist and persisted to bid_hist.json. If the bot is
+# ever run in multiple processes, this state will diverge between processes and
+# must be moved into a shared store (e.g. Redis or a per-instance file with
+# file locking).
+
 
 def _load_bid_hist():
     global _bid_hist
