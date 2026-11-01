@@ -41,7 +41,6 @@ N8N_CONFIG = Path(os.environ.get("N8N_CONFIG_PATH", "/data/data/com.termux/files
 # How each secret is presented as an n8n httpHeaderAuth credential.
 # Match is by lowercase substring of the Bitwarden item name; first hit wins.
 HEADER_MAP = [
-    ("kalshi", ("KALSHI-ACCESS-KEY", "")),
     ("supabase", ("apikey", "")),
     ("n8n api", ("X-N8N-API-KEY", "")),
     ("binance", ("X-MBX-APIKEY", "")),
@@ -53,6 +52,9 @@ DEFAULT_HEADER = ("Authorization", "Bearer ")  # most LLM/provider APIs
 
 def header_for(name: str):
     low = name.lower()
+    if "kalshi" in low:
+        # the RSA private key and the key id use different header names
+        return ("KALSHI_PRIVATE_KEY", "") if "rsa" in low else ("KALSHI-ACCESS-KEY", "")
     for key, val in HEADER_MAP:
         if key in low:
             return val
@@ -97,7 +99,7 @@ def cmd_list():
     return 0
 
 
-def cmd_sync(check: bool, prune: bool = False) -> int:
+def cmd_sync(check: bool, prune: bool = False, force: bool = False) -> int:
     if not STORE.exists():
         print(f"ERROR: mirror {STORE} missing. Restore it with scripts/bw_pull_secure_notes.sh")
         return 2
@@ -130,6 +132,13 @@ def cmd_sync(check: bool, prune: bool = False) -> int:
             deduped += 1
         if ids:
             present += 1
+            if force:
+                # reconcile the stored value with the mirror (keep the id)
+                conn.execute(
+                    "UPDATE credentials_entity SET data=?, updatedAt=? WHERE id=?",
+                    (json.dumps({k: encrypt_value(v, key) for k, v in cred["data"].items()}),
+                     now, ids[0]),
+                )
             continue
         conn.execute(
             """INSERT INTO credentials_entity
@@ -167,10 +176,12 @@ def main():
     ap.add_argument("--list", action="store_true", help="list mirror items")
     ap.add_argument("--prune", action="store_true",
                     help="also delete n8n credentials that are not in the mirror")
+    ap.add_argument("--force", action="store_true",
+                    help="also overwrite the value of existing credentials from the mirror")
     args = ap.parse_args()
     if args.list:
         return cmd_list()
-    return cmd_sync(args.check, args.prune)
+    return cmd_sync(args.check, args.prune, args.force)
 
 
 if __name__ == "__main__":
