@@ -1,6 +1,6 @@
 """Tests for backtest_engine.py — core backtest logic."""
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from backtest_engine import (
     StratParams,
     simulate_trade,
@@ -12,14 +12,18 @@ from backtest_engine import (
 
 def _make_market(ticker="KXBTC15M-TEST", close_minutes=10, yes_won=True,
                  mid_cents=50, last_price=None):
-    """Build a minimal market dict for testing."""
-    now = datetime.now(timezone.utc)
-    close = now.replace(minute=(now.minute + close_minutes) % 60)
+    """Build a minimal market dict for testing.
+
+    Uses timedelta (not minute arithmetic) so the close time is always in the
+    future and never wraps past the hour.
+    """
+    close = datetime.now(timezone.utc) + timedelta(minutes=close_minutes)
+    open_ = close - timedelta(minutes=15)  # full 15-min window, minutes_in == 15
     exp_val = 1.0 if yes_won else 0.0
     market = {
         "ticker": ticker,
         "close_time": close.isoformat(),
-        "open_time": now.isoformat(),
+        "open_time": open_.isoformat(),
         "expiration_value": exp_val,
         "floor_strike": 1.0,
     }

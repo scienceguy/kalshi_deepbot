@@ -54,7 +54,7 @@ import fees  # noqa: E402
 from supabase_client import get_supabase  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient  # noqa: E402
-from market_finder import find_active_markets, _parse_api_time, MarketInfo  # noqa: E402
+from market_finder import find_active_markets, _parse_api_time, _dollars_str_to_cents, MarketInfo  # noqa: E402
 from risk import RiskManager  # noqa: E402
 from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
 from signals import TradeSignal  # noqa: E402
@@ -531,11 +531,13 @@ def cycle(client: KalshiClient):
             if no_pos > 0:
                 mark_to_market_exposure += no_pos * (100 - mid) / 100.0
         else:
-            # Fall back to cost-basis exposure for markets not in current book
+            # Fall back to cost-basis exposure for markets not in current book.
+            # *_avg_price_dollars arrive as decimal strings ("0.8500"); convert
+            # to cents first — multiplying a raw string raises TypeError.
             yes_avg_price = p.get("yes_avg_price_dollars", 0) or 0
             no_avg_price = p.get("no_avg_price_dollars", 0) or 0
-            mark_to_market_exposure += yes_pos * yes_avg_price / 100.0
-            mark_to_market_exposure += no_pos * no_avg_price / 100.0
+            mark_to_market_exposure += yes_pos * _dollars_str_to_cents(yes_avg_price) / 100.0
+            mark_to_market_exposure += no_pos * _dollars_str_to_cents(no_avg_price) / 100.0
 
     # Reconcile resting orders: fetch open orders from Kalshi, sync into
     # state.resting_value for intra-cycle cash tracking, and cancel any
@@ -709,9 +711,11 @@ def cycle(client: KalshiClient):
                 # NO position: current value = contracts * (100 - mid) / 100 (NO price complement)
                 mark_to_market_exposure += no_pos * (100 - mid) / 100.0
         else:
-            # Fall back to cost-basis exposure for markets not in current book
-            mark_to_market_exposure += yes_pos * yes_avg_price / 100.0
-            mark_to_market_exposure += no_pos * no_avg_price / 100.0
+            # Fall back to cost-basis exposure for markets not in current book.
+            # *_avg_price_dollars arrive as decimal strings ("0.8500"); convert
+            # to cents first — multiplying a raw string raises TypeError.
+            mark_to_market_exposure += yes_pos * _dollars_str_to_cents(yes_avg_price) / 100.0
+            mark_to_market_exposure += no_pos * _dollars_str_to_cents(no_avg_price) / 100.0
 
     # Balance may be unknown if the fetch failed (cash is None) — skip the
     # balance-dependent risk/window updates instead of crashing on None.
