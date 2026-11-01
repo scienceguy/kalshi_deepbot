@@ -95,15 +95,14 @@ def simulate_trade(market, params, balance=10.0, settlement_yes_won=None):
     if yes_won is None:
         return None
 
-    if mid_proxy >= params.ENTRY_BAND_MIN:
-        bullish = mid_proxy >= params.ENTRY_BAND_MIN and mid_proxy <= params.ENTRY_BAND_MAX
-        if bullish:
-            ep = mid_proxy
-            side_bullish = True
-        else:
-            ep = 100 - mid_proxy
-            side_bullish = False
+    if params.ENTRY_BAND_MIN <= mid_proxy <= params.ENTRY_BAND_MAX:
+        # YES is the favorite in range — buy YES at mid_proxy (maker entry)
+        ep = mid_proxy
+        side_bullish = True
     else:
+        # Price outside favorite band — do not enter. We do NOT bet the
+        # underdog (100 - mid_proxy) because that contradicts the
+        # favourite-maker strategy: we only buy the favorite side.
         return None
 
     ep = max(1, min(99, int(ep)))

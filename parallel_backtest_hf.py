@@ -198,18 +198,18 @@ def parameter_grid(quick=False):
             "ENTRY_BAND_MIN": [82, 86, 88],
             "ENTRY_BAND_MAX": [88, 91, 93],
             "MAX_NO_ENTRY_CENTS": [60, 65, 68],
-            "PER_TRADE_PCT": [0.20, 0.50, 0.80],
+            "PER_TRADE_PCT": [0.10, 0.20],
             "MAX_TRADE_DOLLARS": [2.0, 3.0, 5.0],
-            "BALANCE_PCT_PER_TRADE": [0.10, 0.25, 0.50],
+            "BALANCE_PCT_PER_TRADE": [0.10, 0.25],
         }
     else:
         grids = {
             "ENTRY_BAND_MIN": [75, 80, 82, 85, 88],
             "ENTRY_BAND_MAX": [88, 90, 92, 95, 98],
             "MAX_NO_ENTRY_CENTS": [55, 60, 65, 70, 75],
-            "PER_TRADE_PCT": [0.20, 0.33, 0.50, 0.67, 0.80],
-            "MAX_TRADE_DOLLARS": [2.0, 3.0, 5.0, 10.0, 15.0],
-            "BALANCE_PCT_PER_TRADE": [0.10, 0.25, 0.50, 0.80],
+            "PER_TRADE_PCT": [0.10, 0.20],
+            "MAX_TRADE_DOLLARS": [2.0, 3.0, 5.0, 10.0],
+            "BALANCE_PCT_PER_TRADE": [0.10, 0.25],
         }
     keys = list(grids.keys())
     for combo in itertools.product(*[grids[k] for k in keys]):
