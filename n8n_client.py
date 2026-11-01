@@ -21,10 +21,16 @@ from typing import Any, Dict, Optional
 import requests
 from requests.adapters import HTTPAdapter
 
+import config
+
 log = logging.getLogger("n8n_client")
 
 # Default base URL — n8n runs locally on port 5678
 DEFAULT_BASE_URL = "http://127.0.0.1:5678"
+
+# Webhook timeout must be less than CYCLE_TIMEOUT_SECONDS so a webhook
+# can't block a full cycle. Default: cycle timeout minus 5s margin.
+DEFAULT_WEBHOOK_TIMEOUT = max(1, config.CYCLE_TIMEOUT_SECONDS - 5)
 
 
 def load_api_key() -> Optional[str]:
@@ -189,7 +195,7 @@ class N8nClient:
     # ── Webhooks ───────────────────────────────────────────────────────────
 
     def execute_webhook(self, webhook_path: str, data: Dict[str, Any],
-                        method: str = "POST", timeout: int = 60) -> Dict[str, Any]:
+                        method: str = "POST", timeout: int = DEFAULT_WEBHOOK_TIMEOUT) -> Dict[str, Any]:
         """Execute a webhook by path. Returns the webhook response."""
         url = f"{self.base_url}/webhook/{webhook_path}"
         try:

@@ -11,6 +11,7 @@ Usage:
 import itertools
 import json
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -334,6 +335,10 @@ def run_sweep(markets, settlement_yes_won=None, quick=False, limit=None,
         markets = markets[:limit]
 
     combos = list(parameter_grid(quick))
+    # Cap workers at CPU count: each worker gets a full copy of `markets`
+    # via pickle, so more workers = more memory. For large datasets this
+    # can OOM; prefer fewer workers over more.
+    jobs = min(jobs, os.cpu_count() or 4)
     log.info("Testing %d parameter combinations with %d workers...", len(combos), jobs)
 
     work_items = [(c, starting_balance) for c in combos]

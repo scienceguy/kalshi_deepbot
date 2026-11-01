@@ -224,7 +224,13 @@ class KalshiClient:
     def _req(self, method, path, **kw): return self._request(method, path, **kw)
 
     def get_balance(self) -> float:
-        """Return available balance in dollars."""
+        """Return available balance in dollars.
+
+        Kalshi /portfolio/balance returns balance in cents. We divide by 100
+        to get dollars. If Kalshi ever changes this field's units, all PnL
+        and sizing math will be silently wrong — verify against a known
+        value at startup if deploying to a new account.
+        """
         data = self._request("GET", "/portfolio/balance")
         cents = data.get("balance", 0)
         return cents / 100.0

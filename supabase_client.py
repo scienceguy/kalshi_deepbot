@@ -139,14 +139,6 @@ elif not SUPABASE_SERVICE_KEY and SUPABASE_KEY_FILE:
     _, file_key = _parse_kv_file(SUPABASE_KEY_FILE)
     SUPABASE_SERVICE_KEY = SUPABASE_SERVICE_KEY or file_key
 
-# Also check root .env
-if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    root_env = Path(__file__).resolve().parent.parent / ".env"
-    if root_env.exists():
-        env_url, env_key = _parse_kv_file(str(root_env))
-        SUPABASE_URL = SUPABASE_URL or env_url
-        SUPABASE_SERVICE_KEY = SUPABASE_SERVICE_KEY or env_key
-
 def is_enabled() -> bool:
     """Check whether Supabase credentials are currently available."""
     return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
