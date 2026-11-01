@@ -274,6 +274,10 @@ def _evaluate_common(
     avail = market.yes_liquidity if bullish else market.no_liquidity
     if avail and n > avail:
         n = min(n, float(avail))
+    # Contract count must be an integer: the API order uses int(count), so a
+    # fractional size would over-reserve cash (resting_value/dollar_risk) and
+    # mis-book PnL at settlement.
+    n = float(int(n))
     if n <= 0:
         return _pass(f"Budget ${max_dollars:.2f} too low for {ep}c entry")
 
@@ -357,6 +361,7 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
     avail = market.no_liquidity
     if avail and n > avail:
         n = min(n, float(avail))
+    n = float(int(n))  # integer contracts — API order uses int(count)
     if n <= 0:
         _pass(f"Budget ${max_dollars:.2f} too low for {ep}c entry")
         return results

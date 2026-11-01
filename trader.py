@@ -277,16 +277,21 @@ class BotState:
 
     def _record_filled_order(self, client, sig, oid, fill_count, status, fees_dollars, cycles):
         ticker = sig.market.ticker
+        # Record the ACTUAL filled contracts (int), not the intended size — a
+        # partial fill would otherwise mis-book PnL at settlement and over-reserve
+        # capital at risk.
+        filled = float(int(fill_count)) if fill_count else float(int(sig.contracts))
+        filled_risk = filled * sig.entry_price / 100.0
         self.positions[ticker] = {
             "side": sig.side,
             "entry_price": sig.entry_price,
-            "contracts": sig.contracts,
+            "contracts": filled,
             "order_id": oid,
         }
         self.window["entered"].add(ticker)
         self.resting_value.pop(oid, None)
         log.info("✓ %s order_id=%s (fills=%.2f)", ticker, oid, fill_count)
-        self.window["used"] += sig.dollar_risk
+        self.window["used"] += filled_risk
         self.trades_placed += 1
         # Record to Supabase
         try:
@@ -294,7 +299,7 @@ class BotState:
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "ticker": ticker,
                 "side": sig.side,
-                "contracts": sig.contracts,
+                "contracts": filled,
                 "price_cents": sig.entry_price,
                 "order_id": oid,
                 "status": status,
@@ -546,13 +551,17 @@ def cycle(client: KalshiClient):
     try:
         resting_orders = client.get_orders(status="resting")
         now = time.time()
+        live_ids = set()
         for o in resting_orders:
             oid = o.get("order_id") or o.get("id")
+            if not oid:
+                continue
+            live_ids.add(oid)
             side = o.get("side", "")
             price_cents = o.get("price_cents", 0)
             count = o.get("count", 0)
             created = o.get("created_time", "")
-            if not oid or not price_cents or not count:
+            if not price_cents or not count:
                 continue
             # Convert NO side price from Kalshi API format to internal format.
             # Uses NO_PRICE_IS_COMPLEMENT config (default True) to determine conversion.
@@ -569,11 +578,41 @@ def cycle(client: KalshiClient):
                     if created_ts and (now - created_ts.timestamp()) > config.STALE_ORDER_MINS * 60:
                         client.cancel_order(oid)
                         state.resting_value.pop(oid, None)
+                        live_ids.discard(oid)
                         log.info("Cancelled stale order %s (older than %.0f min)", oid, config.STALE_ORDER_MINS)
                 except Exception:
                     pass
+        # Prune reservations for orders no longer resting (filled or cancelled),
+        # otherwise stale entries permanently shrink available cash and the bot
+        # eventually stops trading while believing cash is reserved.
+        for stale_oid in list(state.resting_value):
+            if stale_oid not in live_ids:
+                state.resting_value.pop(stale_oid, None)
     except Exception as e:
         log.warning("Could not reconcile resting orders: %s", e)
+
+    # Record any position that appeared on the exchange but is not in local
+    # state — e.g. a resting limit order that filled since the last cycle.
+    # Without this, filled maker orders are never settled and their PnL is lost.
+    for p in positions:
+        tk = p.get("ticker", "")
+        if "15M" not in tk.upper() or tk in state.positions:
+            continue
+        yes_pos = int(p.get("yes_position", 0) or 0)
+        no_pos = int(p.get("no_position", 0) or 0)
+        if not yes_pos and not no_pos:
+            continue
+        side = "yes" if yes_pos else "no"
+        contracts = yes_pos or no_pos
+        avg_key = "yes_avg_price_dollars" if side == "yes" else "no_avg_price_dollars"
+        entry_price = int(round(float(p.get(avg_key, 0) or 0) * 100))
+        state.positions[tk] = {
+            "side": side, "entry_price": entry_price,
+            "contracts": contracts, "order_id": p.get("order_id", tk),
+        }
+        state.position_risk[tk] = contracts * entry_price / 100.0
+        log.info("Synced new position from exchange: %s side=%s contracts=%d @%dc",
+                 tk, side, contracts, entry_price)
 
     # Sync positions from Kalshi API — clear settled tickers from state
     api_tickers = {p.get("ticker", "") for p in positions if "15M" in p.get("ticker", "").upper()}

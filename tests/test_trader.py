@@ -210,6 +210,66 @@ def test_cycle_does_not_crash_on_unknown_balance(monkeypatch):
     trader.cycle(client)  # must not raise
 
 
+def test_hedge_contracts_are_integer():
+    """_evaluate_hedge floors fractional size to an integer contract count."""
+    from market_finder import MarketInfo
+    from signals import _evaluate_hedge
+    m = MarketInfo(
+        ticker="T", series="S", close_time=None, strike=0, strike_type="",
+        yes_bid=14, yes_ask=15, no_bid=84, no_ask=85,
+        yes_liquidity=100, no_liquidity=100, minutes_left=7.0,
+    )
+    res = _evaluate_hedge(m, 1.0)  # $1 budget at 84c -> 1.19 -> floored to 1
+    sig = res[0]
+    assert sig.is_trade
+    assert sig.contracts == float(int(sig.contracts))
+    assert sig.dollar_risk == sig.contracts * sig.entry_price / 100
+
+
+def test_cycle_prunes_stale_resting_value(monkeypatch):
+    """resting_value entries for orders no longer resting are pruned."""
+    client = MagicMock()
+    client.get_balance.return_value = 100.0
+    client.get_positions.return_value = []
+    client.invalidate_markets.return_value = None
+    client.get_orders.return_value = []          # nothing is resting now
+    client.place_order.return_value = None
+
+    monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
+    _reset_cycle_state(monkeypatch)
+    trader.state.resting_value["stale_oid"] = 5.0
+
+    trader.cycle(client)
+
+    assert "stale_oid" not in trader.state.resting_value
+
+
+def test_cycle_syncs_new_position_from_exchange(monkeypatch):
+    """A position that appeared on the exchange is recorded in local state."""
+    client = MagicMock()
+    client.get_balance.return_value = 100.0
+    client.get_positions.return_value = [{
+        "ticker": "KXBTC15M-NEW", "yes_position": 2, "no_position": 0,
+        "yes_avg_price_dollars": "0.85", "no_avg_price_dollars": "0",
+    }]
+    client.invalidate_markets.return_value = None
+    client.get_orders.return_value = []
+    client.get_market.return_value = {"expiration_value": 1.0}
+    client.place_order.return_value = None
+
+    monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
+    monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
+    _reset_cycle_state(monkeypatch)
+
+    trader.cycle(client)
+
+    assert "KXBTC15M-NEW" in trader.state.positions
+    assert trader.state.positions["KXBTC15M-NEW"]["contracts"] == 2
+    assert trader.state.positions["KXBTC15M-NEW"]["side"] == "yes"
+
+
 def test_resolve_pending_settlement_yes_win():
     """_resolve_pending_settlement computes PnL for a winning YES."""
     client = MagicMock()
