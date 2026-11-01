@@ -658,16 +658,20 @@ def cycle(client: KalshiClient):
         state.trades_placed, state.cycles,
     )
 
-    # Record bot state to Supabase (non-critical state writes, batched)
-    try:
-        get_supabase_client().set_bot_state_batch({
-            "cycle": state.cycles,
-            "cash": cash if cash_available else None,
-            "exposure": exposure,
-            "session_pnl": state.session_pnl,
-        })
-    except Exception:
-        log.debug("Supabase bot_state writes failed")
+    # Record bot state to Supabase only when something changed (avoid unnecessary writes)
+    last_logged = getattr(state, "_last_logged_state", None)
+    current_state = {
+        "cycles": state.cycles,
+        "cash": cash if cash_available else None,
+        "exposure": exposure,
+        "session_pnl": state.session_pnl,
+    }
+    if current_state != last_logged:
+        try:
+            get_supabase_client().set_bot_state_batch(current_state)
+            state._last_logged_state = current_state
+        except Exception:
+            log.debug("Supabase bot_state writes failed")
 
     # Hard stops
     if state.risk.state.halted:
