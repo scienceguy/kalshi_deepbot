@@ -732,6 +732,7 @@ def cycle(client: KalshiClient):
             # Track reserved cash for this resting order so intra-cycle cash
             # tracking doesn't overspend on orders already placed this cycle.
             state.resting_value[oid] = sig.dollar_risk
+            cash -= sig.dollar_risk  # Decrement available cash for subsequent orders
 
             # Only record as a filled position when the API reports a fill.
             # A resting (unfilled) limit order stays in resting_value and is
