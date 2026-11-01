@@ -22,7 +22,7 @@ Usage:
     python trader.py --debug  # verbose logging
 """
 
-import argparse, csv, json, logging, os, signal as sig_mod, sys, time, uuid
+import argparse, csv, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
