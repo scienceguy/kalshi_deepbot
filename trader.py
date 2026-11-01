@@ -878,6 +878,11 @@ def main():
             log.exception("Unhandled cycle error: %s", e)
             delay = state.resilience.mark_failure(e)
             if state.resilience.should_rebuild_client():
+                # Don't rebuild on auth errors — a bad key won't fix itself.
+                if state.resilience.is_auth_error():
+                    log.error("Authentication error — not rebuilding client. "
+                              "Check KALSHI_KEY_ID and private key.")
+                    break
                 log.info("Rebuilding Kalshi client after %d errors",
                          state.resilience.settings.rebuild_threshold)
                 try:

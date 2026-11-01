@@ -39,9 +39,13 @@ class KalshiClient:
 
     def __init__(self):
         self.base_url   = config.KALSHI_BASE_URL
-        # Full path from the API root (e.g. "/trade-api/v2") — Kalshi requires
-        # signing this prefix together with the request path, without host and
-        # without query string. See docs: quick_start_authenticated_requests.md
+        # Validate that the base URL contains the expected API root so
+        # signature paths are correct.
+        if "/trade-api/v2" not in self.base_url:
+            raise ValueError(
+                f"KALSHI_BASE_URL ({self.base_url}) must contain '/trade-api/v2' "
+                f"so that signature paths are computed correctly."
+            )
         self._api_path  = urlparse(self.base_url).path
         self.key_id     = config.KALSHI_KEY_ID
         self._privkey   = self._load_private_key()

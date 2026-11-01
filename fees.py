@@ -12,13 +12,18 @@ For a plain buy this means the cash leaving the account is
 model fee rounded up to the next cent.
 """
 import math
+import os
+
+# Kalshi taker fee rate (0.07 = 7% of contracts * price * (1-price)).
+# Configurable via KALSHI_FEE_RATE env var in case the fee schedule changes.
+FEE_RATE = float(os.environ.get("KALSHI_FEE_RATE", "0.07"))
 
 
 def taker_fee_dollars(contracts: float, price_dollars: float, multiplier: float = 1.0) -> float:
     """Raw trade fee, rounded up to 6 decimal places (no balance-grid rounding)."""
     if contracts <= 0 or price_dollars <= 0:
         return 0.0
-    raw = multiplier * 0.07 * contracts * price_dollars * (1.0 - price_dollars)
+    raw = multiplier * FEE_RATE * contracts * price_dollars * (1.0 - price_dollars)
     return math.ceil((raw + 1e-12) * 1_000_000) / 1_000_000
 
 

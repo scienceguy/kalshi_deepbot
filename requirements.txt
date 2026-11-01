@@ -1,4 +1,7 @@
 requests==2.31.0
 cryptography==41.0.0
-pandas
-pyarrow
+pandas==2.2.0
+pyarrow==14.0.1
+
+# Optional — only needed for kalshi_price_data_client.py
+# kalshi-price-data
