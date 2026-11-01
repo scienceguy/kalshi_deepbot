@@ -163,5 +163,5 @@ Coordination (logstream):
 - [x] `python -m pytest tests/ -q` → all pass (75 passed)
 - [x] All 4 n8n webhooks return HTTP 200 (superbot-backtest/collect/trade/monitor)
 - [x] `kalshi_client.get_balance()` returns a dollar amount (not cents) — `cents / 100.0`
-- [ ] `git status` clean — pending push of committed fixes
-- [ ] `git push origin main` completed — pending push
+- [x] `git status` clean
+- [x] `git push origin main` completed
