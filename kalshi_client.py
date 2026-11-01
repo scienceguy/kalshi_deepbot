@@ -59,16 +59,27 @@ class KalshiClient:
         later with an opaque auth error on the first trade.
         Uses get_markets instead of get_balance because some key types lack
         portfolio/balance permission but can read public market data.
+
+        Sets ``_verified`` only *after* the markets call succeeds so a transient
+        startup failure (network blip, 429) doesn't permanently poison the client
+        — the next request retries verification via ``_ensure_verified()``.
+        Uses ``_verifying`` as a re-entrancy guard since ``get_markets`` itself
+        calls ``_ensure_verified()``.
         """
-        self._verified = True  # Set first to prevent recursion via get_markets()
+        if getattr(self, "_verifying", False):
+            return  # Already verifying — don't recurse
+        self._verifying = True
         try:
             self.get_markets(limit=1)
         except Exception as e:
+            self._verifying = False
             raise RuntimeError(
                 f"Kalshi key verification failed: key_id={self.key_id} does not "
                 f"match the loaded private key, or the key is invalid. "
                 f"Original error: {e}"
             )
+        self._verifying = False
+        self._verified = True
 
     def _ensure_verified(self):
         """Verify key on first use rather than in constructor."""

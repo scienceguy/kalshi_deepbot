@@ -428,6 +428,38 @@ def cycle(client: KalshiClient):
         )
         return
 
+    # Reconcile resting orders: fetch open orders from Kalshi, sync into
+    # state.resting_value for intra-cycle cash tracking, and cancel any
+    # order older than STALE_ORDER_MINS so stale limit orders don't tie up
+    # capital indefinitely.
+    try:
+        resting_orders = client.get_orders(status="resting")
+        now = time.time()
+        for o in resting_orders:
+            oid = o.get("order_id") or o.get("id")
+            side = o.get("side", "")
+            price_cents = o.get("price_cents", 0)
+            count = o.get("count", 0)
+            created = o.get("created_time", "")
+            if not oid or not price_cents or not count:
+                continue
+            # NO side price is stored as complement (100 - no_price_cents)
+            entry_cents = price_cents if side == "yes" else (100 - price_cents)
+            state.resting_value[oid] = int(count) * entry_cents / 100.0
+
+            # Cancel stale orders
+            if created:
+                try:
+                    created_ts = _parse_api_time(created)
+                    if created_ts and (now - created_ts.timestamp()) > config.STALE_ORDER_MINS * 60:
+                        client.cancel_order(oid)
+                        state.resting_value.pop(oid, None)
+                        log.info("Cancelled stale order %s (older than %.0f min)", oid, config.STALE_ORDER_MINS)
+                except Exception:
+                    pass
+    except Exception as e:
+        log.warning("Could not reconcile resting orders: %s", e)
+
     # Sync positions from Kalshi API — clear settled tickers from state
     api_tickers = {p.get("ticker", "") for p in positions if "15M" in p.get("ticker", "").upper()}
     settled = [t for t in list(state.positions.keys()) if t not in api_tickers]
@@ -677,17 +709,23 @@ def cycle(client: KalshiClient):
             # Track reserved cash for this resting order so intra-cycle cash
             # tracking doesn't overspend on orders already placed this cycle.
             state.resting_value[oid] = sig.dollar_risk
-            fill_count = float(resp.get("filledCount", 1))
-            fees_dollars = fees.taker_fee_cents(
-                sig.contracts, sig.entry_price / 100.0
-            ) / 100.0
-            state._record_filled_order(
-                client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
-            )
+
+            # Only record as a filled position when the API reports a fill.
+            # A resting (unfilled) limit order stays in resting_value and is
+            # reconciled against get_orders() each cycle.
+            fill_count = float(resp.get("filledCount", 0))
+            if fill_count > 0:
+                fees_dollars = fees.taker_fee_cents(
+                    sig.contracts, sig.entry_price / 100.0
+                ) / 100.0
+                state._record_filled_order(
+                    client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
+                )
+                state.resting_value.pop(oid, None)
             current_exposure += sig.dollar_risk  # track incremental exposure
             state.last_order_time = time.time()
             state.orders_today += 1
-            log.info("✓ %s order_id=%s", sig.market.ticker, oid)
+            log.info("✓ %s order_id=%s (fill_count=%.0f)", sig.market.ticker, oid, fill_count)
             placed += 1
 
     if placed:

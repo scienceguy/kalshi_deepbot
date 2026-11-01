@@ -230,6 +230,7 @@ LLM_HOLD_MAX_POSITIONS = _env_int("LLM_HOLD_MAX_POSITIONS", 5)
 LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", False)
 LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.35)
 LLM_EVAL_MIN_HOLD_CONFIDENCE = _env_float("LLM_EVAL_MIN_HOLD_CONFIDENCE", 0.45)
+LLM_EVAL_FAIL_OPEN = _env_bool("LLM_EVAL_FAIL_OPEN", False)
 
 # ═════════════════════════════════════════════════════════════════════
 # N8N

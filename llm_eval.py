@@ -386,8 +386,13 @@ def should_block_trade(signal_info: dict, min_probability: float = 0.35) -> tupl
 
     Returns (should_block: bool, eval_result: dict or None).
     """
+    import config
+
     result = evaluate_trade(signal_info)
     if not result:
+        if config.LLM_EVAL_FAIL_OPEN:
+            log.warning("All LLM layers failed — fail-open, allowing trade")
+            return False, None
         return True, None  # Can't evaluate — block by default (fail-safe)
     prob = result["probability_of_net_profit"]
     if prob < min_probability:
