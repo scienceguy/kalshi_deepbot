@@ -60,3 +60,11 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Bot result files
+*_result.json
+*_webhook_result.json
+*backtest_results.json
+historical_data/
+monitor_result.json
+trade_result.json

@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import config  # noqa: E402
+
 # Parse args FIRST so env is set before config loads
 parser = argparse.ArgumentParser()
 parser.add_argument("--live", action="store_true", help="Enable LIVE trading (overrides DRY_RUN=true)")
@@ -37,8 +39,6 @@ parser.add_argument("--interval", type=int, default=config.LOOP_INTERVAL_SECONDS
 parser.add_argument("--cycle-limit", type=int, default=0,
                     help="stop after this many cycles (0 = disabled)")
 args = parser.parse_args()
-
-import config  # noqa: E402
 
 # Set DRY_RUN directly on the config module — avoids mutating os.environ
 # before config loads, which could leak into other modules/subprocesses.
@@ -73,8 +73,15 @@ logging.basicConfig(
 )
 log = logging.getLogger("trader")
 
-# Global Supabase client
-supabase = get_supabase()
+# Global Supabase client (lazy)
+_supabase = None
+
+
+def get_supabase_client():
+    global _supabase
+    if _supabase is None:
+        _supabase = get_supabase()
+    return _supabase
 
 # ═════════════════════════════════════════════════════════════════════
 # BOT STATE
@@ -218,7 +225,7 @@ class BotState:
                 )
                 # Record blocked signal to Supabase
                 try:
-                    supabase.insert_signal({
+                    get_supabase_client().insert_signal({
                         "ts": datetime.now(timezone.utc).isoformat(),
                         "ticker": ticker,
                         "side": sig.side,
@@ -267,7 +274,7 @@ class BotState:
         self.trades_placed += 1
         # Record to Supabase
         try:
-            supabase.insert_order({
+            get_supabase_client().insert_order({
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "ticker": ticker,
                 "side": sig.side,
@@ -475,7 +482,8 @@ def cycle(client: KalshiClient):
             state.session_pnl += realized_pnl  # add realized P&L only after successful record
         except Exception:
             log.warning("Failed to record settlement for %s via n8n webhook — queuing", t)
-            _save_settlement_queue(_load_settlement_queue() + [{
+            queue = _load_settlement_queue()
+            queue.append({
                 "order_id": order_id,
                 "payload": {
                     "action": "settlement",
@@ -488,7 +496,8 @@ def cycle(client: KalshiClient):
                     "side": side,
                     "contracts": contracts,
                 },
-            }])
+            })
+            _save_settlement_queue(queue)
 
     exposure = sum(
         (p.get("yes_position", 0) or 0) * (p.get("yes_avg_price_dollars", 0) or 0) / 100
@@ -515,10 +524,10 @@ def cycle(client: KalshiClient):
 
     # Record bot state to Supabase
     try:
-        supabase.set_bot_state("cycle", state.cycles)
-        supabase.set_bot_state("cash", cash)
-        supabase.set_bot_state("exposure", exposure)
-        supabase.set_bot_state("session_pnl", state.session_pnl)
+        get_supabase_client().set_bot_state("cycle", state.cycles)
+        get_supabase_client().set_bot_state("cash", cash)
+        get_supabase_client().set_bot_state("exposure", exposure)
+        get_supabase_client().set_bot_state("session_pnl", state.session_pnl)
     except Exception:
         pass
 
@@ -674,7 +683,7 @@ def main():
              "8%% per-trade | 15%% drawdown halt")
     log.info("LLM eval: %s | Supabase: %s",
              "enabled" if config.LLM_EVALUATION_ENABLED else "disabled",
-             "enabled" if supabase.enabled else "disabled")
+             "enabled" if get_supabase_client().enabled else "disabled")
     log.info("=" * 58)
 
     # Validate credentials and dry-run mode before connecting to Kalshi.
@@ -699,7 +708,7 @@ def main():
     # Reconcile session_pnl from Supabase on startup — prevents P&L drift
     # if n8n webhook settlement writes failed in a previous run.
     try:
-        saved_pnl = supabase.get_bot_state("session_pnl")
+        saved_pnl = get_supabase_client().get_bot_state("session_pnl")
         if saved_pnl is not None:
             state.session_pnl = float(saved_pnl)
             log.info("Reconciled session_pnl from Supabase: $%.2f", state.session_pnl)

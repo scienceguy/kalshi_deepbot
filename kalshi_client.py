@@ -23,7 +23,7 @@ import config
 log = logging.getLogger(__name__)
 
 # Kalshi rate limit: ~10 req/s sustained; we stay well under it.
-_MIN_REQUEST_GAP = 0.12   # seconds between requests
+_MIN_REQUEST_GAP = config.REQUEST_MIN_GAP_SECONDS   # seconds between requests
 
 
 class KalshiAPIError(Exception):
@@ -44,9 +44,8 @@ class KalshiClient:
         self._last_req  = 0.0
         self.session    = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
-        # Verify the loaded key matches KALSHI_KEY_ID by making a lightweight call.
-        # Fails fast at startup instead of producing opaque auth errors later.
-        self._verify_key()
+        self.session.mount('https://', HTTPAdapter(pool_connections=20, pool_maxsize=20))
+        self._verified = False
 
     def _verify_key(self):
         """Confirm the loaded private key corresponds to KALSHI_KEY_ID.
@@ -63,7 +62,12 @@ class KalshiClient:
                 f"match the loaded private key, or the key is invalid. "
                 f"Original error: {e}"
             )
-        self.session.mount('https://', HTTPAdapter(pool_connections=20, pool_maxsize=20))
+        self._verified = True
+
+    def _ensure_verified(self):
+        """Verify key on first use rather than in constructor."""
+        if not self._verified:
+            self._verify_key()
 
     # ── Key Loading ───────────────────────────────────────────────────────────
 
@@ -141,6 +145,8 @@ class KalshiClient:
 
     def _request(self, method: str, path: str, timeout: int = None, **kwargs) -> dict:
         """Execute a rate-limited, signed request. Returns parsed JSON."""
+        # Verify key on first use (fails fast with clear error if key is wrong)
+        self._ensure_verified()
         # Rate limiting
         gap = time.time() - self._last_req
         if gap < _MIN_REQUEST_GAP:
