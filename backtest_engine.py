@@ -15,6 +15,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, asdict
+from datetime import datetime
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -163,11 +164,21 @@ def _default_settlement_yes_won(market):
 
 
 def run_backtest(params, markets, starting_balance=10.0, settlement_yes_won=None):
-    """Run the full backtest for one parameter set."""
+    """Run the full backtest for one parameter set.
+
+    Markets are sorted by close_time before simulation so that the balance
+    evolves in chronological order. This avoids order-dependent results where
+    the sequence of trades depends on arbitrary fetch order rather than time.
+    """
     balance = starting_balance
     trades = []
 
-    for m in markets:
+    # Sort by close_time so trades are processed in chronological order.
+    # Without this, the balance evolution depends on fetch order, making
+    # results non-deterministic and drawdown calculations unreliable.
+    sorted_markets = sorted(markets, key=lambda m: _parse_api_time(m.get("close_time", "")) or datetime.min)
+
+    for m in sorted_markets:
         result = simulate_trade(m, params, balance, settlement_yes_won)
         if not result:
             continue

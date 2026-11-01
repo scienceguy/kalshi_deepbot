@@ -41,9 +41,18 @@ class RiskManager:
             config.PER_TRADE_PCT * 100, config.DRAWDOWN_HALT_PCT * 100,
         )
 
-    def update_balance(self, cash: float, exposure: float = 0.0):
-        """Update balance tracking. Drawdown uses total portfolio value (cash + exposure)."""
-        total_value = cash + exposure
+    def update_balance(self, cash: float, exposure: float = 0.0,
+                       mark_to_market_exposure: float = None):
+        """Update balance tracking. Drawdown uses total portfolio value (cash + exposure).
+
+        `exposure` is cost-basis exposure (position size × avg entry price). If
+        `mark_to_market_exposure` is provided, it is used instead for drawdown
+        calculation (current market value of positions), which is more accurate
+        for drawdown detection.
+        """
+        # Use mark-to-market exposure if provided, otherwise cost-basis exposure
+        effective_exposure = mark_to_market_exposure if mark_to_market_exposure is not None else exposure
+        total_value = cash + effective_exposure
         if total_value <= 0:
             log.warning("⚠️  total_value=$%.2f <= 0 — skipping session_high/drawdown update", total_value)
             return
