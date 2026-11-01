@@ -55,9 +55,8 @@ from supabase_client import get_supabase  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient  # noqa: E402
 from market_finder import find_active_markets, _parse_api_time, MarketInfo  # noqa: E402
-from risk import (  # noqa: E402
-    MIN_CASH_ABSOLUTE, RiskManager, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT,
-)
+from risk import RiskManager  # noqa: E402
+from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT  # noqa: E402
 import signals as se  # noqa: E402
 from resilience import CycleSupervisor  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
