@@ -178,5 +178,6 @@ class RiskManager:
         self.state.session_high = self.state.start_balance
         self.state.halted = False
         self.state.halt_reason = ""
-        log.info("✅ Risk daily reset — session_high reset to $%.2f, halt cleared",
+        self.state.consecutive_losses = 0
+        log.info("✅ Risk daily reset — session_high reset to $%.2f, halt cleared, consecutive_losses cleared",
                  self.state.start_balance)
