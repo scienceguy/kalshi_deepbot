@@ -185,3 +185,216 @@ What this is: `self._last_req = time.time()` set before retry loop; on 429 the s
 Problem: After backing off for a 429, retries can fire back-to-back, re-triggering 429s.
 Fix: Move gap enforcement inside the retry loop or re-check the gap before each attempt.
 If we skip it: Marginal; small increase in 429 recurrence on aggressive retries.
+
+## SHOULD FIX
+
+**26. `trader.py` — No stale-order management; `STALE_ORDER_MINS` unused; `get_orders()` never called**
+
+What this is: `STALE_ORDER_MINS` defined but never read; `trader.py` never calls `client.get_orders()` to reconcile resting orders.
+Problem: Filled/cancelled resting orders never cleaned from local belief; unfilled limit orders accumulate and are never cancelled/repriced; `resting_value` stays empty (finding #3), so no picture of open orders.
+Fix: Each cycle, fetch resting orders via `get_orders()`, sync into `state.resting_value`, cancel stale ones older than `STALE_ORDER_MINS`.
+If we skip it: Stale resting orders persist; capital unintentionally tied up; cash calculations wrong.
+
+**27. `config.py:193` `LOOP_INTERVAL_SECONDS = max(5, ...)` — 5s minimum cycle with many sequential API calls**
+
+What this is: Loop minimum 5s; each cycle calls balance, positions, markets (9 series), orderbooks (concurrent), settlement `get_market`, plus up to 4 Supabase writes and possibly an LLM call.
+Problem: Full cycle can exceed 5s (orderbook fetches + webhook + LLM). Back-to-back cycles with no drift correction; Kalshi rate limit ~10 req/s easy to breach when orderbooks fire in parallel (finding #12).
+Fix: Measure cycle duration and sleep `max(0, interval - elapsed)` (drift-corrected sleep already in main loop at 923-927 but cycle itself can still overrun); add shared request-rate limiter across threads.
+If we skip it: Cycles overlap or hammer Kalshi API; 429s and missed loops.
+
+**28. `backtest_engine.py:98-107` — Contradictory favourite-maker entry logic**
+
+What this is: `simulate_trade()` treats `mid_proxy >= ENTRY_BAND_MIN` as "favorite", but when `mid_proxy > ENTRY_BAND_MAX` it sets `ep = 100 - mid_proxy` and bets the NO side (the underdog).
+Problem: Contradicts "favourite maker" strategy (buy the favourite); effectively buys the underdog when YES is above the band.
+Fix: Restrict entries to the favourite side only; document the lookahead bias of `p_last` or use an earlier price.
+If we skip it: Backtest EV/win-rate inflated and not representative of live behavior.
+
+**29. `parallel_backtest_hf.py:194-212` — Aggressive backtest grid (`PER_TRADE_PCT` up to 0.20, `MAX_TRADE_DOLLARS` up to 10.0)**
+
+What this is: Non-quick grid tests `PER_TRADE_PCT` up to 0.20 and `MAX_TRADE_DOLLARS` up to 10.0 against a $10 starting balance.
+Problem: Up to $2 per trade on a $10 account in backtest "optimal" parameters — bankroll-ruining sizing that would never pass live risk limits (`PER_TRADE_PCT=0.20` default, `MAX_TRADE_DOLLARS=5.00`).
+Fix: Cap backtest grid at live-sane values; separate "search" grid from "deployable" grid.
+If we skip it: Optimized backtest parameters unsafe to deploy; risk config and backtest config diverge.
+
+**30. `tests/` — Core trading paths untested**
+
+What this is: 75 tests pass, but no tests for `trader.py` cycle logic (`_pre_trade_check`, settlement, order placement), `backtest_engine`, `latency_arb`, `data_collector`, `resilience`.
+Problem: The most financially consequential code (live loop) has zero coverage; regressions in sizing/risk/settlement go undetected.
+Fix: Add tests for `_pre_trade_check` caps, settlement PnL booking, `resting_value` behavior; mock `KalshiClient`/`n8n_client`.
+If we skip it: Bugs in trading loop (findings #3, #4, #5, #6) reach production unseen.
+
+**31. `tests/test_*.py` — Weak test isolation (config mutation leaks)**
+
+What this is: Tests `monkeypatch.setattr(config, ...)` module-level globals (e.g. `test_market_finder.py:148` sets `MAX_HEDGE_PER_SERIES=0`) without restoring.
+Problem: Mutated config persists across tests in the same process, making outcomes order-dependent and hiding cross-test contamination. (conftest.py helps but relies on uppercase detection.)
+Fix: Use fixtures restoring config values after each test.
+If we skip it: Flaky tests; false confidence when config-dependent logic changes.
+
+**32. `llm_eval.py:391-397` — Fail-safe blocks all trades when LLM unavailable**
+
+What this is: `should_block_trade()` returns `(True, None)` when `evaluate_trade()` returns None (all layers failed).
+Problem: With no LLM keys (default) and no local gateway, enabling `LLM_EVALUATION_ENABLED` blocks 100% of signals — no trading at all, with no operator alert that LLM is the cause.
+Fix: Add `LLM_EVAL_FAIL_OPEN` (default False) and log a prominent warning when all layers fail.
+If we skip it: Silently zero-trades when LLM misconfigured.
+
+**33. `signals.py:364-368` — "Two-sided" emits at most one side per market**
+
+What this is: `_evaluate_two_sided()` comment says 0–2 signals per market, but when both YES and NO in band it keeps only the more extreme side.
+Problem: The two-sided maker strategy never actually places both sides of the same market; docstring overstates capability.
+Fix: Update comment to reflect single-side-per-market, or implement genuine two-sided entries with separate budget tracking.
+If we skip it: Minor; behavior conservative (one side), but documentation misleads.
+
+**34. `supabase_client.py:215-223` — Circuit breaker never trips on persistent 4xx**
+
+What this is: `_request()` returns None on 400/403/404 without calling `_supabase_record_failure()`.
+Problem: A permanent schema/auth problem (missing `orders` table) returns 400 every cycle, never trips circuit, keeps retrying 3× per call with 1s backoff.
+Fix: Record a failure for non-retryable 4xx too, or distinguish schema errors to fail fast.
+If we skip it: Wasted API calls and logs on permanent Supabase misconfiguration.
+
+**35. `n8n_client.py:37-56` + `inject_n8n_workflows.py` — Hardcoded Termux paths and project IDs**
+
+What this is: `n8n_client` reads `/data/data/com.termux/files/home/.n8n/...`; `inject_n8n_workflows.py` hardcodes `PROJECT_ID`, `USER_ID`, `/data/data/com.termux/files/usr/bin/python3`.
+Problem: Non-portable; direct SQLite writes to n8n's DB bypass the n8n API and break on schema drift; credential injector reads config at import time and crashes outside repo.
+Fix: Parameterize paths/IDs via env; prefer n8n API over direct DB writes; guard credential injector's import-time file read.
+If we skip it: Tooling only runs on this host; n8n DB-schema changes break workflow injection silently.
+
+**36. `kalshi_client.py:174-188` + `trader.py:762-927` — Sequential per-cycle calls can blow 30s cycle timeout**
+
+What this is: A cycle does balance, positions, markets (9 series with retries), orderbooks, settlement `get_market`, Supabase writes, optional LLM — each request up to `REQUEST_TIMEOUT_SECONDS=10`.
+Problem: Several sequential 10s timeouts plus LLM/webhook easily exceed `CYCLE_TIMEOUT_SECONDS=30`; `SIGALRM` aborts cycle; resilience backs off and rebuilds client after 3 errors → client churn on transient slowness.
+Fix: Tighten per-request timeouts for the loop; parallelize independent fetches; only rebuild client on auth errors (not timeouts).
+If we skip it: Frequent cycle timeouts; unnecessary client rebuilds; slower trading.
+
+**37. `supabase_client.py:72-140` — Credential loading order opaque**
+
+What this is: URL/key loading from `SUPABASE_KEY_FILE` and env interleaved; partial parent-`.env` fallback.
+Problem: Operator may not know which source won; running from another directory reads stale/wrong `.env`.
+Fix: Log resolved source at init; remove implicit parent-`.env` fallback; require explicit env/key-file.
+If we skip it: Writes land in wrong Supabase project depending on working directory; debugging credential issues harder.
+
+**38. `trader.py:102` vs `_record_filled_order` — Inconsistent `resting_value` usage/comment**
+
+What this is: Comment says `resting_value: dict = {}  # order_id -> reserved dollars`, but `_record_filled_order` stores position info into `state.positions` and only pops `resting_value`.
+Problem: Comment describes a structure never maintained; readers misled about how resting cash is tracked.
+Fix: Align comment/code: maintain `resting_value[oid] = dollar_risk` on placement or remove it.
+If we skip it: Cosmetic; contributes to finding #3 confusion.
+
+**39. `backtest_engine.py:342` — Multiprocessing pickles full markets list into every worker**
+
+What this is: `run_sweep()` uses `Pool(processes=jobs, initializer=init_worker, initargs=(markets,))`, every worker gets a copy of all markets.
+Problem: Memory scales `jobs × markets_size`; large historical datasets can OOM the small termux host.
+Fix: Have workers read a shared parquet/cache path instead of pickling markets; or cap `jobs`.
+If we skip it: Backtests on large datasets may OOM or slow drastically.
+
+**40. `parallel_backtest.py:46-91` — Duplicate market-fetch logic vs `backtest.py:43-71`**
+
+What this is: Both implement pagination/fetch of settled markets separately.
+Problem: Divergence risk (one fixes a bug, the other doesn't).
+Fix: Share a single fetch helper.
+If we skip it: Duplication; future fixes must be applied twice.
+
+**41. `kalshieye_downloader.py:213` — Only `files[0]` downloaded per date**
+
+What this is: If multiple files exist for a date/series, only first downloaded.
+Problem: Incomplete historical data.
+Fix: Loop over all files.
+If we skip it: Partial downloads; understated datasets.
+
+**42. `data_collector.py:1-12` — Docstring/behavior contradiction on auth**
+
+What this is: `MarketSnapshotCollector.__init__()` constructs `KalshiClient()` (requires Kalshi auth), but docstring claims collection works "without needing an external API key."
+Problem: Operators expecting key-free collection get auth error; historical tier needs Kalshi credentials.
+Fix: Correct docstring; make client optional/injectable.
+If we skip it: Confusing onboarding; data collection fails without clear cause.
+
+**43. `config.py:62-69` — `_env_bool` silently returns default for unparseable values**
+
+What this is: `KALSHI_CONFIRM_LIVE=maybe` returns default (False) with no warning.
+Problem: A typo silently treated as "not confirmed" (safe direction) or enables features unintentionally.
+Fix: Warn on unrecognized bool strings.
+If we skip it: Typos silently disable live confirmation or enable features unintentionally.
+
+**44. `tests/test_kalshi_price_data_client.py` & `tests/test_n8n_client.py` shallow**
+
+What this is: They assert `isinstance(result, bool)` / `is None` without mocking network behavior.
+Problem: Don't exercise real code paths.
+Fix: Add mocked request/response tests.
+If we skip it: Weak coverage for optional clients.
+
+**45. `tests/` — No tests for `market_finder.find_active_markets` multi-series selection or `rank_signals`**
+
+What this is: `rank_signals` and full market-selection flow untested.
+Problem: Ranking/order-selection bugs surface only live.
+Fix: Add unit tests.
+If we skip it: Ranking regressions undetected.
+
+**46. `trader.py` — No per-market or per-day loss limit beyond drawdown and consecutive losses**
+
+What this is: Risk caps are portfolio-level; a single market can lose repeatedly before 15% drawdown halt.
+Problem: A choppy market bleeds account slowly.
+Fix: Add per-market daily loss cap (`market_daily_losses` tracked but only checked in `_pre_trade_check` at line 179; add hard halt).
+If we skip it: Slower bleed before halt triggers.
+
+**47. `backtest_engine.py:258-255` — `parameter_grid` non-quick includes `MAX_NO_ENTRY_CENTS` but `simulate_trade` ignores `MIN_SKEW`/`MIN_TREND`/`ENTRY_WINDOW`**
+
+What this is: Sweep tests params engine doesn't fully apply (skew/trend/window are config constants, not StratParams).
+Problem: Parameter combos varying ignored values produce identical results; wasted compute.
+Fix: Align engine params with grid, or drop ignored keys from grid.
+If we skip it: Wasted backtest compute on no-op dimensions.
+
+**48. `kalshi_price_data_client.py:133-142` — `health_check()` calls `_client.health_check()` which may not exist on SDK**
+
+What this is: If installed SDK lacks `health_check`, `AttributeError` caught and returns False.
+Problem: Silent failure mode.
+Fix: Document SDK version requirement.
+If we skip it: Health check reports False without clarity why.
+
+**49. `add_n8n_credentials.py` / `inject_n8n_workflows.py` — Keys visible in process list**
+
+What this is: API keys passed via CLI args/env visible to other processes on host.
+Problem: On shared Android device, another app could read `/proc/*/environ`.
+Fix: Use files with 0600 perms (already supported for n8n key file) and discourage CLI keys.
+If we skip it: Credential exposure to co-located processes.
+
+**50. `config.py:233-352` — `validate_credentials`/`validate_dry_run`/`validate_bands` not invoked on import; only trader calls them**
+
+What this is: Other entry points (backtest.py, data_collector.py) construct `KalshiClient()` directly and hit auth errors with less-clear messages.
+Problem: Inconsistent startup validation across tools.
+Fix: Call `validate_credentials()` in any tool building a KalshiClient.
+If we skip it: Backtest/data_collector fail with opaque auth errors instead of actionable config guidance.
+
+**51. `resilience.py:44` — Backoff starts at `base_backoff` (5s) on first failure**
+
+What this is: First cycle error already sleeps 5s before retrying.
+Problem: On flaky networks every transient error costs 5s; cycles slow.
+Fix: First failure delay 0 (retry immediately), backoff from second.
+If we skip it: 5s penalty per transient error; reduced throughput on mobile networks.
+
+**52. `kalshi_client.py:247-267` — `get_markets` cache keyed only by (series, status, limit); no invalidation on market state change**
+
+What this is: 30s TTL; if a market closes within window it may still appear as open.
+Problem: Stale market list used for entries.
+Fix: Acceptable at 30s for this load; documented shortcut.
+If we skip it: Minor staleness.
+
+**53. `trader.py:606-614` — `set_bot_state_batch` writes every cycle even when nothing changed**
+
+What this is: Unconditional Supabase write each cycle.
+Problem: Unnecessary traffic when Supabase enabled.
+Fix: Skip write if values unchanged.
+If we skip it: Minor extra requests; negligible at 15s cycles.
+
+**54. `historical_data/` / `hf_data/` and `bot.log` / `*_result.json` in working tree**
+
+What this is: Runtime artifacts and large binary/parquet files sit in repo root (some gitignored).
+Problem: Repo bloat; clutter; parquet may contain training data that shouldn't be versioned.
+Fix: Add to `.gitignore`/LFS; route runtime output to gitignored paths.
+If we skip it: Repo size grows; cosmetic.
+
+**55. `llm_eval.py:324-333` — System prompt says 2 keys but parser accepts extra**
+
+What this is: Contract mismatch between prompt (only 2 keys) and parser (tolerates extra keys).
+Problem: Not a bug, but model contract not enforced.
+Fix: Either enforce 2 keys or update prompt.
+If we skip it: No functional impact.
+
