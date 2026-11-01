@@ -1,0 +1,63 @@
+"""
+resilience.py — Helpers to keep the trading loop alive when errors occur.
+
+From kalshi_live_bot.
+"""
+import logging
+from dataclasses import dataclass, field
+
+import config
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class ResilienceSettings:
+    base_backoff: float = field(default_factory=lambda: config.ERROR_BACKOFF_SECONDS)
+    max_backoff: float = field(default_factory=lambda: config.ERROR_BACKOFF_MAX_SECONDS)
+    rebuild_threshold: int = field(default_factory=lambda: config.CLIENT_REBUILD_THRESHOLD)
+
+
+class CycleSupervisor:
+    """
+    Tracks consecutive cycle errors and decides when to back off or rebuild the
+    Kalshi client. Designed to be lightweight and side-effect free.
+    """
+
+    def __init__(self, settings: ResilienceSettings | None = None):
+        self.settings = settings or ResilienceSettings()
+        self.errors_in_a_row = 0
+        self.last_error_type: str | None = None
+        self.error_types: dict[str, int] = {}
+
+    def mark_success(self):
+        self.errors_in_a_row = 0
+
+    def mark_failure(self, exc: Exception) -> float:
+        self.errors_in_a_row += 1
+        self.last_error_type = type(exc).__name__
+        self.error_types[self.last_error_type] = self.error_types.get(self.last_error_type, 0) + 1
+        # Exponential backoff: 1st failure → base, 2nd → 2×base, 3rd → 4×base, …
+        # Capped at max_backoff so retries never grow unbounded.
+        delay = min(
+            self.settings.base_backoff * (2 ** (self.errors_in_a_row - 1)),
+            self.settings.max_backoff,
+        )
+        log.warning(
+            "Cycle error (%d in a row): %s — backing off %.1fs",
+            self.errors_in_a_row, exc, delay,
+        )
+        return delay
+
+    def is_auth_error(self) -> bool:
+        """Return True if the last recorded error was authentication-related."""
+        if self.last_error_type is None:
+            return False
+        return "auth" in self.last_error_type.lower() or "permission" in self.last_error_type.lower()
+
+    def should_rebuild_client(self) -> bool:
+        return self.errors_in_a_row >= max(1, self.settings.rebuild_threshold)
+
+    def after_rebuild(self):
+        # Reset errors after a successful rebuild to avoid infinite rebuilds
+        self.errors_in_a_row = 0

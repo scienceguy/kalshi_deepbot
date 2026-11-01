@@ -1,0 +1,354 @@
+"""
+config.py — Kalshi SuperBot configuration.
+
+Consolidated from kalshi_15m_bot, kalshi_live_bot, kalshi_gemini_bot,
+kalshi_exp_bot, FlashBot.v6, Momentum.v15, kalshi_1230.
+
+Consolidation strategy: take the best-performing parameters from each bot's
+backtests, with environment-variable overrides for live tuning.
+"""
+
+import os
+from pathlib import Path
+
+_MODE = os.environ.get("KALSHI_MODE", "live")
+_load_done = False
+
+
+def _load_env():
+    """Load .env files into os.environ.
+
+    Precedence: existing environment variables win over .env values.
+    A key already set in the environment is NOT overwritten by .env.
+    Files are loaded in order: .env, then .env.{MODE} (later files can
+    override earlier ones only if the key isn't already in the environment).
+    """
+    global _load_done
+    if _load_done:
+        return
+    _load_done = True
+    base = Path(__file__).resolve().parent
+    env_files = [base / ".env", base / f".env.{_MODE}"]
+    for env_path in env_files:
+        if not env_path.exists():
+            continue
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    k = k.strip(); v = v.strip().strip('"').strip("'")
+                    if not os.environ.get(k):
+                        os.environ[k] = v
+
+
+_load_env()
+
+
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (ValueError, TypeError):
+        return default
+
+
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (ValueError, TypeError):
+        return default
+
+
+def _env_bool(name, default):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on") if os.environ.get(name) else default
+
+
+# ═════════════════════════════════════════════════════════════════════
+# CREDENTIALS
+# ═════════════════════════════════════════════════════════════════════
+KALSHI_KEY_ID = os.environ.get("KALSHI_KEY_ID", "")
+KALSHI_KEY_FILE = os.environ.get("KALSHI_KEY_FILE", "")
+KALSHI_PRIVATE_KEY_CONTENT = os.environ.get("KALSHI_PRIVATE_KEY", "")
+KALSHI_BASE_URL = os.environ.get("KALSHI_BASE_URL", "https://external-api.kalshi.com/trade-api/v2")
+
+# ═════════════════════════════════════════════════════════════════════
+# MARKET TARGETING (from kalshi_live_bot — expanded series list)
+# ═════════════════════════════════════════════════════════════════════
+TARGET_SERIES_DEFAULT = [
+    "KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M",
+    "KXBNB15M", "KXHYPE15M", "KXZEC15M", "KXNEAR15M",
+]
+TARGET_SERIES_ENV = os.environ.get("TARGET_SERIES", "")
+if TARGET_SERIES_ENV.strip():
+    TARGET_SERIES = [s.strip() for s in TARGET_SERIES_ENV.split(",") if s.strip()]
+else:
+    TARGET_SERIES = list(TARGET_SERIES_DEFAULT)
+
+# ═════════════════════════════════════════════════════════════════════
+# SIGNAL THRESHOLDS (best from kalshi_codex_bot momentum backtests)
+# Best: BASELINE_82-88_ee4_bs_pos30 → win_rate 91.5%, Sharpe 1.68, balance 7211
+# Best: MOM_88-93_dynTrue_netTrue_kelly2 → win_rate 93.7%, Sharpe 6.60, balance 6731
+# Entry band: 82-88c or 88-93c for favourite maker strategy (Approach D)
+# ═════════════════════════════════════════════════════════════════════
+MIN_SKEW_CENTS = _env_int("MIN_SKEW_CENTS", 3)
+MIN_TREND_CENTS = _env_int("MIN_TREND_CENTS", 8)
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 6.0)
+ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 11.0)
+MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 1)
+MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
+MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 3)
+MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
+
+# ═════════════════════════════════════════════════════════════════════
+# ORDER BEHAVIOR (favourite maker from kalshi_live_bot Approach D)
+# ═════════════════════════════════════════════════════════════════════
+AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", False)
+AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
+ORDER_TIME_IN_FORCE = "good_till_canceled"
+# Entry band: favourite maker enters at 82-93c range (best from codex backtests)
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 82)
+ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 93)
+MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 88)
+MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 82)
+ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
+
+# ═════════════════════════════════════════════════════════════════════
+# HEDGE SETTINGS
+# ═════════════════════════════════════════════════════════════════════
+HEDGE_YES_ASK_MAX = _env_int("HEDGE_YES_ASK_MAX", 12)
+HEDGE_NO_ASK_MAX = _env_int("HEDGE_NO_ASK_MAX", 0)
+HEDGE_BALANCE_PCT = _env_float("HEDGE_BALANCE_PCT", 0.0)
+MAX_HEDGE_PER_SERIES = _env_int("MAX_HEDGE_PER_SERIES", 0)
+
+# ═════════════════════════════════════════════════════════════════════
+# POSITION SIZING (Kelly criterion from kalshi_codex_bot momentum backtests)
+# Best: MOM_88-93_dynTrue_netTrue_kelly2 → Kelly=0.10, Sharpe 6.60
+# Survival-first: max 3 contracts, 1 per $10 cash (avoids wiping account)
+# ═════════════════════════════════════════════════════════════════════
+MAX_TRADE_DOLLARS = _env_float("MAX_TRADE_DOLLARS", 3.00)
+MAX_CONTRACTS_CAP = _env_int("MAX_CONTRACTS_CAP", 3)
+CONTRACTS_PER_BALANCE_UNIT = _env_float("CONTRACTS_PER_BALANCE_UNIT", 10.0)
+MAX_OPEN_POSITIONS = _env_int("MAX_OPEN_POSITIONS", 4)
+MAX_ORDERS_PER_CYCLE = _env_int("MAX_ORDERS_PER_CYCLE", 2)
+MIN_ORDER_GAP_SECONDS = _env_float("MIN_ORDER_GAP_SECONDS", 5.0)
+MAX_ORDERS_PER_DAY = _env_int("MAX_ORDERS_PER_DAY", 50)
+BALANCE_PCT_PER_TRADE = _env_float("BALANCE_PCT_PER_TRADE", 0.10)  # Kelly=0.10
+POSITION_FRACTION = _env_float("POSITION_FRACTION", 0.30)
+WINDOW_TRADE_PCT = _env_float("WINDOW_TRADE_PCT", 1.00)
+CASH_RESERVED_PCT = _env_float("CASH_RESERVED_PCT", 0.02)
+TOTAL_CASH_TRADABLE_PCT = _env_float("TOTAL_CASH_TRADABLE_PCT", 0.70)
+
+# ═════════════════════════════════════════════════════════════════════
+# RISK LIMITS
+# ═════════════════════════════════════════════════════════════════════
+CASH_FLOOR_PCT = _env_float("CASH_FLOOR_PCT", 0.70)
+EXPOSURE_CEILING_PCT = _env_float("EXPOSURE_CEILING_PCT", 0.30)
+PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.08)
+MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
+DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.15)
+MAX_DRAWDOWN_PCT = _env_float("MAX_DRAWDOWN_PCT", 0.12)
+STALE_ORDER_MINS = _env_float("STALE_ORDER_MINS", 5.0)
+ADVERSE_MOVE_CENTS = _env_int("ADVERSE_MOVE_CENTS", 10)
+
+# ═════════════════════════════════════════════════════════════════════
+# STABILITY CHECK (from kalshi_live_bot — doubles EV per backtests)
+# ═════════════════════════════════════════════════════════════════════
+STABILITY_ENABLED = _env_bool("STABILITY_ENABLED", True)
+STABILITY_LOOKBACK_MIN = _env_int("STABILITY_LOOKBACK_MIN", 3)
+STABILITY_MIN_COVERAGE_MIN = _env_float("STABILITY_MIN_COVERAGE_MIN", 2.5)
+STABILITY_MAX_YES_BID_CENTS = _env_int("STABILITY_MAX_YES_BID_CENTS", 8)
+
+# ═════════════════════════════════════════════════════════════════════
+# SPOT FILTER (optional, from kalshi_live_bot)
+# ═════════════════════════════════════════════════════════════════════
+SPOT_FILTER_ENABLED = _env_bool("SPOT_FILTER_ENABLED", False)
+MIN_WIN_PROB = _env_float("MIN_WIN_PROB", 0.995)
+Z_MAX = _env_float("Z_MAX", -1.0)
+TRADING_FEE_PCT = _env_float("TRADING_FEE_PCT", 0.1)
+
+# ═════════════════════════════════════════════════════════════════════
+# STOP LOSS / PROFIT EXIT (from kalshi_live_bot)
+# ═════════════════════════════════════════════════════════════════════
+STOP_LOSS_ENABLED = _env_bool("STOP_LOSS_ENABLED", True)
+STOP_LOSS_PCT = _env_float("STOP_LOSS_PCT", 0.20)
+STOP_LOSS_GRACE_MIN = _env_float("STOP_LOSS_GRACE_MIN", 2.0)
+STOP_LOSS_SIZE_PCT = _env_float("STOP_LOSS_SIZE_PCT", 1.0)
+PROFIT_QUICK_EXIT_PCT = _env_float("PROFIT_QUICK_EXIT_PCT", 0.0)
+PROFIT_TARGET_PCT = _env_float("PROFIT_TARGET_PCT", 0.0)
+PROFIT_EXIT_MINUTES = _env_float("PROFIT_EXIT_MINUTES", 0.0)
+PROFIT_POSITIVE_EXIT_MINUTES = _env_float("PROFIT_POSITIVE_EXIT_MINUTES", 0.0)
+
+# ═════════════════════════════════════════════════════════════════════
+# CONFIDENCE SCORING (from kalshi_live_bot)
+# ═════════════════════════════════════════════════════════════════════
+MIN_CONFIDENCE = _env_float("MIN_CONFIDENCE", 0.4)
+CONFIDENCE_STRENGTH_SCALE = _env_float("CONFIDENCE_STRENGTH_SCALE", 6.0)
+CONFIDENCE_MID_WEIGHT = _env_float("CONFIDENCE_MID_WEIGHT", 0.4)
+CONFIDENCE_STRENGTH_WEIGHT = _env_float("CONFIDENCE_STRENGTH_WEIGHT", 0.6)
+
+# ═════════════════════════════════════════════════════════════════════
+# LOOP
+# ═════════════════════════════════════════════════════════════════════
+LOOP_INTERVAL_SECONDS = max(5, _env_int("LOOP_INTERVAL_SECONDS", 15))
+
+# ═════════════════════════════════════════════════════════════════════
+# DRY RUN — defaults to True for safety. Must explicitly set DRY_RUN=false
+# in .env or pass --live to trade real money.
+# WARNING: the local .env file overrides this safe default. If .env sets
+# DRY_RUN=false, the bot will trade with real money on startup. Always
+# verify DRY_RUN before running from a directory whose .env you did not write.
+# ══════════════════════════════════════════════════════════════════════
+DRY_RUN = _env_bool("DRY_RUN", True)
+DRY_STARTING_BALANCE = _env_float("DRY_STARTING_BALANCE", 0.0)
+DRY_TARGET_PROFIT_CENTS = _env_int("DRY_TARGET_PROFIT_CENTS", 4)
+DRY_MAX_PROFIT_CENTS = _env_int("DRY_MAX_PROFIT_CENTS", 4)
+DRY_STRENGTH_SCALE_CENTS = _env_int("DRY_STRENGTH_SCALE_CENTS", 10)
+DRY_EXIT_DELAY_CYCLES = _env_int("DRY_EXIT_DELAY_CYCLES", 0)
+
+# ═════════════════════════════════════════════════════════════════════
+# RESILIENCE (from kalshi_live_bot)
+# ═════════════════════════════════════════════════════════════════════
+ERROR_BACKOFF_SECONDS = _env_int("ERROR_BACKOFF_SECONDS", 5)
+ERROR_BACKOFF_MAX_SECONDS = _env_int("ERROR_BACKOFF_MAX_SECONDS", 60)
+CLIENT_REBUILD_THRESHOLD = _env_int("CLIENT_REBUILD_THRESHOLD", 3)
+REQUEST_TIMEOUT_SECONDS = _env_int("REQUEST_TIMEOUT_SECONDS", 10)
+KALSHI_POOL_MAXSIZE = _env_int("KALSHI_POOL_MAXSIZE", 20)
+CYCLE_TIMEOUT_SECONDS = _env_int("CYCLE_TIMEOUT_SECONDS", 30)
+
+# ═════════════════════════════════════════════════════════════════════
+# LLM (optional, from kalshi_live_bot)
+# ═════════════════════════════════════════════════════════════════════
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4")
+OPENROUTER_TIMEOUT_SECONDS = _env_float("OPENROUTER_TIMEOUT_SECONDS", 5.0)
+LLM_HOLD_ENABLED = _env_bool("LLM_HOLD_ENABLED", False)
+LLM_HOLD_TRIGGER_MINUTES = _env_float("LLM_HOLD_TRIGGER_MINUTES", 2.0)
+LLM_HOLD_MAX_POSITIONS = _env_int("LLM_HOLD_MAX_POSITIONS", 5)
+LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", False)
+LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.35)
+LLM_EVAL_MIN_HOLD_CONFIDENCE = _env_float("LLM_EVAL_MIN_HOLD_CONFIDENCE", 0.45)
+
+# ═════════════════════════════════════════════════════════════════════
+# N8N
+# ═════════════════════════════════════════════════════════════════════
+N8N_API_KEY = os.environ.get("N8N_API_KEY", "")
+N8N_BASE_URL = os.environ.get("N8N_BASE_URL", "http://127.0.0.1:5678")
+
+# ═════════════════════════════════════════════════════════════════════
+# LOGGING / VERSION
+# ═════════════════════════════════════════════════════════════════════
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+LOG_FILE = Path(__file__).resolve().parent / "bot.log"
+__version__ = "2.0.0-superbot"
+
+
+def validate_credentials():
+    """Validate that Kalshi credentials are present and non-empty.
+
+    Raises ValueError with actionable instructions if KALSHI_KEY_ID is missing
+    or no private key source (KALSHI_PRIVATE_KEY or KALSHI_KEY_FILE) is set.
+    Intended to be called by trader.py at startup — not automatically on import.
+    """
+    errors = []
+
+    if not KALSHI_KEY_ID:
+        errors.append(
+            "KALSHI_KEY_ID is empty. Set it in your environment or .env file:\n"
+            "  export KALSHI_KEY_ID='your_key_id_here'\n"
+            "  (Get your key ID from the Kalshi dashboard → API Keys)"
+        )
+
+    if not KALSHI_PRIVATE_KEY_CONTENT and not KALSHI_KEY_FILE:
+        errors.append(
+            "No Kalshi private key found. Provide one of:\n"
+            "  KALSHI_PRIVATE_KEY — paste the full PEM key content directly:\n"
+            "    export KALSHI_PRIVATE_KEY='-----BEGIN RSA PRIVATE KEY-----...'\n"
+            "  KALSHI_KEY_FILE — path to a PEM key file:\n"
+            "    export KALSHI_KEY_FILE='/path/to/kalshi_key.pem'\n"
+            "  (Download your private key from the Kalshi dashboard → API Keys)"
+        )
+
+    if KALSHI_KEY_FILE and not Path(KALSHI_KEY_FILE).exists():
+        errors.append(
+            f"KALSHI_KEY_FILE is set to '{KALSHI_KEY_FILE}' but the file does not exist.\n"
+            "  Check the path and ensure the file is present, or unset KALSHI_KEY_FILE\n"
+            "  and use KALSHI_PRIVATE_KEY instead:\n"
+            "    export KALSHI_KEY_FILE=''\n"
+            "    export KALSHI_PRIVATE_KEY='-----BEGIN RSA PRIVATE KEY-----...'"
+        )
+
+    if errors:
+        raise ValueError(
+            "Kalshi credentials are missing or incomplete.\n\n" + "\n".join(errors)
+        )
+
+
+def validate_dry_run(live_explicit: bool = False):
+    """Block live trading unless --live is explicitly passed AND KALSHI_CONFIRM_LIVE=true.
+
+    Raises SystemExit if DRY_RUN is False and --live was not passed,
+    preventing accidental live trading from a misconfigured .env.
+    Raises SystemExit if --live is passed but KALSHI_CONFIRM_LIVE is not set,
+    requiring a second environment confirmation for live trading.
+
+    Intended to be called by trader.py at startup — not automatically on import.
+    """
+    if not DRY_RUN and not live_explicit:
+        import logging
+        import sys
+        logging.getLogger(__name__).error(
+            "DRY_RUN is False but --live was not passed. "
+            "Refusing to start in live mode. "
+            "Set DRY_RUN=true in .env, or pass --live to confirm live trading."
+        )
+        sys.exit(1)
+
+    if live_explicit and os.environ.get("KALSHI_CONFIRM_LIVE", "").strip().lower() != "true":
+        import logging
+        import sys
+        logging.getLogger(__name__).error(
+            "--live passed but KALSHI_CONFIRM_LIVE is not set to 'true'. "
+            "Refusing to start in live mode. "
+            "Set KALSHI_CONFIRM_LIVE=true to confirm you intend live trading."
+        )
+        sys.exit(1)
+
+
+def validate_bands():
+    """Validate entry band configuration invariants.
+
+    Raises ValueError if ENTRY_BAND_MIN > ENTRY_BAND_MAX or
+    MIN_NO_ENTRY_CENTS > MAX_NO_ENTRY_CENTS, which would cause the entry band
+    check in signals.py to reject all prices.
+
+    Intended to be called by trader.py at startup alongside validate_credentials().
+    """
+    errors = []
+    if ENTRY_BAND_MIN > ENTRY_BAND_MAX:
+        errors.append(
+            f"ENTRY_BAND_MIN ({ENTRY_BAND_MIN}) > ENTRY_BAND_MAX ({ENTRY_BAND_MAX}). "
+            f"All prices will be rejected by the entry band check. "
+            f"Set ENTRY_BAND_MIN <= ENTRY_BAND_MAX."
+        )
+    if MIN_NO_ENTRY_CENTS > MAX_NO_ENTRY_CENTS:
+        errors.append(
+            f"MIN_NO_ENTRY_CENTS ({MIN_NO_ENTRY_CENTS}) > "
+            f"MAX_NO_ENTRY_CENTS ({MAX_NO_ENTRY_CENTS}). "
+            f"Set MIN_NO_ENTRY_CENTS <= MAX_NO_ENTRY_CENTS."
+        )
+    if MIN_SKEW_CENTS > MIN_TREND_CENTS:
+        errors.append(
+            f"MIN_SKEW_CENTS ({MIN_SKEW_CENTS}) > MIN_TREND_CENTS ({MIN_TREND_CENTS}). "
+            f"Contradictory signal requirements — no price can satisfy both. "
+            f"Set MIN_SKEW_CENTS <= MIN_TREND_CENTS."
+        )
+    if ENTRY_WINDOW_START_MIN >= ENTRY_WINDOW_END_MIN:
+        errors.append(
+            f"ENTRY_WINDOW_START_MIN ({ENTRY_WINDOW_START_MIN}) >= "
+            f"ENTRY_WINDOW_END_MIN ({ENTRY_WINDOW_END_MIN}). "
+            f"Empty entry window — no time to trade. "
+            f"Set ENTRY_WINDOW_START_MIN < ENTRY_WINDOW_END_MIN."
+        )
+    if errors:
+        raise ValueError("Entry band configuration invalid:\n" + "\n".join(errors))

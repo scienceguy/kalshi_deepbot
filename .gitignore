@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+
+# Environment files - DO NOT commit secrets
+.env
+.env.*
+!.env.example
+
+# Secrets
+.secrets/
+*.pem
+*.key
+*.key.txt
+
+# n8n
+.n8n/
+database.sqlite*
+n8n_api_key.txt
+n8n_env.local
+n8n_*.log
+n8nEventLog-*.log
+
+# Bot state
+bot.log
+dry_state.json
+settlement_queue.json
+.lock
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
