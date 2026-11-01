@@ -65,6 +65,13 @@ def simulate_trade(market, params, balance=10.0, settlement_yes_won=None):
                             Defaults to expiration_value >= floor_strike.
 
     Returns a result dict or None if no signal.
+
+    ⚠️  LOOKAHEAD BIAS WARNING: The entry price proxy uses ``last_price_dollars``
+    (the last observed price before settlement) when available, falling back to
+    the bid/ask mid. This price reflects information available near the end of
+    the 15-minute window, not at entry time. Results are therefore optimistic
+    vs. live trading and should be treated as an upper bound on EV, not a
+    prediction of live performance.
     """
     ticker = market.get("ticker", "")
     ct = _parse_api_time(market.get("close_time", ""))
@@ -339,6 +346,11 @@ def run_sweep(markets, settlement_yes_won=None, quick=False, limit=None,
         jobs: parallel workers.
         out_path: JSON output path.
         starting_balance: cash per backtest run.
+
+    ⚠️  MEMORY WARNING: `Pool` pickles the full `markets` list into every worker
+    process, so memory scales as `jobs × markets_size`. On large datasets this
+    can OOM small hosts (e.g. termux). `jobs` is capped at CPU count; for very
+    large datasets reduce `--jobs` further or pre-filter markets with `--limit`.
 
     Returns sorted results list.
     """

@@ -26,6 +26,8 @@ from typing import Optional, Dict, Any
 
 import requests
 
+import config
+
 log = logging.getLogger("llm_eval")
 
 # ── Timeout and retry config ─────────────────────────────────────────────────
@@ -235,7 +237,7 @@ def _parse_llm_response(content: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _call_layer(layer: dict, messages: list) -> Optional[Dict[str, Any]]:
+def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> Optional[Dict[str, Any]]:
     """Call a single LLM layer. Returns parsed result or None."""
     api_key = None
     if layer["env_key"]:
@@ -255,6 +257,11 @@ def _call_layer(layer: dict, messages: list) -> Optional[Dict[str, Any]]:
     models_to_try = [layer["model"]] + layer.get("free_models", [])
 
     for model in models_to_try:
+        # Check deadline before each model attempt
+        if deadline and time.time() >= deadline:
+            log.debug("Layer %s deadline reached, skipping model %s", layer["name"], model)
+            return None
+
         payload = {
             "model": model,
             "messages": messages,
@@ -272,6 +279,10 @@ def _call_layer(layer: dict, messages: list) -> Optional[Dict[str, Any]]:
             }
 
         for attempt in range(MAX_RETRIES_PER_LAYER):
+            # Check deadline before each retry attempt
+            if deadline and time.time() >= deadline:
+                log.debug("Layer %s deadline reached during retries", layer["name"])
+                return None
             try:
                 resp = requests.post(
                     chat_url, headers=headers, json=payload,
@@ -323,9 +334,10 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
     """
     system_prompt = (
         "You are a disciplined Kalshi 15-minute market trading analyst. "
-        "Return ONLY valid JSON with exactly two keys: "
+        "Return ONLY valid JSON with exactly these keys: "
         "\"probability_of_net_profit\" (number 0-1) and "
         "\"confidence_hold_to_expiry\" (number 0-1). "
+        "Optionally include \"reasoning\" (string) explaining the verdict. "
         "Consider: market skew, trend, entry price vs mid, time remaining in "
         "the 15-minute window, position sizing vs cash, and Kalshi's 7% "
         "quadratic taker fee. Be conservative — most 15-minute binary markets "
@@ -353,13 +365,25 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
     messages = _build_messages(system_prompt, user_prompt)
 
     last_error = None
+    deadline = time.time() + config.LLM_EVAL_DEADLINE_SECONDS
+    layer_idx = 0
+
     for layer in LAYERS:
+        # Stop evaluating layers once we're close to the deadline so a slow
+        # LLM can't blow the cycle timeout.
+        if time.time() >= deadline:
+            log.warning(
+                "LLM evaluation deadline (%.0fs) reached — stopping after %d layers",
+                config.LLM_EVAL_DEADLINE_SECONDS, layer_idx,
+            )
+            break
+        layer_idx += 1
         layer_name = layer["name"]
         if _is_circuit_open(layer_name):
             log.debug("Layer %s skipped: circuit breaker open", layer_name)
             continue
         try:
-            result = _call_layer(layer, messages)
+            result = _call_layer(layer, messages, deadline)
             if result:
                 _record_layer_success(layer_name)
                 log.info(

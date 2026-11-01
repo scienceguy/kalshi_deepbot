@@ -29,6 +29,7 @@ class CycleSupervisor:
         self.settings = settings or ResilienceSettings()
         self.errors_in_a_row = 0
         self.last_error_type: str | None = None
+        self.last_error_message: str | None = None
         self.error_types: dict[str, int] = {}
         self.rebuilds = 0
 
@@ -38,6 +39,7 @@ class CycleSupervisor:
     def mark_failure(self, exc: Exception) -> float:
         self.errors_in_a_row += 1
         self.last_error_type = type(exc).__name__
+        self.last_error_message = str(exc)
         self.error_types[self.last_error_type] = self.error_types.get(self.last_error_type, 0) + 1
         # Exponential backoff: 1st failure → base, 2nd → 2×base, 3rd → 4×base, …
         # Capped at max_backoff so retries never grow unbounded.
@@ -60,7 +62,8 @@ class CycleSupervisor:
         """Return True if the last recorded error was authentication-related."""
         if self.last_error_type is None:
             return False
-        return "auth" in self.last_error_type.lower() or "permission" in self.last_error_type.lower()
+        haystack = f"{self.last_error_type} {self.last_error_message or ''}".lower()
+        return "auth" in haystack or "permission" in haystack or "401" in haystack or "403" in haystack
 
     def should_rebuild_client(self) -> bool:
         return (self.errors_in_a_row >= max(1, self.settings.rebuild_threshold)
@@ -71,4 +74,6 @@ class CycleSupervisor:
         # Increment rebuild counter; if we hit max_rebuilds, should_rebuild_client()
         # will return False and the loop will stop instead of rebuilding forever.
         self.errors_in_a_row = 0
+        self.last_error_type = None
+        self.last_error_message = None
         self.rebuilds += 1

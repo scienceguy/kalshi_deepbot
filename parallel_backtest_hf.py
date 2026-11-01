@@ -36,6 +36,12 @@ class StratParams:
     ENTRY_BAND_MIN: int = 82
     ENTRY_BAND_MAX: int = 93
     MAX_NO_ENTRY_CENTS: int = 88
+    MIN_SKEW_CENTS: int = 3
+    MIN_TREND_CENTS: int = 8
+    ENTRY_WINDOW_START_MIN: float = 6.0
+    ENTRY_WINDOW_END_MIN: float = 11.0
+    AGGRESSIVE_FILL: bool = False
+    MAX_OPEN_POSITIONS: int = 4
     PER_TRADE_PCT: float = 0.08
     MAX_TRADE_DOLLARS: float = 3.00
     BALANCE_PCT_PER_TRADE: float = 0.10
@@ -72,28 +78,15 @@ def simulate_trade(row, params, balance=10.0):
     # YES won?
     yes_won = bool(resolved_yes == 1)
 
-    # Favorite-maker entry logic
-    if mid_proxy >= params.ENTRY_BAND_MIN:
-        # Price in favorite range — YES is favorite
-        bullish = mid_proxy >= params.ENTRY_BAND_MIN and mid_proxy <= params.ENTRY_BAND_MAX
-        if bullish:
-            ep = mid_proxy
-            side_bullish = True
-        else:
-            # YES above entry band — NO is favorite. Buy NO at complement price.
-            # NOTE: This backtest engine does not apply skew/trend/stability gates
-            # like the live signals.py does. It is a simplified model.
-            ep = 100 - mid_proxy  # NO price complement
-            side_bullish = False
-    else:
+    # Favorite-maker entry: only enter YES when it is the favorite (in band).
+    # We do NOT bet the underdog (NO complement) when YES is above the band —
+    # that contradicts the favourite-maker strategy.
+    if mid_proxy < params.ENTRY_BAND_MIN or mid_proxy > params.ENTRY_BAND_MAX:
         # Price outside favorite band — no signal
         return None
 
-    ep = max(1, min(99, int(ep)))
-
-    # NO cap
-    if not side_bullish and ep > params.MAX_NO_ENTRY_CENTS:
-        return None
+    ep = mid_proxy
+    side_bullish = True
 
     # Position sizing
     max_dollars = min(params.MAX_TRADE_DOLLARS, balance * params.BALANCE_PCT_PER_TRADE)

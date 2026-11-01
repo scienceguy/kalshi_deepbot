@@ -57,6 +57,7 @@ from kalshi_client import KalshiClient  # noqa: E402
 from market_finder import find_active_markets, _parse_api_time, MarketInfo  # noqa: E402
 from risk import RiskManager  # noqa: E402
 from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
+from signals import TradeSignal  # noqa: E402
 import signals as se  # noqa: E402
 from resilience import CycleSupervisor  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
@@ -486,11 +487,12 @@ def cycle(client: KalshiClient):
             created = o.get("created_time", "")
             if not oid or not price_cents or not count:
                 continue
-            # NOTE: Assumes Kalshi stores NO-side price as complement (100 - price_cents).
-            # This has NOT been verified against the Kalshi API — if Kalshi stores NO
-            # prices directly, entry_cents will be wrong (e.g. NO stored at 85c would
-            # be read as 15c). Verify against a live NO resting order before live trading.
-            entry_cents = price_cents if side == "yes" else (100 - price_cents)
+            # Convert NO side price from Kalshi API format to internal format.
+            # Uses NO_PRICE_IS_COMPLEMENT config (default True) to determine conversion.
+            if side == "yes":
+                entry_cents = price_cents
+            else:
+                entry_cents = client.api_price_to_internal_no(price_cents, config.NO_PRICE_IS_COMPLEMENT)
             state.resting_value[oid] = int(count) * entry_cents / 100.0
 
             # Cancel stale orders
@@ -526,10 +528,15 @@ def cycle(client: KalshiClient):
             exp_val = market.get("expiration_value")
             if exp_val is not None:
                 settled_yes = int(round(float(exp_val) * 100))  # 0 or 100
-                if side == "yes":
-                    exit_price = float(settled_yes) / 100.0  # 1.0 or 0.0
+                # Validate settlement value — binary markets must settle to 0 or 100
+                if settled_yes not in (0, 100):
+                    log.warning("Invalid expiration_value for %s: %s (exp_val=%s) — skipping PnL",
+                                t, settled_yes, exp_val)
                 else:
-                    exit_price = float(100 - settled_yes) / 100.0  # 0.0 or 1.0
+                    if side == "yes":
+                        exit_price = float(settled_yes) / 100.0  # 1.0 or 0.0
+                    else:
+                        exit_price = float(100 - settled_yes) / 100.0  # 0.0 or 1.0
         except Exception:
             log.warning(
                 "Could not fetch settlement for %s — queuing for retry, not booking synthetic PnL",
@@ -568,6 +575,13 @@ def cycle(client: KalshiClient):
                     "contracts": contracts,
                 })
                 state.session_pnl += realized_pnl  # add realized P&L only after successful record
+                # Sync session_pnl to Supabase immediately so n8n and Supabase
+                # stay in sync even if the process crashes before the end-of-cycle
+                # batched state write (prevents session_pnl drift on restart).
+                try:
+                    get_supabase_client().set_bot_state_batch({"session_pnl": state.session_pnl})
+                except Exception:
+                    log.debug("Supabase session_pnl sync failed for %s", t)
             except Exception:
                 log.warning("Failed to record settlement for %s via n8n webhook — queuing", t)
                 queue = _load_settlement_queue()
@@ -839,6 +853,8 @@ def main():
     log.info("LLM eval: %s | Supabase: %s",
              "enabled" if config.LLM_EVALUATION_ENABLED else "disabled",
              "enabled" if get_supabase_client().enabled else "disabled")
+    # Supabase is non-fatal — writes degrade gracefully when credentials are
+    # missing or the service is down. The bot trades without it (dry-run).
     log.info("=" * 58)
 
     # Validate credentials and dry-run mode before connecting to Kalshi.
@@ -878,11 +894,12 @@ def main():
             price_cents = o.get("price_cents", 0)
             count = o.get("count", 0)
             if oid and price_cents and count:
-                # NO side price stored as complement (100 - no_price_cents)
-                # unless NO_PRICE_IS_COMPLEMENT=False (Kalshi stores NO price directly)
-                if side == "no" and config.NO_PRICE_IS_COMPLEMENT:
-                    price_cents = 100 - price_cents
-                state.resting_value[oid] = int(count) * price_cents / 100.0
+                # Convert NO side price from Kalshi API format to internal format.
+                if side == "yes":
+                    entry_cents = price_cents
+                else:
+                    entry_cents = client.api_price_to_internal_no(price_cents, config.NO_PRICE_IS_COMPLEMENT)
+                state.resting_value[oid] = int(count) * entry_cents / 100.0
         if state.resting_value:
             log.info("Seeded %d resting orders worth $%.2f reserved cash",
                      len(state.resting_value), sum(state.resting_value.values()))
@@ -978,6 +995,12 @@ def main():
                 except Exception as rebuild_e:
                     log.error("Client rebuild failed: %s — stopping", rebuild_e)
                     break
+            elif state.resilience.rebuilds >= state.resilience.settings.max_rebuilds:
+                # Max rebuilds exhausted — stop instead of looping forever
+                # on failing cycles.
+                log.error("Max client rebuilds (%d) exhausted — stopping.",
+                          state.resilience.settings.max_rebuilds)
+                break
             time.sleep(delay)
             continue
         state.resilience.mark_success()

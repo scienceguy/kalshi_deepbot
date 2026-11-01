@@ -25,6 +25,9 @@ def _load_env():
     A key already set in the environment is NOT overwritten by .env.
     Files are loaded in order: .env, then .env.{MODE} (later files can
     override earlier ones only if the key isn't already in the environment).
+
+    Supports: `export KEY=VALUE`, inline `KEY=VALUE # comment`, and quoted
+    values (`KEY="value"` or `KEY='value'`).
     """
     global _load_done
     if _load_done:
@@ -38,11 +41,22 @@ def _load_env():
         with open(env_path) as f:
             for line in f:
                 line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    k = k.strip(); v = v.strip().strip('"').strip("'")
-                    if not os.environ.get(k):
-                        os.environ[k] = v
+                if not line or line.startswith("#"):
+                    continue
+                # Strip inline comment (everything after unquoted #)
+                if " #" in line:
+                    line = line[:line.index(" #")].strip()
+                if "=" not in line:
+                    continue
+                # Strip optional `export ` prefix
+                if line.startswith("export "):
+                    line = line[len("export "):]
+                k, _, v = line.partition("=")
+                k = k.strip(); v = v.strip().strip('"').strip("'")
+                if not k or not v:
+                    continue
+                if not os.environ.get(k):
+                    os.environ[k] = v
 
 
 _load_env()
@@ -180,15 +194,6 @@ STABILITY_MIN_COVERAGE_MIN = _env_float("STABILITY_MIN_COVERAGE_MIN", 2.5)
 STABILITY_MAX_YES_BID_CENTS = _env_int("STABILITY_MAX_YES_BID_CENTS", 8)
 
 # ═════════════════════════════════════════════════════════════════════
-# SPOT FILTER (optional, from kalshi_live_bot)
-# ═════════════════════════════════════════════════════════════════════
-SPOT_FILTER_ENABLED = _env_bool("SPOT_FILTER_ENABLED", False)
-MIN_WIN_PROB = _env_float("MIN_WIN_PROB", 0.995)
-Z_MAX = _env_float("Z_MAX", -1.0)
-TRADING_FEE_PCT = _env_float("TRADING_FEE_PCT", 0.1)
-
-
-# ═════════════════════════════════════════════════════════════════════
 # CONFIDENCE SCORING (from kalshi_live_bot)
 # ═════════════════════════════════════════════════════════════════════
 MIN_CONFIDENCE = _env_float("MIN_CONFIDENCE", 0.4)
@@ -237,6 +242,9 @@ OPENROUTER_TIMEOUT_SECONDS = _env_float("OPENROUTER_TIMEOUT_SECONDS", 5.0)
 LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", False)
 LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.35)
 LLM_EVAL_FAIL_OPEN = _env_bool("LLM_EVAL_FAIL_OPEN", False)
+# Deadline for the full LLM evaluation (all layers) so a slow/hung LLM can't
+# blow the cycle timeout. Must be < CYCLE_TIMEOUT_SECONDS.
+LLM_EVAL_DEADLINE_SECONDS = _env_float("LLM_EVAL_DEADLINE_SECONDS", 25.0)
 
 # ═════════════════════════════════════════════════════════════════════
 # N8N

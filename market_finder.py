@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -115,7 +116,7 @@ def _fetch_orderbook(client: KalshiClient, ticker: str) -> dict:
 
 def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
                           MIN_P: int, MAX_P: int, HMAX: int,
-                          seen: set) -> tuple:
+                          seen: set, seen_lock: threading.Lock) -> tuple:
     """Fetch and filter markets for a single series."""
     markets = None
     for attempt in range(3):
@@ -139,8 +140,10 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
     mains = []; hedges = []
     for mkt in markets:
         ticker = mkt.get("ticker","")
-        if not ticker or ticker in seen: continue
-        seen.add(ticker)
+        with seen_lock:
+            if not ticker or ticker in seen:
+                continue
+            seen.add(ticker)
 
         status = str(mkt.get("status","")).lower()
         if status not in ("active", "open"): continue
@@ -151,9 +154,9 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
         if ml <= 0 or ml > 15.5: continue
 
         yb, ya, nb, na, yq, nq = _parse_market_prices(mkt)
-        mid = round((yb + ya) / 2) if (yb and ya) else (ya or yb or 0)
+        mid = (yb + ya) / 2 if (yb and ya) else (ya or yb or 0)
 
-        log.debug("  %s ml=%.1f mid=%dc ya=%dc yb=%dc", ticker, ml, mid, ya, yb)
+        log.debug("  %s ml=%.1f mid=%.1fc ya=%dc yb=%dc", ticker, ml, mid, ya, yb)
 
         if MIN_P <= mid <= MAX_P:
             mains.append((mkt, ct, ml, mid))
@@ -173,11 +176,20 @@ def find_active_markets(client: KalshiClient):
     # Fetch markets for all series sequentially (KalshiClient._lock serializes
     # all requests anyway, so concurrent fetching provides no benefit).
     all_mains = []; all_hedges = []; seen = set()
-    for series in config.TARGET_SERIES:
+    seen_lock = threading.Lock()
+
+    def _fetch_one(series: str):
         mains, hedges = _fetch_series_markets(client, series, now,
-                                              MIN_P, MAX_P, HMAX, seen)
-        all_mains.extend(mains)
-        all_hedges.extend(hedges)
+                                              MIN_P, MAX_P, HMAX, seen, seen_lock)
+        return mains, hedges
+
+    # Fetch markets for all series concurrently (bounded pool), then
+    # fetch orderbooks concurrently below. This avoids spending several
+    # seconds on sequential per-series fetches inside the 30s cycle timeout.
+    with ThreadPoolExecutor(max_workers=min(len(config.TARGET_SERIES), 4)) as ex:
+        for mains, hedges in ex.map(_fetch_one, config.TARGET_SERIES):
+            all_mains.extend(mains)
+            all_hedges.extend(hedges)
 
     # Fetch orderbooks concurrently for all mains passing the band filter,
     # plus up to MAX_HEDGE_PER_SERIES hedges per series.
@@ -189,10 +201,12 @@ def find_active_markets(client: KalshiClient):
     for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
         fetch_list.append((mkt, ct, ml, "HEDGE_NO"))
 
-    # Fetch all orderbooks concurrently instead of one HTTP call per market
+    # Fetch all orderbooks concurrently instead of one HTTP call per market.
+    # Cap workers so we don't burst past Kalshi's ~10 req/s rate limit and
+    # trigger 429s when many markets are candidates.
     ob_map = {}
     if fetch_list:
-        with ThreadPoolExecutor(max_workers=len(fetch_list)) as ex:
+        with ThreadPoolExecutor(max_workers=min(len(fetch_list), 4)) as ex:
             futs = {ex.submit(_fetch_orderbook, client, m["ticker"]): (m, ct, ml, role)
                     for m, ct, ml, role in fetch_list}
             for fut in as_completed(futs):

@@ -370,6 +370,41 @@ class KalshiClient:
 
     # ── Orders ────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def no_price_to_api_price(price_cents: int) -> str:
+        """Convert NO side price from internal cents (1-99) to Kalshi API dollar string.
+
+        Kalshi v2 API: buying NO = selling YES at complement price.
+        Internal: NO at 85c means we want to buy NO at 85c.
+        API: We sell YES at (100 - 85) = 15c = "0.1500".
+        """
+        if not 1 <= price_cents <= 99:
+            raise ValueError(f"price_cents={price_cents} out of valid range (1-99)")
+        complement_cents = 100 - price_cents
+        return f"{complement_cents / 100:.4f}"
+
+    @staticmethod
+    def yes_price_to_api_price(price_cents: int) -> str:
+        """Convert YES side price from internal cents (1-99) to Kalshi API dollar string."""
+        if not 1 <= price_cents <= 99:
+            raise ValueError(f"price_cents={price_cents} out of valid range (1-99)")
+        return f"{price_cents / 100:.4f}"
+
+    @staticmethod
+    def api_price_to_internal_no(price_cents: int, is_complement: bool = True) -> int:
+        """Convert NO side price from Kalshi API response to internal cents.
+
+        Args:
+            price_cents: Price from Kalshi API (1-99)
+            is_complement: If True (default), Kalshi stores NO as complement (100 - internal).
+                          If False, Kalshi stores NO price directly.
+        Returns:
+            Internal NO price in cents (1-99).
+        """
+        if not 1 <= price_cents <= 99:
+            raise ValueError(f"price_cents={price_cents} out of valid range (1-99)")
+        return 100 - price_cents if is_complement else price_cents
+
     def place_order(self, ticker: str, side: str, contracts: int,
                     price_cents: int, client_order_id: str,
                     order_type: str = "limit") -> dict:
@@ -389,12 +424,12 @@ class KalshiClient:
             return None
 
         if side == "yes":
-            api_side      = "bid"
-            price_dollars = f"{price_cents / 100:.4f}"
+            api_side = "bid"
+            price_dollars = self.yes_price_to_api_price(price_cents)
         else:
             # Buying NO = selling YES at the complement price
-            api_side      = "ask"
-            price_dollars = f"{(100 - price_cents) / 100:.4f}"
+            api_side = "ask"
+            price_dollars = self.no_price_to_api_price(price_cents)
 
         payload = {
             "ticker":                      ticker,

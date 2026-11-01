@@ -51,14 +51,19 @@ def sell_cash_in(contracts: float, price_dollars: float, multiplier: float = 1.0
 
 
 def net_profit_roundtrip(qty: int, entry_cents: int, exit_cents: int) -> tuple:
-    """Round-trip P&L using Kalshi's quadratic taker fee (rounded up per leg).
+    """Round-trip P&L using Kalshi's quadratic taker fee (6dp raw model).
+
+    Uses taker_fee_dollars for both legs (no cent-grid rounding), so the
+    result is consistent with buy_cash_out / sell_cash_in and with the
+    6-decimal-place fee model, not the balance-precision cent grid.
 
     Returns (profit_dollars, profit_pct).
     """
     entry_value = qty * entry_cents / 100.0
     exit_value = qty * exit_cents / 100.0
-    fee = (taker_fee_cents(qty, entry_cents / 100.0)
-           + taker_fee_cents(qty, exit_cents / 100.0)) / 100.0
+    entry_price = entry_cents / 100.0
+    exit_price = exit_cents / 100.0
+    fee = taker_fee_dollars(qty, entry_price) + taker_fee_dollars(qty, exit_price)
     profit = exit_value - entry_value - fee
     profit_pct = (profit / entry_value * 100.0) if entry_value else 0.0
     return profit, profit_pct

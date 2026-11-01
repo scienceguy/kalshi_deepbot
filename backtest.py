@@ -30,12 +30,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(
 
 
 def settlement_yes_won(market):
-    """YES wins if expiration_value rounds to 100 (preserves backtest.py behavior)."""
+    """YES wins if expiration_value >= floor_strike (matches engine default)."""
     exp_val = market.get("expiration_value")
-    if exp_val is None or exp_val == "":
+    floor_strike = market.get("floor_strike")
+    if exp_val is None or exp_val == "" or floor_strike is None or floor_strike == "":
         return None
     try:
-        return int(round(float(exp_val) * 100)) >= 100
+        return float(exp_val) >= float(floor_strike)
     except (ValueError, TypeError):
         return None
 

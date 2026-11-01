@@ -194,23 +194,47 @@ class N8nClient:
     # ── Webhooks ───────────────────────────────────────────────────────────
 
     def execute_webhook(self, webhook_path: str, data: Dict[str, Any],
-                        method: str = "POST", timeout: int = DEFAULT_WEBHOOK_TIMEOUT) -> Dict[str, Any]:
-        """Execute a webhook by path. Returns the webhook response."""
+                        method: str = "POST", timeout: int = DEFAULT_WEBHOOK_TIMEOUT,
+                        max_retries: int = 3) -> Dict[str, Any]:
+        """Execute a webhook by path. Returns the webhook response.
+
+        Retries on 5xx (server-side, transient) errors with 2-second backoff.
+        Does not retry on 4xx (client-side) errors.
+        """
         url = f"{self.base_url}/webhook/{webhook_path}"
-        try:
-            resp = self.session.request(
-                method, url, json=data, timeout=timeout
-            )
-            resp.raise_for_status()
-            if resp.content:
-                try:
-                    return resp.json()
-                except ValueError:
-                    return {"raw": resp.text}
-            return {}
-        except requests.RequestException as e:
-            log.error("Webhook %s %s failed: %s", method, webhook_path, e)
-            raise
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                resp = self.session.request(
+                    method, url, json=data, timeout=timeout
+                )
+                resp.raise_for_status()
+                if resp.content:
+                    try:
+                        return resp.json()
+                    except ValueError:
+                        return {"raw": resp.text}
+                return {}
+            except requests.RequestException as e:
+                last_err = e
+                # Check if it's a 5xx response we should retry
+                if hasattr(e, 'response') and e.response is not None:
+                    status = e.response.status_code
+                    if 500 <= status < 600:
+                        if attempt < max_retries - 1:
+                            log.warning(
+                                "Webhook %s %s: HTTP %s — retry %d/%d",
+                                method, webhook_path, status, attempt + 1, max_retries,
+                            )
+                            time.sleep(2.0 * (attempt + 1))
+                            continue
+                        log.error(
+                            "Webhook %s %s: HTTP %s — exhausted %d retries",
+                            method, webhook_path, status, max_retries,
+                        )
+                log.error("Webhook %s %s failed: %s", method, webhook_path, e)
+                raise
+        raise last_err
 
     # ── SuperBot convenience methods ───────────────────────────────────────
 

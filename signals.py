@@ -11,6 +11,7 @@ Returns a list of TradeSignal (0 or 1 per market).
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,10 +19,6 @@ from typing import Literal, Optional
 
 import config
 from market_finder import MarketInfo
-
-# Spot feed (kalshi_live_bot Approach D) — not implemented; spot module does not exist.
-# SPOT_FILTER_ENABLED and Z_MAX config have no effect without a spot feed.
-_spot_mod = None
 
 log = logging.getLogger(__name__)
 Direction = Literal["YES", "NO", "PASS"]
@@ -127,10 +124,14 @@ def _maker_price(market: MarketInfo, bullish: bool) -> int:
 # ═════════════════════════════════════════════════════════════════════
 
 _bid_hist: dict[str, list[tuple[float, int]]] = {}
-_BID_HIST_FILE = Path(__file__).resolve().parent / f"bid_hist_{'dry' if config.DRY_RUN else 'live'}.json"
 _bid_hist_dirty = False
 _last_bid_hist_save = 0.0
 _BID_HIST_SAVE_INTERVAL = 30.0
+
+
+def _bid_hist_file() -> Path:
+    """Get bid history file path, evaluated at call time (not import time)."""
+    return Path(__file__).resolve().parent / f"bid_hist_{'dry' if config.DRY_RUN else 'live'}.json"
 
 # NOTE: This module-level bid history is single-process only. It is mutated by
 # _track_bid/_maybe_save_bid_hist and persisted to bid_hist_{dry,live}.json.
@@ -142,8 +143,9 @@ _BID_HIST_SAVE_INTERVAL = 30.0
 def _load_bid_hist():
     global _bid_hist
     try:
-        if _BID_HIST_FILE.exists():
-            with open(_BID_HIST_FILE) as f:
+        hist_file = _bid_hist_file()
+        if hist_file.exists():
+            with open(hist_file) as f:
                 data = json.load(f)
             _bid_hist = {k: [(float(t), int(b)) for t, b in v] for k, v in data.items()}
     except Exception:
@@ -152,8 +154,12 @@ def _load_bid_hist():
 
 def _save_bid_hist():
     try:
-        with open(_BID_HIST_FILE, "w") as f:
+        hist_file = _bid_hist_file()
+        # Atomic write: write to temp file then rename
+        tmp_file = hist_file.with_suffix(hist_file.suffix + ".tmp")
+        with open(tmp_file, "w") as f:
             json.dump({k: v for k, v in _bid_hist.items()}, f)
+        os.replace(tmp_file, hist_file)
     except Exception:
         pass
 
@@ -379,7 +385,7 @@ def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: i
     """
     Two-sided favourite maker strategy (Approach D).
 
-    Emit the favourite side (YES or NO) when it is in range (82-88c),
+    Emit the favourite side (YES or NO) when it is in range (ENTRY_BAND_MIN-ENTRY_BAND_MAX),
     posting 1c under its ask so the order is always a maker.
     Returns a list of TradeSignal (0 or 1 per market — when both sides are
     in range, only the more extreme favourite is kept).
@@ -398,13 +404,7 @@ def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: i
         return results
 
     ok_stable, why = _stability_ok(market.ticker, time.time())
-    has_feed = False
-    if getattr(config, "SPOT_FILTER_ENABLED", False):
-        try:
-            has_feed = _spot_mod is not None and _spot_mod.has_feed(market.series)
-        except Exception:
-            has_feed = False
-    if config.STABILITY_ENABLED and not has_feed and not ok_stable:
+    if config.STABILITY_ENABLED and not ok_stable:
         _pass(why)
         return results
 
@@ -437,40 +437,14 @@ def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: i
         _pass(f"No favourite in {entry_min}-{entry_max}c (no={no_pay}c yes={yes_pay}c)")
         return results
 
-    # Spot distance-to-strike gate (crypto series only)
-    z_yes = None
-    if has_feed and _spot_mod is not None:
-        try:
-            strike = float(market.strike or 0) or float(
-                getattr(market, "raw", {}).get("floor_strike") or 0)
-            _raw = getattr(market, "raw", {}) or {}
-            _open = _raw.get("open_time") or _raw.get("open_ts")
-            z_yes = _spot_mod.zscore(market.series, strike, market.minutes_left, open_ts=_open)
-        except Exception:
-            z_yes = None
-
-    TIER_Z_LOOSE = {97: -1.0, 98: -1.5}
-
     for direction, side, entry_c, implied in cands:
         bullish = (direction == "YES")
-        skip_spot = not has_feed
-        z_required = None
-        z_fav = None
-        if not skip_spot:
-            if z_yes is None:
-                _pass(f"Spot: no data")
-                continue
-            z_required = TIER_Z_LOOSE.get(entry_c, config.Z_MAX)
-            z_fav = -z_yes if side == "yes" else z_yes
-
         sig = _evaluate_common(
             market, max_dollars, max_contracts, bullish,
             entry_min, entry_max, minutes_in, implied,
             "FAVOURITE", float(implied),
             skip_stability=True,
-            skip_spot_gate=skip_spot,
-            z_required=z_required,
-            z_fav=z_fav,
+            skip_spot_gate=True,
         )
         if sig and sig.is_trade:
             results.append(sig)

@@ -222,13 +222,15 @@ class SupabaseClient:
                             return {}
                     return {}
                 if resp.status_code in (429, 500, 502, 503, 504):
+                    # Retryable errors — record failure for circuit breaker
                     log.warning("Supabase %s %s: HTTP %s — retry %d/%d",
                                 method, path, resp.status_code, attempt + 1, max_retries)
+                    _supabase_record_failure()
                     time.sleep(1.0 * (attempt + 1))
                     continue
+                # Non-retryable errors (4xx except 429) — log but don't increment circuit breaker
                 log.warning("Supabase %s %s failed: %s %s",
                             method, path, resp.status_code, resp.text[:200])
-                _supabase_record_failure()
                 if resp.status_code in (400, 403, 404):
                     log.error("Supabase schema/auth error on %s %s — audit trail may be incomplete",
                               method, path)
@@ -237,8 +239,10 @@ class SupabaseClient:
                 last_err = e
                 log.warning("Supabase %s %s error: %s (attempt %d/%d)",
                             method, path, e, attempt + 1, max_retries)
+                # Network errors are retryable — record for circuit breaker
+                _supabase_record_failure()
                 time.sleep(1.0 * (attempt + 1))
-        _supabase_record_failure()
+        # All retries exhausted (retryable errors only reach here)
         log.warning("Supabase %s %s failed after %d retries: %s",
                     method, path, max_retries, last_err)
         return None

@@ -101,7 +101,15 @@ class MarketSnapshotCollector:
         return all_snapshots, out_path
 
     def _build_snapshot(self, market: dict) -> dict | None:
-        """Build a training snapshot from a closed market."""
+        """Build a training snapshot from a closed market.
+
+        ⚠️  LOOKAHEAD BIAS WARNING: This function uses `last_price_dollars`
+        (the last observed price before settlement) as the entry price proxy
+        when available. This price reflects information available near the end
+        of the 15-minute window, NOT at entry time. Backtest results on this
+        data will be OPTIMISTIC vs. live trading — treat as an upper bound on
+        EV, not a prediction of live performance.
+        """
         ticker = market.get("ticker", "")
         ct = _parse_api_time(market.get("close_time", ""))
         if not ct:
@@ -127,6 +135,9 @@ class MarketSnapshotCollector:
         yb, ya, nb, na, yq, nq = _parse_market_prices(market)
 
         # Use last_price as entry price proxy
+        # ⚠️  LOOKAHEAD BIAS: last_price_dollars reflects the price near end of
+        # the 15-minute window, not at entry time. This makes backtest results
+        # optimistic vs live trading — treat as an upper bound on EV.
         last_price = market.get("last_price_dollars")
         if last_price and float(last_price) > 0:
             mid = int(round(float(last_price) * 100))
