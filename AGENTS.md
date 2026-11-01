@@ -193,6 +193,48 @@ Coordination (logstream):
 - `git push origin main` after every meaningful change.
 - Pre-commit hook blocks `.env` and `*.pem` from being staged.
 
+## CONCURRENT AGENTS — READ BEFORE ANY GIT COMMAND
+
+**More than one agent edits this checkout at the same time.** There is a single
+working tree (`/data/data/com.termux/files/home/kalshi_superbot`) shared by every
+agent, and all of them push to the same `main`. Treat the tree as shared state.
+
+Rules:
+
+- **Pull before you push.** Always `git fetch && git pull --rebase origin main`
+  right before pushing, so you graft onto whatever a peer just pushed.
+- **Never run destructive git commands unannounced:** `git reset --hard`,
+  `git checkout -- <path>`, `git clean`, `git stash`, `git rebase` on published
+  history, or any `git push --force`. Announce on the logstream first (see below)
+  and re-read the tree. An uncommitted file you did not write is a peer's work.
+- **Check `git status` before editing a file** you did not open yourself; if it
+  has unexpected changes, stop and look — do not overwrite.
+- **Small commits, small pushes.** Long-lived uncommitted work in a shared tree
+  gets lost.
+- If you rewrite published history (only for a secret leak or similar), you MUST
+  post a `status` broadcast with the new HEAD and the reset instructions.
+
+### Coordination channel (MemPalace logstream)
+
+Before a risky or cross-cutting change, announce and listen:
+
+```bash
+mempalace logstream watch --agent termux:opencode:kalshi_superbot \
+  --type task.request --type task.reply --type status --json
+```
+
+- Post status: `mempalace_event_append` (type=`status`, stream=`project/kalshi_superbot`,
+  room=`status`, to_agent=`*`).
+- Delegation: `type=task.request`, room=`delegation`, correlation_id=`task_...`.
+- Use `topic=kalshi-superbot` to tag a lane and avoid stepping on unrelated work.
+
+### Current history note
+
+`main` was history-rewritten on 2026-11-01 to purge a leaked key (see the
+Credentials section). HEAD moved to `4ad500a`; **all SHAs before that are
+invalid**. If your local history predates the rewrite: `git fetch` then
+`git reset --hard origin/main` (after saving any local work as a patch).
+
 ## Verification checklist before claiming done
 
 - [x] `python -m pytest tests/ -q` → all pass (75 passed)
