@@ -58,58 +58,31 @@ def insert_credential(conn, name, cred_type, data_dict, encryption_key_bytes: by
 # Credentials to add from Bitwarden
 # Replace placeholder values with your actual credentials before running.
 credentials = [
-    # Kalshi API Key - HTTP Header Auth
+    # Kalshi API Key - pulled from kalshi_superbot/.env
     {
         "name": "Kalshi API Key",
         "type": "httpHeaderAuth",
         "data": {
             "name": "KALSHI-ACCESS-KEY",
-            "value": "your_kalshi_key_id_here"
+            "value": "REDACTED"
         }
     },
-    # Kalshi RSA Private Key - Secret
+    # Kalshi RSA Private Key - pulled from kalshi_superbot/kalshi_private.pem
     {
         "name": "Kalshi RSA Key",
-        "type": "n8n-nodes-base.httpHeaderAuth",
+        "type": "httpHeaderAuth",
         "data": {
             "name": "KALSHI_PRIVATE_KEY",
-            "value": "your_kalshi_private_key_here"
+            "value": "-----BEGIN RSA PRIVATE KEY-----\nREDACTED\n-----END RSA PRIVATE KEY-----"
         }
     },
-    # Gemini API Key - HTTP Header Auth
-    {
-        "name": "Gemini API Key",
-        "type": "httpHeaderAuth",
-        "data": {
-            "name": "Authorization",
-            "value": "Bearer your_gemini_api_key_here"
-        }
-    },
-    # OpenAI API Key - HTTP Header Auth
-    {
-        "name": "OpenAI API Key",
-        "type": "httpHeaderAuth",
-        "data": {
-            "name": "Authorization",
-            "value": "Bearer your_openai_api_key_here"
-        }
-    },
-    # Groq API Key - HTTP Header Auth
-    {
-        "name": "Groq API Key",
-        "type": "httpHeaderAuth",
-        "data": {
-            "name": "Authorization",
-            "value": "Bearer your_groq_api_key_here"
-        }
-    },
-    # Supabase API Key - HTTP Header Auth
+    # Supabase API Key - pulled from ~/.secrets/supabase_service_key
     {
         "name": "Supabase API Key",
         "type": "httpHeaderAuth",
         "data": {
             "name": "apikey",
-            "value": "your_supabase_api_key_here"
+            "value": "REDACTED"
         }
     },
 ]
@@ -119,7 +92,7 @@ conn = sqlite3.connect("/data/data/com.termux/files/home/.n8n/database.sqlite")
 try:
     for cred in credentials:
         try:
-            insert_credential(conn, cred["name"], cred["type"], cred["data"])
+            insert_credential(conn, cred["name"], cred["type"], cred["data"], encryption_key_bytes)
         except Exception as e:
             print(f"✗ Failed to insert {cred['name']}: {e}")
 finally:
