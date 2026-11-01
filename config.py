@@ -203,6 +203,7 @@ REQUEST_TIMEOUT_SECONDS = _env_int("REQUEST_TIMEOUT_SECONDS", 10)
 REQUEST_MIN_GAP_SECONDS = _env_float("REQUEST_MIN_GAP_SECONDS", 0.12)
 KALSHI_POOL_MAXSIZE = _env_int("KALSHI_POOL_MAXSIZE", 20)
 CYCLE_TIMEOUT_SECONDS = _env_int("CYCLE_TIMEOUT_SECONDS", 30)
+CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 5)
 
 # ═════════════════════════════════════════════════════════════════════
 # LLM (optional, from kalshi_live_bot)

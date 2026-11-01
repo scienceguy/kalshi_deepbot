@@ -185,7 +185,6 @@ def main():
 
     if snapshots:
         print(f"\nData saved to: {out_path}")
-        print(f"Run backtest with: python backtest.py --data-file {out_path}")
     else:
         print("No snapshots collected. Check API credentials and connectivity.")
 

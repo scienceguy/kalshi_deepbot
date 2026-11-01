@@ -46,26 +46,49 @@ def settlement_yes_won(market):
 
 
 def fetch_settled_markets_public(series_list, limit_per_series=1000):
-    """Fetch settled markets from public Kalshi endpoint (no auth required)."""
+    """Fetch settled markets from public Kalshi endpoint (no auth required).
+
+    Follows the cursor returned by the API to page through all results,
+    so markets beyond the first page are not silently excluded.
+    """
     all_markets = []
     for series in series_list:
         url = f"{BASE_URL}/markets"
-        params = {"series_ticker": series, "limit": limit_per_series}
-        try:
-            r = requests.get(url, params=params, timeout=60)
-            r.raise_for_status()
-            data = r.json()
-            markets = data.get("markets", [])
-            settled = []
-            for m in markets:
-                if m.get("status") == "finalized" and m.get("expiration_value"):
-                    m["_series"] = series
-                    settled.append(m)
-            all_markets.extend(settled)
-            log.info("%s: %d settled markets fetched (out of %d total)",
-                     series, len(settled), len(markets))
-        except Exception as e:
-            log.warning("%s fetch failed: %s", series, e)
+        cursor = ""
+        fetched = 0
+        while fetched < limit_per_series:
+            params = {
+                "series_ticker": series,
+                "limit": min(100, limit_per_series - fetched),
+            }
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                r = requests.get(url, params=params, timeout=60)
+                r.raise_for_status()
+                data = r.json()
+                markets = data.get("markets", [])
+                if not markets:
+                    break
+                settled = []
+                for m in markets:
+                    if m.get("status") == "finalized" and m.get("expiration_value"):
+                        m["_series"] = series
+                        settled.append(m)
+                all_markets.extend(settled)
+                fetched += len(markets)
+                cursor = data.get("cursor", "")
+                if not cursor:
+                    break
+                log.info("%s: %d fetched so far...", series, fetched)
+            except Exception as e:
+                log.warning("%s fetch failed: %s", series, e)
+                break
+        settled_count = sum(
+            1 for m in all_markets if m.get("_series") == series
+        )
+        log.info("%s: %d settled markets (out of %d fetched)",
+                 series, settled_count, fetched)
         time.sleep(0.2)
     return all_markets
 

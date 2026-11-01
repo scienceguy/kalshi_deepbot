@@ -16,6 +16,7 @@ class ResilienceSettings:
     base_backoff: float = field(default_factory=lambda: config.ERROR_BACKOFF_SECONDS)
     max_backoff: float = field(default_factory=lambda: config.ERROR_BACKOFF_MAX_SECONDS)
     rebuild_threshold: int = field(default_factory=lambda: config.CLIENT_REBUILD_THRESHOLD)
+    max_rebuilds: int = field(default_factory=lambda: config.CLIENT_MAX_REBUILDS if hasattr(config, 'CLIENT_MAX_REBUILDS') else 5)
 
 
 class CycleSupervisor:
@@ -29,6 +30,7 @@ class CycleSupervisor:
         self.errors_in_a_row = 0
         self.last_error_type: str | None = None
         self.error_types: dict[str, int] = {}
+        self.rebuilds = 0
 
     def mark_success(self):
         self.errors_in_a_row = 0
@@ -56,8 +58,12 @@ class CycleSupervisor:
         return "auth" in self.last_error_type.lower() or "permission" in self.last_error_type.lower()
 
     def should_rebuild_client(self) -> bool:
-        return self.errors_in_a_row >= max(1, self.settings.rebuild_threshold)
+        return (self.errors_in_a_row >= max(1, self.settings.rebuild_threshold)
+                and self.rebuilds < self.settings.max_rebuilds)
 
     def after_rebuild(self):
-        # Reset errors after a successful rebuild to avoid infinite rebuilds
+        # Reset errors after a successful rebuild to avoid infinite rebuilds.
+        # Increment rebuild counter; if we hit max_rebuilds, should_rebuild_client()
+        # will return False and the loop will stop instead of rebuilding forever.
         self.errors_in_a_row = 0
+        self.rebuilds += 1

@@ -173,7 +173,7 @@ def simulate_settlement(market: dict, signal: dict) -> dict | None:
     }
 
 
-def run(client=None, markets=None):
+def run(markets=None):
     """
     Run latency arb evaluation on a list of markets.
     Returns list of trade signals.
@@ -201,7 +201,7 @@ if __name__ == "__main__":
         except Exception as e:
             log.warning("%s fetch failed: %s", series, e)
 
-    signals = run(client, markets)
+    signals = run(markets)
     log.info("Latency arb: %d signals from %d markets", len(signals), len(markets))
     for sig in signals:
         log.info("Signal: %s %s @ %dc edge=%.2fc ml=%.1fmin",
