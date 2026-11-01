@@ -48,7 +48,7 @@ const input = $input.all()[0].json || {};
 
 try {
   const payload = JSON.stringify({ body: input, webhookPath: '%s' });
-  const result = execSync(`python3 ${script} ${args}`, {
+  const result = execSync(`/data/data/com.termux/files/usr/bin/python3 ${script} ${args}`, {
     input: payload,
     encoding: 'utf8',
     timeout: 60000,
@@ -99,8 +99,7 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
         "parameters": {
             "httpMethod": "POST",
             "path": webhook_path,
-            "responseMode": "responseNode" if workflow_type != "settlement_processor" else "lastNode",
-            "responseNode": "node_respond",
+            "responseMode": "lastNode",
             "authentication": "none",
             "webhookId": webhook_id,
             "responseData": True,

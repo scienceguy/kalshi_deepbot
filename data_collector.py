@@ -54,23 +54,11 @@ class MarketSnapshotCollector:
                 # Historical tier: settled markets with expiration_value,
                 # close_time, floor_strike and other settlement fields.
                 try:
-                    fetched = []
-                    cursor = ""
-                    while len(fetched) < limit:
-                        page = min(100, limit - len(fetched))
-                        data = self.client.get_historical_markets(
-                            series_ticker=series, limit=page, cursor=cursor
-                        )
-                        page_markets = data.get("markets", [])
-                        if not page_markets:
-                            break
-                        fetched.extend(page_markets)
-                        cursor = data.get("cursor", "")
-                        if not cursor:
-                            break
-                    if fetched:
-                        series_markets = fetched
-                        log.info("%s: %d historical markets", series, len(fetched))
+                    series_markets = self.client.fetch_all_historical_markets(
+                        series_ticker=series, limit=limit
+                    )
+                    if series_markets:
+                        log.info("%s: %d historical markets", series, len(series_markets))
                 except Exception as e:
                     log.warning("%s historical fetch failed: %s", series, e)
 

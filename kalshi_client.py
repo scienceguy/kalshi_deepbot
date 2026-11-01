@@ -409,6 +409,38 @@ class KalshiClient:
             params["cursor"] = cursor
         return self._request("GET", "/historical/markets", params=params)
 
+    def fetch_all_historical_markets(self, series_ticker: str = "",
+                                     limit: int = 100,
+                                     page_size: int = 100) -> list:
+        """Fetch all settled markets from the historical tier with cursor pagination.
+
+        Convenience wrapper around ``get_historical_markets`` that follows
+        cursors until either ``limit`` markets are collected or no more pages
+        exist.
+
+        Args:
+            series_ticker: Filter by series (e.g. "KXBTC15M").
+            limit: Max total results to collect.
+            page_size: Results per API page (max 100).
+
+        Returns list of market dicts.
+        """
+        fetched = []
+        cursor = ""
+        while len(fetched) < limit:
+            page = min(page_size, limit - len(fetched))
+            data = self.get_historical_markets(
+                series_ticker=series_ticker, limit=page, cursor=cursor
+            )
+            page_markets = data.get("markets", [])
+            if not page_markets:
+                break
+            fetched.extend(page_markets)
+            cursor = data.get("cursor", "")
+            if not cursor:
+                break
+        return fetched
+
     def get_market_candlesticks(self, ticker: str,
                                 start_ts: int,
                                 end_ts: int,
