@@ -68,3 +68,5 @@ Thumbs.db
 historical_data/
 monitor_result.json
 trade_result.json
+hf_data/
+collected_data/

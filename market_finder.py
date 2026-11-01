@@ -184,13 +184,12 @@ def find_active_markets(client: KalshiClient):
             except Exception as e:
                 log.warning("Series fetch failed: %s", e)
 
-    # Best MAIN: closest to 50c — fetch orderbook concurrently with hedges
+    # Fetch orderbooks concurrently for all mains passing the band filter,
+    # plus up to MAX_HEDGE_PER_SERIES hedges per series.
     fetch_list = []  # (mkt, ct, ml, role)
-    if all_mains:
-        mkt, ct, ml, _ = min(all_mains, key=lambda x: abs(x[3] - 50))
+    for mkt, ct, ml, mid in all_mains:
         fetch_list.append((mkt, ct, ml, "MAIN"))
 
-    # HEDGE_NO: up to N brackets where YES is very cheap
     all_hedges.sort(key=lambda x: x[3])
     for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
         fetch_list.append((mkt, ct, ml, "HEDGE_NO"))
@@ -208,11 +207,9 @@ def find_active_markets(client: KalshiClient):
                 except Exception:
                     ob_map[m["ticker"]] = {}
 
-    # Process MAIN — pick the one closest to 50c
-    if all_mains:
-        mkt, ct, ml, _ = min(all_mains, key=lambda x: abs(x[3] - 50))
+    # Process ALL mains passing the entry band — not just the one closest to 50c.
+    for mkt, ct, ml, mid in all_mains:
         ob = ob_map.get(mkt["ticker"], {})
-        # Need series for _build — get it from the market's raw data
         series = mkt.get("series_ticker", "")
         info = _build(mkt, series, ct, ml, ob, "MAIN")
         if MIN_P <= info.mid_yes <= MAX_P:

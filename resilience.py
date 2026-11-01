@@ -41,10 +41,15 @@ class CycleSupervisor:
         self.error_types[self.last_error_type] = self.error_types.get(self.last_error_type, 0) + 1
         # Exponential backoff: 1st failure → base, 2nd → 2×base, 3rd → 4×base, …
         # Capped at max_backoff so retries never grow unbounded.
-        delay = min(
-            self.settings.base_backoff * (2 ** (self.errors_in_a_row - 1)),
-            self.settings.max_backoff,
-        )
+        # First failure: retry immediately (no backoff). Subsequent failures
+        # use exponential backoff starting at base_backoff.
+        if self.errors_in_a_row == 1:
+            delay = 0.0
+        else:
+            delay = min(
+                self.settings.base_backoff * (2 ** (self.errors_in_a_row - 2)),
+                self.settings.max_backoff,
+            )
         log.warning(
             "Cycle error (%d in a row): %s — backing off %.1fs",
             self.errors_in_a_row, exc, delay,

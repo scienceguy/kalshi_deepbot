@@ -209,15 +209,24 @@ def main():
                     log.warning("  %s %s: no files available", series, date_str)
                     continue
 
-                # Download first file
-                file_info = files[0]
-                signed_url = file_info.get("url") or file_info.get("download_url")
-                if not signed_url:
-                    log.warning("  %s %s: no download URL in file info", series, date_str)
-                    continue
+                # Download all files for this date
+                for file_info in files:
+                    signed_url = file_info.get("url") or file_info.get("download_url")
+                    if not signed_url:
+                        log.warning("  %s %s: no download URL in file info", series, date_str)
+                        continue
 
-                client.download_file(signed_url, out_file)
-                log.info("  Downloaded %s (%d bytes)", out_file.name, out_file.stat().st_size)
+                    # Use series/date in filename to avoid overwriting multiple files
+                    file_name = file_info.get("name", file_info.get("filename", "data"))
+                    safe_name = "".join(c for c in file_name if c.isalnum() or c in "._-")
+                    out_file = output_dir / f"{series}_{date_str}_{safe_name}.jsonl.gz"
+
+                    if out_file.exists():
+                        log.info("  %s %s/%s already exists, skipping", series, date_str, safe_name)
+                        continue
+
+                    client.download_file(signed_url, out_file)
+                    log.info("  Downloaded %s (%d bytes)", out_file.name, out_file.stat().st_size)
 
             except Exception as e:
                 log.warning("  %s %s failed: %s", series, date_str, e)

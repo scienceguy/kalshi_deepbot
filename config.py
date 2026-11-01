@@ -60,7 +60,13 @@ def _env_int(name, default):
 
 
 def _env_bool(name, default):
-    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on") if os.environ.get(name) else default
+    val = os.environ.get(name, "").strip().lower()
+    if val and val not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
+        log.warning(
+            "Unrecognized boolean value for %s: '%r'. Using default %s.",
+            name, val, default,
+        )
+    return val in ("1", "true", "yes", "on") if os.environ.get(name) else default
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -142,12 +148,19 @@ TOTAL_CASH_TRADABLE_PCT = _env_float("TOTAL_CASH_TRADABLE_PCT", 0.70)
 # ═════════════════════════════════════════════════════════════════════
 CASH_FLOOR_PCT = _env_float("CASH_FLOOR_PCT", 0.70)
 EXPOSURE_CEILING_PCT = _env_float("EXPOSURE_CEILING_PCT", 0.30)
+if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0:
+    log.warning(
+        "CASH_FLOOR_PCT (%.2f) + EXPOSURE_CEILING_PCT (%.2f) > 1.0. "
+        "Risk checks may allow trades that exceed available cash.",
+        CASH_FLOOR_PCT, EXPOSURE_CEILING_PCT,
+    )
 PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.20)
 MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
 DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.15)
 MAX_DRAWDOWN_PCT = _env_float("MAX_DRAWDOWN_PCT", 0.12)
 STALE_ORDER_MINS = _env_float("STALE_ORDER_MINS", 5.0)
 ADVERSE_MOVE_CENTS = _env_int("ADVERSE_MOVE_CENTS", 10)
+MARKET_DAILY_LOSS_PCT = _env_float("MARKET_DAILY_LOSS_PCT", 0.10)
 
 # ═════════════════════════════════════════════════════════════════════
 # STABILITY CHECK (from kalshi_live_bot — doubles EV per backtests)

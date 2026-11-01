@@ -329,7 +329,8 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
         "Consider: market skew, trend, entry price vs mid, time remaining in "
         "the 15-minute window, position sizing vs cash, and Kalshi's 7% "
         "quadratic taker fee. Be conservative — most 15-minute binary markets "
-        "are close to coin flips at entry."
+        "are close to coin flips at entry. Do not include any other keys or "
+        "text in your response."
     )
 
     user_prompt = json.dumps({

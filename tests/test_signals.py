@@ -1,8 +1,10 @@
 """Tests for signals.py — Signal engine."""
 import pytest
 from unittest.mock import MagicMock
-from signals import max_contracts_for_cash, _size, _maker_price
+from dataclasses import dataclass
+from signals import max_contracts_for_cash, _size, _maker_price, evaluate, rank_signals, TradeSignal
 import config
+from market_finder import MarketInfo
 
 
 def test_max_contracts_for_cash():
@@ -50,3 +52,60 @@ def test_maker_price_aggressive():
     config.AGGRESSIVE_ENTRY_BUFFER_CENTS = 2
     result = _maker_price(market, True)
     assert result == 57  # yes_ask(55) + buffer(2)
+
+
+def make_mock_signal(ticker, side="yes", entry_price=50, strength=50.0, confidence=1.0, bracket_role="MAIN"):
+    """Helper to create a mock TradeSignal."""
+    market = MagicMock(spec=MarketInfo)
+    market.ticker = ticker
+    market.bracket_role = bracket_role
+    return TradeSignal(
+        direction="YES",
+        side=side,
+        entry_price=entry_price,
+        contracts=1.0,
+        dollar_risk=0.5,
+        reason="test",
+        market=market,
+        strength=strength,
+        confidence=confidence,
+    )
+
+
+class TestRankSignals:
+    """Tests for rank_signals ranking function."""
+
+    def test_rank_signals_empty(self):
+        """Empty list returns empty list."""
+        assert rank_signals([]) == []
+
+    def test_rank_signals_single(self):
+        """Single signal returned as-is."""
+        sig = make_mock_signal("TEST1", strength=50.0, confidence=1.0)
+        result = rank_signals([sig])
+        assert len(result) == 1
+        assert result[0] is sig
+
+    def test_rank_signals_by_strength(self):
+        """Signals ranked by strength * confidence * boost (higher first)."""
+        sig1 = make_mock_signal("TEST1", strength=50.0, confidence=1.0)  # score = 50
+        sig2 = make_mock_signal("TEST2", strength=30.0, confidence=1.0)  # score = 30
+        sig3 = make_mock_signal("TEST3", strength=80.0, confidence=1.0)  # score = 80
+        result = rank_signals([sig1, sig2, sig3])
+        assert [s.market.ticker for s in result] == ["TEST3", "TEST1", "TEST2"]
+
+    def test_rank_signals_confidence_weighted(self):
+        """Confidence affects ranking: lower confidence = lower rank."""
+        sig1 = make_mock_signal("TEST1", strength=100.0, confidence=0.5)  # score = 50
+        sig2 = make_mock_signal("TEST2", strength=50.0, confidence=1.0)   # score = 50
+        # Same score, tie broken by ticker name (descending alphabetically since reverse=True)
+        result = rank_signals([sig1, sig2])
+        assert result[0].market.ticker == "TEST2"  # TEST2 > TEST1 alphabetically
+
+    def test_rank_signals_hedge_boost(self):
+        """HEDGE_NO side gets 1.2x boost."""
+        sig_yes = make_mock_signal("TEST1", strength=50.0, confidence=1.0, bracket_role="MAIN")  # score = 50
+        sig_no = make_mock_signal("TEST2", strength=50.0, confidence=1.0, bracket_role="HEDGE_NO")  # score = 60
+        result = rank_signals([sig_yes, sig_no])
+        assert result[0].market.ticker == "TEST2"
+        assert result[1].market.ticker == "TEST1"

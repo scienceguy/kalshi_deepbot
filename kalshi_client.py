@@ -466,6 +466,10 @@ class KalshiClient:
                 break
         return fetched
 
+    def close(self):
+        """Close the underlying requests session to release sockets."""
+        self.session.close()
+
     def get_market_candlesticks(self, ticker: str,
                                 start_ts: int,
                                 end_ts: int,

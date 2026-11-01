@@ -91,16 +91,16 @@ def evaluate_market(market: dict) -> dict | None:
         return None  # Edge too small
 
     # Determine direction: buy the side closer to 50c (cheaper to enter)
-    # If YES mid > 50, buy YES at yes_ask
-    # If YES mid < 50, buy NO at no_ask (equiv: sell YES at yes_bid)
+    # If YES mid > 50, YES is overpriced → buy NO at no_ask
+    # If YES mid < 50, NO is overpriced → buy YES at yes_ask
     if mid > 50:
-        side = "yes"
-        entry_price = ya  # Buy YES at ask
-        direction = "YES"
-    else:
         side = "no"
         entry_price = na  # Buy NO at ask
         direction = "NO"
+    else:
+        side = "yes"
+        entry_price = ya  # Buy YES at ask
+        direction = "YES"
 
     # Verify entry price is valid
     if entry_price <= 0 or entry_price >= 100:

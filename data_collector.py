@@ -114,10 +114,10 @@ class MarketSnapshotCollector:
 
         if minutes_left <= 0:
             # Closed market: market has already settled; record full-window snapshot.
-            # Keep the actual (negative) minutes_left so downstream time-decay features
-            # see variation across markets that settled at different times.
+            # Clamp minutes_left to 0 to avoid negative time-decay features.
             market_status = "closed"
             minutes_in = 15.0
+            minutes_left = 0.0
         else:
             market_status = "open"
             minutes_in = 15.0 - minutes_left
@@ -176,6 +176,9 @@ def main():
     parser.add_argument("--output-dir", default="./collected_data")
     parser.add_argument("--limit", type=int, default=200, help="Max markets per series")
     args = parser.parse_args()
+
+    # Validate credentials before creating KalshiClient
+    config.validate_credentials()
 
     collector = MarketSnapshotCollector(Path(args.output_dir))
 

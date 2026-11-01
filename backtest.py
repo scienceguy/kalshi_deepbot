@@ -81,6 +81,9 @@ def main():
 
     logging.getLogger().setLevel(logging.WARNING)
 
+    # Validate credentials before constructing KalshiClient
+    config.validate_credentials()
+
     client = KalshiClient()
     series = config.TARGET_SERIES
 

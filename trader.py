@@ -56,7 +56,7 @@ from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E
 from kalshi_client import KalshiClient  # noqa: E402
 from market_finder import find_active_markets, _parse_api_time, MarketInfo  # noqa: E402
 from risk import RiskManager  # noqa: E402
-from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT  # noqa: E402
+from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
 import signals as se  # noqa: E402
 from resilience import CycleSupervisor  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
@@ -173,6 +173,15 @@ class BotState:
             log.info(
                 "CASH BLOCK %s — new $%.2f + resting $%.2f > available cash $%.2f",
                 ticker, sig.dollar_risk, pending, cash,
+            )
+            return False
+
+        # Per-market daily loss limit
+        market_daily_loss = state.risk.state.market_daily_losses.get(ticker, 0.0)
+        if market_daily_loss >= cash * config.MARKET_DAILY_LOSS_PCT:
+            log.info(
+                "MARKET DAILY LOSS BLOCK %s — daily loss $%.2f >= limit $%.2f",
+                ticker, market_daily_loss, cash * config.MARKET_DAILY_LOSS_PCT,
             )
             return False
 
@@ -407,8 +416,8 @@ def cycle(client: KalshiClient):
     try:
         cash = client.get_balance()
     except Exception as e:
-        log.warning("Balance fetch failed: %s", e)
-        cash = 0.0
+        log.warning("Balance fetch failed: %s — treating cash as unknown", e)
+        cash = None
 
     # Fetch positions
     try:
@@ -501,8 +510,10 @@ def cycle(client: KalshiClient):
                 t, side, reserved, realized_pnl, won,
             )
 
-            # Track consecutive losses for risk cooldown
+            # Track consecutive losses and per-market daily loss for risk cooldown
             state.risk.record_trade_outcome(won, realized_pnl)
+            if not won:
+                state.risk.record_market_loss(ticker, abs(realized_pnl))
 
             # Record settlement to Supabase via n8n workflow
             try:
@@ -574,9 +585,16 @@ def cycle(client: KalshiClient):
         state.orders_today = 0
         state.risk.reset_daily()
 
+    # If balance fetch failed, skip balance-dependent checks but continue
+    # with market finding — we can still evaluate signals without knowing
+    # exact cash.
+    cash_available = cash is not None
+    if not cash_available:
+        log.warning("Balance unknown — skipping balance-dependent risk checks")
+
     log.info(
         "%s | window $%.2f/%.2f | trades=%d cycles=%d",
-        state.risk.summary(cash, exposure),
+        state.risk.summary(cash if cash_available else 0.0, exposure),
         state.window["used"], state.window["budget"],
         state.trades_placed, state.cycles,
     )
@@ -585,7 +603,7 @@ def cycle(client: KalshiClient):
     try:
         get_supabase_client().set_bot_state_batch({
             "cycle": state.cycles,
-            "cash": cash,
+            "cash": cash if cash_available else None,
             "exposure": exposure,
             "session_pnl": state.session_pnl,
         })
@@ -597,7 +615,7 @@ def cycle(client: KalshiClient):
         log.warning("🛑 Risk halt active — no new entries")
         return
 
-    if cash < 1.00:
+    if cash_available and cash < 1.00:
         log.warning("Cash $%.2f below minimum $1.00", cash)
         return
 
@@ -611,7 +629,8 @@ def cycle(client: KalshiClient):
         return
 
     max_trade = state.risk.max_trade_dollars(
-        cash, exposure, resting_orders_value=sum(state.resting_value.values())
+        cash if cash_available else 0.0, exposure,
+        resting_orders_value=sum(state.resting_value.values()),
     )
     if max_trade < 0.20:
         log.info("Max trade $%.2f too small — protecting cash floor", max_trade)
@@ -916,16 +935,27 @@ if __name__ == "__main__":
     lock_fd = None
     for attempt in range(5):
         try:
-            # Atomic create — fails if lock already exists (TOCTOU-safe)
             lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             break
         except FileExistsError:
-            pid = open(lock_path).read().strip()
-            if os.path.exists(f"/proc/{pid}"):
-                print(f"Bot already running (PID {pid}). Exiting.")
-                sys.exit(1)
-            # Stale lock — remove and retry the atomic open
-            os.unlink(lock_path)
+            # Stale lock — check if holder is still alive via fcntl
+            try:
+                existing_fd = os.open(lock_path, os.O_RDONLY)
+                import fcntl
+                try:
+                    fcntl.flock(existing_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    # Lock acquired — previous holder is dead, take over
+                    os.close(existing_fd)
+                    lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    break
+                except (OSError, BlockingIOError):
+                    # Lock held by live process
+                    os.close(existing_fd)
+                    print(f"Bot already running (PID held lock). Exiting.")
+                    sys.exit(1)
+            except OSError:
+                # File disappeared between stat and open — retry
+                continue
     else:
         print("Could not acquire lock after 5 attempts. Exiting.")
         sys.exit(1)

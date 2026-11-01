@@ -21,6 +21,7 @@ class RiskState:
     halted: bool = False
     halt_reason: str = ""
     consecutive_losses: int = 0
+    market_daily_losses: dict = field(default_factory=dict)
 
 
 class RiskManager:
@@ -77,6 +78,19 @@ class RiskManager:
             if self.state.consecutive_losses >= 3:
                 log.warning("🛑 %d consecutive losses — cooldown active",
                             self.state.consecutive_losses)
+
+    def record_market_loss(self, ticker: str, loss: float):
+        """Track per-market daily loss for risk limiting."""
+        if loss <= 0:
+            return
+        self.state.market_daily_losses[ticker] = (
+            self.state.market_daily_losses.get(ticker, 0.0) + loss
+        )
+
+    def market_loss_exceeded(self, ticker: str, max_daily_loss: float) -> bool:
+        """Check if per-market daily loss limit has been exceeded."""
+        loss = self.state.market_daily_losses.get(ticker, 0.0)
+        return loss >= max_daily_loss
 
     def max_trade_dollars(self, cash: float, exposure: float,
                           resting_orders_value: float = 0.0) -> float:

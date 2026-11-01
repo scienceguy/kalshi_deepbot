@@ -210,3 +210,49 @@ class TestFindActiveMarkets:
 
         result = find_active_markets(client)
         assert result == []
+
+    def test_fetch_multiple_series(self, monkeypatch):
+        """Fetches markets from multiple series concurrently."""
+        monkeypatch.setattr(config, "MIN_YES_PRICE_CENTS", 1)
+        monkeypatch.setattr(config, "MAX_YES_PRICE_CENTS", 99)
+        monkeypatch.setattr(config, "HEDGE_YES_ASK_MAX", 12)
+        monkeypatch.setattr(config, "MAX_HEDGE_PER_SERIES", 0)
+        monkeypatch.setattr(config, "TARGET_SERIES", ["KXBTC15M", "KXETH15M"])
+
+        close_dt = datetime.now(timezone.utc) + timedelta(minutes=10)
+
+        client = MagicMock()
+        client.get_orderbook.return_value = {}
+        # Different markets for each series
+        def side_effect(series_ticker=None, status="open", limit=50):
+            if series_ticker == "KXBTC15M":
+                return [{
+                    "ticker": "KXBTC15M",
+                    "status": "active",
+                    "close_time": close_dt.isoformat(),
+                    "yes_bid_dollars": "0.50",
+                    "yes_ask_dollars": "0.52",
+                    "no_bid_dollars": "0.48",
+                    "no_ask_dollars": "0.50",
+                    "yes_bid_size_fp": "100",
+                    "no_bid_size_fp": "100",
+                }]
+            elif series_ticker == "KXETH15M":
+                return [{
+                    "ticker": "KXETH15M",
+                    "status": "active",
+                    "close_time": close_dt.isoformat(),
+                    "yes_bid_dollars": "0.30",
+                    "yes_ask_dollars": "0.32",
+                    "no_bid_dollars": "0.68",
+                    "no_ask_dollars": "0.70",
+                    "yes_bid_size_fp": "100",
+                    "no_bid_size_fp": "100",
+                }]
+            return []
+        client.get_markets.side_effect = side_effect
+
+        result = find_active_markets(client)
+        assert len(result) == 2
+        tickers = {m.ticker for m in result}
+        assert tickers == {"KXBTC15M", "KXETH15M"}

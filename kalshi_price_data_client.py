@@ -135,8 +135,13 @@ class KalshiPriceDataClient:
         if not self._available:
             return False
         try:
-            self._client.health_check()
-            return True
+            if hasattr(self._client, "health_check"):
+                self._client.health_check()
+                return True
+            log.warning(
+                "kalshi-price-data SDK has no health_check method"
+            )
+            return False
         except Exception as e:
             log.warning("kalshi-price-data health check failed: %s", e)
             return False

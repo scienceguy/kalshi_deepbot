@@ -19,11 +19,9 @@ from typing import Literal, Optional
 import config
 from market_finder import MarketInfo
 
-# Optional spot feed for z-score gating (kalshi_live_bot Approach D)
-try:
-    import spot as _spot_mod
-except Exception:
-    _spot_mod = None
+# Spot feed (kalshi_live_bot Approach D) — not implemented; spot module does not exist.
+# SPOT_FILTER_ENABLED and Z_MAX config have no effect without a spot feed.
+_spot_mod = None
 
 log = logging.getLogger(__name__)
 Direction = Literal["YES", "NO", "PASS"]
@@ -45,6 +43,7 @@ class TradeSignal:
     def is_trade(self) -> bool:
         return (
             self.direction != "PASS"
+            and self.side in ("yes", "no")
             and self.entry_price > 0
             and self.contracts > 0
         )
