@@ -340,7 +340,7 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     
-    # Check if workflows already exist
+    # Check if workflows already exist (by name OR by webhook path, for idempotency)
     cur.execute("SELECT id FROM workflow_entity WHERE name LIKE 'SuperBot%'")
     existing = cur.fetchall()
     if existing:
@@ -354,7 +354,8 @@ def main():
             cur.execute("DELETE FROM workflow_history WHERE workflowId=?", (wid,))
             cur.execute("DELETE FROM workflow_entity WHERE id=?", (wid,))
         conn.commit()
-    
+
+    # Define workflows (before deletion loop so we can remove orphan webhooks too)
     workflows = [
         {
             'id': new_id(),
@@ -394,7 +395,12 @@ def main():
             'args': '--once --debug'
         }
     ]
-    
+
+    # Also remove any orphan webhooks with our paths (from partial/future runs)
+    for wf in workflows:
+        cur.execute("DELETE FROM webhook_entity WHERE webhookPath=? AND method='POST'", (wf['webhook_path'],))
+    conn.commit()
+
     for wf in workflows:
         print("Inserting workflow: %s (webhook: %s)" % (wf['name'], wf['webhook_path']))
         data = make_workflow(

@@ -582,12 +582,14 @@ def cycle(client: KalshiClient):
         state.trades_placed, state.cycles,
     )
 
-    # Record bot state to Supabase (non-critical state writes)
+    # Record bot state to Supabase (non-critical state writes, batched)
     try:
-        get_supabase_client().set_bot_state("cycle", state.cycles)
-        get_supabase_client().set_bot_state("cash", cash)
-        get_supabase_client().set_bot_state("exposure", exposure)
-        get_supabase_client().set_bot_state("session_pnl", state.session_pnl)
+        get_supabase_client().set_bot_state_batch({
+            "cycle": state.cycles,
+            "cash": cash,
+            "exposure": exposure,
+            "session_pnl": state.session_pnl,
+        })
     except Exception:
         log.debug("Supabase bot_state writes failed")
 

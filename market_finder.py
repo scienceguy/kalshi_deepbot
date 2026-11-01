@@ -114,106 +114,126 @@ def _fetch_orderbook(client: KalshiClient, ticker: str) -> dict:
         return {}
 
 
+def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
+                          MIN_P: int, MAX_P: int, HMAX: int,
+                          seen: set) -> tuple:
+    """Fetch and filter markets for a single series."""
+    markets = None
+    for attempt in range(3):
+        try:
+            markets = client.get_markets(series_ticker=series, status="open", limit=50)
+            break
+        except Exception as e:
+            if attempt < 2:
+                wait = 0.5 * (2 ** attempt)
+                log.warning("Fetch failed %s (attempt %d/3): %s — retrying in %.1fs",
+                            series, attempt + 1, e, wait)
+                time.sleep(wait)
+            else:
+                log.warning("Fetch failed %s: %s", series, e)
+
+    if not markets:
+        return [], []
+
+    log.debug("Series %s: %d markets returned", series, len(markets))
+
+    mains = []; hedges = []
+    for mkt in markets:
+        ticker = mkt.get("ticker","")
+        if not ticker or ticker in seen: continue
+        seen.add(ticker)
+
+        status = str(mkt.get("status","")).lower()
+        if status not in ("active", "open"): continue
+
+        ct = _parse_api_time(mkt.get("close_time"))
+        if not ct: continue
+        ml = (ct - now).total_seconds() / 60
+        if ml <= 0 or ml > 15.5: continue
+
+        yb, ya, nb, na, yq, nq = _parse_market_prices(mkt)
+        mid = round((yb + ya) / 2) if (yb and ya) else (ya or yb or 0)
+
+        log.debug("  %s ml=%.1f mid=%dc ya=%dc yb=%dc", ticker, ml, mid, ya, yb)
+
+        if MIN_P <= mid <= MAX_P:
+            mains.append((mkt, ct, ml, mid))
+        elif 1 <= ya <= HMAX:
+            hedges.append((mkt, ct, ml, ya))
+
+    return mains, hedges
+
+
 def find_active_markets(client: KalshiClient):
     now = datetime.now(timezone.utc)
-    result = []; seen = set()
+    result = []
     MIN_P = config.MIN_YES_PRICE_CENTS
     MAX_P = config.MAX_YES_PRICE_CENTS
     HMAX  = config.HEDGE_YES_ASK_MAX
 
-    for series in config.TARGET_SERIES:
-        markets = None
-        for attempt in range(3):
+    # Fetch markets for all series concurrently (thread-safe via KalshiClient._lock)
+    all_mains = []; all_hedges = []; seen = set()
+    with ThreadPoolExecutor(max_workers=len(config.TARGET_SERIES)) as ex:
+        futs = {ex.submit(_fetch_series_markets, client, series, now,
+                          MIN_P, MAX_P, HMAX, seen): series
+                for series in config.TARGET_SERIES}
+        for fut in as_completed(futs):
             try:
-                # Use status=open for the query — Kalshi accepts it and returns "active" markets
-                markets = client.get_markets(series_ticker=series, status="open", limit=50)
-                break
+                mains, hedges = fut.result()
+                all_mains.extend(mains)
+                all_hedges.extend(hedges)
             except Exception as e:
-                if attempt < 2:
-                    wait = 0.5 * (2 ** attempt)
-                    log.warning("Fetch failed %s (attempt %d/3): %s — retrying in %.1fs",
-                                series, attempt + 1, e, wait)
-                    time.sleep(wait)
-                else:
-                    log.warning("Fetch failed %s: %s", series, e)
+                log.warning("Series fetch failed: %s", e)
 
-        log.debug("Series %s: %d markets returned", series, len(markets))
+    # Best MAIN: closest to 50c — fetch orderbook concurrently with hedges
+    fetch_list = []  # (mkt, ct, ml, role)
+    if all_mains:
+        mkt, ct, ml, _ = min(all_mains, key=lambda x: abs(x[3] - 50))
+        fetch_list.append((mkt, ct, ml, "MAIN"))
 
-        mains = []; hedges = []
-        for mkt in markets:
-            ticker = mkt.get("ticker","")
-            if not ticker or ticker in seen: continue
-            seen.add(ticker)
+    # HEDGE_NO: up to N brackets where YES is very cheap
+    all_hedges.sort(key=lambda x: x[3])
+    for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
+        fetch_list.append((mkt, ct, ml, "HEDGE_NO"))
 
-            # Accept both "open" and "active" statuses
-            status = str(mkt.get("status","")).lower()
-            if status not in ("active", "open"): continue
+    # Fetch all orderbooks concurrently instead of one HTTP call per market
+    ob_map = {}
+    if fetch_list:
+        with ThreadPoolExecutor(max_workers=len(fetch_list)) as ex:
+            futs = {ex.submit(_fetch_orderbook, client, m["ticker"]): (m, ct, ml, role)
+                    for m, ct, ml, role in fetch_list}
+            for fut in as_completed(futs):
+                m, ct, ml, role = futs[fut]
+                try:
+                    ob_map[m["ticker"]] = fut.result()
+                except Exception:
+                    ob_map[m["ticker"]] = {}
 
-            ct = _parse_api_time(mkt.get("close_time"))
-            if not ct: continue
-            ml = (ct - now).total_seconds() / 60
-            if ml <= 0 or ml > 15.5: continue
+    # Process MAIN — pick the one closest to 50c
+    if all_mains:
+        mkt, ct, ml, _ = min(all_mains, key=lambda x: abs(x[3] - 50))
+        ob = ob_map.get(mkt["ticker"], {})
+        # Need series for _build — get it from the market's raw data
+        series = mkt.get("series_ticker", "")
+        info = _build(mkt, series, ct, ml, ob, "MAIN")
+        if MIN_P <= info.mid_yes <= MAX_P:
+            result.append(info)
+            log.info("✓ MAIN  %s %.1fmin mid=%.0fc bid=%dc ask=%dc skew=%+dc",
+                     info.ticker, ml, info.mid_yes, info.yes_bid, info.yes_ask, info.skew)
+        else:
+            log.debug("MAIN failed real-price check mid=%.0fc: %s", info.mid_yes, mkt["ticker"])
 
-            # Parse prices from raw market (avoids extra orderbook call for filter)
-            yb, ya, nb, na, yq, nq = _parse_market_prices(mkt)
-            mid = round((yb + ya) / 2) if (yb and ya) else (ya or yb or 0)
-
-            log.debug("  %s ml=%.1f mid=%dc ya=%dc yb=%dc", ticker, ml, mid, ya, yb)
-
-            if MIN_P <= mid <= MAX_P:
-                mains.append((mkt, ct, ml, mid))
-            elif 1 <= ya <= HMAX:
-                hedges.append((mkt, ct, ml, ya))
-            else:
-                log.debug("  Filtered out: mid=%dc ya=%dc (range %d-%d, hedge<%d)",
-                          mid, ya, MIN_P, MAX_P, HMAX)
-
-        # Best MAIN: closest to 50c — fetch orderbook concurrently with hedges
-        fetch_list = []  # (mkt, ct, ml, role)
-        if mains:
-            mkt, ct, ml, _ = min(mains, key=lambda x: abs(x[3] - 50))
-            fetch_list.append((mkt, ct, ml, "MAIN"))
-
-        # HEDGE_NO: up to N brackets where YES is very cheap
-        hedges.sort(key=lambda x: x[3])
-        for mkt, ct, ml, ya in hedges[:config.MAX_HEDGE_PER_SERIES]:
-            fetch_list.append((mkt, ct, ml, "HEDGE_NO"))
-
-        # Fetch all orderbooks concurrently instead of one HTTP call per market
-        ob_map = {}
-        if fetch_list:
-            with ThreadPoolExecutor(max_workers=len(fetch_list)) as ex:
-                futs = {ex.submit(_fetch_orderbook, client, m["ticker"]): (m, ct, ml, role)
-                        for m, ct, ml, role in fetch_list}
-                for fut in as_completed(futs):
-                    m, ct, ml, role = futs[fut]
-                    try:
-                        ob_map[m["ticker"]] = fut.result()
-                    except Exception:
-                        ob_map[m["ticker"]] = {}
-
-        # Process MAIN
-        if mains:
-            mkt, ct, ml, _ = min(mains, key=lambda x: abs(x[3] - 50))
-            ob = ob_map.get(mkt["ticker"], {})
-            info = _build(mkt, series, ct, ml, ob, "MAIN")
-            if MIN_P <= info.mid_yes <= MAX_P:
-                result.append(info)
-                log.info("✓ MAIN  %s %.1fmin mid=%.0fc bid=%dc ask=%dc skew=%+dc",
-                         info.ticker, ml, info.mid_yes, info.yes_bid, info.yes_ask, info.skew)
-            else:
-                log.debug("MAIN failed real-price check mid=%.0fc: %s", info.mid_yes, mkt["ticker"])
-
-        # Process HEDGE_NO
-        for mkt, ct, ml, ya in hedges[:config.MAX_HEDGE_PER_SERIES]:
-            ob = ob_map.get(mkt["ticker"], {})
-            info = _build(mkt, series, ct, ml, ob, "HEDGE_NO")
-            if 0 < info.no_ask <= config.HEDGE_NO_ASK_MAX:
-                result.append(info)
-                log.info("✓ HEDGE %s %.1fmin yes_ask=%dc no_ask=%dc prob≈%d%%",
-                         info.ticker, ml, info.yes_ask, info.no_ask, 100 - info.no_ask)
-            else:
-                log.debug("Hedge filtered no_ask=%dc: %s", info.no_ask, mkt["ticker"])
+    # Process HEDGE_NO
+    for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
+        ob = ob_map.get(mkt["ticker"], {})
+        series = mkt.get("series_ticker", "")
+        info = _build(mkt, series, ct, ml, ob, "HEDGE_NO")
+        if 0 < info.no_ask <= config.HEDGE_NO_ASK_MAX:
+            result.append(info)
+            log.info("✓ HEDGE %s %.1fmin yes_ask=%dc no_ask=%dc prob≈%d%%",
+                     info.ticker, ml, info.yes_ask, info.no_ask, 100 - info.no_ask)
+        else:
+            log.debug("Hedge filtered no_ask=%dc: %s", info.no_ask, mkt["ticker"])
 
     log.info("Found %d tradeable brackets", len(result))
     return result

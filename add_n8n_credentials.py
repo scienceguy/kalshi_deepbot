@@ -11,25 +11,21 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 import base64
 
-# Read n8n encryption key
-config_path = os.environ.get("N8N_CONFIG_PATH", "/data/data/com.termux/files/home/.n8n/config")
-with open(config_path) as f:
-    config = json.load(f)
-encryption_key = config["encryptionKey"]
+def load_encryption_key():
+    config_path = os.environ.get("N8N_CONFIG_PATH", "/data/data/com.termux/files/home/.n8n/config")
+    with open(config_path) as f:
+        config = json.load(f)
+    encryption_key = config["encryptionKey"]
+    enc_key = base64.b64decode(encryption_key)
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"n8n-encryption-key",
+    )
+    return hkdf.derive(enc_key)
 
-# Decode the encryption key (it's base64 encoded)
-enc_key = base64.b64decode(encryption_key)
-
-# Derive AES-256-GCM key using HKDF (n8n uses this)
-hkdf = HKDF(
-    algorithm=hashes.SHA256(),
-    length=32,
-    salt=None,
-    info=b"n8n-encryption-key",
-)
-encryption_key_bytes = hkdf.derive(enc_key)
-
-def encrypt_value(plaintext: str) -> str:
+def encrypt_value(plaintext: str, encryption_key_bytes: bytes) -> str:
     """Encrypt a value using AES-256-GCM like n8n does."""
     aesgcm = AESGCM(encryption_key_bytes)
     nonce = os.urandom(12)
@@ -38,12 +34,12 @@ def encrypt_value(plaintext: str) -> str:
     result = nonce + ciphertext
     return base64.b64encode(result).decode()
 
-def insert_credential(conn, name, cred_type, data_dict):
+def insert_credential(conn, name, cred_type, data_dict, encryption_key_bytes: bytes):
     """Insert a credential into the database."""
     # Encrypt each value in the data dict
     encrypted_data = {}
     for k, v in data_dict.items():
-        encrypted_data[k] = encrypt_value(str(v))
+        encrypted_data[k] = encrypt_value(str(v), encryption_key_bytes)
     
     data_json = json.dumps(encrypted_data)
     
@@ -118,6 +114,7 @@ credentials = [
     },
 ]
 
+encryption_key_bytes = load_encryption_key()
 conn = sqlite3.connect("/data/data/com.termux/files/home/.n8n/database.sqlite")
 try:
     for cred in credentials:

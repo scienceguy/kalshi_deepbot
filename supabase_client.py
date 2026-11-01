@@ -323,6 +323,21 @@ class SupabaseClient:
             log.warning("set_bot_state error: %s", e)
             return False
 
+    def set_bot_state_batch(self, states: dict) -> bool:
+        """Set multiple bot state key-value pairs in a single request."""
+        try:
+            rows = [
+                {"key": k, "value_json": json.dumps(v),
+                 "ts": datetime.now(timezone.utc).isoformat()}
+                for k, v in states.items()
+            ]
+            result = self._request("POST", "bot_state", data=rows,
+                                   extra_headers={"Prefer": "resolution=merge-duplicates"})
+            return result is not None
+        except Exception as e:
+            log.warning("set_bot_state_batch error: %s", e)
+            return False
+
     def get_bot_state(self, key: str) -> Optional[Any]:
         """Get a bot state value by key."""
         try:

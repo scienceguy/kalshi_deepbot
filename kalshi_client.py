@@ -8,6 +8,7 @@ import stat
 import time
 import base64
 import logging
+import threading
 import requests
 from pathlib import Path
 from typing import Optional
@@ -50,6 +51,7 @@ class KalshiClient:
         self.key_id     = config.KALSHI_KEY_ID
         self._privkey   = self._load_private_key()
         self._last_req  = 0.0
+        self._lock      = threading.Lock()
         self.session    = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
         self.session.mount('https://', HTTPAdapter(pool_connections=20, pool_maxsize=20))
@@ -171,21 +173,23 @@ class KalshiClient:
         """Execute a rate-limited, signed request. Returns parsed JSON."""
         # Verify key on first use (fails fast with clear error if key is wrong)
         self._ensure_verified()
-        # Rate limiting
-        gap = time.time() - self._last_req
-        if gap < _MIN_REQUEST_GAP:
-            time.sleep(_MIN_REQUEST_GAP - gap)
+        # Rate limiting (thread-safe)
+        with self._lock:
+            gap = time.time() - self._last_req
+            if gap < _MIN_REQUEST_GAP:
+                time.sleep(_MIN_REQUEST_GAP - gap)
 
-        full_path = path if path.startswith("/") else f"/{path}"
-        url       = self.base_url + full_path
-        headers   = self._auth_header(method, full_path)
+            full_path = path if path.startswith("/") else f"/{path}"
+            url       = self.base_url + full_path
+            headers   = self._auth_header(method, full_path)
 
-        # Default timeout: 10s connect/read; overridable per call
-        if timeout is None:
-            timeout = config.REQUEST_TIMEOUT_SECONDS
-        kwargs.setdefault("timeout", timeout)
+            # Default timeout: 10s connect/read; overridable per call
+            if timeout is None:
+                timeout = config.REQUEST_TIMEOUT_SECONDS
+            kwargs.setdefault("timeout", timeout)
 
-        self._last_req = time.time()
+            self._last_req = time.time()
+
         for _attempt in range(5):
             try:
                 resp = self.session.request(method, url, headers=headers, **kwargs)
