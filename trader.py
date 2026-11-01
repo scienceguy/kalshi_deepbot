@@ -54,7 +54,7 @@ import fees  # noqa: E402
 from supabase_client import get_supabase  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient  # noqa: E402
-from market_finder import find_active_markets, _parse_api_time, _dollars_str_to_cents, MarketInfo  # noqa: E402
+from market_finder import find_active_markets, _parse_api_time, _dollars_str_to_cents, MarketInfo, _settle_yes_cents  # noqa: E402
 from risk import RiskManager  # noqa: E402
 from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
 from signals import TradeSignal  # noqa: E402
@@ -308,8 +308,9 @@ class BotState:
             })
         except Exception:
             log.warning("Supabase insert_order failed for %s — order audit trail incomplete", ticker)
-        # Track capital at risk per ticker — released on settlement, not booked as P&L
-        state.position_risk[ticker] = sig.dollar_risk
+        # Track capital at risk per ticker — released on settlement, not booked as P&L.
+        # Use filled_risk (actual fill) so partial fills don't over-reserve.
+        state.position_risk[ticker] = filled_risk
 
 
 # Global state
@@ -374,6 +375,134 @@ def _save_dry_state(cash: float):
 
 
 # ═════════════════════════════════════════════════════════════════════
+# Kalshi API compatibility helpers
+#
+# The Trade API migrated positions and orders to a fixed-point schema
+# (position_fp / fill_count_fp / *_price_dollars / settlement_value_dollars).
+# The bot read the OLD field names (yes_position / no_position / price_cents /
+# filledCount / expiration_value-as-payout), which silently returned 0 on the
+# live API — every position read, resting-order reservation, fill record and
+# settlement was a no-op. These helpers read the NEW fields with the OLD ones
+# as a fallback, so the code works against the live API while the test mocks
+# (which still use old names) keep passing.
+# ═════════════════════════════════════════════════════════════════════
+
+def _pos_yes(p):
+    """YES contract count from a position record (new + legacy shape)."""
+    v = p.get("position_fp")
+    if v is not None:
+        try:
+            return max(0.0, float(v))
+        except (TypeError, ValueError):
+            return 0.0
+    return float(p.get("yes_position", 0) or 0)
+
+
+def _pos_no(p):
+    """NO contract count from a position record (new + legacy shape)."""
+    v = p.get("position_fp")
+    if v is not None:
+        try:
+            return max(0.0, -float(v))
+        except (TypeError, ValueError):
+            return 0.0
+    return float(p.get("no_position", 0) or 0)
+
+
+def _pos_cost_basis(p):
+    """Cost-basis exposure in dollars from a position record.
+
+    New schema carries market_exposure_dollars directly. Legacy records need
+    the average price fields recomputed.
+    """
+    v = p.get("market_exposure_dollars")
+    if v not in (None, ""):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    yes = _pos_yes(p)
+    no = _pos_no(p)
+    yp = _dollars_str_to_cents(p.get("yes_avg_price_dollars", 0) or 0) / 100.0
+    np_ = _dollars_str_to_cents(p.get("no_avg_price_dollars", 0) or 0) / 100.0
+    return yes * yp + no * np_
+
+
+def _order_count(o):
+    """Contract count from an order record (new + legacy shape)."""
+    for k in ("initial_count_fp", "remaining_count_fp", "count", "quantity"):
+        v = o.get(k)
+        if v in (None, "", 0, "0", "0.00"):
+            continue
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _order_price_dollars(o):
+    """Price per contract in dollars for a resting order (new + legacy)."""
+    side = o.get("outcome_side") or o.get("side") or ""
+    if side == "no":
+        v = o.get("no_price_dollars")
+        if v not in (None, ""):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    v = o.get("yes_price_dollars")
+    if v not in (None, ""):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    pc = o.get("price_cents", 0)
+    try:
+        return float(pc) / 100.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _order_fill_count(resp):
+    """Filled contract count from an order response (new + legacy)."""
+    v = resp.get("fill_count_fp")
+    if v is None:
+        v = resp.get("filledCount", 0)
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _mark_to_market_exposure(positions, markets):
+    """Mark-to-market exposure in dollars across all 15M positions.
+
+    Uses the current orderbook mid when available; falls back to the
+    position's cost basis (market_exposure_dollars) when the market is not in
+    the current book. One pass — the two previous loops were duplicates.
+    """
+    mkt_by_ticker = {m.ticker: m for m in markets}
+    exposure = 0.0
+    for p in positions:
+        if "15M" not in p.get("ticker", "").upper():
+            continue
+        ticker = p.get("ticker", "")
+        yes_pos = _pos_yes(p)
+        no_pos = _pos_no(p)
+        mkt_info = mkt_by_ticker.get(ticker)
+        if mkt_info and (yes_pos or no_pos):
+            mid = mkt_info.mid_yes
+            if yes_pos:
+                exposure += yes_pos * mid / 100.0
+            if no_pos:
+                exposure += no_pos * (100 - mid) / 100.0
+        else:
+            exposure += _pos_cost_basis(p)
+    return exposure
+
+
+# ═════════════════════════════════════════════════════════════════════
 def _load_settlement_queue() -> list:
     """Load pending settlements from the local queue file."""
     try:
@@ -408,11 +537,8 @@ def _resolve_pending_settlement(client, payload):
         market = client.get_market(ticker)
     except Exception:
         return None
-    exp_val = market.get("expiration_value")
-    if exp_val is None:
-        return None
-    settled_yes = int(round(float(exp_val) * 100))
-    if settled_yes not in (0, 100):
+    settled_yes = _settle_yes_cents(market)
+    if settled_yes is None:
         return None
     exit_price = (float(settled_yes) / 100.0 if side == "yes"
                   else float(100 - settled_yes) / 100.0)
@@ -508,41 +634,21 @@ def cycle(client: KalshiClient):
         log.info("No tradeable markets.")
         return
 
-    # Extended outage guard: if both balance and positions failed (cash=0,
-    # no positions), skip the rest of the cycle to avoid wasted API calls.
-    # Dry run is exempt — simulated cash may legitimately be 0.
-    if cash == 0.0 and not positions and not config.DRY_RUN:
+    # Extended outage guard: if balance fetch failed, we can still process
+    # settlements and evaluate signals, just skip order placement.
+    # If both balance AND positions are unavailable (cash=0, no positions),
+    # this may be a real outage — log but continue signal evaluation so we
+    # don't miss entry windows.
+    if cash is not None and cash <= 0.0 and not positions and not config.DRY_RUN:
         log.warning(
-            "Balance and positions both unavailable — Kalshi API outage? "
-            "Skipping cycle %d.", state.cycles,
+            "Balance unknown/zero and no positions — Kalshi API outage? "
+            "Continuing signal evaluation (no orders will be placed)."
         )
-        return
 
-    # Compute mark-to-market exposure using current orderbook data
-    mark_to_market_exposure = 0.0
-    for p in positions:
-        if "15M" not in p.get("ticker", "").upper():
-            continue
-        ticker = p.get("ticker", "")
-        yes_pos = p.get("yes_position", 0) or 0
-        no_pos = p.get("no_position", 0) or 0
-
-        # Find current market data for this ticker
-        mkt_info = next((m for m in markets if m.ticker == ticker), None)
-        if mkt_info:
-            mid = mkt_info.mid_yes
-            if yes_pos > 0:
-                mark_to_market_exposure += yes_pos * mid / 100.0
-            if no_pos > 0:
-                mark_to_market_exposure += no_pos * (100 - mid) / 100.0
-        else:
-            # Fall back to cost-basis exposure for markets not in current book.
-            # *_avg_price_dollars arrive as decimal strings ("0.8500"); convert
-            # to cents first — multiplying a raw string raises TypeError.
-            yes_avg_price = p.get("yes_avg_price_dollars", 0) or 0
-            no_avg_price = p.get("no_avg_price_dollars", 0) or 0
-            mark_to_market_exposure += yes_pos * _dollars_str_to_cents(yes_avg_price) / 100.0
-            mark_to_market_exposure += no_pos * _dollars_str_to_cents(no_avg_price) / 100.0
+    # Compute mark-to-market exposure using current orderbook data.
+    # Uses the NEW position schema (position_fp / market_exposure_dollars) with
+    # the legacy fields as a fallback.
+    mark_to_market_exposure = _mark_to_market_exposure(positions, markets)
 
     # Reconcile resting orders: fetch open orders from Kalshi, sync into
     # state.resting_value for intra-cycle cash tracking, and cancel any
@@ -557,19 +663,13 @@ def cycle(client: KalshiClient):
             if not oid:
                 continue
             live_ids.add(oid)
-            side = o.get("side", "")
-            price_cents = o.get("price_cents", 0)
-            count = o.get("count", 0)
+            count = _order_count(o)
+            price_dollars = _order_price_dollars(o)
             created = o.get("created_time", "")
-            if not price_cents or not count:
+            if not price_dollars or not count:
                 continue
-            # Convert NO side price from Kalshi API format to internal format.
-            # Uses NO_PRICE_IS_COMPLEMENT config (default True) to determine conversion.
-            if side == "yes":
-                entry_cents = price_cents
-            else:
-                entry_cents = client.api_price_to_internal_no(price_cents, config.NO_PRICE_IS_COMPLEMENT)
-            state.resting_value[oid] = int(count) * entry_cents / 100.0
+            # New schema quotes the order's yes/no price in dollars directly.
+            state.resting_value[oid] = count * price_dollars
 
             # Cancel stale orders
             if created:
@@ -598,14 +698,16 @@ def cycle(client: KalshiClient):
         tk = p.get("ticker", "")
         if "15M" not in tk.upper() or tk in state.positions:
             continue
-        yes_pos = int(p.get("yes_position", 0) or 0)
-        no_pos = int(p.get("no_position", 0) or 0)
+        yes_pos = _pos_yes(p)
+        no_pos = _pos_no(p)
         if not yes_pos and not no_pos:
             continue
         side = "yes" if yes_pos else "no"
-        contracts = yes_pos or no_pos
-        avg_key = "yes_avg_price_dollars" if side == "yes" else "no_avg_price_dollars"
-        entry_price = int(round(float(p.get(avg_key, 0) or 0) * 100))
+        contracts = int(yes_pos or no_pos)
+        # Entry price from the position's cost basis (market_exposure_dollars),
+        # falling back to the legacy average-price fields.
+        exposure = _pos_cost_basis(p)
+        entry_price = int(round(exposure * 100 / contracts)) if contracts else 0
         state.positions[tk] = {
             "side": side, "entry_price": entry_price,
             "contracts": contracts, "order_id": p.get("order_id", tk),
@@ -626,23 +728,24 @@ def cycle(client: KalshiClient):
         order_id = pos_info.get("order_id", "")
 
         # Fetch actual settlement price from Kalshi market data.
-        # Kalshi settles YES at 100 (yes wins) or 0 (yes loses);
-        # NO settles at the complement (0 if yes wins, 100 if no wins).
+        # The NEW schema returns settlement_value_dollars ("1.0000"/"0.0000")
+        # or result ("yes"/"no"). The legacy expiration_value was the raw
+        # underlying (e.g. a BTC price), NOT a payout — reading it as 0/100 made
+        # every settlement look invalid and silently dropped realized PnL.
         exit_price = None  # None means settlement data unavailable — don't book PnL
         try:
             market = client.get_market(t)
-            exp_val = market.get("expiration_value")
-            if exp_val is not None:
-                settled_yes = int(round(float(exp_val) * 100))  # 0 or 100
-                # Validate settlement value — binary markets must settle to 0 or 100
-                if settled_yes not in (0, 100):
-                    log.warning("Invalid expiration_value for %s: %s (exp_val=%s) — skipping PnL",
-                                t, settled_yes, exp_val)
+            settled_yes = _settle_yes_cents(market)
+            if settled_yes is None:
+                log.warning(
+                    "No settlement data for %s (market=%s) — queuing for retry, "
+                    "not booking synthetic PnL", t, market.get("status"),
+                )
+            else:
+                if side == "yes":
+                    exit_price = float(settled_yes) / 100.0  # 1.0 or 0.0
                 else:
-                    if side == "yes":
-                        exit_price = float(settled_yes) / 100.0  # 1.0 or 0.0
-                    else:
-                        exit_price = float(100 - settled_yes) / 100.0  # 0.0 or 1.0
+                    exit_price = float(100 - settled_yes) / 100.0  # 0.0 or 1.0
         except Exception:
             log.warning(
                 "Could not fetch settlement for %s — queuing for retry, not booking synthetic PnL",
@@ -728,33 +831,9 @@ def cycle(client: KalshiClient):
             _save_settlement_queue(queue)
 
     # Compute mark-to-market exposure using current orderbook data for positions
-    mark_to_market_exposure = 0.0
-    for p in positions:
-        if "15M" not in p.get("ticker", "").upper():
-            continue
-        ticker = p.get("ticker", "")
-        yes_pos = p.get("yes_position", 0) or 0
-        no_pos = p.get("no_position", 0) or 0
-        yes_avg_price = p.get("yes_avg_price_dollars", 0) or 0
-        no_avg_price = p.get("no_avg_price_dollars", 0) or 0
-
-        # Find current market data for this ticker
-        mkt_info = next((m for m in markets if m.ticker == ticker), None)
-        if mkt_info:
-            # Use current mid price for mark-to-market
-            mid = mkt_info.mid_yes
-            if yes_pos > 0:
-                # YES position: current value = contracts * mid / 100 (YES price in cents)
-                mark_to_market_exposure += yes_pos * mid / 100.0
-            if no_pos > 0:
-                # NO position: current value = contracts * (100 - mid) / 100 (NO price complement)
-                mark_to_market_exposure += no_pos * (100 - mid) / 100.0
-        else:
-            # Fall back to cost-basis exposure for markets not in current book.
-            # *_avg_price_dollars arrive as decimal strings ("0.8500"); convert
-            # to cents first — multiplying a raw string raises TypeError.
-            mark_to_market_exposure += yes_pos * _dollars_str_to_cents(yes_avg_price) / 100.0
-            mark_to_market_exposure += no_pos * _dollars_str_to_cents(no_avg_price) / 100.0
+    # (single pass via _mark_to_market_exposure; the previous duplicate loop
+    # here was identical to the one above and computed the same value twice).
+    mark_to_market_exposure = _mark_to_market_exposure(positions, markets)
 
     # Balance may be unknown if the fetch failed (cash is None) — skip the
     # balance-dependent risk/window updates instead of crashing on None.
@@ -810,7 +889,7 @@ def cycle(client: KalshiClient):
     open_count = sum(
         1 for p in positions
         if "15M" in p.get("ticker", "").upper()
-        and (p.get("yes_position", 0) or p.get("no_position", 0))
+        and (_pos_yes(p) or _pos_no(p))
     )
     if open_count >= config.MAX_OPEN_POSITIONS:
         log.info("Position limit (%d/%d)", open_count, config.MAX_OPEN_POSITIONS)
@@ -924,7 +1003,8 @@ def cycle(client: KalshiClient):
             # Only record as a filled position when the API reports a fill.
             # A resting (unfilled) limit order stays in resting_value and is
             # reconciled against get_orders() each cycle.
-            fill_count = float(resp.get("filledCount", 0))
+            # fill_count_fp is the NEW field; filledCount is the legacy alias.
+            fill_count = _order_fill_count(resp)
             if fill_count > 0:
                 fees_dollars = fees.taker_fee_cents(
                     sig.contracts, sig.entry_price / 100.0
@@ -933,7 +1013,11 @@ def cycle(client: KalshiClient):
                     client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
                 )
                 state.resting_value.pop(oid, None)
-            current_exposure += sig.dollar_risk  # track incremental exposure
+                # Only a FILLED position counts as exposure. A resting (unfilled)
+                # order's committed capital is already tracked in resting_value,
+                # which max_trade_dollars subtracts from cash — adding it to
+                # exposure too would double-count and over-restrict later trades.
+                current_exposure += sig.dollar_risk
             state.last_order_time = time.time()
             state.orders_today += 1
             log.info("✓ %s order_id=%s (fill_count=%.0f)", sig.market.ticker, oid, fill_count)
@@ -995,22 +1079,34 @@ def main():
         sys.exit(1)
     log.info("n8n health check ✓")
 
+    # Validate the Supabase service key at startup — an invalid/leaked key
+    # (e.g. the one previously committed to git history) returns 401 on every
+    # write and would spam warnings forever. Test it once and disable Supabase
+    # cleanly if it doesn't work, so the bot keeps trading without it.
+    sb = get_supabase_client()
+    if sb.enabled and not sb.health_check():
+        log.warning(
+            "Supabase health check failed — service key may be invalid or revoked. "
+            "Supabase writes are disabled; rotate the key in the Supabase dashboard "
+            "and restart. Bot continues trading without Supabase."
+        )
+        sb.enabled = False
+
     # Seed resting orders from Kalshi so intra-cycle cash tracking accounts
     # for orders already resting from a previous run.
     try:
         resting_orders = client.get_orders(status="resting")
         for o in resting_orders:
             oid = o.get("order_id") or o.get("id")
-            side = o.get("side", "")
-            price_cents = o.get("price_cents", 0)
-            count = o.get("count", 0)
-            if oid and price_cents and count:
-                # Convert NO side price from Kalshi API format to internal format.
-                if side == "yes":
-                    entry_cents = price_cents
-                else:
-                    entry_cents = client.api_price_to_internal_no(price_cents, config.NO_PRICE_IS_COMPLEMENT)
-                state.resting_value[oid] = int(count) * entry_cents / 100.0
+            count = _order_count(o)
+            if not oid or not count:
+                continue
+            # New schema quotes yes/no price in dollars directly; the legacy
+            # price_cents field is read as a fallback.
+            price_dollars = _order_price_dollars(o)
+            if price_dollars <= 0:
+                continue
+            state.resting_value[oid] = count * price_dollars
         if state.resting_value:
             log.info("Seeded %d resting orders worth $%.2f reserved cash",
                      len(state.resting_value), sum(state.resting_value.values()))
@@ -1025,15 +1121,16 @@ def main():
             ticker = p.get("ticker", "")
             if "15M" not in ticker.upper():
                 continue
-            yes_pos = int(p.get("yes_position", 0) or 0)
-            no_pos = int(p.get("no_position", 0) or 0)
+            yes_pos = _pos_yes(p)
+            no_pos = _pos_no(p)
             if not yes_pos and not no_pos:
                 continue
             side = "yes" if yes_pos else "no"
-            contracts = yes_pos or no_pos
-            entry_price = int(round(float(p.get("yes_avg_price_dollars", 0) or 0) * 100))
-            if side == "no":
-                entry_price = int(round(float(p.get("no_avg_price_dollars", 0) or 0) * 100))
+            contracts = int(yes_pos or no_pos)
+            # Entry price from the position's cost basis (market_exposure_dollars),
+            # falling back to the legacy average-price fields.
+            exposure = _pos_cost_basis(p)
+            entry_price = int(round(exposure * 100 / contracts)) if contracts else 0
             order_id = p.get("order_id", ticker)
             state.positions[ticker] = {
                 "side": side,

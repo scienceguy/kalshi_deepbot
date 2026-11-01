@@ -333,10 +333,17 @@ class SupabaseClient:
             # Supabase returns either a list [{"value_json": "..."}] or a dict {"value_json": "..."}
             rows = result if isinstance(result, list) else ([result] if result else [])
             if rows:
-                return json.loads(rows[0]["value_json"])
+                try:
+                    return json.loads(rows[0]["value_json"])
+                except json.JSONDecodeError as e:
+                    log.error(
+                        "get_bot_state(%s): corrupt JSON in value_json — %s",
+                        key, e
+                    )
+                    return None
             return None
         except Exception as e:
-            log.warning("get_bot_state error: %s", e)
+            log.warning("get_bot_state(%s) error: %s", key, e)
             return None
 
     # ─── backtest runs ─────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ from market_finder import (
     _parse_api_time,
     _parse_market_prices,
     _build,
+    _settle_yes_cents,
     find_active_markets,
     MarketInfo,
 )
@@ -256,3 +257,47 @@ class TestFindActiveMarkets:
         assert len(result) == 2
         tickers = {m.ticker for m in result}
         assert tickers == {"KXBTC15M", "KXETH15M"}
+
+
+class TestSettleYesCents:
+    """Tests for _settle_yes_cents — the settlement payout parser.
+
+    The Kalshi Trade API migrated settlement from a 0/100 expiration_value to
+    settlement_value_dollars ("1.0000"/"0.0000") plus result ("yes"/"no").
+    The legacy expiration_value is the raw underlying price (e.g. a BTC price
+    like "78029.99"), NOT a payout. Reading it as 0/100 silently drops every
+    settlement. These tests lock in the correct behavior.
+    """
+
+    def test_settlement_value_dollars_yes(self):
+        assert _settle_yes_cents({"settlement_value_dollars": "1.0000"}) == 100
+
+    def test_settlement_value_dollars_no(self):
+        assert _settle_yes_cents({"settlement_value_dollars": "0.0000"}) == 0
+
+    def test_result_yes(self):
+        assert _settle_yes_cents({"result": "yes"}) == 100
+
+    def test_result_no(self):
+        assert _settle_yes_cents({"result": "no"}) == 0
+
+    def test_legacy_expiration_value_100(self):
+        assert _settle_yes_cents({"expiration_value": "1.0"}) == 100
+
+    def test_legacy_expiration_value_0(self):
+        assert _settle_yes_cents({"expiration_value": "0"}) == 0
+
+    def test_raw_underlying_price_rejected(self):
+        # expiration_value holding a BTC price (78029.99) is NOT a payout
+        assert _settle_yes_cents({"expiration_value": "78029.99"}) is None
+
+    def test_unknown_settlement_returns_none(self):
+        assert _settle_yes_cents({}) is None
+        assert _settle_yes_cents({"status": "open"}) is None
+
+    def test_settlement_value_takes_precedence(self):
+        # If both fields exist, settlement_value_dollars wins
+        assert _settle_yes_cents({
+            "settlement_value_dollars": "0.0000",
+            "expiration_value": "78029.99",
+        }) == 0

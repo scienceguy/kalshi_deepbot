@@ -469,7 +469,7 @@ def evaluate(market: MarketInfo, cash: float = 10.0,
     _track_bid(market.ticker, int(round(market.yes_bid or 0)), now)
 
     if market.bracket_role == "HEDGE_NO":
-        result = [_evaluate_hedge(market, max_dollars)]
+        result = _evaluate_hedge(market, max_dollars)
     else:
         # Two-sided favourite maker strategy (Approach D)
         result = _evaluate_two_sided(market, max_dollars,

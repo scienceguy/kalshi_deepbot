@@ -9,6 +9,38 @@ from kalshi_client import KalshiClient
 
 log = logging.getLogger(__name__)
 
+
+def _settle_yes_cents(market: dict) -> int | None:
+    """YES payout in cents (0 or 100) from a market record, or None if unknown.
+
+    NEW schema: ``settlement_value_dollars`` ("1.0000"/"0.0000") or ``result``
+    ("yes"/"no"). The legacy ``expiration_value`` is the raw underlying price
+    (e.g. a BTC price like "78029.99"), NOT a payout — reading it as 0/100 made
+    every settlement look invalid and silently dropped realized PnL. A raw
+    ``expiration_value`` that already equals 0 or 100 is accepted as a fallback.
+    """
+    sv = market.get("settlement_value_dollars")
+    if sv not in (None, ""):
+        try:
+            return int(round(float(sv) * 100))
+        except (TypeError, ValueError):
+            pass
+    r = market.get("result")
+    if r == "yes":
+        return 100
+    if r == "no":
+        return 0
+    ev = market.get("expiration_value")
+    if ev not in (None, ""):
+        try:
+            v = int(round(float(ev) * 100))
+            if v in (0, 100):
+                return v
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 @dataclass
 class MarketInfo:
     ticker: str; series: str; close_time: datetime

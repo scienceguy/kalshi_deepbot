@@ -231,13 +231,13 @@ mempalace logstream watch --agent termux:opencode:kalshi_superbot \
 ### Current history note
 
 `main` was history-rewritten on 2026-11-01 to purge a leaked key (see the
-Credentials section). HEAD moved to `4ad500a`; **all SHAs before that are
+Credentials section). HEAD moved to `ac0b91b`; **all SHAs before that are
 invalid**. If your local history predates the rewrite: `git fetch` then
 `git reset --hard origin/main` (after saving any local work as a patch).
 
 ## Verification checklist before claiming done
 
-- [x] `python -m pytest tests/ -q` → all pass (75 passed)
+- [x] `python -m pytest tests/ -q` → all pass (118 passed)
 - [x] All 4 n8n webhooks return HTTP 200 (superbot-backtest/collect/trade/monitor)
 - [x] `kalshi_client.get_balance()` returns a dollar amount (not cents) — `cents / 100.0`
 - [x] `git status` clean

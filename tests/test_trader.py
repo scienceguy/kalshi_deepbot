@@ -365,3 +365,72 @@ def test_settlement_records_market_loss_to_correct_ticker(monkeypatch):
     # The loss must be recorded against the settled ticker, not a stray one.
     assert ticker in trader.state.risk.state.market_daily_losses
     assert ticker not in trader.state.positions
+
+
+class TestPositionHelpers:
+    """Tests for the Kalshi API position/order compatibility helpers.
+
+    The Trade API migrated positions to position_fp (+/- contracts) and
+    market_exposure_dollars, and orders to fill_count_fp / yes_price_dollars /
+    no_price_dollars / initial_count_fp. These helpers read the new schema
+    with the legacy fields as fallback.
+    """
+
+    def test_pos_yes_positive_position_fp(self):
+        assert trader._pos_yes({"position_fp": "10.00"}) == 10.0
+
+    def test_pos_yes_negative_position_fp_is_no(self):
+        assert trader._pos_yes({"position_fp": "-5.00"}) == 0.0
+
+    def test_pos_yes_legacy(self):
+        assert trader._pos_yes({"yes_position": 3}) == 3.0
+
+    def test_pos_no_negative_position_fp(self):
+        assert trader._pos_no({"position_fp": "-5.00"}) == 5.0
+
+    def test_pos_no_positive_position_fp_is_zero(self):
+        assert trader._pos_no({"position_fp": "10.00"}) == 0.0
+
+    def test_pos_no_legacy(self):
+        assert trader._pos_no({"no_position": 2}) == 2.0
+
+    def test_pos_cost_basis_new_schema(self):
+        assert trader._pos_cost_basis({"market_exposure_dollars": "17.00"}) == 17.0
+
+    def test_pos_cost_basis_legacy_fallback(self):
+        p = {"yes_position": 2, "yes_avg_price_dollars": "0.85",
+             "no_position": 0, "no_avg_price_dollars": "0"}
+        assert trader._pos_cost_basis(p) == 2 * 0.85
+
+    def test_order_count_new_schema(self):
+        assert trader._order_count({"initial_count_fp": "10.00"}) == 10
+
+    def test_order_count_legacy_count(self):
+        assert trader._order_count({"count": "5"}) == 5
+
+    def test_order_count_zero_or_missing(self):
+        assert trader._order_count({}) == 0
+        assert trader._order_count({"count": 0}) == 0
+
+    def test_order_price_dollars_new_schema_yes(self):
+        assert trader._order_price_dollars({"yes_price_dollars": "0.6100"}) == 0.61
+
+    def test_order_price_dollars_new_schema_no(self):
+        assert trader._order_price_dollars({
+            "outcome_side": "no", "no_price_dollars": "0.4000",
+        }) == 0.40
+
+    def test_order_price_dollars_legacy_cents(self):
+        assert trader._order_price_dollars({"price_cents": 75}) == 0.75
+
+    def test_order_price_dollars_missing(self):
+        assert trader._order_price_dollars({}) == 0.0
+
+    def test_order_fill_count_new_schema(self):
+        assert trader._order_fill_count({"fill_count_fp": "3.00"}) == 3.0
+
+    def test_order_fill_count_legacy(self):
+        assert trader._order_fill_count({"filledCount": 2}) == 2.0
+
+    def test_order_fill_count_missing(self):
+        assert trader._order_fill_count({}) == 0.0

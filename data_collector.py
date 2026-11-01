@@ -17,7 +17,7 @@ from pathlib import Path
 
 import config
 from kalshi_client import KalshiClient
-from market_finder import find_active_markets, _parse_api_time
+from market_finder import find_active_markets, _parse_api_time, _settle_yes_cents
 
 log = logging.getLogger("data_collector")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")
@@ -146,9 +146,9 @@ class MarketSnapshotCollector:
         else:
             return None
 
-        # Settlement outcome
-        exp_val = market.get("expiration_value")
-        settled_yes = int(round(float(exp_val) * 100)) if exp_val is not None else None
+        # Settlement outcome — use the real payout field, NOT expiration_value
+        # (which is the raw underlying price, e.g. a BTC price).
+        settled_yes = _settle_yes_cents(market)
 
         return {
             "ticker": ticker,
