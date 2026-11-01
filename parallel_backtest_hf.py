@@ -12,13 +12,12 @@ Strategy: favorite-maker limit orders
 - Settlement from resolved_yes field
 - Fee-aware P&L using fees.py
 """
-import argparse, itertools, json, logging, sys, time
+import argparse, itertools, json, logging, sys
 from dataclasses import dataclass
 from multiprocessing import Pool
 from pathlib import Path
 
 import pyarrow.parquet as pq
-import config
 from fees import buy_cash_out, sell_cash_in
 
 log = logging.getLogger("parallel_backtest_hf")

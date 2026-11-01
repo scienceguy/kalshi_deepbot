@@ -24,11 +24,8 @@ Entry logic:
 Returns dict with signal info for Supabase/n8n logging.
 """
 
-import json
 import logging
 import os
-import sys
-import time
 from datetime import datetime, timezone
 
 import config

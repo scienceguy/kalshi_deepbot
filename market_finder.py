@@ -3,7 +3,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 import config
 from kalshi_client import KalshiClient
 

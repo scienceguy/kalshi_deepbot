@@ -10,7 +10,6 @@ Uses the n8n API key (X-N8N-API-KEY header) to:
 All endpoints live under http://127.0.0.1:5678/api/v1/
 """
 
-import json
 import logging
 import os
 import stat

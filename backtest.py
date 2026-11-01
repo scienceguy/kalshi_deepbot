@@ -20,12 +20,10 @@ import argparse
 import logging
 import sys
 import time
-from pathlib import Path
 
 import config
 from backtest_engine import run_sweep
 from kalshi_client import KalshiClient
-from market_finder import _parse_api_time
 
 log = logging.getLogger("backtest")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")
