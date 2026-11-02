@@ -23,7 +23,6 @@ Usage:
 """
 
 import argparse, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,7 +53,7 @@ import fees  # noqa: E402
 from supabase_client import get_supabase  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient  # noqa: E402
-from market_finder import find_active_markets, _parse_api_time, _dollars_str_to_cents, MarketInfo, _settle_yes_cents  # noqa: E402
+from market_finder import find_active_markets, _parse_api_time, _dollars_str_to_cents, _settle_yes_cents  # noqa: E402
 from risk import RiskManager  # noqa: E402
 from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
 from signals import TradeSignal  # noqa: E402

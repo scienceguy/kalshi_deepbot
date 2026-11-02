@@ -11,13 +11,13 @@ Usage:
     python backtest.py --data-dir ./collected_data  # Backtest on collected data
 """
 
-import argparse, gzip, json, logging, os, sys, time
-from datetime import datetime, timezone, timedelta
+import argparse, gzip, json, logging, time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import config
 from kalshi_client import KalshiClient
-from market_finder import find_active_markets, _parse_api_time, _settle_yes_cents
+from market_finder import _parse_api_time, _settle_yes_cents
 
 log = logging.getLogger("data_collector")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")

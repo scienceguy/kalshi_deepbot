@@ -12,14 +12,9 @@ import itertools
 import json
 import logging
 import os
-import sys
-import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime
 from multiprocessing import Pool
-from pathlib import Path
-
-import config
 from fees import buy_cash_out, sell_cash_in
 from market_finder import _parse_api_time, _parse_market_prices
 

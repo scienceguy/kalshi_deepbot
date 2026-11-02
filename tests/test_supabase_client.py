@@ -2,9 +2,12 @@
 
 Tests mock the HTTP requests to avoid making real network calls.
 """
+import time
+
 import pytest
 from unittest.mock import MagicMock, patch
 from supabase_client import SupabaseClient, get_supabase
+import supabase_client
 import config
 
 
@@ -107,3 +110,21 @@ class TestSupabaseClientGetBotState:
         with patch.object(client, "_request", return_value=[]):
             result = client.get_bot_state("session_pnl")
             assert result is None
+
+class TestCircuitBreakerReset:
+    """The circuit breaker must reset its counter when the cooldown expires.
+
+    Previously _supabase_circuit_open() reset _SUPABASE_FAILURES without a
+    `global` declaration, so the reset hit a local. The module counter stayed at
+    the threshold and one later failure immediately re-opened the circuit,
+    permanently suppressing audit writes after the first outage.
+    """
+
+    def test_counter_reset_after_cooldown(self, monkeypatch):
+        monkeypatch.setattr(supabase_client, "_SUPABASE_FAILURES", 5)
+        monkeypatch.setattr(supabase_client, "_SUPABASE_SKIP_UNTIL", time.time() - 1)
+        assert supabase_client._supabase_circuit_open() is False
+        assert supabase_client._SUPABASE_FAILURES == 0
+        # one subsequent failure must NOT reopen the circuit
+        supabase_client._supabase_record_failure()
+        assert supabase_client._supabase_circuit_open() is False

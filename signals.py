@@ -181,7 +181,7 @@ def _force_save_bid_hist():
 
 
 def _track_bid(ticker: str, yes_bid_cents: int, now: float):
-    global _bid_hist, _bid_hist_dirty
+    global _bid_hist_dirty
     if not _bid_hist:
         _load_bid_hist()
     h = _bid_hist.setdefault(ticker, [])

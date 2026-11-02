@@ -11,13 +11,11 @@ import logging
 import threading
 import requests
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from cryptography.hazmat.backends import default_backend
 
 import config
 

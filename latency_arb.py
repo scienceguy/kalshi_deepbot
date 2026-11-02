@@ -29,7 +29,6 @@ import os
 from datetime import datetime, timezone
 
 import config
-from fees import buy_cash_out, sell_cash_in
 from kalshi_client import KalshiClient
 
 log = logging.getLogger("latency_arb")

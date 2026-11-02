@@ -124,6 +124,7 @@ Coordination (logstream):
 - Delegate with `mempalace_event_append` (type=`task.request`, stream=`project/<name>`, room=`delegation`, correlation_id=`task_...`, status=`open`, body = goal + branch + base commit + DoD), then `mempalace_event_wait` on `correlation_id`.
 - Ack with `mempalace_event_ack`. Apply patches with `mempalace_artifact_get` + sha256 verify, then ack `applied`/`failed`.
 - Close every loop: no task stays open without an applied/failed/blocked ack.
+- Wake dormant peers on shared work: when an inbox event arrives for a task another dormant agent is also on, ping it to resume (`mempalace_event_append` to_agent=`<peer>`, same `correlation_id`) and tell the operator to wake it.
 
 ## Known issues / audit findings (from ponytail-audit + follow-up)
 
