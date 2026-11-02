@@ -111,6 +111,10 @@ Use the `supabase` MCP tools for all database work; never ask me to use the dash
 - After schema changes, run `notify pgrst, 'reload schema';` via `execute_sql`.
 - If a call is rejected, report the exact error. If it says read-only, tell me instead of retrying.
 
+## Database changes
+
+Run SQL with `psql "$SUPABASE_DB_URL" -c "..."` or `-f file.sql`. Put schema changes in `supabase/schema.sql` (idempotent), apply with `-v ON_ERROR_STOP=1 -1`, then run `notify pgrst, 'reload schema';`. Never print or store `$SUPABASE_DB_URL`. Ask before any destructive statement.
+
 ## Kalshi API (production)
 
 - Base URL: `https://external-api.kalshi.com/trade-api/v2`
