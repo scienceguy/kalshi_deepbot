@@ -838,12 +838,7 @@ def cycle(client: KalshiClient):
     # balance-dependent risk/window updates instead of crashing on None.
     cash_available = cash is not None
     if cash_available:
-        # Pass mark-to-market exposure for BOTH the positional arg and the
-        # keyword so the drawdown halt reflects current market value, not the
-        # stale cost basis. Cost basis can hide a losing open position until it
-        # settles, letting the bot keep trading past the halt threshold.
-        state.risk.update_balance(cash, mark_to_market_exposure,
-                                  mark_to_market_exposure=mark_to_market_exposure)
+        state.risk.update_balance(cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
         _touch_window(datetime.now(timezone.utc), cash)
 
     # Reset daily order counter on new day
