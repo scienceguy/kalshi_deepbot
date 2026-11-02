@@ -138,8 +138,9 @@ MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 82)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 
 # NO side price format: Kalshi returns NO prices directly (not complemented).
-# Set NO_PRICE_IS_COMPLEMENT=False for production. Default True for backward compat.
-NO_PRICE_IS_COMPLEMENT = _env_bool("NO_PRICE_IS_COMPLEMENT", True)
+# Set NO_PRICE_IS_COMPLEMENT=False for production. Default False for safety.
+# If True, Kalshi returns NO price as complement (100 - internal), and we must convert.
+NO_PRICE_IS_COMPLEMENT = _env_bool("NO_PRICE_IS_COMPLEMENT", False)
 
 # ═════════════════════════════════════════════════════════════════════
 # HEDGE SETTINGS
@@ -227,13 +228,13 @@ DRY_EXIT_DELAY_CYCLES = _env_int("DRY_EXIT_DELAY_CYCLES", 0)
 # RESILIENCE (from kalshi_live_bot)
 # ═════════════════════════════════════════════════════════════════════
 ERROR_BACKOFF_SECONDS = _env_int("ERROR_BACKOFF_SECONDS", 5)
-ERROR_BACKOFF_MAX_SECONDS = _env_int("ERROR_BACKOFF_MAX_SECONDS", 60)
-CLIENT_REBUILD_THRESHOLD = _env_int("CLIENT_REBUILD_THRESHOLD", 3)
+ERROR_BACKOFF_MAX_SECONDS = _env_int("ERROR_BACKOFF_MAX_SECONDS", 120)
+CLIENT_REBUILD_THRESHOLD = _env_int("CLIENT_REBUILD_THRESHOLD", 5)
 REQUEST_TIMEOUT_SECONDS = _env_int("REQUEST_TIMEOUT_SECONDS", 10)
 REQUEST_MIN_GAP_SECONDS = _env_float("REQUEST_MIN_GAP_SECONDS", 0.12)
 KALSHI_POOL_MAXSIZE = _env_int("KALSHI_POOL_MAXSIZE", 20)
 CYCLE_TIMEOUT_SECONDS = _env_int("CYCLE_TIMEOUT_SECONDS", 30)
-CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 5)
+CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 20)
 
 # ═════════════════════════════════════════════════════════════════════
 # LLM (optional, from kalshi_live_bot)

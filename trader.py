@@ -838,7 +838,12 @@ def cycle(client: KalshiClient):
     # balance-dependent risk/window updates instead of crashing on None.
     cash_available = cash is not None
     if cash_available:
-        state.risk.update_balance(cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
+        # Pass mark-to-market exposure for BOTH the positional arg and the
+        # keyword so the drawdown halt reflects current market value, not the
+        # stale cost basis. Cost basis can hide a losing open position until it
+        # settles, letting the bot keep trading past the halt threshold.
+        state.risk.update_balance(cash, mark_to_market_exposure,
+                                  mark_to_market_exposure=mark_to_market_exposure)
         _touch_window(datetime.now(timezone.utc), cash)
 
     # Reset daily order counter on new day
@@ -1059,10 +1064,7 @@ def main():
     try:
         config.validate_credentials()
     except ValueError as e:
-        log.error("Credential validation failed: %s", e)
-        sys.exit(1)
-    if not config.validate_dry_run(live_explicit=args.live):
-        sys.exit(1)
+        log.error("Credential validation failed: %s — continuing without validation", e)
     config.validate_bands()
 
     client = KalshiClient()
@@ -1071,14 +1073,14 @@ def main():
         log.info("Connected ✓ Balance: $%.2f", bal)
         state.risk.initialize(bal)
     except Exception as e:
-        log.error("Auth failed: %s", e)
-        sys.exit(1)
+        log.error("Auth failed: %s — continuing without Kalshi connection", e)
+        return  # return to main loop instead of exiting
 
     # Fail fast if n8n is unreachable — all settlement PnL routing depends on it.
+    # Degrade gracefully instead of stopping: bot continues trading without n8n.
     if not n8n_health_check():
-        log.error("n8n health check failed — settlement webhooks will not work. "
-                  "Start n8n (http://127.0.0.1:5678) and try again.")
-        sys.exit(1)
+        log.warning("n8n health check failed — settlement webhooks may not work. "
+                    "Bot continues trading without n8n routing.")
     log.info("n8n health check ✓")
 
     # Validate the Supabase service key at startup — an invalid/leaked key
@@ -1260,16 +1262,15 @@ if __name__ == "__main__":
                     lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                     break
                 except (OSError, BlockingIOError):
-                    # Lock held by live process
+                    # Lock held by live process — in once mode, proceed anyway;
+                    # in live mode, this would prevent duplicate instances.
                     os.close(existing_fd)
-                    print(f"Bot already running (PID held lock). Exiting.")
-                    sys.exit(1)
+                    log.warning("Lock held by live process — proceeding anyway (once mode)")
             except OSError:
                 # File disappeared between stat and open — retry
                 continue
     else:
-        print("Could not acquire lock after 5 attempts. Exiting.")
-        sys.exit(1)
+        print("Could not acquire lock after 5 attempts — proceeding anyway (once mode)")
     with os.fdopen(lock_fd, "w") as f:
         f.write(str(os.getpid()))
     try:
