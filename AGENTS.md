@@ -119,6 +119,7 @@ Host:harness:project = `termux:opencode:kalshi_superbot`.
 - Do not file secrets or tokens.
 
 Coordination (logstream):
+- Always sweep the mempalace inbox at session start, before other work: `mempalace_event_list` to_agent=`termux:opencode:kalshi_superbot`; act on anything addressed to you.
 - Arm `mempalace logstream watch --agent termux:opencode:kalshi_superbot --type task.request --type task.reply --type patch.ready --json` when collaborating/claiming/delegating.
 - Delegate with `mempalace_event_append` (type=`task.request`, stream=`project/<name>`, room=`delegation`, correlation_id=`task_...`, status=`open`, body = goal + branch + base commit + DoD), then `mempalace_event_wait` on `correlation_id`.
 - Ack with `mempalace_event_ack`. Apply patches with `mempalace_artifact_get` + sha256 verify, then ack `applied`/`failed`.
