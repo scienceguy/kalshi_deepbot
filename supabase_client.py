@@ -128,27 +128,32 @@ def _parse_raw_key_file(path: str) -> str:
         return ""
 
 
-# Load URL from env or key file
-if not SUPABASE_URL and SUPABASE_KEY_FILE:
+# ── Load credentials in documented order ─────────────────────────────────
+# 1. Protected key file (0600) — highest priority
+# 2. Environment variable
+# 3. .env (loaded by config.py at import)
+
+# Load URL: env first, then key file
+if SUPABASE_URL:
+    log.debug("Supabase URL loaded from environment variable")
+elif SUPABASE_KEY_FILE:
     file_url, _ = _parse_kv_file(SUPABASE_KEY_FILE)
     if file_url:
         SUPABASE_URL = file_url
         log.info("Supabase URL loaded from key file: %s", SUPABASE_KEY_FILE)
-elif SUPABASE_URL:
-    log.debug("Supabase URL loaded from environment variable")
 
-# Load service key: protected file first (0600), then env var, then .env
+# Load service key: protected raw file first, then env var
 if SUPABASE_KEY_FILE:
     raw_key = _parse_raw_key_file(SUPABASE_KEY_FILE)
     if raw_key:
         SUPABASE_SERVICE_KEY = raw_key
         log.info("Supabase service key loaded from key file: %s", SUPABASE_KEY_FILE)
-elif not SUPABASE_SERVICE_KEY and SUPABASE_KEY_FILE:
-    # Fall back to KEY=VALUE parsing of the file
-    _, file_key = _parse_kv_file(SUPABASE_KEY_FILE)
-    if file_key:
-        SUPABASE_SERVICE_KEY = file_key
-        log.info("Supabase service key loaded from key file (KEY=VALUE): %s", SUPABASE_KEY_FILE)
+    else:
+        # Fall back to KEY=VALUE parsing of the file
+        _, file_key = _parse_kv_file(SUPABASE_KEY_FILE)
+        if file_key:
+            SUPABASE_SERVICE_KEY = file_key
+            log.info("Supabase service key loaded from key file (KEY=VALUE): %s", SUPABASE_KEY_FILE)
 elif SUPABASE_SERVICE_KEY:
     log.debug("Supabase service key loaded from environment variable")
 

@@ -224,8 +224,8 @@ def _parse_llm_response(content: str) -> Optional[Dict[str, Any]]:
                 return None
             data = json.loads(snippet)
 
-        prob = float(data.get("probability_of_net_profit", data.get("probability", 0.0)))
-        conf = float(data.get("confidence_hold_to_expiry", data.get("confidence", 0.0)))
+        prob = float(data.get("probability_of_net_profit", 0.0))
+        conf = float(data.get("confidence_hold_to_expiry", 0.0))
         reasoning = data.get("reasoning", data.get("reason", ""))
         return {
             "probability_of_net_profit": max(0.0, min(1.0, prob)),
