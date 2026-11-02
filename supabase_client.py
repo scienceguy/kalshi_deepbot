@@ -240,16 +240,22 @@ class SupabaseClient:
                     time.sleep(1.0 * (attempt + 1))
                     continue
                 # Non-retryable errors (4xx except 429) — log but don't increment circuit breaker
+                global _schema_warned
+                if resp.status_code == 404 and "PGRST205" in resp.text:
+                    # Table not created yet (schema.sql not run). One actionable
+                    # error, then silence — this fires on every write otherwise.
+                    if not _schema_warned:
+                        _schema_warned = True
+                        log.error(
+                            "Supabase tables missing — run supabase/schema.sql in the "
+                            "Supabase dashboard SQL Editor. Audit writes will be dropped "
+                            "until then."
+                        )
+                    else:
+                        log.debug("Supabase %s %s: table not created yet", method, path)
+                    return None
                 log.warning("Supabase %s %s failed: %s %s",
                             method, path, resp.status_code, resp.text[:200])
-                global _schema_warned
-                if resp.status_code == 404 and "PGRST205" in resp.text and not _schema_warned:
-                    _schema_warned = True
-                    log.error(
-                        "Supabase tables missing — run supabase/schema.sql in the "
-                        "Supabase dashboard SQL Editor. Audit writes will be dropped "
-                        "until then."
-                    )
                 if resp.status_code in (400, 403, 404):
                     log.error("Supabase schema/auth error on %s %s — audit trail may be incomplete",
                               method, path)

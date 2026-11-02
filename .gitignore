@@ -72,3 +72,7 @@ hf_data/
 collected_data/
 # Bid-history runtime state
 bid_hist_*.json
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json

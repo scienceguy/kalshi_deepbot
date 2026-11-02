@@ -74,6 +74,7 @@ class TestEvaluateTrade:
         """With no NVIDIA key, evaluation fails cleanly instead of hitting the net."""
         with patch.dict("os.environ", {}, clear=False), \
              patch.object(llm_eval.requests, "post") as post:
+            llm_eval.os.environ.pop("NVIDIA_API_KEY_FILE", None)
             llm_eval.os.environ.pop("NVIDIA_API_KEY", None)
             result = llm_eval.evaluate_trade({"ticker": "KXBTC15M-T1"})
 
