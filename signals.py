@@ -452,7 +452,6 @@ def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: i
             entry_min, entry_max, minutes_in, implied,
             "FAVOURITE", float(implied),
             skip_stability=True,
-            skip_spot_gate=True,
         )
         if sig and sig.is_trade:
             results.append(sig)
