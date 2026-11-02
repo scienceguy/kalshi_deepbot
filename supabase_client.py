@@ -29,6 +29,8 @@ from requests.adapters import HTTPAdapter
 
 log = logging.getLogger(__name__)
 
+_schema_warned = False  # log the missing-schema hint once, not on every write
+
 # ── Circuit breaker for Supabase outages ──
 # Trips after N consecutive failures, skips writes for a cooldown period.
 _SUPABASE_FAILURES: int = 0
@@ -231,6 +233,14 @@ class SupabaseClient:
                 # Non-retryable errors (4xx except 429) — log but don't increment circuit breaker
                 log.warning("Supabase %s %s failed: %s %s",
                             method, path, resp.status_code, resp.text[:200])
+                global _schema_warned
+                if resp.status_code == 404 and "PGRST205" in resp.text and not _schema_warned:
+                    _schema_warned = True
+                    log.error(
+                        "Supabase tables missing — run supabase/schema.sql in the "
+                        "Supabase dashboard SQL Editor. Audit writes will be dropped "
+                        "until then."
+                    )
                 if resp.status_code in (400, 403, 404):
                     log.error("Supabase schema/auth error on %s %s — audit trail may be incomplete",
                               method, path)
