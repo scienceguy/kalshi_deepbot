@@ -21,8 +21,7 @@ import logging
 import stat
 import time
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
-from pathlib import Path
+from typing import Optional, Dict, Any
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -41,7 +40,10 @@ _SUPABASE_CIRCUIT_COOLDOWN = 60.0  # seconds
 
 def _supabase_circuit_open() -> bool:
     """Return True if Supabase writes are currently skipped due to outage."""
-    global _SUPABASE_SKIP_UNTIL
+    # Both names must be global: without the _SUPABASE_FAILURES declaration the
+    # reset below created a local, so the module counter stayed >= threshold and
+    # a single later failure re-opened the circuit (crippling the audit trail).
+    global _SUPABASE_SKIP_UNTIL, _SUPABASE_FAILURES
     if _SUPABASE_SKIP_UNTIL <= 0:
         return False
     if time.time() >= _SUPABASE_SKIP_UNTIL:
