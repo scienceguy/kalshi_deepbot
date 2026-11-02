@@ -368,11 +368,25 @@ class SupabaseClient:
 
     # ─── health check ──────────────────────────────────────────────────────────
     def health_check(self) -> bool:
-        """Test Supabase connectivity."""
+        """Test Supabase connectivity and auth.
+
+        Returns True if Supabase is reachable and the service key is valid,
+        even if the signals table doesn't exist yet (schema may need setup).
+        Returns False only on auth failure (401/403) or connection error.
+        """
+        url = f"{self.url}/rest/v1/signals?select=*&limit=1"
         try:
-            result = self._request("GET", "signals?select=*&limit=1", max_retries=1)
-            return result is not None
-        except Exception:
+            resp = self.session.get(url, headers=self._headers(), timeout=(5, 10))
+            if resp.status_code in (200, 404):
+                # 200 = table exists; 404 = table missing but auth is valid
+                return True
+            if resp.status_code in (401, 403):
+                log.warning("Supabase health check: HTTP %s — service key invalid or revoked", resp.status_code)
+                return False
+            log.warning("Supabase health check: HTTP %s — unexpected response", resp.status_code)
+            return True  # reachable, assume auth OK
+        except Exception as e:
+            log.warning("Supabase health check error: %s", e)
             return False
 
 
