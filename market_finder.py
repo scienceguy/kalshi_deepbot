@@ -65,8 +65,10 @@ class MarketInfo:
 
 def _parse_api_time(v):
     if not v: return None
-    try: return datetime.fromisoformat(v.replace("Z", "+00:00"))
-    except: return None
+    try:
+        return datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
 
 def _dollars_str_to_cents(v):
     """Convert Kalshi dollar string ('0.3900') or int/float to integer cents."""
@@ -79,12 +81,15 @@ def _dollars_str_to_cents(v):
             return int(round(f * 100))
         # Already in cents (1-99 for binary markets)
         return int(round(f))
-    except: return 0
+    except (ValueError, TypeError):
+        return 0
 
 def _q(v):
     if v in (None, ""): return 0
-    try: return int(float(v))
-    except: return 0
+    try:
+        return int(float(v))
+    except (ValueError, TypeError):
+        return 0
 
 def _parse_market_prices(mkt):
     """

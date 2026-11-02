@@ -16,9 +16,9 @@ Entry logic:
   2. Check minutes_left <= 10
   3. Compute mid = (yes_bid + yes_ask) / 2
   4. Compute edge = |mid - 50| - fee_estimate
-  5. If edge >= MIN_EDGE (0.04), place taker order:
-     - If mid > 50: BUY YES at yes_ask
-     - If mid < 50: BUY NO at no_ask (equiv: sell YES at yes_bid)
+  5. If edge >= MIN_EDGE (0.04), place taker order on the underdog side:
+     - If mid > 50: BUY NO at no_ask (YES is overpriced)
+     - If mid < 50: BUY YES at yes_ask (NO is overpriced)
   6. Record settlement outcome when market closes
 
 Returns dict with signal info for Supabase/n8n logging.

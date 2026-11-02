@@ -22,7 +22,7 @@ Usage:
     python trader.py --debug  # verbose logging
 """
 
-import argparse, csv, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
+import argparse, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -916,37 +916,40 @@ def cycle(client: KalshiClient):
             if sig.is_trade:
                 signals.append(sig)
 
-    # Latency arb evaluation — separate signal path for last-minute entries
-    for m in markets:
-        ticker = m.ticker
-        if ticker in state.positions:
-            continue
-        # Convert MarketInfo to dict for latency_arb
-        market_dict = {
-            "ticker": m.ticker,
-            "series": m.series,
-            "yes_bid": m.yes_bid,
-            "yes_ask": m.yes_ask,
-            "no_bid": m.no_bid,
-            "no_ask": m.no_ask,
-            "close_time": m.close_time.isoformat() if m.close_time else "",
-            "minutes_left": m.minutes_left,
-        }
-        sig = latency_evaluate_market(market_dict)
-        if sig:
-            # Convert to TradeSignal for uniform handling through ranking/placement
-            trade_sig = TradeSignal(
-                direction=sig["direction"],
-                side=sig["side"],
-                entry_price=sig["entry_price_cents"],
-                contracts=sig["contracts"],
-                dollar_risk=sig["contracts"] * sig["entry_price_cents"] / 100.0,
-                reason=f"Latency arb: edge={sig['edge_cents']:.1f}c",
-                market=m,
-                strength=sig["edge_cents"],
-                confidence=1.0,
-            )
-            signals.append(trade_sig)
+    # Latency arb evaluation — separate signal path for last-minute entries.
+    # OFF by default (LATENCY_ARB_ENABLED): the edge model is unvalidated for
+    # live fills, so it must not place real-money taker orders unless enabled.
+    if config.LATENCY_ARB_ENABLED:
+        for m in markets:
+            ticker = m.ticker
+            if ticker in state.positions:
+                continue
+            # Convert MarketInfo to dict for latency_arb
+            market_dict = {
+                "ticker": m.ticker,
+                "series": m.series,
+                "yes_bid": m.yes_bid,
+                "yes_ask": m.yes_ask,
+                "no_bid": m.no_bid,
+                "no_ask": m.no_ask,
+                "close_time": m.close_time.isoformat() if m.close_time else "",
+                "minutes_left": m.minutes_left,
+            }
+            sig = latency_evaluate_market(market_dict)
+            if sig:
+                # Convert to TradeSignal for uniform handling through ranking/placement
+                trade_sig = TradeSignal(
+                    direction=sig["direction"],
+                    side=sig["side"],
+                    entry_price=sig["entry_price_cents"],
+                    contracts=sig["contracts"],
+                    dollar_risk=sig["contracts"] * sig["entry_price_cents"] / 100.0,
+                    reason=f"Latency arb: edge={sig['edge_cents']:.1f}c",
+                    market=m,
+                    strength=sig["edge_cents"],
+                    confidence=1.0,
+                )
+                signals.append(trade_sig)
 
     ranked = se.rank_signals(signals)
     if not ranked:

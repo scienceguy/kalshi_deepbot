@@ -147,6 +147,11 @@ NO_PRICE_IS_COMPLEMENT = _env_bool("NO_PRICE_IS_COMPLEMENT", True)
 HEDGE_YES_ASK_MAX = _env_int("HEDGE_YES_ASK_MAX", 12)
 MAX_HEDGE_PER_SERIES = _env_int("MAX_HEDGE_PER_SERIES", 0)
 
+# Latency-arb taker strategy. OFF by default: the edge model is unvalidated for
+# live fills (the 2s edge decay is only ~33% survivable per FINDINGS), so it
+# should not place real-money taker orders until it has a passing backtest.
+LATENCY_ARB_ENABLED = _env_bool("LATENCY_ARB_ENABLED", False)
+
 # ═════════════════════════════════════════════════════════════════════
 # POSITION SIZING (Kelly criterion from kalshi_codex_bot momentum backtests)
 # Best: MOM_88-93_dynTrue_netTrue_kelly2 → Kelly=0.10, Sharpe 6.60
