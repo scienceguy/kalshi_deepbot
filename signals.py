@@ -151,6 +151,9 @@ def _load_bid_hist():
     except Exception:
         _bid_hist = {}
 
+# Load bid history at module import so it's available immediately on startup.
+_load_bid_hist()
+
 
 def _save_bid_hist():
     try:
@@ -210,10 +213,15 @@ def _stability_ok(ticker: str, now: float):
     cutoff = now - config.STABILITY_LOOKBACK_MIN * 60
     window = [(t, b) for t, b in h if t >= cutoff]
     if not window:
-        return False, "Stability: no history yet"
+        # Fresh ticker: allow with warning (fail-open on fresh start)
+        log.warning("Stability check: no history for %s — allowing trade (fresh start)", ticker)
+        return True, "fresh start: no history"
     coverage = now - window[0][0]
     if coverage < config.STABILITY_MIN_COVERAGE_MIN * 60:
-        return False, f"Stability: only {coverage/60:.1f}min of history"
+        # Insufficient coverage: allow with warning (fail-open)
+        log.warning("Stability check: only %.1fmin history for %s (need %.1fmin) — allowing trade",
+                    coverage/60, ticker, config.STABILITY_MIN_COVERAGE_MIN)
+        return True, f"insufficient coverage: {coverage/60:.1f}min"
     peak = max(min(b, 100 - b) for _, b in window)
     if peak > config.STABILITY_MAX_YES_BID_CENTS:
         return False, (
