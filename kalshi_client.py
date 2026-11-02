@@ -303,6 +303,9 @@ class KalshiClient:
     def get_market(self, ticker: str) -> dict:
         """Fetch a single market's details including expiration_value for settlement."""
         data = self._request("GET", f"/markets/{ticker}")
+        if "market" not in data:
+            log.warning("get_market(%s): API response missing 'market' key — "
+                        "using whole response as fallback", ticker)
         return data.get("market", data)
 
     def get_orderbook(self, ticker: str, depth: int = 5) -> dict:
