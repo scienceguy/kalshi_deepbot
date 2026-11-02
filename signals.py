@@ -41,6 +41,7 @@ class TradeSignal:
         return (
             self.direction != "PASS"
             and self.side in ("yes", "no")
+            and self.side != ""
             and self.entry_price > 0
             and self.contracts > 0
         )
@@ -128,6 +129,10 @@ _bid_hist_dirty = False
 _last_bid_hist_save = 0.0
 _BID_HIST_SAVE_INTERVAL = 30.0
 
+# Track tickers that have already warned about fresh start / insufficient coverage
+# to avoid spamming logs on every cycle.
+_stability_warned: set[str] = set()
+
 
 def _bid_hist_file() -> Path:
     """Get bid history file path, evaluated at call time (not import time)."""
@@ -146,6 +151,8 @@ def _load_bid_hist():
         hist_file = _bid_hist_file()
         if hist_file.exists():
             with open(hist_file) as f:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
                 data = json.load(f)
             _bid_hist = {k: [(float(t), int(b)) for t, b in v] for k, v in data.items()}
     except Exception:
@@ -161,6 +168,8 @@ def _save_bid_hist():
         # Atomic write: write to temp file then rename
         tmp_file = hist_file.with_suffix(hist_file.suffix + ".tmp")
         with open(tmp_file, "w") as f:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             json.dump({k: v for k, v in _bid_hist.items()}, f)
         os.replace(tmp_file, hist_file)
     except Exception:
@@ -214,13 +223,21 @@ def _stability_ok(ticker: str, now: float):
     window = [(t, b) for t, b in h if t >= cutoff]
     if not window:
         # Fresh ticker: allow with warning (fail-open on fresh start)
-        log.warning("Stability check: no history for %s — allowing trade (fresh start)", ticker)
+        # Only warn once per ticker per session to avoid log spam.
+        warn_key = f"{ticker}:fresh"
+        if warn_key not in _stability_warned:
+            _stability_warned.add(warn_key)
+            log.warning("Stability check: no history for %s — allowing trade (fresh start)", ticker)
         return True, "fresh start: no history"
     coverage = now - window[0][0]
     if coverage < config.STABILITY_MIN_COVERAGE_MIN * 60:
         # Insufficient coverage: allow with warning (fail-open)
-        log.warning("Stability check: only %.1fmin history for %s (need %.1fmin) — allowing trade",
-                    coverage/60, ticker, config.STABILITY_MIN_COVERAGE_MIN)
+        # Only warn once per ticker per session.
+        warn_key = f"{ticker}:coverage"
+        if warn_key not in _stability_warned:
+            _stability_warned.add(warn_key)
+            log.warning("Stability check: only %.1fmin history for %s (need %.1fmin) — allowing trade",
+                        coverage/60, ticker, config.STABILITY_MIN_COVERAGE_MIN)
         return True, f"insufficient coverage: {coverage/60:.1f}min"
     peak = max(min(b, 100 - b) for _, b in window)
     if peak > config.STABILITY_MAX_YES_BID_CENTS:
@@ -349,6 +366,9 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
         return results
 
     no_ask = market.no_ask
+    # If NO price is complemented (legacy), derive from YES bid
+    if not no_ask and market.yes_bid and config.NO_PRICE_IS_COMPLEMENT:
+        no_ask = 100 - market.yes_bid
     if not no_ask:
         _pass("No NO ask")
         return results
@@ -413,11 +433,12 @@ def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: i
         return results
 
     no_ask = market.no_ask
-    if no_ask == 0 and market.yes_bid:
-        no_ask = 100 - market.yes_bid if config.NO_PRICE_IS_COMPLEMENT else market.yes_bid
+    # If NO price is complemented (legacy), derive from YES bid
+    if not no_ask and market.yes_bid and config.NO_PRICE_IS_COMPLEMENT:
+        no_ask = 100 - market.yes_bid
     yes_ask = market.yes_ask
-    if yes_ask == 0 and market.no_bid:
-        yes_ask = 100 - market.no_bid if config.NO_PRICE_IS_COMPLEMENT else market.no_bid
+    if yes_ask == 0 and market.no_bid and config.NO_PRICE_IS_COMPLEMENT:
+        yes_ask = 100 - market.no_bid
     if no_ask <= 0 and yes_ask <= 0:
         _pass("No quotes")
         return results

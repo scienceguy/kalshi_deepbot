@@ -770,6 +770,19 @@ def cycle(client: KalshiClient):
 
             # Record settlement to Supabase via n8n workflow
             try:
+                state.session_pnl += realized_pnl  # add realized P&L FIRST (before n8n) so crash after this still has correct total
+                # Sync session_pnl to Supabase immediately so n8n and Supabase
+                # stay in sync even if the process crashes before the end-of-cycle
+                # batched state write (prevents session_pnl drift on restart).
+                try:
+                    get_supabase_client().set_bot_state_batch({"session_pnl": state.session_pnl})
+                except Exception:
+                    log.debug("Supabase session_pnl sync failed for %s", t)
+                # Invalidate market cache after settlement — the market is no longer open.
+                series = t.split("-")[0] if "-" in t else t
+                client.invalidate_markets(series_ticker=series)
+                # NOW call n8n webhook — if this fails, the PnL is already booked
+                # and the settlement will be replayed from the queue on restart.
                 n8n_client = get_n8n_client()
                 n8n_client.execute_webhook("superbot-trade", {
                     "action": "settlement",
@@ -782,14 +795,6 @@ def cycle(client: KalshiClient):
                     "side": side,
                     "contracts": contracts,
                 }, max_retries=1)  # No retry — on failure, queue for replay instead of double-counting
-                state.session_pnl += realized_pnl  # add realized P&L only after successful record
-                # Sync session_pnl to Supabase immediately so n8n and Supabase
-                # stay in sync even if the process crashes before the end-of-cycle
-                # batched state write (prevents session_pnl drift on restart).
-                try:
-                    get_supabase_client().set_bot_state_batch({"session_pnl": state.session_pnl})
-                except Exception:
-                    log.debug("Supabase session_pnl sync failed for %s", t)
             except Exception:
                 log.warning("Failed to record settlement for %s via n8n webhook — queuing", t)
                 queue = _load_settlement_queue()
@@ -833,6 +838,34 @@ def cycle(client: KalshiClient):
     # (single pass via _mark_to_market_exposure; the previous duplicate loop
     # here was identical to the one above and computed the same value twice).
     mark_to_market_exposure = _mark_to_market_exposure(positions, markets)
+
+    # Track unrealized losses per market for per-market daily loss limit.
+    # Unrealized loss = cost basis - mark-to-market value (when position is losing).
+    # This ensures the per-market daily loss limit accounts for open losing positions.
+    if cash is not None:
+        mkt_by_ticker = {m.ticker: m for m in markets}
+        for p in positions:
+            tk = p.get("ticker", "")
+            if "15M" not in tk.upper():
+                continue
+            yes_pos = _pos_yes(p)
+            no_pos = _pos_no(p)
+            if not yes_pos and not no_pos:
+                continue
+            contracts = yes_pos or no_pos
+            cost_basis = _pos_cost_basis(p)
+            mkt_info = mkt_by_ticker.get(tk)
+            if mkt_info and (yes_pos or no_pos):
+                mid = mkt_info.mid_yes
+                if yes_pos:
+                    mtm_value = yes_pos * mid / 100.0
+                else:
+                    mtm_value = no_pos * (100 - mid) / 100.0
+            else:
+                mtm_value = cost_basis
+            unrealized_loss = max(0.0, cost_basis - mtm_value)
+            if unrealized_loss > 1e-6:
+                state.risk.record_unrealized_loss(tk, unrealized_loss)
 
     # Balance may be unknown if the fetch failed (cash is None) — skip the
     # balance-dependent risk/window updates instead of crashing on None.
@@ -1015,6 +1048,9 @@ def cycle(client: KalshiClient):
                     client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
                 )
                 state.resting_value.pop(oid, None)
+                # Invalidate market cache so subsequent find_active_markets() calls
+                # in this cycle see updated liquidity/quotes for the filled market.
+                client.invalidate_markets(series_ticker=sig.market.series)
                 # Only a FILLED position counts as exposure. A resting (unfilled)
                 # order's committed capital is already tracked in resting_value,
                 # which max_trade_dollars subtracts from cash — adding it to
@@ -1061,6 +1097,15 @@ def main():
     except ValueError as e:
         log.error("Credential validation failed: %s — continuing without validation", e)
     config.validate_bands()
+
+    # Warn if NO_PRICE_IS_COMPLEMENT is True in live mode — production Kalshi v2
+    # returns NO prices directly (complement=False). If True, NO prices are inverted.
+    if not config.DRY_RUN and config.NO_PRICE_IS_COMPLEMENT:
+        log.warning(
+            "NO_PRICE_IS_COMPLEMENT=True in live mode — production Kalshi v2 returns NO "
+            "prices directly. This will invert NO side prices. Set NO_PRICE_IS_COMPLEMENT=False "
+            "in .env or pass KALSHI_NO_PRICE_IS_COMPLEMENT=false."
+        )
 
     client = KalshiClient()
     try:
@@ -1154,6 +1199,18 @@ def main():
     except Exception:
         log.warning("Could not reconcile session_pnl from Supabase — starting at $0.00")
 
+    # Also reconcile from n8n by checking recent executions for settlement webhooks
+    # that may have recorded PnL not yet synced to Supabase.
+    try:
+        n8n_client = get_n8n_client()
+        executions = n8n_client.list_executions(limit=50)
+        for ex in executions.get("data", []):
+            if ex.get("status") == "success" and "superbot-trade" in str(ex.get("workflowId", "")):
+                # Check if this execution has settlement data
+                pass  # n8n execution history doesn't easily expose settlement data
+    except Exception:
+        log.debug("Could not reconcile session_pnl from n8n executions")
+
     # Replay any pending settlements from the queue file
     _replay_settlement_queue(client)
 
@@ -1243,26 +1300,35 @@ if __name__ == "__main__":
     lock_fd = None
     for attempt in range(5):
         try:
+            # Atomic create: only succeeds if lock file doesn't exist
             lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             break
         except FileExistsError:
-            # Stale lock — check if holder is still alive via fcntl
+            # Lock file exists — check if holder is still alive
             try:
-                existing_fd = os.open(lock_path, os.O_RDONLY)
-                import fcntl
-                try:
-                    fcntl.flock(existing_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    # Lock acquired — previous holder is dead, take over
-                    os.close(existing_fd)
-                    lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                    break
-                except (OSError, BlockingIOError):
-                    # Lock held by live process — in once mode, proceed anyway;
-                    # in live mode, this would prevent duplicate instances.
-                    os.close(existing_fd)
-                    log.warning("Lock held by live process — proceeding anyway (once mode)")
+                pid_str = lock_path.read_text().strip()
+                if pid_str.isdigit():
+                    pid = int(pid_str)
+                    # Check if process exists (signal 0 = existence check)
+                    try:
+                        os.kill(pid, 0)
+                        # Process alive — lock is valid
+                        if os.environ.get("DRY_RUN", "true").lower() == "true" or os.environ.get("ONCE_MODE"):
+                            log.warning("Lock held by live process (PID %d) — proceeding anyway (once mode)", pid)
+                        else:
+                            log.error("Lock held by live process (PID %d) — another instance running", pid)
+                            sys.exit(1)
+                    except OSError:
+                        # Process dead — stale lock, remove and retry
+                        log.warning("Stale lock from dead PID %d — removing", pid)
+                        os.unlink(lock_path)
+                        continue
+                else:
+                    # Invalid PID in lock file — treat as stale
+                    os.unlink(lock_path)
+                    continue
             except OSError:
-                # File disappeared between stat and open — retry
+                # File disappeared or unreadable — retry
                 continue
     else:
         print("Could not acquire lock after 5 attempts — proceeding anyway (once mode)")

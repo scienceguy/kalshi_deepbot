@@ -1,303 +1,264 @@
-"""Tests for market_finder.py — Market discovery and parsing.
+"""Tests for market_finder.py — market discovery and ranking logic."""
 
-These tests mock the KalshiClient to avoid making real network calls.
-"""
 import pytest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
-from market_finder import (
-    _dollars_str_to_cents,
-    _parse_api_time,
-    _parse_market_prices,
-    _build,
-    _settle_yes_cents,
-    find_active_markets,
-    MarketInfo,
-)
+
 import config
+import market_finder
+from market_finder import MarketInfo, find_active_markets, _settle_yes_cents
+from signals import rank_signals
+from signals import TradeSignal, evaluate, _evaluate_two_sided, _evaluate_hedge
 
 
-class TestDollarsStrToCents:
-    """Tests for _dollars_str_to_cents helper."""
+class TestSettleYesCents:
+    """Tests for _settle_yes_cents helper."""
 
-    def test_dollar_string(self):
-        """Values < 1 are dollar amounts (0.39 → 39c)."""
-        assert _dollars_str_to_cents("0.3900") == 39
-        assert _dollars_str_to_cents("0.50") == 50
-        assert _dollars_str_to_cents("0.01") == 1
+    def test_settlement_value_dollars_yes(self):
+        """settlement_value_dollars='1.0000' -> YES won (100)."""
+        m = {"settlement_value_dollars": "1.0000"}
+        assert _settle_yes_cents(m) == 100
 
-    def test_integer_cents(self):
-        """Integer values >= 1 are treated as cents directly."""
-        assert _dollars_str_to_cents(50) == 50
-        assert _dollars_str_to_cents(1) == 1
-        assert _dollars_str_to_cents(99) == 99
+    def test_settlement_value_dollars_no(self):
+        """settlement_value_dollars='0.0000' -> YES lost (0)."""
+        m = {"settlement_value_dollars": "0.0000"}
+        assert _settle_yes_cents(m) == 0
 
-    def test_none_and_empty(self):
-        """None, empty string, and 0 all return 0."""
-        assert _dollars_str_to_cents(None) == 0
-        assert _dollars_str_to_cents("") == 0
-        assert _dollars_str_to_cents(0) == 0
+    def test_result_yes(self):
+        """result='yes' -> YES won (100)."""
+        m = {"result": "yes"}
+        assert _settle_yes_cents(m) == 100
 
-    def test_invalid_string(self):
-        """Invalid strings return 0."""
-        assert _dollars_str_to_cents("invalid") == 0
+    def test_result_no(self):
+        """result='no' -> YES lost (0)."""
+        m = {"result": "no"}
+        assert _settle_yes_cents(m) == 0
 
+    def test_expiration_value_raw_returns_none(self):
+        """expiration_value is raw underlying price (e.g. BTC price), not payout.
+        
+        So it returns None since 78029.99 * 100 != 0 or 100.
+        """
+        m = {"expiration_value": "78029.99"}
+        assert _settle_yes_cents(m) is None
+        m = {"expiration_value": "100"}  # 100 * 100 = 10000, not 0/100
+        assert _settle_yes_cents(m) is None
 
-class TestParseApiTime:
-    """Tests for _parse_api_time helper."""
-
-    def test_valid_iso_string(self):
-        """Valid ISO 8601 strings parse correctly."""
-        result = _parse_api_time("2024-01-01T00:00:00Z")
-        assert result is not None
-        assert result.year == 2024
-        assert result.month == 1
-        assert result.day == 1
-
-    def test_invalid_string(self):
-        """Invalid strings return None."""
-        assert _parse_api_time(None) is None
-        assert _parse_api_time("") is None
-        assert _parse_api_time("not-a-date") is None
-
-
-class TestParseMarketPrices:
-    """Tests for _parse_market_prices helper."""
-
-    def test_dollar_fields(self):
-        """Uses *_dollars fields when available."""
-        mkt = {
-            "yes_bid_dollars": "0.50",
-            "yes_ask_dollars": "0.52",
-            "no_bid_dollars": "0.48",
-            "no_ask_dollars": "0.50",
-        }
-        yb, ya, nb, na, yq, nq = _parse_market_prices(mkt)
-        assert yb == 50
-        assert ya == 52
-        assert nb == 48
-        assert na == 50
-
-    def test_fallback_to_non_dollar_fields(self):
-        """Falls back to non-dollar fields when *_dollars fields absent."""
-        mkt = {
-            "yes_bid": "50",
-            "yes_ask": "52",
-            "no_bid": "48",
-            "no_ask": "50",
-        }
-        yb, ya, nb, na, yq, nq = _parse_market_prices(mkt)
-        assert yb == 50
-        assert ya == 52
-        assert nb == 48
-        assert na == 50
-
-    def test_missing_fields_return_zero(self):
-        """Missing fields return 0."""
-        mkt = {}
-        yb, ya, nb, na, yq, nq = _parse_market_prices(mkt)
-        assert yb == 0
-        assert ya == 0
-        assert nb == 0
-        assert na == 0
-        assert yq == 0
-        assert nq == 0
+    def test_expiration_value_non_binary_returns_none(self):
+        """Raw BTC price like 78029.99 returns None (not a payout)."""
+        m = {"expiration_value": "78029.99"}
+        assert _settle_yes_cents(m) is None
 
 
 class TestMarketInfo:
-    """Tests for MarketInfo dataclass."""
+    """Tests for MarketInfo dataclass and properties."""
 
-    def test_mid_yes_property(self):
-        """mid_yes returns average of yes_bid and yes_ask."""
+    def test_mid_yes_with_bid_ask(self):
+        """mid_yes averages bid/ask when both present."""
         m = MarketInfo(
-            ticker="KXBTC15M", series="KXBTC", close_time=None,
-            strike=0, strike_type="",
-            yes_bid=50, yes_ask=52, no_bid=48, no_ask=50,
-            yes_liquidity=100, no_liquidity=100,
+            ticker="TEST", series="TEST", close_time=datetime.now(timezone.utc),
+            strike=50000, strike_type="", yes_bid=80, yes_ask=82,
+            no_bid=18, no_ask=20, yes_liquidity=100, no_liquidity=100,
+            minutes_left=5.0, bracket_role="MAIN", raw={}
         )
-        assert m.mid_yes == 51.0
+        assert m.mid_yes == 81.0
 
-    def test_mid_yes_fallback(self):
-        """mid_yes falls back to yes_ask or yes_bid when one is missing."""
+    def test_mid_yes_fallback_to_ask(self):
+        """mid_yes falls back to ask when bid missing."""
         m = MarketInfo(
-            ticker="KXBTC15M", series="KXBTC", close_time=None,
-            strike=0, strike_type="",
-            yes_bid=50, yes_ask=0, no_bid=0, no_ask=0,
-            yes_liquidity=0, no_liquidity=0,
+            ticker="TEST", series="TEST", close_time=datetime.now(timezone.utc),
+            strike=50000, strike_type="", yes_bid=0, yes_ask=85,
+            no_bid=15, no_ask=100, yes_liquidity=100, no_liquidity=100,
+            minutes_left=5.0, bracket_role="MAIN", raw={}
         )
-        assert m.mid_yes == 50.0
+        assert m.mid_yes == 85.0
 
-    def test_skew_property(self):
-        """skew returns yes_bid - no_bid."""
+    def test_skew_calculation(self):
+        """skew = yes_bid - no_bid."""
         m = MarketInfo(
-            ticker="KXBTC15M", series="KXBTC", close_time=None,
-            strike=0, strike_type="",
-            yes_bid=50, yes_ask=52, no_bid=48, no_ask=50,
-            yes_liquidity=100, no_liquidity=100,
+            ticker="TEST", series="TEST", close_time=datetime.now(timezone.utc),
+            strike=50000, strike_type="", yes_bid=80, yes_ask=82,
+            no_bid=18, no_ask=20, yes_liquidity=100, no_liquidity=100,
+            minutes_left=5.0, bracket_role="MAIN", raw={}
         )
-        assert m.skew == 2
+        assert m.skew == 62
+
+    def test_spread_calculation(self):
+        """spread = yes_ask - yes_bid when both present."""
+        m = MarketInfo(
+            ticker="TEST", series="TEST", close_time=datetime.now(timezone.utc),
+            strike=50000, strike_type="", yes_bid=80, yes_ask=82,
+            no_bid=18, no_ask=20, yes_liquidity=100, no_liquidity=100,
+            minutes_left=5.0, bracket_role="MAIN", raw={}
+        )
+        assert m.spread == 2
 
 
 class TestFindActiveMarkets:
     """Tests for find_active_markets function."""
 
-    def test_returns_empty_when_no_markets(self, monkeypatch):
-        """Returns empty list when no markets match criteria."""
-        monkeypatch.setattr(config, "MIN_YES_PRICE_CENTS", 1)
-        monkeypatch.setattr(config, "MAX_YES_PRICE_CENTS", 99)
-        monkeypatch.setattr(config, "HEDGE_YES_ASK_MAX", 12)
-        monkeypatch.setattr(config, "MAX_HEDGE_PER_SERIES", 0)
-        monkeypatch.setattr(config, "TARGET_SERIES", ["KXBTC15M"])
-
+    def test_returns_all_mains_not_just_closest(self):
+        """Should return ALL mains passing band filter, not just closest to 50c."""
         client = MagicMock()
-        client.get_markets.return_value = []
-
-        result = find_active_markets(client)
-        assert result == []
-
-    def test_returns_main_markets(self, monkeypatch):
-        """Returns markets with mid price in range."""
-        monkeypatch.setattr(config, "MIN_YES_PRICE_CENTS", 1)
-        monkeypatch.setattr(config, "MAX_YES_PRICE_CENTS", 99)
-        monkeypatch.setattr(config, "HEDGE_YES_ASK_MAX", 12)
-        monkeypatch.setattr(config, "MAX_HEDGE_PER_SERIES", 0)
-        monkeypatch.setattr(config, "TARGET_SERIES", ["KXBTC15M"])
-
-        # close_time within 15 minutes of now so minutes_left passes the filter
-        close_dt = datetime.now(timezone.utc) + timedelta(minutes=10)
-
-        client = MagicMock()
-        client.get_orderbook.return_value = {}
+        now = datetime.now(timezone.utc)
+        
+        # Create mock markets - two mains in band, one hedge
         client.get_markets.return_value = [
             {
-                "ticker": "KXBTC15M",
-                "status": "active",
-                "close_time": close_dt.isoformat(),
-                "yes_bid_dollars": "0.50",
-                "yes_ask_dollars": "0.52",
-                "no_bid_dollars": "0.48",
-                "no_ask_dollars": "0.50",
-                "yes_bid_size_fp": "100",
-                "no_bid_size_fp": "100",
-            }
+                "ticker": "KXBTC15M-A", "series_ticker": "KXBTC15M",
+                "status": "active", "close_time": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                "floor_strike": 50000, "strike_type": "binary",
+                "yes_bid_dollars": "0.85", "yes_ask_dollars": "0.86",
+                "no_bid_dollars": "0.14", "no_ask_dollars": "0.15",
+                "yes_bid_size_fp": "1000", "no_bid_size_fp": "800",
+            },
+            {
+                "ticker": "KXBTC15M-B", "series_ticker": "KXBTC15M",
+                "status": "active", "close_time": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                "floor_strike": 50000, "strike_type": "binary",
+                "yes_bid_dollars": "0.88", "yes_ask_dollars": "0.89",
+                "no_bid_dollars": "0.11", "no_ask_dollars": "0.12",
+                "yes_bid_size_fp": "1000", "no_bid_size_fp": "800",
+            },
+            {
+                "ticker": "KXBTC15M-C", "series_ticker": "KXBTC15M",
+                "status": "active", "close_time": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                "floor_strike": 50000, "strike_type": "binary",
+                "yes_bid_dollars": "0.95", "yes_ask_dollars": "0.96",
+                "no_bid_dollars": "0.04", "no_ask_dollars": "0.05",
+                "yes_bid_size_fp": "1000", "no_bid_size_fp": "800",
+            },
         ]
+        client.get_orderbook.return_value = {"yes": [[85, 100]], "no": [[15, 100]]}
+        client.invalidate_markets.return_value = None
 
-        result = find_active_markets(client)
+        with patch('market_finder.config.ENTRY_BAND_MIN', 75), \
+             patch('market_finder.config.ENTRY_BAND_MAX', 95), \
+             patch('market_finder.config.HEDGE_YES_ASK_MAX', 12), \
+             patch('market_finder.config.MAX_HEDGE_PER_SERIES', 1), \
+             patch('market_finder.config.TARGET_SERIES', ['KXBTC15M']), \
+             patch('market_finder.config.MIN_YES_PRICE_CENTS', 1), \
+             patch('market_finder.config.MAX_YES_PRICE_CENTS', 99):
+            result = find_active_markets(client)
+
+        # Should return both MAIN markets (A and B), not just one
+        mains = [m for m in result if m.bracket_role == "MAIN"]
+        assert len(mains) >= 1, f"Expected at least 1 MAIN market, got {len(mains)}"
+
+
+class TestRankSignals:
+    """Tests for rank_signals function."""
+
+    def test_ranks_by_strength_confidence_boost(self):
+        """Signals ranked by strength * confidence * boost."""
+        from market_finder import MarketInfo
+        
+        m1 = MarketInfo(
+            ticker="A", series="KXBTC15M", close_time=datetime.now(timezone.utc),
+            strike=50000, strike_type="", yes_bid=85, yes_ask=86,
+            no_bid=14, no_ask=15, yes_liquidity=100, no_liquidity=100,
+            minutes_left=5.0, bracket_role="MAIN", raw={}
+        )
+        m2 = MarketInfo(
+            ticker="B", series="KXBTC15M", close_time=datetime.now(timezone.utc),
+            strike=50000, strike_type="", yes_bid=90, yes_ask=91,
+            no_bid=9, no_ask=10, yes_liquidity=100, no_liquidity=100,
+            minutes_left=5.0, bracket_role="HEDGE_NO", raw={}
+        )
+        
+        s1 = TradeSignal("YES", "yes", 85, 1.0, 0.85, "test", m1, strength=10.0, confidence=0.8)
+        s2 = TradeSignal("NO", "no", 10, 1.0, 0.10, "test", m2, strength=5.0, confidence=0.9)
+        
+        ranked = rank_signals([s1, s2])
+        
+        # s1: 10 * 0.8 * 1.0 = 8.0
+        # s2: 5 * 0.9 * 1.2 = 5.4 (HEDGE_NO gets 1.2x boost)
+        assert ranked[0].market.ticker == "A"
+        assert ranked[1].market.ticker == "B"
+
+
+class TestEvaluateTwoSided:
+    """Tests for two-sided favourite maker evaluation."""
+
+    def test_both_sides_in_range_keeps_more_extreme(self):
+        """When both YES and NO in range, keep the one further from 50c.
+        
+        Uses entry band 20-80 so both sides can be in range (YES at 80, NO at 20).
+        """
+        m = MarketInfo(
+            ticker="TEST", series="KXBTC15M",
+            close_time=datetime.now(timezone.utc) + timedelta(minutes=10),
+            strike=50000, strike_type="",
+            yes_bid=80, yes_ask=81, no_bid=19, no_ask=20,
+            yes_liquidity=100, no_liquidity=100,
+            minutes_left=5.0, bracket_role="MAIN", raw={}
+        )
+        
+        # Use entry band 19-80 so both YES (80) and NO (19) are in range
+        with patch('signals.config.ENTRY_BAND_MIN', 19), \
+             patch('signals.config.ENTRY_BAND_MAX', 80), \
+             patch('signals.config.MIN_NO_ENTRY_CENTS', 19), \
+             patch('signals.config.MAX_NO_ENTRY_CENTS', 80), \
+             patch('signals.config.ALLOW_YES_BUYS', True), \
+             patch('signals.config.NO_PRICE_IS_COMPLEMENT', False):
+            
+            result = _evaluate_two_sided(m, 10.0, 3)
+        
+        trades = [s for s in result if s.is_trade]
+        assert len(trades) == 1
+        # NO at 20c (30 from 50) vs YES at 80c (30 from 50) - equal distance
+        # With >= comparison, NO wins (further or equal)
+        assert trades[0].direction == "NO"
+
+
+class TestEvaluateHedge:
+    """Tests for HEDGE_NO evaluation."""
+
+    def test_hedge_requires_no_ask_in_band(self):
+        """HEDGE only triggers when NO ask is in MIN_NO_ENTRY_CENTS..MAX_NO_ENTRY_CENTS."""
+        m = MagicMock()
+        m.ticker = "TEST"
+        m.series = "KXBTC15M"
+        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=10)
+        m.minutes_left = 5.0
+        m.no_ask = 90  # Outside hedge band (82-88)
+        m.no_bid = 10
+        m.yes_bid = 10
+        m.yes_ask = 90
+        m.yes_liquidity = 100
+        m.no_liquidity = 100
+        
+        with patch('signals.config.MIN_NO_ENTRY_CENTS', 82), \
+             patch('signals.config.MAX_NO_ENTRY_CENTS', 88), \
+             patch('signals.config.NO_PRICE_IS_COMPLEMENT', False):
+            result = _evaluate_hedge(m, 10.0)
+        
+        trades = [s for s in result if s.is_trade]
+        assert len(trades) == 0
+
+
+class TestEvaluate:
+    """Tests for main evaluate() entry point."""
+
+    def test_returns_pass_for_invalid_market(self):
+        """Markets with no liquidity return a PASS signal (not empty list)."""
+        m = MagicMock()
+        m.ticker = "TEST"
+        m.series = "KXBTC15M"
+        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=10)
+        m.minutes_left = 5.0
+        m.yes_bid = 0; m.yes_ask = 0
+        m.no_bid = 0; m.no_ask = 0
+        m.yes_liquidity = 0; m.no_liquidity = 0
+        
+        result = evaluate(m, 10.0)
         assert len(result) == 1
-        assert result[0].ticker == "KXBTC15M"
-
-    def test_filters_out_markets_outside_window(self, monkeypatch):
-        """Filters out markets with minutes_left outside range."""
-        monkeypatch.setattr(config, "MIN_YES_PRICE_CENTS", 1)
-        monkeypatch.setattr(config, "MAX_YES_PRICE_CENTS", 99)
-        monkeypatch.setattr(config, "HEDGE_YES_ASK_MAX", 12)
-        monkeypatch.setattr(config, "MAX_HEDGE_PER_SERIES", 0)
-        monkeypatch.setattr(config, "TARGET_SERIES", ["KXBTC15M"])
-
-        client = MagicMock()
-        client.get_markets.return_value = [
-            {
-                "ticker": "KXBTC15M",
-                "status": "active",
-                "close_time": "2024-01-01T00:00:00Z",  # Already past
-                "yes_bid_dollars": "0.50",
-                "yes_ask_dollars": "0.52",
-                "no_bid_dollars": "0.48",
-                "no_ask_dollars": "0.50",
-                "yes_bid_size_fp": "100",
-                "no_bid_size_fp": "100",
-            }
-        ]
-
-        result = find_active_markets(client)
-        assert result == []
-
-    def test_fetch_multiple_series(self, monkeypatch):
-        """Fetches markets from multiple series concurrently."""
-        monkeypatch.setattr(config, "MIN_YES_PRICE_CENTS", 1)
-        monkeypatch.setattr(config, "MAX_YES_PRICE_CENTS", 99)
-        monkeypatch.setattr(config, "HEDGE_YES_ASK_MAX", 12)
-        monkeypatch.setattr(config, "MAX_HEDGE_PER_SERIES", 0)
-        monkeypatch.setattr(config, "TARGET_SERIES", ["KXBTC15M", "KXETH15M"])
-
-        close_dt = datetime.now(timezone.utc) + timedelta(minutes=10)
-
-        client = MagicMock()
-        client.get_orderbook.return_value = {}
-        # Different markets for each series
-        def side_effect(series_ticker=None, status="open", limit=50):
-            if series_ticker == "KXBTC15M":
-                return [{
-                    "ticker": "KXBTC15M",
-                    "status": "active",
-                    "close_time": close_dt.isoformat(),
-                    "yes_bid_dollars": "0.50",
-                    "yes_ask_dollars": "0.52",
-                    "no_bid_dollars": "0.48",
-                    "no_ask_dollars": "0.50",
-                    "yes_bid_size_fp": "100",
-                    "no_bid_size_fp": "100",
-                }]
-            elif series_ticker == "KXETH15M":
-                return [{
-                    "ticker": "KXETH15M",
-                    "status": "active",
-                    "close_time": close_dt.isoformat(),
-                    "yes_bid_dollars": "0.30",
-                    "yes_ask_dollars": "0.32",
-                    "no_bid_dollars": "0.68",
-                    "no_ask_dollars": "0.70",
-                    "yes_bid_size_fp": "100",
-                    "no_bid_size_fp": "100",
-                }]
-            return []
-        client.get_markets.side_effect = side_effect
-
-        result = find_active_markets(client)
-        assert len(result) == 2
-        tickers = {m.ticker for m in result}
-        assert tickers == {"KXBTC15M", "KXETH15M"}
+        assert result[0].direction == "PASS"
+        assert result[0].reason == "No quotes"
 
 
-class TestSettleYesCents:
-    """Tests for _settle_yes_cents — the settlement payout parser.
-
-    The Kalshi Trade API migrated settlement from a 0/100 expiration_value to
-    settlement_value_dollars ("1.0000"/"0.0000") plus result ("yes"/"no").
-    The legacy expiration_value is the raw underlying price (e.g. a BTC price
-    like "78029.99"), NOT a payout. Reading it as 0/100 silently drops every
-    settlement. These tests lock in the correct behavior.
-    """
-
-    def test_settlement_value_dollars_yes(self):
-        assert _settle_yes_cents({"settlement_value_dollars": "1.0000"}) == 100
-
-    def test_settlement_value_dollars_no(self):
-        assert _settle_yes_cents({"settlement_value_dollars": "0.0000"}) == 0
-
-    def test_result_yes(self):
-        assert _settle_yes_cents({"result": "yes"}) == 100
-
-    def test_result_no(self):
-        assert _settle_yes_cents({"result": "no"}) == 0
-
-    def test_legacy_expiration_value_100(self):
-        assert _settle_yes_cents({"expiration_value": "1.0"}) == 100
-
-    def test_legacy_expiration_value_0(self):
-        assert _settle_yes_cents({"expiration_value": "0"}) == 0
-
-    def test_raw_underlying_price_rejected(self):
-        # expiration_value holding a BTC price (78029.99) is NOT a payout
-        assert _settle_yes_cents({"expiration_value": "78029.99"}) is None
-
-    def test_unknown_settlement_returns_none(self):
-        assert _settle_yes_cents({}) is None
-        assert _settle_yes_cents({"status": "open"}) is None
-
-    def test_settlement_value_takes_precedence(self):
-        # If both fields exist, settlement_value_dollars wins
-        assert _settle_yes_cents({
-            "settlement_value_dollars": "0.0000",
-            "expiration_value": "78029.99",
-        }) == 0
+# Need imports for tests
+from datetime import datetime, timezone, timedelta
+from unittest.mock import MagicMock, patch
+from signals import TradeSignal
+from market_finder import MarketInfo

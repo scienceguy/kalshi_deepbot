@@ -168,6 +168,7 @@ def test_resting_value_kept_for_resting_order(fresh_state, mock_client):
 def _reset_cycle_state(monkeypatch):
     """Give the module-level trader.state a clean, isolated snapshot."""
     from risk import RiskManager
+    from datetime import datetime, timezone
     monkeypatch.setattr(trader.state, "positions", {})
     monkeypatch.setattr(trader.state, "resting_value", {})
     monkeypatch.setattr(trader.state, "position_risk", {})
@@ -178,7 +179,9 @@ def _reset_cycle_state(monkeypatch):
     monkeypatch.setattr(trader.state, "risk", RiskManager())
     monkeypatch.setattr(trader.state, "cycles", 0)
     monkeypatch.setattr(trader.state, "orders_today", 0)
-    monkeypatch.setattr(trader.state, "today", "")
+    # Don't reset today to empty string — use today's date so reset_daily isn't
+    # called on first cycle, which would clear market_daily_losses.
+    monkeypatch.setattr(trader.state, "today", datetime.now(timezone.utc).date().isoformat())
 
 
 def _mkts():
@@ -346,7 +349,7 @@ def test_settlement_records_market_loss_to_correct_ticker(monkeypatch):
     client.get_balance.return_value = 100.0
     client.get_positions.return_value = []          # position has settled (gone)
     client.invalidate_markets.return_value = None
-    client.get_market.return_value = {"expiration_value": 0.0}  # YES loses
+    client.get_market.return_value = {"expiration_value": 0.0, "floor_strike": 50000.0}  # YES loses
     client.get_orders.return_value = []
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())

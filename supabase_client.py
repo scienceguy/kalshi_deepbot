@@ -74,10 +74,13 @@ def _supabase_record_success() -> None:
     _SUPABASE_SKIP_UNTIL = 0.0
 
 
-# ── Load credentials ─────────────────────────────────────────────────────────
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+# ── Load credentials (lazy, at call time) ─────────────────────────────────────
+# Credential loading order (highest priority first):
+# 1. Protected key file (0600) — highest priority
+# 2. Environment variable
+# 3. .env (loaded by config.py at import)
+
 SUPABASE_KEY_FILE = os.environ.get("SUPABASE_KEY_FILE", "")
-SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
 # Valid key names recognised in key=value files (order: first match wins)
 _VALID_KEY_NAMES = {"SUPABASE_SERVICE_KEY", "SUPABASE_API_KEY", "sb_secret"}
@@ -130,45 +133,52 @@ def _parse_raw_key_file(path: str) -> str:
         return ""
 
 
-# ── Load credentials in documented order ─────────────────────────────────
-# 1. Protected key file (0600) — highest priority
-# 2. Environment variable
-# 3. .env (loaded by config.py at import)
+def _load_credentials() -> tuple[str, str]:
+    """Load Supabase credentials from env/file at call time.
+    
+    Returns (url, service_key). Called lazily by SupabaseClient.__init__.
+    """
+    # Load URL: env first, then key file
+    url = os.environ.get("SUPABASE_URL", "")
+    if url:
+        log.debug("Supabase URL loaded from environment variable")
+    elif SUPABASE_KEY_FILE:
+        file_url, _ = _parse_kv_file(SUPABASE_KEY_FILE)
+        if file_url:
+            url = file_url
+            log.info("Supabase URL loaded from key file: %s", SUPABASE_KEY_FILE)
 
-# Load URL: env first, then key file
-if SUPABASE_URL:
-    log.debug("Supabase URL loaded from environment variable")
-elif SUPABASE_KEY_FILE:
-    file_url, _ = _parse_kv_file(SUPABASE_KEY_FILE)
-    if file_url:
-        SUPABASE_URL = file_url
-        log.info("Supabase URL loaded from key file: %s", SUPABASE_KEY_FILE)
+    # Load service key: protected raw file first, then env var
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    if SUPABASE_KEY_FILE:
+        raw_key = _parse_raw_key_file(SUPABASE_KEY_FILE)
+        if raw_key:
+            service_key = raw_key
+            log.info("Supabase service key loaded from key file: %s", SUPABASE_KEY_FILE)
+        else:
+            # Fall back to KEY=VALUE parsing of the file
+            _, file_key = _parse_kv_file(SUPABASE_KEY_FILE)
+            if file_key:
+                service_key = file_key
+                log.info("Supabase service key loaded from key file (KEY=VALUE): %s", SUPABASE_KEY_FILE)
+    elif service_key:
+        log.debug("Supabase service key loaded from environment variable")
 
-# Load service key: protected raw file first, then env var
-if SUPABASE_KEY_FILE:
-    raw_key = _parse_raw_key_file(SUPABASE_KEY_FILE)
-    if raw_key:
-        SUPABASE_SERVICE_KEY = raw_key
-        log.info("Supabase service key loaded from key file: %s", SUPABASE_KEY_FILE)
-    else:
-        # Fall back to KEY=VALUE parsing of the file
-        _, file_key = _parse_kv_file(SUPABASE_KEY_FILE)
-        if file_key:
-            SUPABASE_SERVICE_KEY = file_key
-            log.info("Supabase service key loaded from key file (KEY=VALUE): %s", SUPABASE_KEY_FILE)
-elif SUPABASE_SERVICE_KEY:
-    log.debug("Supabase service key loaded from environment variable")
+    return url, service_key
+
 
 def is_enabled() -> bool:
     """Check whether Supabase credentials are currently available."""
-    return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
+    url, key = _load_credentials()
+    return bool(url and key)
 
 
-if not is_enabled():
+url, key = _load_credentials()
+if not (url and key):
     missing = []
-    if not SUPABASE_URL:
+    if not url:
         missing.append("SUPABASE_URL")
-    if not SUPABASE_SERVICE_KEY:
+    if not key:
         missing.append("SUPABASE_SERVICE_KEY")
     log.warning(
         "Supabase credentials incomplete — missing %s. "
@@ -181,9 +191,10 @@ if not is_enabled():
 
 class SupabaseClient:
     def __init__(self):
-        self.url = SUPABASE_URL.rstrip("/") if SUPABASE_URL else ""
-        self.key = SUPABASE_SERVICE_KEY or ""
-        self.enabled = is_enabled()
+        url, key = _load_credentials()
+        self.url = url.rstrip("/") if url else ""
+        self.key = key or ""
+        self.enabled = bool(url and key)
         self.session = requests.Session()
         self.session.headers.update({
             "apikey": self.key,
@@ -241,6 +252,15 @@ class SupabaseClient:
                     continue
                 # Non-retryable errors (4xx except 429) — log but don't increment circuit breaker
                 global _schema_warned
+                if resp.status_code in (401, 403):
+                    # Auth failure — disable client permanently for this process
+                    log.error(
+                        "Supabase auth failure (HTTP %s) — service key invalid or revoked. "
+                        "Supabase writes disabled. Rotate key in dashboard and restart.",
+                        resp.status_code,
+                    )
+                    self.enabled = False
+                    return None
                 if resp.status_code == 404 and "PGRST205" in resp.text:
                     # Table not created yet (schema.sql not run). One actionable
                     # error, then silence — this fires on every write otherwise.
