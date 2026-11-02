@@ -1,20 +1,15 @@
 """
-llm_eval.py — LLM trade evaluation with 7-layer fallback from free model providers.
+llm_eval.py — LLM trade evaluation via NVIDIA API (integrate.api.nvidia.com).
 
-Layers (tried in order, each with independent retry):
-  1. OpenRouter free models (OPENROUTER_API_KEY)
-  2. Groq free tier (GROQ_API_KEY)
-  3. DeepSeek free tier (DEEPSEEK_API_KEY)
-  4. OpenAI free tier (OPENAI_API_KEY)
-  5. Gemini free tier (GEMINI_API_KEY)
-  6. DSH our-free-model local gateway (http://127.0.0.1:18900)
-  7. Ollama local (http://127.0.0.1:11434)
+Single provider: NVIDIA's OpenAI-compatible endpoint, authenticated with
+NVIDIA_API_KEY. The primary model is ``NVIDIA_MODEL``; the free models in
+``LAYERS[0]["free_models"]`` are tried when the primary returns a non-200.
 
-Each layer returns a dict:
+Each call returns a dict:
   {"probability_of_net_profit": float (0-1), "confidence_hold_to_expiry": float (0-1),
-   "reasoning": str, "layer": str}
+   "reasoning": str, "layer": str, "model": str}
 
-Returns None if all layers fail.
+Returns None if the API call fails (caller decides fail-open vs fail-safe).
 """
 
 import json
@@ -45,7 +40,25 @@ def _env_float(name, default):
     except (ValueError, TypeError):
         return default
 
-REQUEST_TIMEOUT = _env_int("LLM_REQUEST_TIMEOUT", 8)
+
+def _resolve_api_key(env_key: str) -> str:
+    """Return the API key from env, or from a protected file via <ENV_KEY>_FILE.
+
+    Keeps secrets out of `.env`/source: set NVIDIA_API_KEY_FILE to a chmod-600
+    file instead of pasting the key inline.
+    """
+    key = os.environ.get(env_key, "")
+    if key:
+        return key
+    path = os.environ.get(f"{env_key}_FILE", "")
+    if path:
+        try:
+            return open(path).read().strip()
+        except OSError as e:
+            log.debug("Could not read %s_FILE (%s): %s", env_key, path, e)
+    return ""
+
+REQUEST_TIMEOUT = _env_int("LLM_REQUEST_TIMEOUT", 20)
 MAX_RETRIES_PER_LAYER = _env_int("LLM_MAX_RETRIES", 2)
 BACKOFF_BASE = _env_float("LLM_BACKOFF_BASE", 1.0)
 
@@ -54,80 +67,17 @@ BACKOFF_BASE = _env_float("LLM_BACKOFF_BASE", 1.0)
 
 LAYERS = [
     {
-        "name": "openrouter",
-        "env_key": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
-        "model": os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4"),
+        "name": "nvidia",
+        "env_key": "NVIDIA_API_KEY",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "model": os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b"),
         "chat_path": "/chat/completions",
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
+        # Fallbacks on the same NVIDIA endpoint (different model = different quota).
         "free_models": [
-            "openrouter/auto", "openrouter/free", "openrouter/openrouter-free-router",
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "google/gemma-2-9b-it:free",
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         ],
-    },
-    {
-        "name": "groq",
-        "env_key": "GROQ_API_KEY",
-        "base_url": "https://api.groq.com/openai/v1",
-        "model": os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
-        "chat_path": "/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "free_models": [
-            "llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768",
-        ],
-    },
-    {
-        "name": "deepseek",
-        "env_key": "DEEPSEEK_API_KEY",
-        "base_url": "https://api.deepseek.com/v1",
-        "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
-        "chat_path": "/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "free_models": ["deepseek-chat"],
-    },
-    {
-        "name": "openai",
-        "env_key": "OPENAI_API_KEY",
-        "base_url": "https://api.openai.com/v1",
-        "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-        "chat_path": "/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "free_models": ["gpt-4o-mini", "gpt-3.5-turbo"],
-    },
-    {
-        "name": "gemini",
-        "env_key": "GEMINI_API_KEY",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "model": os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
-        "chat_path": "/openai/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "free_models": ["gemini-2.5-flash", "gemini-1.5-flash"],
-    },
-    {
-        "name": "dsh_our_free_model",
-        "env_key": None,  # No API key needed for local gateway
-        "base_url": "http://127.0.0.1:18900",
-        "model": os.environ.get("DSH_MODEL", "free-model"),
-        "chat_path": "/v1/chat/completions",
-        "auth_header": None,
-        "auth_prefix": None,
-        "free_models": ["free-model", "kimi-k3-dsh", "deepseek-v4.1-flash-free"],
-    },
-    {
-        "name": "ollama",
-        "env_key": None,
-        "base_url": "http://127.0.0.1:11434",
-        "model": os.environ.get("OLLAMA_MODEL", "gemma3:1b"),
-        "chat_path": "/api/chat",
-        "auth_header": None,
-        "auth_prefix": None,
-        "free_models": ["gemma3:1b", "llama3.2", "qwen2.5"],
     },
 ]
 
@@ -241,7 +191,7 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
     """Call a single LLM layer. Returns parsed result or None."""
     api_key = None
     if layer["env_key"]:
-        api_key = os.environ.get(layer["env_key"], "")
+        api_key = _resolve_api_key(layer["env_key"])
         if not api_key:
             log.debug("Layer %s skipped: no API key", layer["name"])
             return None
@@ -269,15 +219,6 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
             "max_tokens": 256,
         }
 
-        # Ollama uses different payload format
-        if layer["name"] == "ollama":
-            payload = {
-                "model": model,
-                "messages": messages,
-                "stream": False,
-                "options": {"temperature": 0.1},
-            }
-
         for attempt in range(MAX_RETRIES_PER_LAYER):
             # Check deadline before each retry attempt
             if deadline and time.time() >= deadline:
@@ -298,13 +239,10 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
                               layer["name"], model, resp.status_code)
                     break  # Try next model
                 data = resp.json()
-                if layer["name"] == "ollama":
-                    content = data.get("message", {}).get("content", "")
-                else:
-                    choices = data.get("choices", [])
-                    if not choices:
-                        continue
-                    content = choices[0].get("message", {}).get("content", "")
+                choices = data.get("choices", [])
+                if not choices:
+                    continue
+                content = choices[0].get("message", {}).get("content", "")
                 result = _parse_llm_response(content)
                 if result:
                     result["layer"] = layer["name"]
@@ -321,7 +259,7 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
 
 def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
     """
-    Evaluate a trade signal using LLM with 7-layer fallback.
+    Evaluate a trade signal using the NVIDIA LLM API.
 
     Args:
         signal_info: dict with keys like ticker, direction, entry_price,
@@ -330,7 +268,7 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
 
     Returns:
         dict with probability_of_net_profit, confidence_hold_to_expiry,
-        reasoning, layer, model — or None if all layers fail.
+        reasoning, layer, model — or None if the API call fails.
     """
     system_prompt = (
         "You are a disciplined Kalshi 15-minute market trading analyst. "
@@ -401,7 +339,7 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
             log.debug("Layer %s failed: %s", layer_name, e)
             continue
 
-    log.warning("All 7 LLM layers failed — last error: %s", last_error)
+    log.warning("NVIDIA LLM eval failed — last error: %s", last_error)
     return None
 
 
@@ -416,7 +354,7 @@ def should_block_trade(signal_info: dict, min_probability: float = 0.35) -> tupl
     result = evaluate_trade(signal_info)
     if not result:
         if config.LLM_EVAL_FAIL_OPEN:
-            log.warning("All LLM layers failed — fail-open, allowing trade")
+            log.warning("NVIDIA LLM eval failed — fail-open, allowing trade")
             return False, None
         return True, None  # Can't evaluate — block by default (fail-safe)
     prob = result["probability_of_net_profit"]
