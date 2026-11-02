@@ -387,10 +387,16 @@ class KalshiClient:
         Kalshi v2 API: buying NO = selling YES at complement price.
         Internal: NO at 85c means we want to buy NO at 85c.
         API: We sell YES at (100 - 85) = 15c = "0.1500".
+        
+        If NO_PRICE_IS_COMPLEMENT=False (production), Kalshi stores NO price directly,
+        so the complement is NOT applied here.
         """
         if not 1 <= price_cents <= 99:
             raise ValueError(f"price_cents={price_cents} out of valid range (1-99)")
-        complement_cents = 100 - price_cents
+        if config.NO_PRICE_IS_COMPLEMENT:
+            complement_cents = 100 - price_cents
+        else:
+            complement_cents = price_cents
         return f"{complement_cents / 100:.4f}"
 
     @staticmethod

@@ -404,8 +404,12 @@ def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: i
         _pass(why)
         return results
 
-    no_ask = market.no_ask or (100 - market.yes_bid if market.yes_bid else 0)
-    yes_ask = market.yes_ask or (100 - market.no_bid if market.no_bid else 0)
+    no_ask = market.no_ask
+    if no_ask == 0 and market.yes_bid:
+        no_ask = 100 - market.yes_bid if config.NO_PRICE_IS_COMPLEMENT else market.yes_bid
+    yes_ask = market.yes_ask
+    if yes_ask == 0 and market.no_bid:
+        yes_ask = 100 - market.no_bid if config.NO_PRICE_IS_COMPLEMENT else market.no_bid
     if no_ask <= 0 and yes_ask <= 0:
         _pass("No quotes")
         return results
