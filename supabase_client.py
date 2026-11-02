@@ -26,6 +26,8 @@ from typing import Optional, Dict, Any
 import requests
 from requests.adapters import HTTPAdapter
 
+import config  # noqa: F401  — import loads .env into os.environ
+
 log = logging.getLogger(__name__)
 
 _schema_warned = False  # log the missing-schema hint once, not on every write

@@ -1,282 +1,238 @@
-#!/usr/bin/env python3
 """
-parallel_backtest_hf.py — Parallel parameter sweep using HuggingFace Kalshi BTC 15m features dataset.
+parallel_backtest_hf.py — Parameter sweep backtest on DegenHedge/kalshi-btc-15m dataset.
 
-Loads all 8 parquet shards from bennett-tan/kalshi-btc-15m-features and runs
-a parallel parameter sweep to find the strategy with highest EV per trade.
+Loads signals.parquet + windows.parquet from Hugging Face, sweeps entry-threshold
+and model_probability parameters, computes net EV per trade using the exact
+Kalshi quadratic taker fee (fees.py), and reports the highest-EV parameter set.
 
-Strategy: favorite-maker limit orders
-- Enter YES when price is in favorite band (82-99c)
-- Enter NO when price is in NO favorite band (equivalently YES price in 1-18c)
-- Entry price proxy: p_last (last observed price before settlement)
-- Settlement from resolved_yes field
-- Fee-aware P&L using fees.py
+Usage:
+    python parallel_backtest_hf.py          # full sweep
+    python parallel_backtest_hf.py --quick  # smaller grid for speed
+
+Output:
+    hf_backtest_results.json  — top 50 results
+    Prints ranked table + best parameters to stdout.
 """
-import argparse, itertools, json, logging, sys
-from dataclasses import dataclass
-from multiprocessing import Pool
-from pathlib import Path
 
-import pyarrow.parquet as pq
-from fees import buy_cash_out, sell_cash_in
+import argparse
+import itertools
+import json
+import logging
+import math
+import os
+import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
-log = logging.getLogger("parallel_backtest_hf")
+import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fees import taker_fee_dollars
+
+LOG = logging.getLogger("parallel_backtest_hf")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")
 
-_cached_data = None
+FEE_RATE = float(os.environ.get("KALSHI_FEE_RATE", "0.07"))
+CONTRACTS = 1  # per-trade contract count for EV calc
 
 
-def init_worker(data):
-    global _cached_data
-    _cached_data = data
+def roundtrip_pnl_dollars(entry_cents: int, won: bool, contracts: int = 1) -> float:
+    """Net P&L in dollars for one round-trip trade using Kalshi taker fees.
 
-
-@dataclass
-class StratParams:
-    ENTRY_BAND_MIN: int = 82
-    ENTRY_BAND_MAX: int = 93
-    MAX_NO_ENTRY_CENTS: int = 88
-    MIN_SKEW_CENTS: int = 3
-    MIN_TREND_CENTS: int = 8
-    ENTRY_WINDOW_START_MIN: float = 6.0
-    ENTRY_WINDOW_END_MIN: float = 11.0
-    AGGRESSIVE_FILL: bool = False
-    MAX_OPEN_POSITIONS: int = 4
-    PER_TRADE_PCT: float = 0.08
-    MAX_TRADE_DOLLARS: float = 3.00
-    BALANCE_PCT_PER_TRADE: float = 0.10
-    STARTING_BALANCE: float = 10.00
-
-
-def load_all_data():
-    """Load all parquet shards from hf_data/."""
-    all_rows = []
-    data_dir = Path("hf_data")
-    for pq_file in sorted(data_dir.glob("*.parquet")):
-        table = pq.read_table(str(pq_file))
-        df = table.to_pandas()
-        all_rows.append(df)
-        log.info("Loaded %s: %d rows", pq_file.name, len(df))
-    if not all_rows:
-        return []
-    import pandas as pd
-    combined = pd.concat(all_rows, ignore_index=True)
-    return combined.to_dict("records")
-
-
-def simulate_trade(row, params, balance=10.0):
-    """Simulate one market through the favorite-maker signal engine."""
-    ticker = row.get("market_ticker", "")
-    p_open = row.get("p_open", 0.5)
-    p_last = row.get("p_last", 0.5)
-    resolved_yes = row.get("resolved_yes", 0)
-
-    # Entry price proxy: last price (price at end of window before settlement)
-    # Note: this is a conservative estimate — actual entry would be earlier
-    mid_proxy = int(round(p_last * 100))
-
-    # YES won?
-    yes_won = bool(resolved_yes == 1)
-
-    # Favorite-maker entry: only enter YES when it is the favorite (in band).
-    # We do NOT bet the underdog (NO complement) when YES is above the band —
-    # that contradicts the favourite-maker strategy.
-    if mid_proxy < params.ENTRY_BAND_MIN or mid_proxy > params.ENTRY_BAND_MAX:
-        # Price outside favorite band — no signal
-        return None
-
-    ep = mid_proxy
-    side_bullish = True
-
-    # Position sizing
-    max_dollars = min(params.MAX_TRADE_DOLLARS, balance * params.BALANCE_PCT_PER_TRADE)
-    cost = ep / 100.0
-    n = int(max_dollars / cost)
-    if n < 1 and max_dollars >= cost:
-        n = 1
-    n = max(0, n)
-    if n < 1:
-        return None
-
-    dollar_risk = n * ep / 100.0
-
-    # Fee-aware P&L: buy at ep, sell at settlement
-    entry_price_dollars = ep / 100.0
-    exit_price_dollars = (
-        1.0 if yes_won else 0.0
-    ) if side_bullish else (
-        0.0 if yes_won else 1.0
+    Buy at entry_cents/100, sell at 1.00 (win) or 0.00 (loss).
+    Fee charged on both legs via taker_fee_dollars (6dp model).
+    """
+    entry_price = entry_cents / 100.0
+    exit_price = 1.0 if won else 0.0
+    entry_value = contracts * entry_price
+    exit_value = contracts * exit_price
+    fee = taker_fee_dollars(contracts, entry_price) + taker_fee_dollars(
+        contracts, exit_price
     )
-
-    buy_cost = buy_cash_out(n, entry_price_dollars)
-    sell_revenue = sell_cash_in(n, exit_price_dollars)
-    pnl = sell_revenue - buy_cost
-    won = sell_revenue > buy_cost
-
-    return {
-        "ticker": ticker,
-        "direction": "YES" if side_bullish else "NO",
-        "entry_price": ep,
-        "contracts": n,
-        "dollar_risk": dollar_risk,
-        "buy_cost": buy_cost,
-        "sell_revenue": sell_revenue,
-        "settled_yes": 100 if yes_won else 0,
-        "won": won,
-        "pnl": pnl,
-        "p_open": p_open,
-        "p_last": p_last,
-        "mid": mid_proxy,
-    }
+    return exit_value - entry_value - fee
 
 
-def run_backtest(params, data, starting_balance=10.0):
-    balance = starting_balance
-    trades = []
+def evaluate(df: pd.DataFrame, params: dict) -> dict:
+    """Filter signals by params and compute EV metrics.
 
-    for row in data:
-        result = simulate_trade(row, params, balance)
-        if not result:
-            continue
-        if result["dollar_risk"] > balance * params.PER_TRADE_PCT:
-            continue
-        if result["dollar_risk"] > params.MAX_TRADE_DOLLARS:
-            continue
-        balance -= result["buy_cost"]
-        balance += result["sell_revenue"]
-        trades.append(result)
+    Params:
+        entry_ask_min, entry_ask_max: inclusive entry_ask_cents range
+        model_prob_min: minimum model_prob to trade
+        side: 'UP', 'DOWN', or 'both'
+    """
+    d = df.copy()
 
-    if not trades:
-        return {"ev": 0.0, "total_pnl": 0.0, "n_trades": 0, "win_rate": 0.0,
-                "avg_pnl": 0.0, "final_balance": balance, "max_drawdown": 0.0}
+    entry_min = params.get("entry_ask_min", 1)
+    entry_max = params.get("entry_ask_max", 99)
+    d = d[(d["entry_ask_cents"] >= entry_min) & (d["entry_ask_cents"] <= entry_max)]
 
-    total_pnl = sum(t["pnl"] for t in trades)
-    wins = sum(1 for t in trades if t["won"])
-    win_rate = wins / len(trades)
-    avg_pnl = total_pnl / len(trades)
-    ev_per_trade = avg_pnl
+    mp_min = params.get("model_prob_min", 0.0)
+    d = d[d["model_prob"] >= mp_min]
 
-    running = starting_balance
-    peak = starting_balance
+    side = params.get("side", "both")
+    if side == "UP":
+        d = d[d["side"] == "UP"]
+    elif side == "DOWN":
+        d = d[d["side"] == "DOWN"]
+
+    n = len(d)
+    if n == 0:
+        return {
+            "params": params,
+            "n_trades": 0,
+            "win_rate": 0.0,
+            "avg_entry_cents": 0.0,
+            "ev_per_trade": 0.0,
+            "total_pnl": 0.0,
+            "avg_pnl": 0.0,
+            "max_drawdown": 0.0,
+        }
+
+    won = d["won"].astype(bool)
+    win_rate = won.mean()
+    avg_entry = d["entry_ask_cents"].mean()
+
+    # P&L per trade
+    pnl = [
+        roundtrip_pnl_dollars(int(c), bool(w), CONTRACTS)
+        for c, w in zip(d["entry_ask_cents"], won)
+    ]
+    pnl_series = pd.Series(pnl)
+    total_pnl = pnl_series.sum()
+    ev_per_trade = pnl_series.mean()
+    avg_pnl = ev_per_trade
+
+    # Drawdown
+    running = 0.0
+    peak = 0.0
     max_dd = 0.0
-    for t in trades:
-        running += t["pnl"]
+    for p in pnl:
+        running += p
         if running > peak:
             peak = running
-        dd = (peak - running) / peak if peak > 0 else 0
+        dd = (peak - running) / peak if peak > 0 else 0.0
         if dd > max_dd:
             max_dd = dd
 
     return {
-        "ev": ev_per_trade,
-        "total_pnl": total_pnl,
-        "n_trades": len(trades),
-        "win_rate": win_rate,
-        "avg_pnl": avg_pnl,
-        "final_balance": balance,
-        "max_drawdown": max_dd,
-        "trades": trades,
+        "params": params,
+        "n_trades": int(n),
+        "win_rate": float(win_rate),
+        "avg_entry_cents": float(avg_entry),
+        "ev_per_trade": float(ev_per_trade),
+        "total_pnl": float(total_pnl),
+        "avg_pnl": float(avg_pnl),
+        "max_drawdown": float(max_dd),
     }
 
 
-def _backtest_one(args):
-    combo, starting_balance = args
-    params = StratParams(**combo)
-    result = run_backtest(params, _cached_data, starting_balance)
-    result["params"] = combo
-    return result
-
-
-def parameter_grid(quick=False):
+def parameter_grid(quick: bool = False):
     if quick:
-        grids = {
-            "ENTRY_BAND_MIN": [82, 86, 88],
-            "ENTRY_BAND_MAX": [88, 91, 93],
-            "MAX_NO_ENTRY_CENTS": [60, 65, 68],
-            "PER_TRADE_PCT": [0.10, 0.20],
-            "MAX_TRADE_DOLLARS": [2.0, 3.0, 5.0],
-            "BALANCE_PCT_PER_TRADE": [0.10, 0.25],
-        }
+        entry_mins = [1, 35, 50, 65]
+        entry_maxs = [65, 80, 95, 99]
+        model_probs = [0.60, 0.80, 0.90, 0.95]
+        sides = ["both"]
     else:
-        grids = {
-            "ENTRY_BAND_MIN": [75, 80, 82, 85, 88],
-            "ENTRY_BAND_MAX": [88, 90, 92, 95, 98],
-            "MAX_NO_ENTRY_CENTS": [55, 60, 65, 70, 75],
-            "PER_TRADE_PCT": [0.10, 0.20],
-            "MAX_TRADE_DOLLARS": [2.0, 3.0, 5.0, 10.0],
-            "BALANCE_PCT_PER_TRADE": [0.10, 0.25],
-        }
-    keys = list(grids.keys())
-    for combo in itertools.product(*[grids[k] for k in keys]):
-        yield dict(zip(keys, combo))
+        entry_mins = [1, 20, 35, 50, 60, 65, 70, 75, 80, 85]
+        entry_maxs = [65, 70, 75, 80, 85, 90, 95, 99]
+        model_probs = [0.60, 0.70, 0.80, 0.85, 0.90, 0.92, 0.94, 0.96, 0.98]
+        sides = ["both", "UP", "DOWN"]
+
+    for em in entry_mins:
+        for ex in entry_maxs:
+            if ex < em:
+                continue
+            for mp in model_probs:
+                for sd in sides:
+                    yield {
+                        "entry_ask_min": em,
+                        "entry_ask_max": ex,
+                        "model_prob_min": mp,
+                        "side": sd,
+                    }
+
+
+def worker(args):
+    df, params = args
+    return evaluate(df, params)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--quick", action="store_true")
-    parser.add_argument("--top", type=int, default=10)
-    parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--quick", action="store_true", help="Smaller parameter grid")
+    parser.add_argument("--top", type=int, default=20, help="Show top N results")
+    parser.add_argument(
+        "--jobs", type=int, default=4, help="Parallel workers"
+    )
     args = parser.parse_args()
 
-    logging.getLogger().setLevel(logging.WARNING)
+    r = "DegenHedge/kalshi-btc-15m"
+    from huggingface_hub import hf_hub_download as g
 
-    log.info("Loading HuggingFace dataset...")
-    data = load_all_data()
-    log.info("Total market windows: %d", len(data))
-
-    if not data:
-        log.error("No data loaded — cannot backtest")
-        sys.exit(1)
+    LOG.info("Loading signals.parquet ...")
+    df = pd.read_parquet(g(r, "signals.parquet", repo_type="dataset"))
+    LOG.info("Loaded %d signals", len(df))
 
     combos = list(parameter_grid(args.quick))
-    log.info("Testing %d parameter combinations with %d workers...", len(combos), args.jobs)
+    LOG.info("Testing %d parameter combinations with %d workers...", len(combos), args.jobs)
 
-    work_items = [(c, 10.0) for c in combos]
+    work_items = [(df, p) for p in combos]
 
-    with Pool(processes=args.jobs, initializer=init_worker, initargs=(data,)) as pool:
-        results = pool.map(_backtest_one, work_items)
+    results = []
+    if args.jobs > 1:
+        with ProcessPoolExecutor(max_workers=args.jobs) as ex:
+            futures = {ex.submit(worker, item): i for i, item in enumerate(work_items)}
+            for fut in as_completed(futures):
+                results.append(fut.result())
+    else:
+        for item in work_items:
+            results.append(evaluate(*item))
 
-    results.sort(key=lambda r: r["ev"], reverse=True)
+    results.sort(key=lambda r: r["ev_per_trade"], reverse=True)
 
-    print("\n" + "=" * 90)
-    print(f"BACKTEST RESULTS — {len(data)} markets, {len(combos)} parameter sets")
-    print("=" * 90)
-    print(f"\n{'Rank':<5} {'EV/trade':<9} {'Total P&L':<10} {'Trades':<7} {'Win%':<7} {'Avg P&L':<9} {'MaxDD':<7} {'Params'}")
-    print("-" * 90)
-    for i, r in enumerate(results[:args.top]):
+    print("\n" + "=" * 100)
+    print(f"BACKTEST RESULTS — {len(df)} signals, {len(combos)} parameter sets")
+    print("=" * 100)
+    print(
+        f"\n{'Rank':<5} {'EV/trade':<10} {'Total P&L':<10} {'Trades':<7} "
+        f"{'Win%':<7} {'AvgEntry':<9} {'MaxDD':<7} {'Params'}"
+    )
+    print("-" * 100)
+    for i, r in enumerate(results[: args.top]):
         p = r["params"]
-        print(f"{i+1:<5} {r['ev']:<9.4f} {r['total_pnl']:<10.2f} {r['n_trades']:<7} "
-              f"{r['win_rate']*100:<6.1f}% {r['avg_pnl']:<9.4f} {r['max_drawdown']*100:<6.1f}% "
-              f"band={p.get('ENTRY_BAND_MIN','-')}-{p.get('ENTRY_BAND_MAX','-')} "
-              f"no_cap={p.get('MAX_NO_ENTRY_CENTS','-')} "
-              f"pct={p.get('PER_TRADE_PCT','-')} max_$={p.get('MAX_TRADE_DOLLARS','-')} "
-              f"bal_pct={p.get('BALANCE_PCT_PER_TRADE','-')}")
+        print(
+            f"{i+1:<5} {r['ev_per_trade']:<10.4f} {r['total_pnl']:<10.2f} "
+            f"{r['n_trades']:<7} {r['win_rate']*100:<6.1f}% "
+            f"{r['avg_entry_cents']:<9.1f} {r['max_drawdown']*100:<6.1f}% "
+            f"emin={p['entry_ask_min']} exmax={p['entry_ask_max']} "
+            f"mp>={p['model_prob_min']} side={p['side']}"
+        )
 
+    # Save top 50
     out = {
-        "n_markets": len(data),
+        "n_signals": len(df),
         "n_combos": len(combos),
         "results": [
-            {**{"params": r["params"]}, **{k: v for k, v in r.items() if k != "trades"}}
+            {**{"params": r["params"]}, **{k: v for k, v in r.items() if k != "params"}}
             for r in results[:50]
         ],
     }
-    out_path = Path("hf_backtest_results.json")
-    with open(out_path, "w") as f:
+    with open("hf_backtest_results.json", "w") as f:
         json.dump(out, f, indent=2, default=str)
-    log.info("Full results saved to %s", out_path)
+    LOG.info("Results saved to hf_backtest_results.json")
 
+    # Print best
     best = results[0]
     print("\n" + "=" * 80)
     print("BEST PARAMETERS (highest EV):")
     print("=" * 80)
     for k, v in best["params"].items():
         print(f"  {k}: {v}")
-    print(f"\n  EV/trade: ${best['ev']:.4f}")
+    print(f"  EV/trade: ${best['ev_per_trade']:.4f}")
     print(f"  Total P&L: ${best['total_pnl']:.2f}")
     print(f"  Trades: {best['n_trades']}")
     print(f"  Win rate: {best['win_rate']*100:.1f}%")
+    print(f"  Avg entry: {best['avg_entry_cents']:.1f}c")
     print(f"  Max drawdown: {best['max_drawdown']*100:.1f}%")
-    print(f"  Final balance: ${best['final_balance']:.2f}")
 
 
 if __name__ == "__main__":
