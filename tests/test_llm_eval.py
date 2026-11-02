@@ -87,3 +87,21 @@ class TestEvaluateTrade:
             blocked, result = llm_eval.should_block_trade({}, min_probability=0.35)
         assert blocked is True
         assert result["probability_of_net_profit"] == 0.1
+
+    def test_content_null_handled_gracefully(self):
+        """content: null in response should not crash; returns None to try next model."""
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "choices": [{
+                "message": {
+                    "content": None  # reasoning-only models return null
+                }
+            }]
+        }
+        with patch.object(llm_eval, "REQUEST_TIMEOUT", 1), \
+             patch.dict("os.environ", {"NVIDIA_API_KEY": "test-key"}), \
+             patch.object(llm_eval.requests, "post", return_value=resp):
+            result = llm_eval.evaluate_trade({"ticker": "KXBTC15M-T1"})
+
+        assert result is None  # falls back / returns None instead of crashing

@@ -74,9 +74,11 @@ LAYERS = [
         "chat_path": "/chat/completions",
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # Fallbacks on the same NVIDIA endpoint (different model = different quota).
+        # Fallback on the same NVIDIA endpoint (different model = different quota).
+        # Must return a normal message.content: reasoning-only models (e.g.
+        # nemotron-3-nano-omni) send content=null and never parse.
         "free_models": [
-            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+            "meta/llama-3.2-90b-vision-instruct",
         ],
     },
 ]
@@ -242,7 +244,7 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
                 choices = data.get("choices", [])
                 if not choices:
                     continue
-                content = choices[0].get("message", {}).get("content", "")
+                content = choices[0].get("message", {}).get("content") or ""
                 result = _parse_llm_response(content)
                 if result:
                     result["layer"] = layer["name"]
