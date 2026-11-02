@@ -101,6 +101,16 @@ n8n holds a **copy** of every credential, recreated from the mirror at any time.
 - Secret files: `~/.secrets/kalshi_private.pem`, `~/.secrets/n8n_api_key`,
   `~/.secrets/supabase_service_key`, `~/.secrets/bw/`.
 
+## Supabase database access
+
+Use the `supabase` MCP tools for all database work; never ask me to use the dashboard SQL editor.
+- Before changing anything, call `list_tables` (verbose) to see what exists.
+- Use `execute_sql` for queries and data changes.
+- Use `apply_migration` for schema changes (create/alter/drop), with a snake_case name.
+- Tables in scope: public.bot_state, public.signals, public.orders. Never touch other tables.
+- After schema changes, run `notify pgrst, 'reload schema';` via `execute_sql`.
+- If a call is rejected, report the exact error. If it says read-only, tell me instead of retrying.
+
 ## Kalshi API (production)
 
 - Base URL: `https://external-api.kalshi.com/trade-api/v2`
