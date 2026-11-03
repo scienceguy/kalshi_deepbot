@@ -187,7 +187,7 @@ if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0 + _SUM_EPSILON:
         f"CASH_FLOOR_PCT ({CASH_FLOOR_PCT:.2f}) + EXPOSURE_CEILING_PCT ({EXPOSURE_CEILING_PCT:.2f}) > 1.0. "
         f"Sum must be <= 1.0 to avoid over-reserving cash."
     )
-PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.05)  # 5% per trade - very conservative for $2 balance
+PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.50)  # 50% per trade - allows 1 contract with $1.77 balance
 MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
 DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.15)
 MAX_DRAWDOWN_PCT = _env_float("MAX_DRAWDOWN_PCT", 0.12)
