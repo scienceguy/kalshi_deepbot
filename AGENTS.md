@@ -162,8 +162,8 @@ Coordination (logstream):
 | 16 | `n8n_client.py:289-293` | Health check writes through trade webhook | FIXED — uses `superbot-trade` health-check action (returns 200) |
 | 17 | `kalshi_client.py:191-208` | `_last_req` set before 429 retry loop → burst after rate limit | FIXED — gap enforced inside rate-limit block |
 | 18 | `config.py:189-199` | `DRY_RUN=false` in `.env` silently enables live | FIXED — `.env.example` defaults `KALSHI_CONFIRM_LIVE=false`; `--live` requires explicit confirm |
-| 19 | `backtest_engine.py:64-150` | Lookahead bias: `last_price` as entry price | NOT FIXED — documented warning in docstrings |
-| 20 | `backtest_engine.py:170-180` | Balance updated per trade in list order, not time order | NOT FIXED |
+| 19 | `backtest_engine.py:64-150` | Lookahead bias: `last_price` as entry price | FIXED — uses bid/ask mid or synthetic 45c entry price (line 89-94); docstring warning retained |
+| 20 | `backtest_engine.py:170-180` | Balance updated per trade in list order, not time order | FIXED — markets sorted by close_time before simulation (line 182) |
 | 21 | `backtest.py/parallel_backtest.py` | Default sweep huge (~147k combos), slow on Android | FIXED — `--quick` default, jobs capped at CPU count |
 | 22 | `signals.py:202-211` | Stability gate blocks all trades ~3min on fresh start | NOT FIXED (by design) |
 | 23 | `fees.py:19` | `FEE_RATE` from env, no range validation | FIXED — `0 <= FEE_RATE <= 1` validated at import |
