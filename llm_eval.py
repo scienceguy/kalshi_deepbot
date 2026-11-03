@@ -176,13 +176,16 @@ def _parse_llm_response(content: str) -> Optional[Dict[str, Any]]:
         conf = float(data.get("confidence_hold_to_expiry", 0.0))
         reasoning = data.get("reasoning", data.get("reason", ""))
 
-        # Validate that only expected keys are present (per system prompt).
+        # Validate that ONLY documented keys are present. The system prompt
+        # says "exactly these keys" — extra keys indicate a malformed
+        # response that should not be trusted.
         expected_keys = {"probability_of_net_profit", "confidence_hold_to_expiry", "reasoning"}
         extra_keys = set(data.keys()) - expected_keys
         if extra_keys:
-            log.warning(
-                "LLM response contained unexpected keys: %s — ignoring extras",
-                ", ".join(sorted(extra_keys)),
+            raise ValueError(
+                f"LLM response contained undocumented keys: "
+                f"{', '.join(sorted(extra_keys))}. "
+                f"System prompt requires exactly: {', '.join(sorted(expected_keys))}"
             )
 
         return {

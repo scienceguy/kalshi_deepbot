@@ -149,15 +149,15 @@ Coordination (logstream):
 | 3 | `trader.py:708-726` | Float contracts truncated in API order but `dollar_risk` keeps float → cash over-reservation | FIXED — contracts floored to int before `dollar_risk` |
 | 4 | `kalshi_client.py:63` | `_verify_key` set verified before check succeeded → permanent poison on transient failure | FIXED — verified only after success, with `_verifying` re-entrancy guard |
 | 5 | `trader.py:667-680` | Orders recorded as filled before fill confirmation | FIXED — only recorded when `fill_count > 0` |
-| 6 | `trader.py:445-447, 796-799` | NO order price assumed complemented, unverified | NOT FIXED — verify against Kalshi before live |
+| 6 | `trader.py:445-447, 796-799` | NO order price assumed complemented, unverified | FIXED — `NO_PRICE_IS_COMPLEMENT` config; `_order_price_dollars` reads `no_price_dollars` directly; `kalshi_client.no_price_to_api_price` respects config flag |
 | 7 | `supabase_client.py:189-232` | Supabase write failures return `None` silently; no alert on schema/4xx | FIXED — `_supabase_record_failure()` called on 4xx |
 | 8 | `data_collector.py:110-116` | Closed markets store negative `minutes_left` | FIXED — clamped to 0 |
-| 9 | `trader.py:917-931` | Lock file uses `/proc/{pid}` (unreliable on Android) | NOT FIXED — still uses /proc check |
+| 9 | `trader.py:917-931` | Lock file uses `/proc/{pid}` (unreliable on Android) | FIXED — uses `fcntl.flock` (trader.py:1344-1351) |
 | 10 | `signals.py:130-138` | Module-level `_bid_hist`, not persisted on shutdown | FIXED — saved to `bid_hist_{dry,live}.json` |
-| 11 | `trader.py:423-428` | Transient balance failure skips entire cycle | NOT FIXED |
-| 12 | `market_finder.py:189-192` | Only ONE main market returned per cycle | NOT FIXED |
+| 11 | `trader.py:423-428` | Transient balance failure skips entire cycle | FIXED — logs warning and continues (trader.py:619-624) |
+| 12 | `market_finder.py:189-192` | Only ONE main market returned per cycle | FIXED — returns ALL mains passing entry band filter (lines 260-264) |
 | 13 | `market_finder.py:159-160` | MAIN selected on raw mid, dropped after orderbook fetch | FIXED — bid history and market finder refactored |
-| 14 | `risk.py:43-55` | Drawdown halt uses cost-basis, not mark-to-market | NOT FIXED |
+| 14 | `risk.py:43-55` | Drawdown halt uses cost-basis, not mark-to-market | FIXED — `mark_to_market_exposure` parameter (risk.py:44-79) |
 | 15 | `trader.py:508-523, 839-845` | `session_pnl` drift between n8n and Supabase | PARTIAL — batched bot-state writes added |
 | 16 | `n8n_client.py:289-293` | Health check writes through trade webhook | FIXED — uses `superbot-trade` health-check action (returns 200) |
 | 17 | `kalshi_client.py:191-208` | `_last_req` set before 429 retry loop → burst after rate limit | FIXED — gap enforced inside rate-limit block |
@@ -182,26 +182,26 @@ Coordination (logstream):
 | 36 | `trader.py:543-545` | 4 sequential `set_bot_state` writes per cycle | FIXED — batched via `set_bot_state_batch` |
 | 37 | `latency_arb.py:176` | `run(client, markets)` accepts unused `client` | FIXED — `run(markets)` only |
 | 38 | `parallel_backtest.py:55` | Public fetch `limit=1000`, no cursor pagination | FIXED — cursor pagination added |
-| 39 | `kalshieye_downloader.py:213` | Only `files[0]` downloaded per date | NOT FIXED |
+| 39 | `kalshieye_downloader.py:213` | Only `files[0]` downloaded per date | FIXED — iterates all files (lines 213-229) |
 | 40 | `data_collector.py:13-12` | Docstring says dry-run, collects closed historical | FIXED — docstring corrected |
-| 41 | `config.py:63` | `_env_bool` silently returns default for unparseable values | NOT FIXED |
+| 41 | `config.py:63` | `_env_bool` silently returns default for unparseable values | FIXED — raises `ValueError` on unparseable values (config.py:86-89) |
 | 42 | `tests/` — `test_kalshi_price_data_client.py`, `test_n8n_client.py` shallow | Weak coverage | PARTIAL — added `tests/test_trader.py` (8 tests) |
-| 43 | `tests/` — no tests for `market_finder.find_active_markets` / `rank_signals` | NOT FIXED |
-| 44 | `trader.py` — no per-market/day loss limit beyond drawdown | NOT FIXED |
+| 43 | `tests/` — no tests for `market_finder.find_active_markets` / `rank_signals` | NOT FIXED | FIXED — `tests/test_market_finder.py` exists |
+| 44 | `trader.py` — no per-market/day loss limit beyond drawdown | FIXED — `record_market_loss` / `market_loss_exceeded` (risk.py:91-112) |
 | 45 | `backtest_engine.py:258-255` | Sweep tests ignored params (`MIN_SKEW`, etc.) | FIXED — `StratParams` aligns with grid |
-| 46 | `kalshi_price_data_client.py:133-142` | `health_check()` may call missing SDK method | NOT FIXED |
-| 47 | `add_n8n_credentials.py` / `inject_n8n_workflows.py` | Keys visible in process list | PARTIAL — env var paths for key files |
+| 46 | `kalshi_price_data_client.py:133-142` | `health_check()` may call missing SDK method | FIXED — `hasattr` check (lines 133-147) |
+| 47 | `add_n8n_credentials.py` / `inject_n8n_workflows.py` | Keys visible in process list | FIXED — Supabase credentials removed from workflow JSON (inject_n8n_workflows.py) |
 | 48 | `config.py:233-339` | `validate_*` not auto-called on import | NOT FIXED — called explicitly by `trader.py` |
-| 49 | `resilience.py:44` | Backoff starts at `base_backoff` (5s) on first failure | NOT FIXED |
-| 50 | `kalshi_client.py:265` | `get_markets` cache keyed by `(series, status, limit)`, no invalidation | NOT FIXED (30s TTL acceptable) |
+| 49 | `resilience.py:44` | Backoff starts at `base_backoff` (5s) on first failure | FIXED — first failure delay=0 (resilience.py:48-49) |
+| 50 | `kalshi_client.py:265` | `get_markets` cache keyed by `(series, status, limit)`, no invalidation | FIXED — `invalidate_markets()` method (kalshi_client.py:277-299) |
 | 51 | `trader.py:586-593` | `set_bot_state` writes every cycle even when unchanged | FIXED — batched single write |
-| 52 | `historical_data/`, `hf_data/` in repo | Repo bloat | NOT FIXED |
-| 53 | `bot.log`, `*_result.json` in working tree | Clutter | NOT FIXED |
-| 54 | `llm_eval.py:324-332` | System prompt says 2 keys, parser accepts extra | NOT FIXED |
+| 52 | `historical_data/`, `hf_data/` in repo | Repo bloat | FIXED — directories removed |
+| 53 | `bot.log`, `*_result.json` in working tree | Clutter | FIXED — `.gitignore` excludes `*.log` and `*_result.json` |
+| 54 | `llm_eval.py:324-332` | System prompt says 2 keys, parser accepts extra | FIXED — raises `ValueError` on extra keys (llm_eval.py:179-186) |
 | 55 | `parallel_backtest_hf.py:77-85` | NO branch uses `100 - mid_proxy`, no skew/trend gates | NOT FIXED — HF results not applicable to live |
 | 57 | `config.py:143-144` | `CASH_FLOOR_PCT=0.70` + `EXPOSURE_CEILING_PCT=0.30` sum to 1.0 | NOT FIXED (rounding epsilon handled) |
-| 58 | `signals.py:46-50` | `is_trade` allows empty `side` | NOT FIXED |
-| 60 | `supabase_client.py:72-140` | Credential loading order opaque | NOT FIXED |
+| 58 | `signals.py:46-50` | `is_trade` allows empty `side` | FIXED — checks `side != ""` (signals.py:44-47) |
+| 60 | `supabase_client.py:72-140` | Credential loading order opaque | FIXED — `_load_credentials()` documents priority order (supabase_client.py:136-171) |
 
 ## Git workflow
 
