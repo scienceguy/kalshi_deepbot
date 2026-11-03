@@ -157,6 +157,15 @@ MAX_HEDGE_PER_SERIES = _env_int("MAX_HEDGE_PER_SERIES", 0)
 # should not place real-money taker orders until it has a passing backtest.
 LATENCY_ARB_ENABLED = _env_bool("LATENCY_ARB_ENABLED", False)
 
+# Panic fade (mean reversion) strategy. Bet opposite side when price moves
+# sharply in short window — TurbineFi research found this was the ONLY
+# consistently profitable strategy group (93/96 variants, mean +4.90% ROI).
+PANIC_FADE_ENABLED = _env_bool("PANIC_FADE_ENABLED", True)
+PANIC_FADE_MOVE_CENTS = _env_int("PANIC_FADE_MOVE_CENTS", 15)  # min cents move to trigger
+PANIC_FADE_WINDOW_SECONDS = _env_int("PANIC_FADE_WINDOW_SECONDS", 120)  # lookback window
+PANIC_FADE_ENTRY_BAND_MIN = _env_int("PANIC_FADE_ENTRY_BAND_MIN", 75)  # bet favorite side 75-95c
+PANIC_FADE_ENTRY_BAND_MAX = _env_int("PANIC_FADE_ENTRY_BAND_MAX", 95)
+
 # ═════════════════════════════════════════════════════════════════════
 # POSITION SIZING (Kelly criterion from kalshi_codex_bot momentum backtests)
 # Best: MOM_88-93_dynTrue_netTrue_kelly2 → Kelly=0.10, Sharpe 6.60

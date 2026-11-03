@@ -351,6 +351,102 @@ def _evaluate_common(
 # ═════════════════════════════════════════════════════════════════════
 
 # ═════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════════════════
+# PANIC FADE (mean reversion — TurbineFi research: 93/96 variants profitable)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _evaluate_panic_fade(market: MarketInfo, max_dollars: float, max_contracts: int = 0):
+    """
+    Panic fade strategy: bet opposite side when price moves sharply in short window.
+    
+    When YES price crashes sharply (e.g., 90c→40c in <2min), fade by buying YES
+    at maker prices in 75-95c band, expecting mean reversion up.
+    When YES spiked sharply, fade by buying NO at 5-25c.
+    """
+    results = []
+    
+    def _pass(r):
+        results.append(TradeSignal("PASS", "", 0, 0, 0.0, r, market))
+    
+    now = time.time()
+    ticker = market.ticker
+    
+    h = _bid_hist.get(ticker, []) if _bid_hist else []
+    if len(h) < 3:
+        return results
+    
+    cutoff = now - config.PANIC_FADE_WINDOW_SECONDS
+    window = [(t, b) for t, b in h if t >= cutoff]
+    if len(window) < 2:
+        return results
+    
+    max_price = max(b for _, b in window)
+    min_price = min(b for _, b in window)
+    price_move = max_price - min_price
+    
+    if price_move < config.PANIC_FADE_MOVE_CENTS:
+        return results
+    
+    first_price = window[0][1]
+    last_price = window[-1][1]
+    price_change = last_price - first_price
+    
+    if price_change < -config.PANIC_FADE_MOVE_CENTS:
+        # YES dropped sharply — fade by buying YES at maker prices in 75-95c band
+        yes_ask = market.yes_ask
+        if not yes_ask:
+            return results
+        
+        ep = yes_ask - 1
+        ep = max(config.PANIC_FADE_ENTRY_BAND_MIN, min(config.PANIC_FADE_ENTRY_BAND_MAX, ep))
+        
+        n = _size(ep, max_dollars, max_contracts)
+        avail = market.yes_liquidity
+        if avail and n > avail:
+            n = min(n, float(avail))
+        n = float(int(n))
+        if n <= 0:
+            return results
+        
+        dollar_risk = n * ep / 100.0
+        results.append(TradeSignal(
+            "YES", "yes", ep, n, dollar_risk,
+            f"Panic fade YES: price dropped {abs(price_change)}c in {config.PANIC_FADE_WINDOW_SECONDS}s",
+            market, abs(price_change), confidence=float(ep)/100.0
+        ))
+    
+    elif price_change > config.PANIC_FADE_MOVE_CENTS:
+        # YES spiked sharply — fade by buying NO at 5-25c
+        no_ask = market.no_ask
+        if not no_ask:
+            return results
+        
+        ep = no_ask - 1
+        ep = max(5, min(25, ep))
+        
+        n = _size(ep, max_dollars, max_contracts)
+        avail = market.no_liquidity
+        if avail and n > avail:
+            n = min(n, float(avail))
+        n = float(int(n))
+        if n <= 0:
+            return results
+        
+        dollar_risk = n * ep / 100.0
+        results.append(TradeSignal(
+            "NO", "no", ep, n, dollar_risk,
+            f"Panic fade NO: YES spiked {price_change}c in {config.PANIC_FADE_WINDOW_SECONDS}s",
+            market, abs(price_change), confidence=float(ep)/100.0
+        ))
+    
+    return results
+
+
+# ═════════════════════════════════════════════════════════════════════
+# HEDGE_NO (from kalshi_15m_bot)
+# ═════════════════════════════════════════════════════════════════════
+
 # TWO-SIDED FAVOURITE MAKER (Approach D — from kalshi_live_bot)
 # ═════════════════════════════════════════════════════════════════════
 
