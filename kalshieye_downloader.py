@@ -120,6 +120,40 @@ class KalshieyeClient:
         data = r.json()
         return data.get("files", [])
 
+    def get_download_links(self, keys: list[str]) -> dict[str, str]:
+        """Get signed download URLs for file keys via POST /api/v1/files/links.
+
+        Returns a dict mapping key -> signed URL.
+        """
+        if not keys:
+            return {}
+        
+        # Scale timeout with key count: base 30s + 0.1s per key, max 120s
+        timeout = min(30 + len(keys) * 0.1, 120)
+        log.debug("Requesting download links for %d keys (timeout=%.1fs)", len(keys), timeout)
+        
+        r = self.session.post(f"{BASE_URL}/files/links", json={"keys": keys}, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        
+        # Validate response structure
+        if "files" not in data:
+            log.warning("Unexpected response format from /files/links: keys=%s", list(data.keys()))
+            return {}
+        
+        links = {}
+        for entry in data.get("files", []):
+            # Try multiple key field names that the API might return
+            key = entry.get("key") or entry.get("path") or entry.get("file_key") or entry.get("id")
+            url = entry.get("url") or entry.get("download_url") or entry.get("signed_url")
+            if url and key:
+                links[key] = url
+            else:
+                log.debug("Skipping entry with missing key/url: %s", entry)
+        
+        log.debug("Got %d signed download links for %d requested keys", len(links), len(keys))
+        return links
+
     def estimate_request(self, dataset: str, start_date: str, end_date: str,
                          series: str = None):
         """Estimate cost/size of a download request.
@@ -143,11 +177,17 @@ class KalshieyeClient:
                 return {}
 
     def download_file(self, signed_url: str, output_path: Path):
-        """Download a file from a signed URL with retry and content validation."""
+        """Download a file from a signed URL with retry and content validation.
+
+        Signed Cloudflare R2 URLs must be fetched without the session's
+        Authorization header (R2 rejects it on pre-signed URLs).
+        """
         last_err = None
         for attempt in range(3):
             try:
-                r = self.session.get(signed_url, timeout=120)
+                # Use a fresh session without the Bearer token for signed URLs
+                dl_session = requests.Session()
+                r = dl_session.get(signed_url, timeout=120)
                 r.raise_for_status()
                 # Validate content — must not be an error page
                 content_type = r.headers.get("Content-Type", "")
@@ -233,36 +273,36 @@ def main():
                 log.warning("  %s %s: no files available", series, date_str)
                 continue
 
-            # Download all files for this date
+            # Download all files for this date — first get signed links,
+            # then download each file from its signed Cloudflare R2 URL.
             try:
+                # Collect all file keys for this date
+                keys = [fi.get("key") or fi.get("path") or fi.get("file_key") or fi.get("id") for fi in files]
+                keys = [k for k in keys if k]
+
+                # Get signed download links (batch call for all keys at once)
+                link_map = {}
+                try:
+                    link_map = client.get_download_links(keys)
+                except Exception as e:
+                    log.warning("  %s %s: get_download_links failed: %s", series, date_str, e)
+
                 for file_info in files:
-                    # Kalshieye file info uses 'key' (e.g. flat/v1/markets/date=.../markets-...parquet)
-                    # and 'path' fields instead of 'url'/'download_url'. Construct download URL.
-                    key = file_info.get("key") or file_info.get("path", "")
-                    signed_url = file_info.get("url") or file_info.get("download_url")
-                    if not signed_url and key:
-                        # Try multiple download URL patterns for Kalshieye
-                        candidate_urls = [
-                            f"{BASE_URL}/files/download?key={key}",
-                            f"{BASE_URL}/files/download/{key}",
-                            f"{BASE_URL}/download/{key}",
-                            f"{BASE_URL}/{key}",
-                        ]
-                        signed_url = None
-                        for candidate in candidate_urls:
-                            try:
-                                test_r = s.head(candidate, timeout=10)
-                                if test_r.status_code == 200:
-                                    signed_url = candidate
-                                    break
-                            except Exception:
-                                continue
+                    # Try multiple key field names to match API response
+                    key = file_info.get("key") or file_info.get("path") or file_info.get("file_key") or file_info.get("id")
+                    
+                    # Prioritize fresh signed URL from link_map over potentially stale URLs in file_info
+                    signed_url = link_map.get(key)
                     if not signed_url:
-                        log.warning("  %s %s: no download URL in file info", series, date_str)
+                        # Fallback to any URL in file_info
+                        signed_url = file_info.get("url") or file_info.get("download_url") or file_info.get("signed_url")
+                    
+                    if not signed_url:
+                        log.warning("  %s %s: no download URL for key %s", series, date_str, key)
                         continue
 
                     # Use series/date in filename to avoid overwriting multiple files
-                    file_name = file_info.get("name", file_info.get("filename", "data"))
+                    file_name = file_info.get("name") or file_info.get("filename") or "data"
                     safe_name = "".join(c for c in file_name if c.isalnum() or c in "._-")
                     out_file = output_dir / f"{series}_{date_str}_{safe_name}.jsonl.gz"
 
