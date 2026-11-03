@@ -114,11 +114,11 @@ class TestSupabaseClientGetBotState:
 class TestSupabaseClientSetBotStateBatch:
     """Tests for SupabaseClient.set_bot_state_batch method.
 
-    Posts keys sequentially so one bad row doesn't fail the whole batch.
+    Posts all keys in a single batch upsert (one POST with array of rows).
     """
 
     def test_batch_all_keys_succeed(self, monkeypatch):
-        """set_bot_state_batch posts each key and returns True on all success."""
+        """set_bot_state_batch posts all keys in one batch and returns True on success."""
         monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
         monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
         monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
@@ -131,19 +131,21 @@ class TestSupabaseClientSetBotStateBatch:
 
         def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
             calls.append((method, path, data))
-            return {"data": [{"key": data[0]["key"]}]}
+            return {"data": [{"key": row["key"]} for row in data]}
 
         with patch.object(client, "_request", side_effect=fake_request):
             result = client.set_bot_state_batch({"session_pnl": 42.5, "cycles": 3})
             assert result is True
-            assert len(calls) == 2
+            assert len(calls) == 1
             assert calls[0][0] == "POST"
             assert calls[0][1] == "bot_state"
-            assert calls[0][2][0]["key"] == "session_pnl"
-            assert calls[1][2][0]["key"] == "cycles"
+            # Single batch with both keys
+            assert len(calls[0][2]) == 2
+            keys = {row["key"] for row in calls[0][2]}
+            assert keys == {"session_pnl", "cycles"}
 
     def test_batch_stops_on_first_failure(self, monkeypatch):
-        """set_bot_state_batch returns False when first key fails, doesn't post remaining keys."""
+        """set_bot_state_batch returns False when batch fails (no partial writes)."""
         monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
         monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
         monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
@@ -156,16 +158,17 @@ class TestSupabaseClientSetBotStateBatch:
 
         def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
             calls.append((method, path, data))
-            if data[0]["key"] == "bad_key":
-                return None  # simulate failure
-            return {"data": [{"key": data[0]["key"]}]}
+            # Simulate batch failure (e.g., constraint violation)
+            return None
 
         with patch.object(client, "_request", side_effect=fake_request):
             result = client.set_bot_state_batch({"good_key": 1.0, "bad_key": 2.0, "never_posted": 3.0})
             assert result is False
-            assert len(calls) == 2  # stops after bad_key fails, never posts "never_posted"
-            assert calls[0][2][0]["key"] == "good_key"
-            assert calls[1][2][0]["key"] == "bad_key"
+            assert len(calls) == 1  # single batch attempt
+            # All keys in the single batch
+            assert len(calls[0][2]) == 3
+            keys = {row["key"] for row in calls[0][2]}
+            assert keys == {"good_key", "bad_key", "never_posted"}
 
 
 class TestCircuitBreakerReset:

@@ -118,7 +118,7 @@ def main():
         top=args.top,
         jobs=args.jobs,
         out_path="parallel_backtest_results.json",
-        starting_balance=10.0,
+        starting_balance=100.0,
     )
 
 

@@ -27,13 +27,13 @@ def _make_market(ticker="KXBTC15M-TEST", close_minutes=10, yes_won=True,
         "expiration_value": exp_val,
         "floor_strike": 1.0,
     }
+    # Always set bid/ask — needed for mid_proxy calculation in simulate_trade
+    market["yes_bid_dollars"] = str(mid_cents / 100.0)
+    market["yes_ask_dollars"] = str((mid_cents + 2) / 100.0)
+    market["no_bid_dollars"] = str((100 - mid_cents - 2) / 100.0)
+    market["no_ask_dollars"] = str((100 - mid_cents) / 100.0)
     if last_price is not None:
         market["last_price_dollars"] = last_price / 100.0
-    else:
-        market["yes_bid_dollars"] = str(mid_cents / 100.0)
-        market["yes_ask_dollars"] = str((mid_cents + 2) / 100.0)
-        market["no_bid_dollars"] = str((100 - mid_cents - 2) / 100.0)
-        market["no_ask_dollars"] = str((100 - mid_cents) / 100.0)
     return market
 
 
@@ -99,6 +99,10 @@ class TestRunBacktest:
                 "open_time": open_t,
                 "expiration_value": 1.0,
                 "floor_strike": 1.0,
+                "yes_bid_dollars": "0.83",
+                "yes_ask_dollars": "0.87",
+                "no_bid_dollars": "0.13",
+                "no_ask_dollars": "0.17",
                 "last_price_dollars": "0.85",
             }
             markets.append(market)
@@ -112,7 +116,7 @@ class TestRunBacktest:
         """No matching markets → zero result."""
         params = StratParams(ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93)
         market = _make_market(mid_cents=50, yes_won=True, last_price=50)
-        result = run_backtest(params, [market], starting_balance=10.0)
+        result = run_backtest(params, [market], starting_balance=100.0)
         assert result["n_trades"] == 0
         assert result["total_pnl"] == 0.0
         assert result["ev"] == 0.0

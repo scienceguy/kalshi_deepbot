@@ -778,10 +778,10 @@ def cycle(client: KalshiClient):
             # reconciled on restart. If webhook fails, queue replay handles it.
             try:
                 new_session_pnl = state.session_pnl + realized_pnl
-                # Write to Supabase first (atomic upsert)
-                get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl})
-                # Update local state only after successful write
-                state.session_pnl = new_session_pnl
+                # Write to Supabase first (atomic upsert); only update local
+                # state if the write succeeded, otherwise PnL drifts on restart.
+                if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
+                    state.session_pnl = new_session_pnl
                 log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
                 # Invalidate market cache after settlement — the market is no longer open.
                 series = t.split("-")[0] if "-" in t else t
@@ -908,8 +908,8 @@ def cycle(client: KalshiClient):
     }
     if current_state != last_logged:
         try:
-            get_supabase_client().set_bot_state_batch(current_state)
-            state._last_logged_state = current_state
+            if get_supabase_client().set_bot_state_batch(current_state):
+                state._last_logged_state = current_state
         except Exception:
             log.debug("Supabase bot_state writes failed")
 

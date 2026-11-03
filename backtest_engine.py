@@ -35,7 +35,7 @@ class StratParams:
     MAX_TRADE_DOLLARS: float = 3.00
     MAX_OPEN_POSITIONS: int = 4
     BALANCE_PCT_PER_TRADE: float = 0.10
-    STARTING_BALANCE: float = 10.00
+    STARTING_BALANCE: float = 100.00
 
 
 _cached_markets = None
@@ -47,7 +47,7 @@ def init_worker(markets):
     _cached_markets = markets
 
 
-def simulate_trade(market, params, balance=10.0, settlement_yes_won=None):
+def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
     """
     Simulate one market through the favorite-maker signal engine.
 
@@ -164,7 +164,7 @@ def _default_settlement_yes_won(market):
         return None
 
 
-def run_backtest(params, markets, starting_balance=10.0, settlement_yes_won=None):
+def run_backtest(params, markets, starting_balance=100.0, settlement_yes_won=None):
     """Run the full backtest for one parameter set.
 
     Markets are sorted by close_time before simulation so that the balance
@@ -328,7 +328,7 @@ def print_best(results):
 
 def run_sweep(markets, settlement_yes_won=None, quick=False, limit=None,
               top=10, jobs=4, out_path="backtest_results.json",
-              starting_balance=10.0):
+              starting_balance=100.0):
     """Run a full parameter sweep and print/save results.
 
     Args:
