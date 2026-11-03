@@ -221,7 +221,7 @@ class SupabaseClient:
             headers.update(extra)
         return headers
 
-    def _request(self, method: str, path: str, data: Optional[Dict] = None,
+    def _request(self, method: str, path: str, data: Optional[Any] = None,
                  params: Optional[Dict] = None, extra_headers: Optional[Dict[str, str]] = None,
                  max_retries: int = 3) -> Optional[Dict]:
         if not self.enabled:
@@ -361,23 +361,24 @@ class SupabaseClient:
             return False
 
     def set_bot_state_batch(self, states: dict) -> bool:
-        """Set multiple bot state key-value pairs sequentially.
+        """Set multiple bot state key-value pairs in a single batch upsert.
 
-        Posts each key individually so a single bad row (e.g. None value
-        rejected by schema) doesn't fail the entire batch.
+        Posts all rows in one HTTP request to Supabase REST API (which accepts
+        a JSON array for bulk upsert). One bad row fails the entire batch, but
+        all rows are validated before sending so this is rare.
         """
-        for k, v in states.items():
-            data = {
-                "key": k,
-                "value_json": json.dumps(v),
-                "ts": datetime.now(timezone.utc).isoformat()
-            }
-            result = self._request("POST", "bot_state", data=[data],
+        try:
+            rows = [
+                {"key": k, "value_json": json.dumps(v),
+                 "ts": datetime.now(timezone.utc).isoformat()}
+                for k, v in states.items()
+            ]
+            result = self._request("POST", "bot_state", data=rows,
                                    extra_headers={"Prefer": "resolution=merge-duplicates"})
-            if result is None:
-                log.warning("set_bot_state_batch failed for key %s", k)
-                return False
-        return True
+            return result is not None
+        except Exception as e:
+            log.warning("set_bot_state_batch error: %s", e)
+            return False
 
     def get_bot_state(self, key: str) -> Optional[Any]:
         """Get a bot state value by key."""

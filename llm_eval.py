@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import stat
 import time
 from typing import Optional, Dict, Any
 
@@ -26,26 +27,18 @@ import config
 log = logging.getLogger("llm_eval")
 
 # ── Timeout and retry config ─────────────────────────────────────────────────
-def _env_int(name, default):
-    """Read an integer from the environment, falling back to default on any error."""
-    try:
-        return int(os.environ.get(name, default))
-    except (ValueError, TypeError):
-        return default
-
-def _env_float(name, default):
-    """Read a float from the environment, falling back to default on any error."""
-    try:
-        return float(os.environ.get(name, default))
-    except (ValueError, TypeError):
-        return default
+# Uses config._env_int / config._env_float (deduped — do not redefine here).
+REQUEST_TIMEOUT = config._env_int("LLM_REQUEST_TIMEOUT", 20)
+MAX_RETRIES_PER_LAYER = config._env_int("LLM_MAX_RETRIES", 2)
+BACKOFF_BASE = config._env_float("LLM_BACKOFF_BASE", 1.0)
 
 
 def _resolve_api_key(env_key: str) -> str:
     """Return the API key from env, or from a protected file via <ENV_KEY>_FILE.
 
     Keeps secrets out of `.env`/source: set NVIDIA_API_KEY_FILE to a chmod-600
-    file instead of pasting the key inline.
+    file instead of pasting the key inline. Refuses to read files with
+    world-readable permissions (mode & 0o077), matching supabase_client.py.
     """
     key = os.environ.get(env_key, "")
     if key:
@@ -53,14 +46,17 @@ def _resolve_api_key(env_key: str) -> str:
     path = os.environ.get(f"{env_key}_FILE", "")
     if path:
         try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            if mode & 0o077:
+                log.warning(
+                    "%s_FILE %s has insecure permissions (mode %o) — "
+                    "refusing to read. Set chmod 600.", env_key, path, mode,
+                )
+                return ""
             return open(path).read().strip()
         except OSError as e:
             log.debug("Could not read %s_FILE (%s): %s", env_key, path, e)
     return ""
-
-REQUEST_TIMEOUT = _env_int("LLM_REQUEST_TIMEOUT", 20)
-MAX_RETRIES_PER_LAYER = _env_int("LLM_MAX_RETRIES", 2)
-BACKOFF_BASE = _env_float("LLM_BACKOFF_BASE", 1.0)
 
 # ── Layer configurations ─────────────────────────────────────────────────────
 # Each layer: (name, env_key, base_url, model, chat_path, auth_header_name)

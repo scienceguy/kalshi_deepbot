@@ -305,6 +305,29 @@ def test_resolve_pending_settlement_unavailable_returns_none():
     assert trader._resolve_pending_settlement(client, payload) is None
 
 
+def test_resolve_pending_settlement_expiration_value_not_zero_or_hundred():
+    """expiration_value that is not exactly 0 or 100 returns None (stays queued)."""
+    client = MagicMock()
+    # expiration_value of 50.0 → v = 5000, not in (0, 100) → rejected
+    client.get_market.return_value = {"expiration_value": 50.0}
+    payload = {"ticker": "T", "side": "yes", "contracts": 10,
+               "entry_price": 60, "pnl_dollars": None}
+    assert trader._resolve_pending_settlement(client, payload) is None
+
+
+def test_resolve_pending_settlement_expiration_value_hundred():
+    """expiration_value of 100.0 → v = 10000 → not in (0,100) → None.
+    
+    Note: expiration_value is raw underlying price (e.g. BTC ~78000), NOT a
+    0/100 payout. Only values that happen to be exactly 0.0 or 1.0 resolve.
+    """
+    client = MagicMock()
+    client.get_market.return_value = {"expiration_value": 100.0}
+    payload = {"ticker": "T", "side": "yes", "contracts": 10,
+               "entry_price": 60, "pnl_dollars": None}
+    assert trader._resolve_pending_settlement(client, payload) is None
+
+
 def test_replay_resolves_pending_and_credits(monkeypatch, tmp_path):
     """A queued pending settlement is resolved, credited, and drained."""
     import json

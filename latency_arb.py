@@ -29,6 +29,7 @@ import os
 from datetime import datetime, timezone
 
 import config
+from fees import FEE_RATE
 from kalshi_client import KalshiClient
 
 log = logging.getLogger("latency_arb")
@@ -81,7 +82,7 @@ def evaluate_market(market: dict) -> dict | None:
     # Kalshi taker fee = fee_rate * contracts * price * (1 - price)
     # For 1 contract at price p: fee = fee_rate * p * (1 - p)
     # Edge must exceed fee to be profitable
-    fee_rate = config.KALSHI_FEE_RATE
+    fee_rate = FEE_RATE
     # Estimate fee at mid price
     est_fee = fee_rate * (mid / 100.0) * (1.0 - mid / 100.0) * 100  # in cents
     edge_cents = abs(mid - 50.0) - est_fee

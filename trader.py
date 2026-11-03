@@ -204,7 +204,8 @@ class BotState:
             return False
 
         # LLM evaluation (NVIDIA-only via integrate.api.nvidia.com)
-        if config.NVIDIA_API_KEY:
+        # Requires both an API key and explicit LLM_EVALUATION_ENABLED=true.
+        if config.NVIDIA_API_KEY and config.LLM_EVALUATION_ENABLED:
             signal_info = {
                 "ticker": ticker,
                 "direction": sig.direction,
@@ -1093,12 +1094,15 @@ def main():
     # missing or the service is down. The bot trades without it (dry-run).
     log.info("=" * 58)
 
-    # Validate credentials and dry-run mode before connecting to Kalshi.
+    # Validate credentials, dry-run mode, and bands before connecting to Kalshi.
     # The local .env sets DRY_RUN=false, which overrides the safe default of True.
     try:
         config.validate_credentials()
     except ValueError as e:
         log.error("Credential validation failed: %s — continuing without validation", e)
+    if not config.validate_dry_run(live_explicit=args.live):
+        log.error("Dry-run validation failed — refusing to start")
+        return
     try:
         config.validate_bands()
     except ValueError as e:

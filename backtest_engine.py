@@ -84,10 +84,9 @@ def simulate_trade(market, params, balance=10.0, settlement_yes_won=None):
 
     yb, ya, nb, na, yq, nq = _parse_market_prices(market)
 
-    last_price = market.get("last_price_dollars")
-    if last_price and float(last_price) > 0:
-        mid_proxy = int(round(float(last_price) * 100))
-    elif yb and ya:
+    # Entry price proxy uses bid/ask mid only — last_price_dollars would be
+    # lookahead bias (it reflects prices near settlement, not at entry time).
+    if yb and ya:
         mid_proxy = (yb + ya) // 2
     else:
         return None
