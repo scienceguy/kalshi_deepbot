@@ -230,7 +230,7 @@ def test_hedge_contracts_are_integer():
     m = MarketInfo(
         ticker="T", series="S", close_time=None, strike=0, strike_type="",
         yes_bid=14, yes_ask=15, no_bid=84, no_ask=85,
-        yes_liquidity=100, no_liquidity=100, minutes_left=7.0,
+        yes_liquidity=100, no_liquidity=100, minutes_left=1.5,  # within 13-14.5min window
     )
     res = _evaluate_hedge(m, 1.0)  # $1 budget at 84c -> 1.19 -> floored to 1
     sig = res[0]

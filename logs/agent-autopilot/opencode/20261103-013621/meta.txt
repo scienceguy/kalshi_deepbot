@@ -1,0 +1,14 @@
+tool=opencode
+cwd=/data/data/com.termux/files/home/kalshi_superbot
+minutes=1
+turn_minutes=5
+wrap_up_minutes=3
+model=
+stop_file=/data/data/com.termux/files/home/kalshi_superbot/logs/agent-autopilot/opencode/20261103-013621/STOP
+attach_url=
+resume=0
+prefer_json=0
+dry_run=0
+
+mission:
+run python -m pytest tests/ -q and report results

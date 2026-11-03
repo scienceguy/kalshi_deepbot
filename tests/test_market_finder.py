@@ -183,15 +183,16 @@ class TestEvaluateTwoSided:
     def test_both_sides_in_range_keeps_more_extreme(self):
         """When both YES and NO in range, keep the one further from 50c.
         
-        Uses entry band 20-80 so both sides can be in range (YES at 80, NO at 20).
+        Uses entry band 19-80 so both sides can be in range (YES at 80, NO at 19).
+        Entry window is 13-14.5 minutes (0.5-2 minutes left).
         """
         m = MarketInfo(
             ticker="TEST", series="KXBTC15M",
-            close_time=datetime.now(timezone.utc) + timedelta(minutes=10),
+            close_time=datetime.now(timezone.utc) + timedelta(minutes=1.5),
             strike=50000, strike_type="",
             yes_bid=80, yes_ask=81, no_bid=19, no_ask=20,
             yes_liquidity=100, no_liquidity=100,
-            minutes_left=5.0, bracket_role="MAIN", raw={}
+            minutes_left=1.5, bracket_role="MAIN", raw={}
         )
         
         # Use entry band 19-80 so both YES (80) and NO (19) are in range
@@ -245,8 +246,8 @@ class TestEvaluate:
         m = MagicMock()
         m.ticker = "TEST"
         m.series = "KXBTC15M"
-        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=10)
-        m.minutes_left = 5.0
+        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=1.5)
+        m.minutes_left = 1.5
         m.yes_bid = 0; m.yes_ask = 0
         m.no_bid = 0; m.no_ask = 0
         m.yes_liquidity = 0; m.no_liquidity = 0

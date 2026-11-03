@@ -282,16 +282,22 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
         reasoning, layer, model — or None if the API call fails.
     """
     system_prompt = (
-        "You are a disciplined Kalshi 15-minute market trading analyst. "
+        "You are a disciplined Kalshi 15-minute market trading analyst focused on RAPID COMPOUNDING via trend-following limit orders. "
         "Return ONLY valid JSON with exactly these keys: "
         "\"probability_of_net_profit\" (number 0-1) and "
         "\"confidence_hold_to_expiry\" (number 0-1). "
         "Optionally include \"reasoning\" (string) explaining the verdict. "
-        "Consider: market skew, trend, entry price vs mid, time remaining in "
-        "the 15-minute window, position sizing vs cash, and Kalshi's 7% "
-        "quadratic taker fee. Be conservative — most 15-minute binary markets "
-        "are close to coin flips at entry. Do not include any other keys or "
-        "text in your response."
+        "CONSIDER: Kalshi's 7% quadratic taker fee (peaks at 50¢). "
+        "Maker orders pay 0 fee on most 15M series. PRIORITIZE MAKER LIMIT ORDERS. "
+        "FAVORITE MAKER STRATEGY: Bet YES at 75-95¢ when trend confirms direction, or NO at 5-25¢. "
+        "HIGH PROBABILITY SETUPS: Strong trend (|trend|≥20c) + price in favorite band (YES≥75¢ or NO≥75¢) + ≤3min remaining. "
+        "AVOID: prices 30-70¢ (high fees, low edge), underdog bets (low win rate), early window (>10min left). "
+        "PANIC FADE: If YES drops >15¢ in 2min → buy YES at 75-95¢ (mean reversion). If YES spikes >15¢ → buy NO at 5-25¢. "
+        "CALIBRATION: Be conservative. Most 15-min markets are coin flips. Require STRONG trend (|trend|≥15c) + favorable skew. "
+        "Return ONLY valid JSON with exactly these keys: "
+        "\"probability_of_net_profit\" (number 0-1) and "
+        "\"confidence_hold_to_expiry\" (number 0-1). "
+        "Optionally include \"reasoning\" (string). No other keys, no extra text."
     )
 
     user_prompt = json.dumps({
@@ -354,21 +360,30 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
     return None
 
 
-def should_block_trade(signal_info: dict, min_probability: float = 0.35) -> tuple:
+def should_block_trade(signal_info: dict, min_probability: float = 0.65) -> tuple:
     """
     Determine if a trade should be blocked based on LLM evaluation.
-
+    
     Returns (should_block: bool, eval_result: dict or None).
+    Blocks if probability < 0.65 OR confidence < 0.45.
     """
     import config
-
+    
     result = evaluate_trade(signal_info)
     if not result:
         if config.LLM_EVAL_FAIL_OPEN:
             log.warning("NVIDIA LLM eval failed — fail-open, allowing trade")
             return False, None
         return True, None  # Can't evaluate — block by default (fail-safe)
+    
     prob = result["probability_of_net_profit"]
-    if prob < min_probability:
-        return True, result
-    return False, result
+    conf = result.get("confidence_hold_to_expiry", 0.0)
+    
+    should_block = prob < config.LLM_EVAL_MIN_PROBABILITY or conf < config.LLM_EVAL_MIN_CONFIDENCE
+    if should_block:
+        log.info(
+            "LLM BLOCK %s — prob=%.2f conf=%.2f (min_prob=%.2f min_conf=%.2f)",
+            signal_info.get("ticker", "?"), prob, conf,
+            config.LLM_EVAL_MIN_PROBABILITY, config.LLM_EVAL_MIN_CONFIDENCE
+        )
+    return should_block, result

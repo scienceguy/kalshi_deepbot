@@ -51,14 +51,6 @@ def test_env_bool_unrecognized_raises(monkeypatch):
     assert cfg.AGGRESSIVE_FILL is True
 
 
-def test_env_bool_unset_uses_default(monkeypatch):
-    cfg = _reload_with(monkeypatch, DRY_RUN=None)
-    assert cfg.DRY_RUN is True
-
-    cfg = _reload_with(monkeypatch, AGGRESSIVE_FILL=None)
-    assert cfg.AGGRESSIVE_FILL is False
-
-
 def test_env_bool_recognized_values(monkeypatch):
     cases = [
         ("true", True), ("1", True), ("yes", True), ("on", True),
@@ -70,8 +62,9 @@ def test_env_bool_recognized_values(monkeypatch):
 
 
 def test_env_bool_unset_uses_default(monkeypatch):
-    cfg = _reload_with(monkeypatch, DRY_RUN=None)
+    # Set to empty string to trigger default (since .env file sets DRY_RUN=false)
+    cfg = _reload_with(monkeypatch, DRY_RUN="")
     assert cfg.DRY_RUN is True
 
-    cfg = _reload_with(monkeypatch, AGGRESSIVE_FILL=None)
+    cfg = _reload_with(monkeypatch, AGGRESSIVE_FILL="")
     assert cfg.AGGRESSIVE_FILL is False
