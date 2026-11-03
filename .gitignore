@@ -77,6 +77,7 @@ bid_hist_*.json
 mempalace.yaml
 entities.json
 kalshi-trade-downloader/
+kalshieye_test/
 
 # Local SQLite database (runtime state, not source)
 local_data/
