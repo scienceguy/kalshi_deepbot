@@ -176,7 +176,9 @@ TOTAL_CASH_TRADABLE_PCT = _env_float("TOTAL_CASH_TRADABLE_PCT", 0.70)
 # ═════════════════════════════════════════════════════════════════════
 CASH_FLOOR_PCT = _env_float("CASH_FLOOR_PCT", 0.70)
 EXPOSURE_CEILING_PCT = _env_float("EXPOSURE_CEILING_PCT", 0.30)
-if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0:
+# Small epsilon for floating-point comparison: 0.70 + 0.30 == 1.0000000000000001
+_SUM_EPSILON = 1e-9
+if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0 + _SUM_EPSILON:
     raise ValueError(
         f"CASH_FLOOR_PCT ({CASH_FLOOR_PCT:.2f}) + EXPOSURE_CEILING_PCT ({EXPOSURE_CEILING_PCT:.2f}) > 1.0. "
         f"Sum must be <= 1.0 to avoid over-reserving cash."
@@ -371,3 +373,15 @@ def validate_bands():
         )
     if errors:
         raise ValueError("Entry band configuration invalid:\n" + "\n".join(errors))
+
+
+# Auto-validate on import (graceful — logs warnings, never crashes).
+# Called explicitly by trader.py main() as well; double-validation is harmless.
+try:
+    validate_credentials()
+except ValueError as _e:
+    log.warning("Config validation (import-time): %s", _e)
+try:
+    validate_bands()
+except ValueError as _e:
+    log.warning("Config band validation (import-time): %s", _e)

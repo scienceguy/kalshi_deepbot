@@ -138,15 +138,17 @@ def _load_credentials() -> tuple[str, str]:
     
     Returns (url, service_key). Called lazily by SupabaseClient.__init__.
     """
-    # Load URL: env first, then key file
-    url = os.environ.get("SUPABASE_URL", "")
-    if url:
-        log.debug("Supabase URL loaded from environment variable")
-    elif SUPABASE_KEY_FILE:
+    # Load URL: key file first (highest priority), then env
+    url = ""
+    if SUPABASE_KEY_FILE:
         file_url, _ = _parse_kv_file(SUPABASE_KEY_FILE)
         if file_url:
             url = file_url
             log.info("Supabase URL loaded from key file: %s", SUPABASE_KEY_FILE)
+    if not url:
+        url = os.environ.get("SUPABASE_URL", "")
+        if url:
+            log.debug("Supabase URL loaded from environment variable")
 
     # Load service key: protected raw file first, then env var
     service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -357,16 +359,20 @@ class SupabaseClient:
             return False
 
     def set_bot_state_batch(self, states: dict) -> bool:
-        """Set multiple bot state key-value pairs in a single request."""
+        """Set multiple bot state key-value pairs (sequentially to avoid batch upsert issues)."""
         try:
-            rows = [
-                {"key": k, "value_json": json.dumps(v),
-                 "ts": datetime.now(timezone.utc).isoformat()}
-                for k, v in states.items()
-            ]
-            result = self._request("POST", "bot_state", data=rows,
-                                   extra_headers={"Prefer": "resolution=merge-duplicates"})
-            return result is not None
+            for k, v in states.items():
+                data = {
+                    "key": k,
+                    "value_json": json.dumps(v),
+                    "ts": datetime.now(timezone.utc).isoformat()
+                }
+                result = self._request("POST", "bot_state", data=[{"key": k, "value_json": json.dumps(v), "ts": datetime.now(timezone.utc).isoformat()}],
+                                       extra_headers={"Prefer": "resolution=merge-duplicates"})
+                if result is None:
+                    log.warning("set_bot_state_batch failed for key %s", k)
+                    return False
+            return True
         except Exception as e:
             log.warning("set_bot_state_batch error: %s", e)
             return False
