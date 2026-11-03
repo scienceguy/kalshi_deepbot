@@ -393,13 +393,13 @@ def _evaluate_panic_fade(market: MarketInfo, max_dollars: float, max_contracts: 
     price_change = last_price - first_price
     
     if price_change < -config.PANIC_FADE_MOVE_CENTS:
-        # YES dropped sharply — fade by buying YES at maker prices in 75-95c band
+        # YES dropped sharply — fade by buying YES at maker prices in favourite-maker band
         yes_ask = market.yes_ask
         if not yes_ask:
             return results
         
         ep = yes_ask - 1
-        ep = max(config.PANIC_FADE_ENTRY_BAND_MIN, min(config.PANIC_FADE_ENTRY_BAND_MAX, ep))
+        ep = max(config.ENTRY_BAND_MIN, min(config.ENTRY_BAND_MAX, ep))
         
         n = _size(ep, max_dollars, max_contracts)
         avail = market.yes_liquidity
@@ -487,10 +487,10 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
     ep = max(1, min(99, ep))
 
     # NO entry band check
-    if ep < config.MIN_NO_ENTRY_CENTS or ep > config.MAX_NO_ENTRY_CENTS:
+    if ep < config.HEDGE_MIN_NO_ENTRY_CENTS or ep > config.HEDGE_MAX_NO_ENTRY_CENTS:
         _pass(
             f"NO price {ep}c outside hedge band "
-            f"{config.MIN_NO_ENTRY_CENTS}-{config.MAX_NO_ENTRY_CENTS}c"
+            f"{config.HEDGE_MIN_NO_ENTRY_CENTS}-{config.HEDGE_MAX_NO_ENTRY_CENTS}c"
         )
         return results
 

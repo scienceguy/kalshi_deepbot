@@ -23,13 +23,13 @@ log = logging.getLogger("backtest_engine")
 
 @dataclass
 class StratParams:
-    MIN_SKEW_CENTS: int = 5
-    MIN_TREND_CENTS: int = 12
+    MIN_SKEW_CENTS: int = 3
+    MIN_TREND_CENTS: int = 8
     ENTRY_WINDOW_START_MIN: float = 6.0
     ENTRY_WINDOW_END_MIN: float = 11.0
-    ENTRY_BAND_MIN: int = 82
-    ENTRY_BAND_MAX: int = 93
-    MAX_NO_ENTRY_CENTS: int = 88
+    ENTRY_BAND_MIN: int = 15
+    ENTRY_BAND_MAX: int = 55
+    MAX_NO_ENTRY_CENTS: int = 55
     AGGRESSIVE_FILL: bool = False
     PER_TRADE_PCT: float = 0.08
     MAX_TRADE_DOLLARS: float = 3.00

@@ -153,6 +153,11 @@ NO_PRICE_IS_COMPLEMENT = _env_bool("NO_PRICE_IS_COMPLEMENT", False)
 HEDGE_YES_ASK_MAX = _env_int("HEDGE_YES_ASK_MAX", 12)
 MAX_HEDGE_PER_SERIES = _env_int("MAX_HEDGE_PER_SERIES", 0)
 
+# Hedge entry band: when YES is cheap (≤HEDGE_YES_ASK_MAX), NO is expensive (≥88c).
+# Separate from favourite-maker band so both can coexist.
+HEDGE_MIN_NO_ENTRY_CENTS = _env_int("HEDGE_MIN_NO_ENTRY_CENTS", 82)
+HEDGE_MAX_NO_ENTRY_CENTS = _env_int("HEDGE_MAX_NO_ENTRY_CENTS", 88)
+
 # Latency-arb taker strategy. OFF by default: the edge model is unvalidated for
 # live fills (the 2s edge decay is only ~33% survivable per FINDINGS), so it
 # should not place real-money taker orders until it has a passing backtest.
@@ -164,8 +169,7 @@ LATENCY_ARB_ENABLED = _env_bool("LATENCY_ARB_ENABLED", False)
 PANIC_FADE_ENABLED = _env_bool("PANIC_FADE_ENABLED", True)
 PANIC_FADE_MOVE_CENTS = _env_int("PANIC_FADE_MOVE_CENTS", 15)  # min cents move to trigger
 PANIC_FADE_WINDOW_SECONDS = _env_int("PANIC_FADE_WINDOW_SECONDS", 120)  # lookback window
-PANIC_FADE_ENTRY_BAND_MIN = _env_int("PANIC_FADE_ENTRY_BAND_MIN", 15)  # bet favorite side 75-95c
-PANIC_FADE_ENTRY_BAND_MAX = _env_int("PANIC_FADE_ENTRY_BAND_MAX", 55)
+# Uses ENTRY_BAND_MIN/MAX (15-55c) for fade entries
 
 # ═════════════════════════════════════════════════════════════════════
 # POSITION SIZING (Kelly criterion from kalshi_codex_bot momentum backtests)
