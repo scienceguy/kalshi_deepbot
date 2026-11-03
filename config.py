@@ -256,7 +256,7 @@ CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 20)
 # ═════════════════════════════════════════════════════════════════════
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 NVIDIA_MODEL = os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
-LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", False)
+LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", True)
 LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.35)
 LLM_EVAL_FAIL_OPEN = _env_bool("LLM_EVAL_FAIL_OPEN", False)
 # Deadline for the full LLM evaluation so a slow/hung LLM can't
