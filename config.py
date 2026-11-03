@@ -52,7 +52,7 @@ def _load_env():
                 k = k.strip(); v = v.strip().strip('"').strip("'")
                 if not k or not v:
                     continue
-                if not os.environ.get(k):
+                if k not in os.environ:
                     os.environ[k] = v
 
 
@@ -176,7 +176,7 @@ MAX_CONTRACTS_CAP = _env_int("MAX_CONTRACTS_CAP", 3)
 CONTRACTS_PER_BALANCE_UNIT = _env_float("CONTRACTS_PER_BALANCE_UNIT", 10.0)
 MAX_OPEN_POSITIONS = _env_int("MAX_OPEN_POSITIONS", 4)
 MAX_ORDERS_PER_CYCLE = _env_int("MAX_ORDERS_PER_CYCLE", 2)
-MIN_ORDER_GAP_SECONDS = _env_float("MIN_ORDER_GAP_SECONDS", 5.0)
+MIN_ORDER_GAP_SECONDS = _env_float("MIN_ORDER_GAP_SECONDS", 10.0)
 MAX_ORDERS_PER_DAY = _env_int("MAX_ORDERS_PER_DAY", 50)
 BALANCE_PCT_PER_TRADE = _env_float("BALANCE_PCT_PER_TRADE", 0.05)  # 5% per trade — conservative for small balance
 POSITION_FRACTION = _env_float("POSITION_FRACTION", 0.30)
@@ -196,7 +196,7 @@ if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0 + _SUM_EPSILON:
         f"CASH_FLOOR_PCT ({CASH_FLOOR_PCT:.2f}) + EXPOSURE_CEILING_PCT ({EXPOSURE_CEILING_PCT:.2f}) > 1.0. "
         f"Sum must be <= 1.0 to avoid over-reserving cash."
     )
-PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.50)  # 50% per trade - allows 1 contract with $1.77 balance
+PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.10)  # 10% per trade - safer for small balance
 MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
 DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.15)
 MAX_DRAWDOWN_PCT = _env_float("MAX_DRAWDOWN_PCT", 0.12)
@@ -257,11 +257,17 @@ CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 20)
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 NVIDIA_MODEL = os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
 LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", True)
-LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.35)
+LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.65)
+LLM_EVAL_MIN_CONFIDENCE = _env_float("LLM_EVAL_MIN_CONFIDENCE", 0.45)
 LLM_EVAL_FAIL_OPEN = _env_bool("LLM_EVAL_FAIL_OPEN", False)
 # Deadline for the full LLM evaluation so a slow/hung LLM can't
 # blow the cycle timeout. Must be < CYCLE_TIMEOUT_SECONDS.
 LLM_EVAL_DEADLINE_SECONDS = _env_float("LLM_EVAL_DEADLINE_SECONDS", 25.0)
+# LLM rate limiting
+LLM_REQUEST_TIMEOUT = _env_int("LLM_REQUEST_TIMEOUT", 20)
+LLM_MAX_RETRIES = _env_int("LLM_MAX_RETRIES", 2)
+LLM_BACKOFF_BASE = _env_float("LLM_BACKOFF_BASE", 2.0)
+LLM_MIN_REQUEST_GAP = _env_float("LLM_MIN_REQUEST_GAP", 3.0)  # seconds between LLM requests
 
 # ═════════════════════════════════════════════════════════════════════
 # N8N
