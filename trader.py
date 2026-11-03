@@ -176,14 +176,15 @@ class BotState:
             )
             return False
 
-        # Per-market daily loss limit
-        market_daily_loss = state.risk.state.market_daily_losses.get(ticker, 0.0)
-        if market_daily_loss >= cash * config.MARKET_DAILY_LOSS_PCT:
-            log.info(
-                "MARKET DAILY LOSS BLOCK %s — daily loss $%.2f >= limit $%.2f",
-                ticker, market_daily_loss, cash * config.MARKET_DAILY_LOSS_PCT,
-            )
-            return False
+        # Per-market daily loss limit (skip if cash unknown)
+        if cash is not None:
+            market_daily_loss = state.risk.state.market_daily_losses.get(ticker, 0.0)
+            if market_daily_loss >= cash * config.MARKET_DAILY_LOSS_PCT:
+                log.info(
+                    "MARKET DAILY LOSS BLOCK %s — daily loss $%.2f >= limit $%.2f",
+                    ticker, market_daily_loss, cash * config.MARKET_DAILY_LOSS_PCT,
+                )
+                return False
 
         tradable_balance = cash * config.TOTAL_CASH_TRADABLE_PCT
         deployed = exposure + pending + sig.dollar_risk
@@ -771,20 +772,20 @@ def cycle(client: KalshiClient):
                 state.risk.record_market_loss(t, abs(realized_pnl))
 
             # Record settlement to Supabase via n8n workflow
+            # Write PnL to Supabase FIRST, then update local state, then fire webhook.
+            # This ensures: if process crashes after Supabase write, local state is
+            # reconciled on restart. If webhook fails, queue replay handles it.
             try:
-                state.session_pnl += realized_pnl  # add realized P&L FIRST (before n8n) so crash after this still has correct total
-                # Sync session_pnl to Supabase immediately so n8n and Supabase
-                # stay in sync even if the process crashes before the end-of-cycle
-                # batched state write (prevents session_pnl drift on restart).
-                try:
-                    get_supabase_client().set_bot_state_batch({"session_pnl": state.session_pnl})
-                except Exception:
-                    log.debug("Supabase session_pnl sync failed for %s", t)
+                new_session_pnl = state.session_pnl + realized_pnl
+                # Write to Supabase first (atomic upsert)
+                get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl})
+                # Update local state only after successful write
+                state.session_pnl = new_session_pnl
+                log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
                 # Invalidate market cache after settlement — the market is no longer open.
                 series = t.split("-")[0] if "-" in t else t
                 client.invalidate_markets(series_ticker=series)
-                # NOW call n8n webhook — if this fails, the PnL is already booked
-                # and the settlement will be replayed from the queue on restart.
+                # Fire n8n webhook — if this fails, queue replay handles it
                 n8n_client = get_n8n_client()
                 n8n_client.execute_webhook("superbot-trade", {
                     "action": "settlement",
@@ -1302,44 +1303,42 @@ if __name__ == "__main__":
     lock_fd = None
     for attempt in range(5):
         try:
-            # Atomic create: only succeeds if lock file doesn't exist
-            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            # Open lock file (create if needed)
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY)
+            # Try to acquire exclusive non-blocking lock
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
-        except FileExistsError:
-            # Lock file exists — check if holder is still alive
-            try:
-                pid_str = lock_path.read_text().strip()
-                if pid_str.isdigit():
-                    pid = int(pid_str)
-                    # Check if process exists (signal 0 = existence check)
-                    try:
-                        os.kill(pid, 0)
-                        # Process alive — lock is valid
-                        if os.environ.get("DRY_RUN", "true").lower() == "true" or os.environ.get("ONCE_MODE"):
-                            log.warning("Lock held by live process (PID %d) — proceeding anyway (once mode)", pid)
-                        else:
-                            log.error("Lock held by live process (PID %d) — another instance running", pid)
-                            sys.exit(1)
-                    except OSError:
-                        # Process dead — stale lock, remove and retry
-                        log.warning("Stale lock from dead PID %d — removing", pid)
-                        os.unlink(lock_path)
-                        continue
-                else:
-                    # Invalid PID in lock file — treat as stale
-                    os.unlink(lock_path)
-                    continue
-            except OSError:
-                # File disappeared or unreadable — retry
+        except (OSError, BlockingIOError):
+            # Lock held by another process
+            if attempt < 4:
+                log.warning("Lock held by another process — retrying in 1s (attempt %d/5)", attempt + 2)
+                time.sleep(1)
+                if lock_fd:
+                    os.close(lock_fd)
+                    lock_fd = None
                 continue
+            else:
+                if os.environ.get("DRY_RUN", "true").lower() == "true" or os.environ.get("ONCE_MODE"):
+                    log.warning("Could not acquire lock after 5 attempts — proceeding anyway (once mode)")
+                else:
+                    log.error("Could not acquire lock after 5 attempts — another instance running")
+                    sys.exit(1)
     else:
-        print("Could not acquire lock after 5 attempts — proceeding anyway (once mode)")
+        # This runs if the loop wasn't broken (shouldn't happen)
+        if os.environ.get("DRY_RUN", "true").lower() == "true" or os.environ.get("ONCE_MODE"):
+            print("Could not acquire lock after 5 attempts — proceeding anyway (once mode)")
+        else:
+            log.error("Could not acquire lock after 5 attempts — another instance running")
+            sys.exit(1)
+    # Write PID to lock file for debugging
     with os.fdopen(lock_fd, "w") as f:
         f.write(str(os.getpid()))
     try:
         main()
     finally:
         try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
             os.unlink(lock_path)
-        except FileNotFoundError:
+        except (OSError, FileNotFoundError):
             pass

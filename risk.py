@@ -119,21 +119,6 @@ class RiskManager:
             self.state.market_daily_losses.get(ticker, 0.0) + loss
         )
 
-    def record_unrealized_loss(self, ticker: str, unrealized_loss: float):
-        """Track unrealized loss for a currently open position.
-        
-        This allows the per-market daily loss limit to account for
-        currently-open losing positions before they settle.
-        """
-        if unrealized_loss <= 0:
-            return
-        # Use a separate key for unrealized losses so they can be distinguished
-        # from realized losses, but still count toward the daily limit.
-        key = f"{ticker}:unrealized"
-        self.state.market_daily_losses[key] = (
-            self.state.market_daily_losses.get(key, 0.0) + unrealized_loss
-        )
-
     def market_loss_exceeded(self, ticker: str, max_daily_loss: float) -> bool:
         """Check if per-market daily loss limit has been exceeded.
         
