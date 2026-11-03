@@ -150,8 +150,8 @@ def _load_credentials() -> tuple[str, str]:
         if url:
             log.debug("Supabase URL loaded from environment variable")
 
-    # Load service key: protected raw file first, then env var
-    service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    # Load service key: protected raw file first (highest priority), then env
+    service_key = ""
     if SUPABASE_KEY_FILE:
         raw_key = _parse_raw_key_file(SUPABASE_KEY_FILE)
         if raw_key:
@@ -163,8 +163,10 @@ def _load_credentials() -> tuple[str, str]:
             if file_key:
                 service_key = file_key
                 log.info("Supabase service key loaded from key file (KEY=VALUE): %s", SUPABASE_KEY_FILE)
-    elif service_key:
-        log.debug("Supabase service key loaded from environment variable")
+    if not service_key:
+        service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        if service_key:
+            log.debug("Supabase service key loaded from environment variable")
 
     return url, service_key
 

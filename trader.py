@@ -1099,7 +1099,10 @@ def main():
         config.validate_credentials()
     except ValueError as e:
         log.error("Credential validation failed: %s — continuing without validation", e)
-    config.validate_bands()
+    try:
+        config.validate_bands()
+    except ValueError as e:
+        log.error("Band validation failed: %s — continuing without band checks", e)
 
     # Warn if NO_PRICE_IS_COMPLEMENT is True in live mode — production Kalshi v2
     # returns NO prices directly (complement=False). If True, NO prices are inverted.

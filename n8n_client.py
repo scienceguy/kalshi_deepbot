@@ -199,6 +199,7 @@ class N8nClient:
         """Execute a webhook by path. Returns the webhook response.
 
         Retries on 5xx (server-side, transient) errors with 2-second backoff.
+        Also retries on connection errors and timeouts.
         Does not retry on 4xx (client-side) errors.
         """
         url = f"{self.base_url}/webhook/{webhook_path}"
@@ -215,6 +216,18 @@ class N8nClient:
                     except ValueError:
                         return {"raw": resp.text}
                 return {}
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last_err = e
+                if attempt < max_retries - 1:
+                    log.warning(
+                        "Webhook %s %s: connection/timeout error — retry %d/%d: %s",
+                        method, webhook_path, attempt + 1, max_retries, e,
+                    )
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+                log.error("Webhook %s %s: connection/timeout error — exhausted %d retries: %s",
+                          method, webhook_path, max_retries, e)
+                raise
             except requests.RequestException as e:
                 last_err = e
                 # Check if it's a 5xx response we should retry

@@ -78,10 +78,10 @@ def evaluate_market(market: dict) -> dict | None:
     mid = (yb + ya) / 2.0
 
     # Compute edge: distance from 50c minus fee
-    # Kalshi taker fee = 0.07 * contracts * price * (1 - price)
-    # For 1 contract at price p: fee = 0.07 * p * (1 - p)
+    # Kalshi taker fee = fee_rate * contracts * price * (1 - price)
+    # For 1 contract at price p: fee = fee_rate * p * (1 - p)
     # Edge must exceed fee to be profitable
-    fee_rate = 0.07
+    fee_rate = config.KALSHI_FEE_RATE
     # Estimate fee at mid price
     est_fee = fee_rate * (mid / 100.0) * (1.0 - mid / 100.0) * 100  # in cents
     edge_cents = abs(mid - 50.0) - est_fee
