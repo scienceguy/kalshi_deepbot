@@ -202,8 +202,8 @@ class BotState:
             log.info("RISK BLOCK %s — %s", ticker, reason)
             return False
 
-        # LLM evaluation (7-layer fallback)
-        if config.LLM_EVALUATION_ENABLED and config.OPENROUTER_API_KEY:
+        # LLM evaluation (NVIDIA-only via integrate.api.nvidia.com)
+        if config.NVIDIA_API_KEY:
             signal_info = {
                 "ticker": ticker,
                 "direction": sig.direction,
@@ -224,12 +224,14 @@ class BotState:
                 signal_info, min_probability=config.LLM_EVAL_MIN_PROBABILITY
             )
             if should_block:
+                prob = eval_result["probability_of_net_profit"] if eval_result else "N/A"
+                layer = eval_result["layer"] if eval_result else "unavailable"
                 log.info(
-                    "LLM BLOCK %s — prob=%.2f < %.2f (%s)",
+                    "LLM BLOCK %s — prob=%s < %.2f (%s)",
                     ticker,
-                    eval_result["probability_of_net_profit"],
+                    prob,
                     config.LLM_EVAL_MIN_PROBABILITY,
-                    eval_result["layer"],
+                    layer,
                 )
                 # Record blocked signal to Supabase
                 try:
@@ -239,9 +241,9 @@ class BotState:
                         "side": sig.side,
                         "price_cents": sig.entry_price,
                         "contracts": sig.contracts,
-                        "reason": f"LLM blocked: {eval_result.get('reasoning', '')}",
+                        "reason": f"LLM blocked: {eval_result.get('reasoning', '')}" if eval_result else "LLM eval failed",
                         "executed": False,
-                        "blocked_reason": f"LLM prob {eval_result['probability_of_net_profit']:.2f}",
+                        "blocked_reason": f"LLM prob {eval_result['probability_of_net_profit']:.2f}" if eval_result else "LLM eval failed",
                     })
                 except Exception:
                     log.debug("Supabase insert_signal failed for %s", ticker)

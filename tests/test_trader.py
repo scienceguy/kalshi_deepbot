@@ -35,6 +35,16 @@ def mock_client():
     return client
 
 
+@pytest.fixture(autouse=True)
+def disable_llm_eval(monkeypatch):
+    """Disable LLM evaluation in tests by removing NVIDIA_API_KEY."""
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_API_KEY_FILE", raising=False)
+    # Also patch config module directly
+    import config
+    monkeypatch.setattr(config, "NVIDIA_API_KEY", "", raising=False)
+
+
 def test_pre_trade_check_blocks_over_cap(fresh_state, mock_client):
     """_pre_trade_check blocks trades that exceed per-trade cap."""
     sig = MagicMock()

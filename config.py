@@ -239,16 +239,13 @@ CYCLE_TIMEOUT_SECONDS = _env_int("CYCLE_TIMEOUT_SECONDS", 30)
 CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 20)
 
 # ═════════════════════════════════════════════════════════════════════
-# LLM (optional, from kalshi_live_bot)
+# LLM (optional, NVIDIA-only via integrate.api.nvidia.com)
 # ═════════════════════════════════════════════════════════════════════
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4")
-OPENROUTER_TIMEOUT_SECONDS = _env_float("OPENROUTER_TIMEOUT_SECONDS", 5.0)
-LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", False)
+NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
+NVIDIA_MODEL = os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
 LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.35)
 LLM_EVAL_FAIL_OPEN = _env_bool("LLM_EVAL_FAIL_OPEN", False)
-# Deadline for the full LLM evaluation (all layers) so a slow/hung LLM can't
+# Deadline for the full LLM evaluation so a slow/hung LLM can't
 # blow the cycle timeout. Must be < CYCLE_TIMEOUT_SECONDS.
 LLM_EVAL_DEADLINE_SECONDS = _env_float("LLM_EVAL_DEADLINE_SECONDS", 25.0)
 
