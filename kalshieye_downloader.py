@@ -106,7 +106,10 @@ class KalshieyeClient:
 
     def list_files(self, dataset: str = None, start_date: str = None,
                    end_date: str = None, series: str = None):
-        """List available download files."""
+        """List available download files.
+
+        Kalshieye returns {"files": [...]} — extract the files list.
+        """
         params = {}
         if dataset: params["dataset"] = dataset
         if start_date: params["start_date"] = start_date
@@ -114,16 +117,30 @@ class KalshieyeClient:
         if series: params["series"] = series
         r = self.session.get(f"{BASE_URL}/files", params=params, timeout=30)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        return data.get("files", [])
 
     def estimate_request(self, dataset: str, start_date: str, end_date: str,
                          series: str = None):
-        """Estimate cost/size of a download request."""
+        """Estimate cost/size of a download request.
+
+        Kalshieye may not expose an estimate endpoint; if it fails, return
+        an empty dict so the caller can proceed without it.
+        """
         params = {"dataset": dataset, "start_date": start_date, "end_date": end_date}
         if series: params["series"] = series
-        r = self.session.post(f"{BASE_URL}/estimate", json=params, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        try:
+            r = self.session.get(f"{BASE_URL}/estimate", params=params, timeout=30)
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            # POST as fallback
+            try:
+                r = self.session.post(f"{BASE_URL}/estimate", json=params, timeout=30)
+                r.raise_for_status()
+                return r.json()
+            except Exception:
+                return {}
 
     def download_file(self, signed_url: str, output_path: Path):
         """Download a file from a signed URL with retry and content validation."""
@@ -198,18 +215,26 @@ def main():
                 continue
 
             try:
-                # Estimate first
+                # Estimate first (non-fatal if endpoint unavailable)
                 est = client.estimate_request(args.dataset, date_str, date_str, series)
                 log.info("  %s %s: estimate=%s", series, date_str, est)
+            except Exception as e:
+                log.warning("  %s %s: estimate failed: %s — proceeding anyway",
+                            series, date_str, e)
 
-                # Get files
+            # Get files
+            try:
                 files = client.list_files(dataset=args.dataset, start_date=date_str,
                                           end_date=date_str, series=series)
-                if not files:
-                    log.warning("  %s %s: no files available", series, date_str)
-                    continue
+            except Exception as e:
+                log.warning("  %s %s: list_files failed: %s", series, date_str, e)
+                continue
+            if not files:
+                log.warning("  %s %s: no files available", series, date_str)
+                continue
 
-                # Download all files for this date
+            # Download all files for this date
+            try:
                 for file_info in files:
                     signed_url = file_info.get("url") or file_info.get("download_url")
                     if not signed_url:
@@ -227,9 +252,8 @@ def main():
 
                     client.download_file(signed_url, out_file)
                     log.info("  Downloaded %s (%d bytes)", out_file.name, out_file.stat().st_size)
-
             except Exception as e:
-                log.warning("  %s %s failed: %s", series, date_str, e)
+                log.warning("  %s %s download failed: %s", series, date_str, e)
 
             time.sleep(1.0)  # Rate limit
 
