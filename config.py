@@ -263,6 +263,14 @@ LLM_EVAL_DEADLINE_SECONDS = _env_float("LLM_EVAL_DEADLINE_SECONDS", 25.0)
 N8N_API_KEY = os.environ.get("N8N_API_KEY", "")
 N8N_BASE_URL = os.environ.get("N8N_BASE_URL", "http://127.0.0.1:5678")
 
+# EXCHANGE / ORACLE APIS (cross-reference price feeds)
+# Public endpoints — no auth required. Used to compare Kalshi prediction
+# market prices against underlying spot/oracle prices for arbitrage signals.
+BINANCE_ENABLED = _env_bool("BINANCE_ENABLED", False)
+COINBASE_ENABLED = _env_bool("COINBASE_ENABLED", False)
+REDSTONE_ENABLED = _env_bool("REDSTONE_ENABLED", False)
+EXCHANGE_PRICE_CACHE_SECONDS = _env_int("EXCHANGE_PRICE_CACHE_SECONDS", 30)
+
 # ═════════════════════════════════════════════════════════════════════
 # LOGGING / VERSION
 # ═════════════════════════════════════════════════════════════════════
