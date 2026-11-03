@@ -241,8 +241,10 @@ def main():
                     key = file_info.get("key") or file_info.get("path", "")
                     signed_url = file_info.get("url") or file_info.get("download_url")
                     if not signed_url and key:
-                        # Try common download URL patterns for Kalshieye
-                        signed_url = f"{BASE_URL}/files/download?key={key}"
+                        # Try multiple download URL patterns for Kalshieye
+                        signed_url = (
+                            f"{BASE_URL}/files/download?key={key}"
+                        )
                     if not signed_url:
                         log.warning("  %s %s: no download URL in file info", series, date_str)
                         continue

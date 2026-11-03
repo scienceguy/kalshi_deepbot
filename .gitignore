@@ -76,3 +76,4 @@ bid_hist_*.json
 # MemPalace per-project files (issue #185)
 mempalace.yaml
 entities.json
+kalshi-trade-downloader/
