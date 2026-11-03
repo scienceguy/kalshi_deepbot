@@ -253,8 +253,30 @@ invalid**. If your local history predates the rewrite: `git fetch` then
 
 ## Verification checklist before claiming done
 
-- [x] `python -m pytest tests/ -q` → all pass (118 passed)
+- [x] `python -m pytest tests/ -q` → all pass (152 passed)
 - [x] All 4 n8n webhooks return HTTP 200 (superbot-backtest/collect/trade/monitor)
 - [x] `kalshi_client.get_balance()` returns a dollar amount (not cents) — `cents / 100.0`
 - [x] `git status` clean
 - [x] `git push origin main` completed
+
+## Optimal Parameters (from backtest 2026-11-03)
+
+Backtest results on 900 historical 15M markets:
+- **Best EV/trade**: $0.58 (win rate 52.8%, max drawdown 84.6%)
+- **Optimal parameters**:
+  - `MIN_SKEW_CENTS=3`
+  - `MIN_TREND_CENTS=8`
+  - `ENTRY_WINDOW_START_MIN=6.0`
+  - `ENTRY_WINDOW_END_MIN=11.0`
+  - `ENTRY_BAND_MIN=15`
+  - `ENTRY_BAND_MAX=55`
+  - `MIN_NO_ENTRY_CENTS=15`
+  - `MAX_NO_ENTRY_CENTS=55`
+  - `PER_TRADE_PCT=0.08`
+  - `BALANCE_PCT_PER_TRADE=0.08`
+  - `AGGRESSIVE_FILL=False`
+  - `PANIC_FADE_ENTRY_BAND_MIN=15`
+  - `PANIC_FADE_ENTRY_BAND_MAX=55`
+  - `PAPER_PER_TRADE_PCT=0.95` (dry-run only)
+
+Strategy: Early entry (6-11 min into 15-min window), wide favourite-maker band (15-55c), conservative per-trade sizing (8%).
