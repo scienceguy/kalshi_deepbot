@@ -349,33 +349,50 @@ class SupabaseClient:
 
     # ─── bot state ─────────────────────────────────────────────────────────────
     def set_bot_state(self, key: str, value: Any) -> bool:
-        """Set a bot state key-value pair (upsert)."""
+        """Set a bot state key-value pair (upsert on unique key column).
+        
+        Uses PATCH for existing keys, INSERT with explicit ID for new keys.
+        """
         try:
+            # Check if key exists
+            existing = self._request("GET", f"bot_state?key=eq.{key}&select=id")
+            existing_id = None
+            if existing and isinstance(existing, list) and len(existing) > 0:
+                existing_id = existing[0].get("id")
+            
             data = {"key": key, "value_json": json.dumps(value),
                     "ts": datetime.now(timezone.utc).isoformat()}
-            result = self._request("POST", "bot_state", data=data,
-                                   extra_headers={"Prefer": "resolution=merge-duplicates"})
+            
+            if existing_id:
+                # Update existing row via PATCH
+                result = self._request("PATCH", f"bot_state?key=eq.{key}", data=data)
+            else:
+                # Get max id for new row
+                existing_all = self._request("GET", "bot_state?select=id&order=id.desc&limit=1")
+                max_id = 0
+                if existing_all and isinstance(existing_all, list) and len(existing_all) > 0:
+                    max_id = existing_all[0].get("id", 0)
+                
+                data["id"] = max_id + 1
+                # Insert new row
+                result = self._request("POST", "bot_state", data=data)
+            
             return result is not None
         except Exception as e:
             log.warning("set_bot_state error: %s", e)
             return False
 
     def set_bot_state_batch(self, states: dict) -> bool:
-        """Set multiple bot state key-value pairs in a single batch upsert.
-
-        Posts all rows in one HTTP request to Supabase REST API (which accepts
-        a JSON array for bulk upsert). One bad row fails the entire batch, but
-        all rows are validated before sending so this is rare.
+        """Set multiple bot state key-value pairs using PATCH + INSERT.
+        
+        This properly handles upsert on the unique 'key' column.
         """
         try:
-            rows = [
-                {"key": k, "value_json": json.dumps(v),
-                 "ts": datetime.now(timezone.utc).isoformat()}
-                for k, v in states.items()
-            ]
-            result = self._request("POST", "bot_state", data=rows,
-                                   extra_headers={"Prefer": "resolution=merge-duplicates"})
-            return result is not None
+            all_ok = True
+            for k, v in states.items():
+                if not self.set_bot_state(k, v):
+                    all_ok = False
+            return all_ok
         except Exception as e:
             log.warning("set_bot_state_batch error: %s", e)
             return False

@@ -114,11 +114,12 @@ class TestSupabaseClientGetBotState:
 class TestSupabaseClientSetBotStateBatch:
     """Tests for SupabaseClient.set_bot_state_batch method.
 
-    Posts all keys in a single batch upsert (one POST with array of rows).
+    Uses individual PATCH/POST for each key to properly upsert on unique 'key' column.
+    Supabase REST API's merge-duplicates only works on primary key (id), not unique constraints.
     """
 
     def test_batch_all_keys_succeed(self, monkeypatch):
-        """set_bot_state_batch posts all keys in one batch and returns True on success."""
+        """set_bot_state_batch processes each key individually and returns True on success."""
         monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
         monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
         monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
@@ -131,21 +132,29 @@ class TestSupabaseClientSetBotStateBatch:
 
         def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
             calls.append((method, path, data))
-            return {"data": [{"key": row["key"]} for row in data]}
+            if method == "GET" and "key=eq." in path:
+                return []  # Key doesn't exist
+            elif method == "GET" and "order=id.desc" in path:
+                return [{"id": 0}]  # Max id is 0
+            elif method in ("POST", "PATCH"):
+                return {"data": [{"key": data.get("key")}]}
+            return {}
 
         with patch.object(client, "_request", side_effect=fake_request):
             result = client.set_bot_state_batch({"session_pnl": 42.5, "cycles": 3})
             assert result is True
-            assert len(calls) == 1
-            assert calls[0][0] == "POST"
-            assert calls[0][1] == "bot_state"
-            # Single batch with both keys
-            assert len(calls[0][2]) == 2
-            keys = {row["key"] for row in calls[0][2]}
+            # Should make: 2 GET (check key exists) + 2 GET (max id) + 2 POST (insert) = 6 calls
+            # But our implementation does: check exists -> if not exists, get max id -> insert
+            # For 2 new keys: 2 * (GET + GET + POST) = 6 calls
+            assert len(calls) == 6
+            # Check all keys were processed
+            post_calls = [c for c in calls if c[0] == "POST"]
+            assert len(post_calls) == 2
+            keys = {c[2]["key"] for c in post_calls}
             assert keys == {"session_pnl", "cycles"}
 
-    def test_batch_stops_on_first_failure(self, monkeypatch):
-        """set_bot_state_batch returns False when batch fails (no partial writes)."""
+    def test_batch_existing_keys_use_patch(self, monkeypatch):
+        """set_bot_state_batch uses PATCH for existing keys."""
         monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
         monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
         monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
@@ -158,17 +167,53 @@ class TestSupabaseClientSetBotStateBatch:
 
         def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
             calls.append((method, path, data))
-            # Simulate batch failure (e.g., constraint violation)
-            return None
+            if method == "GET" and "key=eq." in path:
+                return [{"id": 123}]  # Key exists
+            elif method == "PATCH":
+                return {"data": [{"key": data.get("key")}]}
+            return {}
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            result = client.set_bot_state_batch({"session_pnl": 42.5, "cycles": 3})
+            assert result is True
+            # For 2 existing keys: 2 * (GET + PATCH) = 4 calls
+            assert len(calls) == 4
+            patch_calls = [c for c in calls if c[0] == "PATCH"]
+            assert len(patch_calls) == 2
+            keys = {c[2]["key"] for c in patch_calls}
+            assert keys == {"session_pnl", "cycles"}
+
+    def test_batch_stops_on_first_failure(self, monkeypatch):
+        """set_bot_state_batch returns False when any key fails."""
+        monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
+        monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
+        import importlib
+        import supabase_client
+        importlib.reload(supabase_client)
+        client = supabase_client.SupabaseClient()
+
+        calls = []
+
+        def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
+            calls.append((method, path, data))
+            if method == "GET" and "key=eq." in path:
+                return []  # Key doesn't exist
+            elif method == "GET" and "order=id.desc" in path:
+                return [{"id": 0}]
+            elif method == "POST":
+                key = data.get("key")
+                if key == "bad_key":
+                    return None  # Simulate failure
+                return {"data": [{"key": key}]}
+            return {}
 
         with patch.object(client, "_request", side_effect=fake_request):
             result = client.set_bot_state_batch({"good_key": 1.0, "bad_key": 2.0, "never_posted": 3.0})
             assert result is False
-            assert len(calls) == 1  # single batch attempt
-            # All keys in the single batch
-            assert len(calls[0][2]) == 3
-            keys = {row["key"] for row in calls[0][2]}
-            assert keys == {"good_key", "bad_key", "never_posted"}
+            # Should process all keys, but return False because one failed
+            post_calls = [c for c in calls if c[0] == "POST"]
+            assert len(post_calls) == 3  # All 3 keys attempted
 
 
 class TestCircuitBreakerReset:

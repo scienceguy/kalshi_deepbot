@@ -94,7 +94,7 @@ def evaluate_market(market: dict) -> dict | None:
     # If YES mid > 50, YES is overpriced → buy NO at no_ask
     # If YES mid < 50, NO is overpriced → buy YES at yes_ask
     if mid > 50:
-        side = "no"
+        side = "no"  # buy NO when YES is overpriced
         entry_price = na  # Buy NO at ask
         direction = "NO"
     else:

@@ -23,6 +23,8 @@ log = logging.getLogger(__name__)
 
 # Kalshi rate limit: ~10 req/s sustained; we stay well under it.
 _MIN_REQUEST_GAP = config.REQUEST_MIN_GAP_SECONDS   # seconds between requests
+# Balance endpoint hits stricter write bucket (100 tokens/s at Basic) — needs more gap
+_MIN_BALANCE_GAP = config.REQUEST_MIN_GAP_SECONDS * 2  # 2x for balance endpoint
 
 
 class KalshiAPIError(Exception):
@@ -58,6 +60,7 @@ class KalshiClient:
         self.key_id     = config.KALSHI_KEY_ID
         self._privkey   = self._load_private_key()
         self._last_req  = 0.0
+        self._last_balance_req = 0.0  # Separate timer for balance endpoint
         self._lock      = threading.Lock()
         self.session    = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
@@ -193,11 +196,21 @@ class KalshiClient:
         for _attempt in range(5):
             # Rate limiting (thread-safe) — re-checked before every attempt
             # including 429 retries so backoff isn't bypassed.
+            # Balance endpoint hits stricter write bucket — use separate timer
+            is_balance = path == "/portfolio/balance"
             with self._lock:
-                gap = time.time() - self._last_req
-                if gap < _MIN_REQUEST_GAP:
-                    time.sleep(_MIN_REQUEST_GAP - gap)
-                self._last_req = time.time()
+                if is_balance:
+                    gap = time.time() - self._last_balance_req
+                    min_gap = _MIN_BALANCE_GAP
+                else:
+                    gap = time.time() - self._last_req
+                    min_gap = _MIN_REQUEST_GAP
+                if gap < min_gap:
+                    time.sleep(min_gap - gap)
+                if is_balance:
+                    self._last_balance_req = time.time()
+                else:
+                    self._last_req = time.time()
 
             try:
                 resp = self.session.request(method, url, headers=headers, **kwargs)

@@ -51,6 +51,7 @@ if args.debug:
 
 import fees  # noqa: E402
 from supabase_client import get_supabase  # noqa: E402
+from local_db import get_local_db_api  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient  # noqa: E402
 from market_finder import find_active_markets, _parse_api_time, _dollars_str_to_cents, _settle_yes_cents  # noqa: E402
@@ -72,15 +73,31 @@ logging.basicConfig(
 )
 log = logging.getLogger("trader")
 
-# Global Supabase client (lazy)
-_supabase = None
+# Global LocalDB client (lazy) — primary write path with background Supabase sync
+_local_db_api = None
+# Raw Supabase client for direct reads (e.g., reconciliation)
+_raw_supabase = None
 
 
 def get_supabase_client():
-    global _supabase
-    if _supabase is None:
-        _supabase = get_supabase()
-    return _supabase
+    """Get the local database API (SupabaseClient-compatible interface).
+    
+    All writes go to local SQLite immediately (fast, reliable, offline-capable).
+    A background thread syncs changes to Supabase periodically.
+    """
+    global _local_db_api
+    if _local_db_api is None:
+        _local_db_api = get_local_db_api()
+    return _local_db_api
+
+
+def get_raw_supabase_client():
+    """Get the raw Supabase client for direct Supabase reads (e.g., reconciliation)."""
+    global _raw_supabase
+    if _raw_supabase is None:
+        from supabase_client import get_supabase
+        _raw_supabase = get_supabase()
+    return _raw_supabase
 
 # ═════════════════════════════════════════════════════════════════════
 # BOT STATE
@@ -1238,7 +1255,7 @@ def main():
     # Reconcile session_pnl from Supabase on startup — prevents P&L drift
     # if n8n webhook settlement writes failed in a previous run.
     try:
-        saved_pnl = get_supabase_client().get_bot_state("session_pnl")
+        saved_pnl = get_raw_supabase_client().get_bot_state("session_pnl")
         if saved_pnl is not None:
             state.session_pnl = float(saved_pnl)
             log.info("Reconciled session_pnl from Supabase: $%.2f", state.session_pnl)
