@@ -120,6 +120,9 @@ class LocalDB:
                     status TEXT,
                     fees_dollars REAL,
                     cycles INTEGER,
+                    fill_price_cents INTEGER,
+                    outcome_won INTEGER,
+                    pnl_dollars REAL,
                     settled_at TEXT,
                     synced INTEGER DEFAULT 0,
                     created_at TEXT DEFAULT (datetime('now'))
@@ -153,7 +156,25 @@ class LocalDB:
                     created_at TEXT DEFAULT (datetime('now'))
                 )
             """)
-            
+
+            # pnl_ledger: idempotent settlement P&L ledger
+            # Every settlement P&L is applied exactly once via idempotency_key.
+            # Use INSERT ... ON CONFLICT(idempotency_key) DO NOTHING to dedupe.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pnl_ledger (
+                    idempotency_key TEXT PRIMARY KEY,
+                    market_ticker TEXT NOT NULL,
+                    realized_pnl_dollars REAL NOT NULL,
+                    fee_dollars REAL NOT NULL DEFAULT 0,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    source TEXT NOT NULL DEFAULT 'local',
+                    synced INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_pnl_ledger_market ON pnl_ledger(market_ticker, applied_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_pnl_ledger_synced ON pnl_ledger(synced)")
+
             # Create indexes for common queries
             conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts)")
@@ -328,6 +349,84 @@ class LocalDB:
                 log.warning("get_all_bot_state error: %s", e)
                 return {}
 
+    # ── pnl_ledger (idempotent settlement P&L) ───────────────────────────
+
+    def apply_settlement_pnl(self, idempotency_key: str, market_ticker: str,
+                             realized_pnl_dollars: float, fee_dollars: float = 0.0,
+                             source: str = "local") -> bool:
+        """Apply settlement P&L exactly once via idempotency key.
+
+        Returns True if the P&L was newly applied, False if it was already
+        recorded (duplicate key). Uses INSERT ... ON CONFLICT DO NOTHING so
+        concurrent processes can't double-count.
+        """
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                ts = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    """
+                    INSERT INTO pnl_ledger
+                        (idempotency_key, market_ticker, realized_pnl_dollars,
+                         fee_dollars, applied_at, source, synced)
+                    VALUES (?, ?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(idempotency_key) DO NOTHING
+                    """,
+                    (idempotency_key, market_ticker, realized_pnl_dollars,
+                     fee_dollars, ts, source),
+                )
+                conn.commit()
+                # Check if row was actually inserted (changes > 0 means new)
+                cursor = conn.execute("SELECT changes()")
+                new_rows = cursor.fetchone()[0]
+                return new_rows > 0
+            except Exception as e:
+                log.warning("apply_settlement_pnl(%s, %s) error: %s",
+                            idempotency_key, market_ticker, e)
+                return False
+
+    def get_total_realized_pnl(self) -> float:
+        """Sum of all applied realized P&L (net of fees)."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(realized_pnl_dollars - fee_dollars), 0.0) "
+                    "FROM pnl_ledger"
+                ).fetchone()
+                return float(row[0]) if row else 0.0
+            except Exception as e:
+                log.warning("get_total_realized_pnl error: %s", e)
+                return 0.0
+
+    def get_unsynced_pnl_rows(self) -> list:
+        """Get unsynced pnl_ledger rows for cloud sync."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM pnl_ledger WHERE synced = 0 ORDER BY created_at LIMIT 100"
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except Exception as e:
+                log.warning("get_unsynced_pnl_rows error: %s", e)
+                return []
+
+    def mark_pnl_synced(self, idempotency_key: str) -> bool:
+        """Mark a pnl_ledger row as synced to Supabase."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                conn.execute(
+                    "UPDATE pnl_ledger SET synced = 1 WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                )
+                conn.commit()
+                return True
+            except Exception as e:
+                log.warning("mark_pnl_synced(%s) error: %s", idempotency_key, e)
+                return False
+
     # ── backtest_runs ───────────────────────────────────────────────────────────
 
     def insert_backtest_run(self, params: Dict[str, Any], metrics: Dict[str, Any]) -> bool:
@@ -392,7 +491,14 @@ class LocalDB:
                 if table == "signals":
                     result = supabase_client.insert_signal(row_dict)
                 elif table == "orders":
-                    result = supabase_client.insert_order(row_dict)
+                    # Strip columns that may not exist in remote Supabase schema yet
+                    # (fill_price_cents, outcome_won, pnl_dollars, settled_at may
+                    #  need manual ALTER TABLE on remote). Local DB keeps them all.
+                    order_data = {k: v for k, v in row_dict.items()
+                                  if k in ("ts", "ticker", "side", "contracts",
+                                           "price_cents", "order_id", "status",
+                                           "fees_dollars", "cycles")}
+                    result = supabase_client.insert_order(order_data)
                 elif table == "bot_state":
                     key = row_dict.pop("key")
                     value = json.loads(row_dict.pop("value_json"))
@@ -430,17 +536,13 @@ class LocalDB:
             return {"signals": 0, "orders": 0, "bot_state": 0, "backtest_runs": 0}
         
         results = {}
-        # Only sync tables with compatible schemas
-        # Orders and backtest_runs have schema mismatches in Supabase
-        for table in ["signals", "bot_state"]:
+        # Sync tables with compatible schemas
+        # bot_state uses per-row upsert; signals/orders use batch inserts
+        for table in ["signals", "orders", "bot_state", "backtest_runs"]:
             count = self._sync_table(table, supabase_client)
             results[table] = count
             if count > 0:
                 log.info("Synced %d rows from %s to Supabase", count, table)
-        
-        # Orders and backtest_runs not synced due to schema mismatch
-        results["orders"] = 0
-        results["backtest_runs"] = 0
         
         return results
 

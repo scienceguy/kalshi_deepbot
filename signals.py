@@ -155,7 +155,13 @@ def _load_bid_hist():
                 fcntl.flock(f.fileno(), fcntl.LOCK_SH)
                 data = json.load(f)
             _bid_hist = {k: [(float(t), int(b)) for t, b in v] for k, v in data.items()}
-    except Exception:
+    except FileNotFoundError:
+        _bid_hist = {}
+    except json.JSONDecodeError as e:
+        log.error("Bid history file corrupted: %s — starting fresh", e)
+        _bid_hist = {}
+    except Exception as e:
+        log.error("Failed to load bid history: %s — starting fresh", e)
         _bid_hist = {}
 
 # Load bid history at module import so it's available immediately on startup.
@@ -172,8 +178,10 @@ def _save_bid_hist():
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             json.dump({k: v for k, v in _bid_hist.items()}, f)
         os.replace(tmp_file, hist_file)
-    except Exception:
-        pass
+    except Exception as e:
+        log.error("Failed to save bid history: %s — HISTORY NOT PERSISTED", e)
+        # Don't silently drop; caller will retry on next interval via dirty flag
+        raise
 
 
 def _maybe_save_bid_hist(now: float):

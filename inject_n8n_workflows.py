@@ -26,6 +26,19 @@ DB_PATH = os.environ.get("N8N_DB_PATH", "/data/data/com.termux/files/home/.n8n/d
 PROJECT_ID = os.environ.get("N8N_PROJECT_ID", "9WCli3nfVzBpxYqg")
 USER_ID = os.environ.get("N8N_USER_ID", "user-gentry")
 
+# Load Supabase credentials for settlement_processor workflow
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+# Also try loading from key file if env vars not set
+if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+    try:
+        from supabase_client import _load_credentials
+        file_url, file_key = _load_credentials()
+        SUPABASE_URL = SUPABASE_URL or file_url
+        SUPABASE_SERVICE_KEY = SUPABASE_SERVICE_KEY or file_key
+    except Exception:
+        pass
+
 now = datetime.now(timezone.utc).isoformat() + "Z"
 
 def new_id():
@@ -437,6 +450,8 @@ def main():
             'webhook_id': 'superbot-trade-auto',
             'node_name': 'SuperBot Trade',
             'workflow_type': 'settlement_processor',
+            'supabase_url': SUPABASE_URL,
+            'supabase_key': SUPABASE_SERVICE_KEY,
         },
         {
             'id': new_id(),

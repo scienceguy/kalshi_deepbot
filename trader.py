@@ -264,8 +264,8 @@ class BotState:
                         "executed": False,
                         "blocked_reason": f"LLM prob {eval_result['probability_of_net_profit']:.2f}" if eval_result else "LLM eval failed",
                     })
-                except Exception:
-                    log.debug("Supabase insert_signal failed for %s", ticker)
+                except Exception as e:
+                    log.warning("Supabase insert_signal failed for %s: %s", ticker, e)
                 return False
 
             # Record LLM insight
@@ -380,8 +380,8 @@ def _load_dry_state():
         if ds.exists():
             with open(ds) as f:
                 return float(json.load(f).get("cash", 0.0))
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to load dry state: %s — starting fresh", e)
     return None
 
 
@@ -390,8 +390,8 @@ def _save_dry_state(cash: float):
         ds = Path(__file__).resolve().parent / "dry_state.json"
         with open(ds, "w") as f:
             json.dump({"cash": round(cash, 4)}, f)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to save dry state: %s", e)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -524,21 +524,44 @@ def _mark_to_market_exposure(positions, markets):
 
 # ═════════════════════════════════════════════════════════════════════
 def _load_settlement_queue() -> list:
-    """Load pending settlements from the local queue file."""
+    """Load pending settlements from the local queue file.
+    
+    Uses file locking to prevent race conditions if multiple processes
+    access the queue (e.g., bot restart + cron job).
+    """
     try:
         with open(SETTLEMENT_QUEUE_FILE) as f:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             return json.load(f)
-    except Exception:
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError as e:
+        log.error("Settlement queue file corrupted: %s — starting fresh", e)
+        return []
+    except Exception as e:
+        log.error("Failed to load settlement queue: %s — starting fresh", e)
         return []
 
 
 def _save_settlement_queue(queue: list):
-    """Persist pending settlements to the local queue file."""
+    """Persist pending settlements to the local queue file.
+    
+    Uses file locking and atomic write (temp file + rename) to prevent
+    corruption and race conditions.
+    """
     try:
-        with open(SETTLEMENT_QUEUE_FILE, "w") as f:
+        # Atomic write: write to temp file then rename
+        tmp_file = SETTLEMENT_QUEUE_FILE.with_suffix(SETTLEMENT_QUEUE_FILE.suffix + ".tmp")
+        with open(tmp_file, "w") as f:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             json.dump(queue, f)
-    except Exception:
-        pass
+        os.replace(tmp_file, SETTLEMENT_QUEUE_FILE)
+    except Exception as e:
+        log.error("Failed to save settlement queue: %s — QUEUE NOT PERSISTED", e)
+        # Don't silently drop the queue; caller will retry on next cycle
+        raise
 
 
 def _resolve_pending_settlement(client, payload):
@@ -615,7 +638,9 @@ def _replay_settlement_queue(client=None):
                     state.session_pnl = new_session_pnl
                 log.debug("Replayed settlement PnL $%.2f persisted to Supabase", new_session_pnl)
             log.info("Replayed settlement for %s", payload.get("order_id"))
-        except Exception:
+        except Exception as e:
+            log.warning("Replay settlement failed for %s — re-queueing: %s",
+                        payload.get("order_id"), e)
             remaining.append(entry)
     _save_settlement_queue(remaining)
 
@@ -704,8 +729,8 @@ def cycle(client: KalshiClient):
                         state.resting_value.pop(oid, None)
                         live_ids.discard(oid)
                         log.info("Cancelled stale order %s (older than %.0f min)", oid, config.STALE_ORDER_MINS)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning("Failed to cancel stale order %s: %s", oid, e)
         # Prune reservations for orders no longer resting (filled or cancelled),
         # otherwise stale entries permanently shrink available cash and the bot
         # eventually stops trading while believing cash is reserved.
@@ -783,6 +808,9 @@ def cycle(client: KalshiClient):
             realized_pnl = sell_revenue - buy_cost
             won = sell_revenue > buy_cost
 
+            # Fees in dollars for the order
+            fees_dollars = fees.taker_fee_cents(contracts, entry_price / 100.0) / 100.0
+
             log.info(
                 "Cleared settled position: %s (side=%s, released $%.2f, realized P&L $%.2f, won=%s)",
                 t, side, reserved, realized_pnl, won,
@@ -793,17 +821,36 @@ def cycle(client: KalshiClient):
             if not won:
                 state.risk.record_market_loss(t, abs(realized_pnl))
 
-            # Record settlement to Supabase via n8n workflow
+            # Record settlement P&L idempotently — use idempotency key so replays
+            # after a crash can't double-count. Key is "settle:<ticker>:<order_id>".
+            settle_key = f"settle:{t}:{order_id}"
+            try:
+                applied = get_local_db().apply_settlement_pnl(
+                    settle_key, t, realized_pnl,
+                    fee_dollars=fees_dollars,
+                    source="local",
+                )
+                if not applied:
+                    log.info("Settlement P&L already recorded for %s — skipping duplicate", t)
+                    # Still queue webhook for n8n but don't credit local session_pnl again
+                    pnl_to_add = 0.0
+                else:
+                    pnl_to_add = realized_pnl
+            except Exception:
+                log.warning("Failed to record settlement P&L to local ledger for %s — using fallback", t)
+                pnl_to_add = realized_pnl
+
+            new_session_pnl = state.session_pnl + pnl_to_add
             # Write PnL to Supabase FIRST, then update local state, then fire webhook.
             # This ensures: if process crashes after Supabase write, local state is
             # reconciled on restart. If webhook fails, queue replay handles it.
             try:
-                new_session_pnl = state.session_pnl + realized_pnl
-                # Write to Supabase first (atomic upsert); only update local
-                # state if the write succeeded, otherwise PnL drifts on restart.
                 if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
                     state.session_pnl = new_session_pnl
                 log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
+            except Exception:
+                log.warning("Supabase session_pnl write failed — keeping local state only", t)
+                state.session_pnl = new_session_pnl
                 # Invalidate market cache after settlement — the market is no longer open.
                 series = t.split("-")[0] if "-" in t else t
                 client.invalidate_markets(series_ticker=series)
@@ -1252,15 +1299,23 @@ def main():
     except Exception as e:
         log.warning("Could not seed positions from Kalshi: %s", e)
 
-    # Reconcile session_pnl from Supabase on startup — prevents P&L drift
-    # if n8n webhook settlement writes failed in a previous run.
+    # Reconcile session_pnl on startup — prevents P&L drift.
+    # Read from LOCAL DB first (may have newer data not yet synced to Supabase),
+    # then fall back to Supabase if local is missing/zero.
     try:
-        saved_pnl = get_raw_supabase_client().get_bot_state("session_pnl")
-        if saved_pnl is not None:
-            state.session_pnl = float(saved_pnl)
-            log.info("Reconciled session_pnl from Supabase: $%.2f", state.session_pnl)
+        local_db = get_local_db()
+        local_pnl = local_db.get_bot_state("session_pnl")
+        if local_pnl is not None and local_pnl != 0:
+            state.session_pnl = float(local_pnl)
+            log.info("Reconciled session_pnl from LOCAL DB: $%.2f", state.session_pnl)
+        else:
+            # Fall back to Supabase
+            saved_pnl = get_raw_supabase_client().get_bot_state("session_pnl")
+            if saved_pnl is not None:
+                state.session_pnl = float(saved_pnl)
+                log.info("Reconciled session_pnl from Supabase: $%.2f", state.session_pnl)
     except Exception:
-        log.warning("Could not reconcile session_pnl from Supabase — starting at $0.00")
+        log.warning("Could not reconcile session_pnl — starting at $0.00")
 
     # Also reconcile from n8n by checking recent executions for settlement webhooks
     # that may have recorded PnL not yet synced to Supabase.
