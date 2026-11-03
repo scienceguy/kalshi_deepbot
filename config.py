@@ -114,31 +114,32 @@ else:
     TARGET_SERIES = list(TARGET_SERIES_DEFAULT)
 
 # ═════════════════════════════════════════════════════════════════════
-# SIGNAL THRESHOLDS (best from kalshi_codex_bot momentum backtests)
-# Best: BASELINE_82-88_ee4_bs_pos30 → win_rate 91.5%, Sharpe 1.68, balance 7211
-# Best: MOM_88-93_dynTrue_netTrue_kelly2 → win_rate 93.7%, Sharpe 6.60, balance 6731
-# Entry band: 82-88c or 88-93c for favourite maker strategy (Approach D)
+# SIGNAL THRESHOLDS (optimized from backtests - 2026-11-03)
+# Backtest best: MIN_SKEW=3, MIN_TREND=8, window=6-11min, band=15-55c
+# EV=0.58/trade, win_rate=52.8%, maxDD=84.6% (needs risk management)
+# Real backtest best: EV=0.077, win_rate=48.2%, maxDD=68.4%
 # ═════════════════════════════════════════════════════════════════════
 MIN_SKEW_CENTS = _env_int("MIN_SKEW_CENTS", 3)
 MIN_TREND_CENTS = _env_int("MIN_TREND_CENTS", 8)
-ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 13.0)
-ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.5)
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 6.0)
+ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 11.0)
 MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 1)
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
 MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 3)
 MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
 
 # ═════════════════════════════════════════════════════════════════════
-# ORDER BEHAVIOR (favourite maker from kalshi_live_bot Approach D)
+# ORDER BEHAVIOR (favourite maker - optimized from backtests)
+# Backtest optimal: 15-55c entry band (wider = more trades, earlier window)
 # ═════════════════════════════════════════════════════════════════════
 AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", False)
 AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
 ORDER_TIME_IN_FORCE = "good_till_canceled"
-# Entry band: favourite maker enters at 75-95c range (favorite side - high probability)
-ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 75)
-ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 95)
-MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 88)
-MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 82)
+# Entry band: favourite maker enters at 15-55c range (backtest optimal)
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 15)
+ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 55)
+MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 55)
+MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 15)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 
 # NO side price format: Kalshi returns NO prices directly (not complemented).
@@ -163,8 +164,8 @@ LATENCY_ARB_ENABLED = _env_bool("LATENCY_ARB_ENABLED", False)
 PANIC_FADE_ENABLED = _env_bool("PANIC_FADE_ENABLED", True)
 PANIC_FADE_MOVE_CENTS = _env_int("PANIC_FADE_MOVE_CENTS", 15)  # min cents move to trigger
 PANIC_FADE_WINDOW_SECONDS = _env_int("PANIC_FADE_WINDOW_SECONDS", 120)  # lookback window
-PANIC_FADE_ENTRY_BAND_MIN = _env_int("PANIC_FADE_ENTRY_BAND_MIN", 75)  # bet favorite side 75-95c
-PANIC_FADE_ENTRY_BAND_MAX = _env_int("PANIC_FADE_ENTRY_BAND_MAX", 95)
+PANIC_FADE_ENTRY_BAND_MIN = _env_int("PANIC_FADE_ENTRY_BAND_MIN", 15)  # bet favorite side 75-95c
+PANIC_FADE_ENTRY_BAND_MAX = _env_int("PANIC_FADE_ENTRY_BAND_MAX", 55)
 
 # ═════════════════════════════════════════════════════════════════════
 # POSITION SIZING (Kelly criterion from kalshi_codex_bot momentum backtests)
@@ -178,7 +179,7 @@ MAX_OPEN_POSITIONS = _env_int("MAX_OPEN_POSITIONS", 4)
 MAX_ORDERS_PER_CYCLE = _env_int("MAX_ORDERS_PER_CYCLE", 2)
 MIN_ORDER_GAP_SECONDS = _env_float("MIN_ORDER_GAP_SECONDS", 10.0)
 MAX_ORDERS_PER_DAY = _env_int("MAX_ORDERS_PER_DAY", 50)
-BALANCE_PCT_PER_TRADE = _env_float("BALANCE_PCT_PER_TRADE", 0.50)  # 50% per trade - allows trades with small balance
+BALANCE_PCT_PER_TRADE = _env_float("BALANCE_PCT_PER_TRADE", 0.08)  # 8% per trade - backtest optimal
 POSITION_FRACTION = _env_float("POSITION_FRACTION", 0.30)
 WINDOW_TRADE_PCT = _env_float("WINDOW_TRADE_PCT", 1.00)
 CASH_RESERVED_PCT = _env_float("CASH_RESERVED_PCT", 0.02)
@@ -196,7 +197,7 @@ if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0 + _SUM_EPSILON:
         f"CASH_FLOOR_PCT ({CASH_FLOOR_PCT:.2f}) + EXPOSURE_CEILING_PCT ({EXPOSURE_CEILING_PCT:.2f}) > 1.0. "
         f"Sum must be <= 1.0 to avoid over-reserving cash."
     )
-PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.50)  # 50% per trade - allows trades with small balance
+PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.08)  # 8% per trade - backtest optimal
 MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
 
 # Paper-mode sizing (dry runs only). Dry runs deploy the whole paper balance so

@@ -227,16 +227,22 @@ def test_hedge_contracts_are_integer():
     """_evaluate_hedge floors fractional size to an integer contract count."""
     from market_finder import MarketInfo
     from signals import _evaluate_hedge
+    from unittest.mock import patch
+    import config
     m = MarketInfo(
         ticker="T", series="S", close_time=None, strike=0, strike_type="",
-        yes_bid=14, yes_ask=15, no_bid=84, no_ask=85,
-        yes_liquidity=100, no_liquidity=100, minutes_left=1.5,  # within 13-14.5min window
+        yes_bid=84, yes_ask=85, no_bid=15, no_ask=16,
+        yes_liquidity=100, no_liquidity=100, minutes_left=9.0,  # within 6-11min window (minutes_in=6)
     )
-    res = _evaluate_hedge(m, 1.0)  # $1 budget at 84c -> 1.19 -> floored to 1
-    sig = res[0]
-    assert sig.is_trade
-    assert sig.contracts == float(int(sig.contracts))
-    assert sig.dollar_risk == sig.contracts * sig.entry_price / 100
+    # Patch config to use hedge band that matches test data (MIN=15, MAX=55)
+    with patch('signals.config.MIN_NO_ENTRY_CENTS', 15), \
+         patch('signals.config.MAX_NO_ENTRY_CENTS', 55), \
+         patch('signals.config.NO_PRICE_IS_COMPLEMENT', False):
+        res = _evaluate_hedge(m, 1.0)  # $1 budget at 15c -> 6.66 -> floored to 6
+        sig = res[0]
+        assert sig.is_trade
+        assert sig.contracts == float(int(sig.contracts))
+        assert sig.dollar_risk == sig.contracts * sig.entry_price / 100
 
 
 def test_cycle_prunes_stale_resting_value(monkeypatch):
