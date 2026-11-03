@@ -187,8 +187,13 @@ def _save_bid_hist():
 def _maybe_save_bid_hist(now: float):
     global _bid_hist_dirty, _last_bid_hist_save
     if _bid_hist_dirty and (now - _last_bid_hist_save) >= _BID_HIST_SAVE_INTERVAL:
-        _save_bid_hist()
-        _bid_hist_dirty = False
+        try:
+            _save_bid_hist()
+            _bid_hist_dirty = False
+        except Exception:
+            # Save failed — keep dirty flag so we retry, but advance timestamp
+            # so we don't retry every cycle on a persistent failure.
+            pass
         _last_bid_hist_save = now
 
 

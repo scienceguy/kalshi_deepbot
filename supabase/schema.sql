@@ -66,3 +66,19 @@ create table if not exists public.backtest_runs (
     max_drawdown   numeric,
     final_balance  numeric
 );
+
+-- ─── pnl_ledger: idempotent settlement P&L ledger ──────────────────────────
+-- Every settlement P&L is recorded exactly once via idempotency_key.
+-- Used for audit and reconciliation against Kalshi /portfolio/settlements.
+create table if not exists public.pnl_ledger (
+    idempotency_key   text primary key,
+    market_ticker     text not null,
+    realized_pnl_dollars numeric not null,
+    fee_dollars       numeric default 0,
+    applied_at        timestamptz not null default now(),
+    source            text not null default 'local',
+    synced            boolean default false,
+    created_at        timestamptz not null default now()
+);
+create index if not exists idx_pnl_ledger_market on public.pnl_ledger(market_ticker, applied_at);
+create index if not exists idx_pnl_ledger_synced on public.pnl_ledger(synced);

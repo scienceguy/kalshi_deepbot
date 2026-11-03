@@ -146,6 +146,17 @@ def _api_get(path: str, params: dict, retries: int = 5) -> Optional[dict]:
                             path, wait, attempt + 1, retries)
                 time.sleep(wait)
                 continue
+            if 500 <= resp.status_code < 600:
+                wait = 0.7 * (2 ** attempt)
+                log.warning("HTTP %s on %s — backing off %.1fs (attempt %d/%d)",
+                            resp.status_code, path, wait, attempt + 1, retries)
+                time.sleep(wait)
+                continue
+            # 4xx (except 429) — don't retry, return None immediately
+            if resp.status_code >= 400:
+                log.error("HTTP %s on %s — not retrying (client error)",
+                          resp.status_code, path)
+                return None
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as e:
@@ -282,11 +293,12 @@ def download_trades(
         return 0
 
     df = pd.DataFrame(all_trades)
-    # Normalize timestamp
+    # Normalize timestamp — Kalshi returns created_time as ISO 8601
+    # (e.g., "2023-11-07T05:31:56Z"), NOT epoch milliseconds.
     if "created_time" in df.columns:
-        df["created_time"] = pd.to_datetime(df["created_time"], unit="ms", errors="coerce")
+        df["created_time"] = pd.to_datetime(df["created_time"], errors="coerce")
     elif "ts" in df.columns:
-        df["created_time"] = pd.to_datetime(df["ts"], unit="ms", errors="coerce")
+        df["created_time"] = pd.to_datetime(df["ts"], errors="coerce")
 
     if "created_time" in df.columns:
         df["_date"] = df["created_time"].dt.strftime("%Y-%m-%d")

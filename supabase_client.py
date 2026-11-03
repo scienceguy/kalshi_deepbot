@@ -437,6 +437,26 @@ class SupabaseClient:
             log.warning("insert_backtest_run error: %s", e)
             return False
 
+    def insert_pnl_ledger(self, ledger_data: Dict[str, Any]) -> bool:
+        """Record a settlement P&L ledger entry (idempotent on idempotency_key).
+
+        Upserts on idempotency_key so duplicate settlement events don't
+        double-count P&L.
+        """
+        required = ("idempotency_key", "market_ticker", "realized_pnl_dollars")
+        missing = [f for f in required if f not in ledger_data]
+        if missing:
+            log.warning("insert_pnl_ledger: missing required fields %s — skipping",
+                        ", ".join(missing))
+            return False
+        try:
+            result = self._request("POST", "pnl_ledger", data=ledger_data,
+                                   extra_headers={"Prefer": "resolution=merge-duplicates"})
+            return result is not None
+        except Exception as e:
+            log.warning("insert_pnl_ledger error: %s", e)
+            return False
+
     # ─── health check ──────────────────────────────────────────────────────────
     def health_check(self) -> bool:
         """Test Supabase connectivity and auth.

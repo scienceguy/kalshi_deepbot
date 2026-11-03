@@ -841,9 +841,9 @@ def cycle(client: KalshiClient):
                 pnl_to_add = realized_pnl
 
             new_session_pnl = state.session_pnl + pnl_to_add
-            # Write PnL to Supabase FIRST, then update local state, then fire webhook.
+            # Write PnL to Supabase FIRST, then update local state.
             # This ensures: if process crashes after Supabase write, local state is
-            # reconciled on restart. If webhook fails, queue replay handles it.
+            # reconciled on restart.
             try:
                 if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
                     state.session_pnl = new_session_pnl
@@ -851,10 +851,14 @@ def cycle(client: KalshiClient):
             except Exception:
                 log.warning("Supabase session_pnl write failed — keeping local state only", t)
                 state.session_pnl = new_session_pnl
-                # Invalidate market cache after settlement — the market is no longer open.
-                series = t.split("-")[0] if "-" in t else t
-                client.invalidate_markets(series_ticker=series)
-                # Fire n8n webhook — if this fails, queue replay handles it
+
+            # Invalidate market cache after settlement — the market is no longer open.
+            series = t.split("-")[0] if "-" in t else t
+            client.invalidate_markets(series_ticker=series)
+            # Fire n8n webhook — if this fails, queue replay handles it.
+            # Runs regardless of Supabase write success/failure so settlement
+            # P&L always routes through n8n.
+            try:
                 n8n_client = get_n8n_client()
                 n8n_client.execute_webhook("superbot-trade", {
                     "action": "settlement",
@@ -1402,6 +1406,13 @@ def main():
         se._force_save_bid_hist()
     except Exception as e:
         log.warning("Could not save bid history on shutdown: %s", e)
+
+    # Stop local DB background sync thread so unsynced rows aren't lost
+    # on unclean shutdown.
+    try:
+        get_local_db().close()
+    except Exception as e:
+        log.warning("Could not stop local DB sync on shutdown: %s", e)
 
     # Release the HTTP session's sockets on clean shutdown.
     try:

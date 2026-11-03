@@ -51,8 +51,8 @@ DB_DIR = Path(__file__).resolve().parent / "local_data"
 DB_DIR.mkdir(exist_ok=True)
 DB_PATH = DB_DIR / "superbot_local.db"
 
-# Sync interval (seconds)
-SYNC_INTERVAL = 300  # 5 minutes
+# Sync interval (seconds) — configurable via env
+SYNC_INTERVAL = float(os.environ.get("LOCAL_DB_SYNC_INTERVAL", "300"))
 
 
 class LocalDB:
@@ -482,6 +482,9 @@ class LocalDB:
             if table == "bot_state":
                 pk_col = "key"
                 pk_val = row_dict[pk_col]
+            elif table == "pnl_ledger":
+                pk_col = "idempotency_key"
+                pk_val = row_dict[pk_col]
             else:
                 pk_col = "id"
                 pk_val = row_dict.pop("id")
@@ -503,6 +506,8 @@ class LocalDB:
                     key = row_dict.pop("key")
                     value = json.loads(row_dict.pop("value_json"))
                     result = supabase_client.set_bot_state(key, value)
+                elif table == "pnl_ledger":
+                    result = supabase_client.insert_pnl_ledger(row_dict)
                 elif table == "backtest_runs":
                     params = json.loads(row_dict.pop("params_json"))
                     metrics = {k: v for k, v in row_dict.items() if k != "ts"}
@@ -537,8 +542,8 @@ class LocalDB:
         
         results = {}
         # Sync tables with compatible schemas
-        # bot_state uses per-row upsert; signals/orders use batch inserts
-        for table in ["signals", "orders", "bot_state", "backtest_runs"]:
+        # bot_state uses per-row upsert; signals/orders/pnl_ledger use batch inserts
+        for table in ["signals", "orders", "pnl_ledger", "bot_state", "backtest_runs"]:
             count = self._sync_table(table, supabase_client)
             results[table] = count
             if count > 0:
