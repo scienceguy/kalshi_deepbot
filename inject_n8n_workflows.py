@@ -190,6 +190,61 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
                 ]]
             }
         }
+    elif workflow_type == "coordination":
+        # Coordination workflow: webhook → Python coordination script → respond
+        code_js = make_code_node_code(python_script, python_args, webhook_path)
+        
+        code_node = {
+            "id": "node_code",
+            "name": "Agent Coordination",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [300, 0],
+            "parameters": {
+                "jsCode": code_js,
+                "language": "javascript",
+                "mode": "runOnceForAllItems"
+            },
+            "position": [300, 0]
+        }
+        
+        respond_node = {
+            "id": "node_respond",
+            "name": "Respond to Webhook",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1,
+            "position": [600, 0],
+            "parameters": {
+                "responseCode": "200",
+                "responseBody": "={{ $json }}",
+                "respondWith": "json",
+                "options": {}
+            },
+            "position": [600, 0]
+        }
+        
+        nodes = [webhook_node, code_node, respond_node]
+        
+        connections = {
+            "node_webhook": {
+                "main": [[
+                    {
+                        "node": "node_code",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]]
+            },
+            "node_code": {
+                "main": [[
+                    {
+                        "node": "node_respond",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]]
+            }
+        }
     else:
         # Python script workflow (original behavior)
         code_js = make_code_node_code(python_script, python_args, webhook_path)
@@ -393,6 +448,16 @@ def main():
             'node_name': 'SuperBot Monitor',
             'script': '/data/data/com.termux/files/home/kalshi_superbot/trader.py',
             'args': '--once --debug'
+        },
+        {
+            'id': new_id(),
+            'name': 'SuperBot Agent Coordination',
+            'webhook_path': 'superbot-coordinate',
+            'webhook_id': 'superbot-coordinate-auto',
+            'node_name': 'SuperBot Agent Coordination',
+            'workflow_type': 'coordination',
+            'script': '/data/data/com.termux/files/home/kalshi_superbot/n8n_coordination.py',
+            'args': ''
         }
     ]
 

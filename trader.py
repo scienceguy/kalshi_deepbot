@@ -1086,7 +1086,7 @@ def main():
     log.info("Risk: 70%% cash floor | 30%% exposure ceiling | "
              "8%% per-trade | 15%% drawdown halt")
     log.info("LLM eval: %s | Supabase: %s",
-             "enabled" if config.LLM_EVALUATION_ENABLED else "disabled",
+             "enabled (NVIDIA)" if config.NVIDIA_API_KEY else "disabled",
              "enabled" if get_supabase_client().enabled else "disabled")
     # Supabase is non-fatal — writes degrade gracefully when credentials are
     # missing or the service is down. The bot trades without it (dry-run).
