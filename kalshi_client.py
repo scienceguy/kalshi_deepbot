@@ -474,7 +474,7 @@ class KalshiClient:
             log.info("[DRY RUN] %s", payload)
             return {"dry_run": True, "order_id": client_order_id}
 
-        resp = self._request("POST", "/portfolio/orders", json=payload)
+        resp = self._request("POST", "/portfolio/events/orders", json=payload)
         # Normalise: v2 returns order_id at top level
         if resp and "order_id" not in resp and "order" in resp:
             resp["order_id"] = resp["order"].get("order_id", "")
@@ -486,7 +486,7 @@ class KalshiClient:
             log.info("[DRY RUN] Would cancel order: %s", order_id)
             return {"dry_run": True}
         try:
-            return self._request("DELETE", f"/portfolio/orders/{order_id}")
+            return self._request("DELETE", f"/portfolio/events/orders/{order_id}")
         except KalshiAPIError as e:
             if "404" in str(e):
                 log.debug("cancel_order %s: order not found (already filled/cancelled)", order_id)
