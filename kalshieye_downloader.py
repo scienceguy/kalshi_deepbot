@@ -236,7 +236,13 @@ def main():
             # Download all files for this date
             try:
                 for file_info in files:
+                    # Kalshieye file info uses 'key' (e.g. flat/v1/markets/date=.../markets-...parquet)
+                    # and 'path' fields instead of 'url'/'download_url'. Construct download URL.
+                    key = file_info.get("key") or file_info.get("path", "")
                     signed_url = file_info.get("url") or file_info.get("download_url")
+                    if not signed_url and key:
+                        # Try common download URL patterns for Kalshieye
+                        signed_url = f"{BASE_URL}/files/download?key={key}"
                     if not signed_url:
                         log.warning("  %s %s: no download URL in file info", series, date_str)
                         continue
