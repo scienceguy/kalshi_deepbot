@@ -134,10 +134,9 @@ MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
 AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", False)
 AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
 ORDER_TIME_IN_FORCE = "good_till_canceled"
-# Entry band: favourite maker enters at 15-55c range (best from backtest sweep:
-# band=15-55 → EV=$1.1998/trade, 450 trades, 57.8% win rate, $539.90 total P&L, 25.1% maxDD)
-ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 15)
-ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 55)
+# Entry band: favourite maker enters at 75-95c range (favorite side - high probability)
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 75)
+ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 95)
 MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 88)
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 82)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
