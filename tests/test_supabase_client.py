@@ -111,6 +111,63 @@ class TestSupabaseClientGetBotState:
             result = client.get_bot_state("session_pnl")
             assert result is None
 
+class TestSupabaseClientSetBotStateBatch:
+    """Tests for SupabaseClient.set_bot_state_batch method.
+
+    Posts keys sequentially so one bad row doesn't fail the whole batch.
+    """
+
+    def test_batch_all_keys_succeed(self, monkeypatch):
+        """set_bot_state_batch posts each key and returns True on all success."""
+        monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
+        monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
+        import importlib
+        import supabase_client
+        importlib.reload(supabase_client)
+        client = supabase_client.SupabaseClient()
+
+        calls = []
+
+        def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
+            calls.append((method, path, data))
+            return {"data": [{"key": data[0]["key"]}]}
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            result = client.set_bot_state_batch({"session_pnl": 42.5, "cycles": 3})
+            assert result is True
+            assert len(calls) == 2
+            assert calls[0][0] == "POST"
+            assert calls[0][1] == "bot_state"
+            assert calls[0][2][0]["key"] == "session_pnl"
+            assert calls[1][2][0]["key"] == "cycles"
+
+    def test_batch_stops_on_first_failure(self, monkeypatch):
+        """set_bot_state_batch returns False when first key fails, doesn't post remaining keys."""
+        monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
+        monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
+        import importlib
+        import supabase_client
+        importlib.reload(supabase_client)
+        client = supabase_client.SupabaseClient()
+
+        calls = []
+
+        def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
+            calls.append((method, path, data))
+            if data[0]["key"] == "bad_key":
+                return None  # simulate failure
+            return {"data": [{"key": data[0]["key"]}]}
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            result = client.set_bot_state_batch({"good_key": 1.0, "bad_key": 2.0, "never_posted": 3.0})
+            assert result is False
+            assert len(calls) == 2  # stops after bad_key fails, never posts "never_posted"
+            assert calls[0][2][0]["key"] == "good_key"
+            assert calls[1][2][0]["key"] == "bad_key"
+
+
 class TestCircuitBreakerReset:
     """The circuit breaker must reset its counter when the cooldown expires.
 

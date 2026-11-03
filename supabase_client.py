@@ -359,23 +359,23 @@ class SupabaseClient:
             return False
 
     def set_bot_state_batch(self, states: dict) -> bool:
-        """Set multiple bot state key-value pairs (sequentially to avoid batch upsert issues)."""
-        try:
-            for k, v in states.items():
-                data = {
-                    "key": k,
-                    "value_json": json.dumps(v),
-                    "ts": datetime.now(timezone.utc).isoformat()
-                }
-                result = self._request("POST", "bot_state", data=[{"key": k, "value_json": json.dumps(v), "ts": datetime.now(timezone.utc).isoformat()}],
-                                       extra_headers={"Prefer": "resolution=merge-duplicates"})
-                if result is None:
-                    log.warning("set_bot_state_batch failed for key %s", k)
-                    return False
-            return True
-        except Exception as e:
-            log.warning("set_bot_state_batch error: %s", e)
-            return False
+        """Set multiple bot state key-value pairs sequentially.
+
+        Posts each key individually so a single bad row (e.g. None value
+        rejected by schema) doesn't fail the entire batch.
+        """
+        for k, v in states.items():
+            data = {
+                "key": k,
+                "value_json": json.dumps(v),
+                "ts": datetime.now(timezone.utc).isoformat()
+            }
+            result = self._request("POST", "bot_state", data=[data],
+                                   extra_headers={"Prefer": "resolution=merge-duplicates"})
+            if result is None:
+                log.warning("set_bot_state_batch failed for key %s", k)
+                return False
+        return True
 
     def get_bot_state(self, key: str) -> Optional[Any]:
         """Get a bot state value by key."""

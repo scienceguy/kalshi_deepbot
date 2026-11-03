@@ -370,15 +370,3 @@ def validate_bands():
         )
     if errors:
         raise ValueError("Entry band configuration invalid:\n" + "\n".join(errors))
-
-
-# Auto-validate on import (graceful — logs warnings, never crashes).
-# Called explicitly by trader.py main() as well; double-validation is harmless.
-try:
-    validate_credentials()
-except ValueError as _e:
-    log.warning("Config validation (import-time): %s", _e)
-try:
-    validate_bands()
-except ValueError as _e:
-    log.warning("Config band validation (import-time): %s", _e)
