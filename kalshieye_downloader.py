@@ -242,9 +242,21 @@ def main():
                     signed_url = file_info.get("url") or file_info.get("download_url")
                     if not signed_url and key:
                         # Try multiple download URL patterns for Kalshieye
-                        signed_url = (
-                            f"{BASE_URL}/files/download?key={key}"
-                        )
+                        candidate_urls = [
+                            f"{BASE_URL}/files/download?key={key}",
+                            f"{BASE_URL}/files/download/{key}",
+                            f"{BASE_URL}/download/{key}",
+                            f"{BASE_URL}/{key}",
+                        ]
+                        signed_url = None
+                        for candidate in candidate_urls:
+                            try:
+                                test_r = s.head(candidate, timeout=10)
+                                if test_r.status_code == 200:
+                                    signed_url = candidate
+                                    break
+                            except Exception:
+                                continue
                     if not signed_url:
                         log.warning("  %s %s: no download URL in file info", series, date_str)
                         continue
