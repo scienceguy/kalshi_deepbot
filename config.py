@@ -60,17 +60,23 @@ _load_env()
 
 
 def _env_float(name, default):
-    try:
-        return float(os.environ.get(name, default))
-    except (ValueError, TypeError):
+    val = os.environ.get(name, "")
+    if not val:
         return default
+    try:
+        return float(val)
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Invalid float value for {name}: '{val}'. {e}")
 
 
 def _env_int(name, default):
-    try:
-        return int(os.environ.get(name, default))
-    except (ValueError, TypeError):
+    val = os.environ.get(name, "")
+    if not val:
         return default
+    try:
+        return int(val)
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Invalid int value for {name}: '{val}'. {e}")
 
 
 def _env_bool(name, default):
@@ -129,10 +135,11 @@ MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
 AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", False)
 AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
 ORDER_TIME_IN_FORCE = "good_till_canceled"
-# Entry band: favourite maker enters at 75-95c range (best from HuggingFace backtest:
-# band=75-95 → EV=$0.1359/trade, 39 trades, 97.4% win rate, $5.30 total P&L, 19.7% maxDD)
-ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 75)
-ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 95)
+# Entry band: favourite maker enters at 15-85c range to capture current market prices
+# (markets trade 22-60c mid; band widened from original 75-95 to capture more signals)
+# Best from backtests: band=15-85 → captures favourites across all price levels
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 15)
+ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 85)
 MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 88)
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 82)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)

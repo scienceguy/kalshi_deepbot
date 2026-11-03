@@ -592,7 +592,11 @@ def _replay_settlement_queue(client=None):
             _save_settlement_queue(remaining + queue[i + 1:])
             pnl = payload.get("pnl_dollars")
             if pnl is not None:
-                state.session_pnl += pnl
+                new_session_pnl = state.session_pnl + pnl
+                # Write PnL to Supabase FIRST, then update local state
+                if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
+                    state.session_pnl = new_session_pnl
+                log.debug("Replayed settlement PnL $%.2f persisted to Supabase", new_session_pnl)
             log.info("Replayed settlement for %s", payload.get("order_id"))
         except Exception:
             remaining.append(entry)

@@ -175,6 +175,16 @@ def _parse_llm_response(content: str) -> Optional[Dict[str, Any]]:
         prob = float(data.get("probability_of_net_profit", 0.0))
         conf = float(data.get("confidence_hold_to_expiry", 0.0))
         reasoning = data.get("reasoning", data.get("reason", ""))
+
+        # Validate that only expected keys are present (per system prompt).
+        expected_keys = {"probability_of_net_profit", "confidence_hold_to_expiry", "reasoning"}
+        extra_keys = set(data.keys()) - expected_keys
+        if extra_keys:
+            log.warning(
+                "LLM response contained unexpected keys: %s — ignoring extras",
+                ", ".join(sorted(extra_keys)),
+            )
+
         return {
             "probability_of_net_profit": max(0.0, min(1.0, prob)),
             "confidence_hold_to_expiry": max(0.0, min(1.0, conf)),

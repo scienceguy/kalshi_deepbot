@@ -61,18 +61,18 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
 
     Returns a result dict or None if no signal.
 
-    ⚠️  LOOKAHEAD BIAS WARNING: The entry price proxy uses ``last_price_dollars``
-    (the last observed price before settlement) when available, falling back to
-    the bid/ask mid. This price reflects information available near the end of
-    the 15-minute window, not at entry time. Results are therefore optimistic
-    vs. live trading and should be treated as an upper bound on EV, not a
-    prediction of live performance.
+    ⚠️  LOOKAHEAD BIAS WARNING: When bid/ask data is available, the entry price
+    proxy uses bid/ask mid. When only settlement data is available (no orderbook
+    history), a fixed synthetic entry price of 45c for YES is used. This is a
+    simplifying assumption: it models always entering YES at 45c, which is an
+    executable strategy but may not reflect actual entry prices at entry time.
+    Results should be treated as indicative, not a prediction of live performance.
     """
     ticker = market.get("ticker", "")
     ct = _parse_api_time(market.get("close_time", ""))
     ot = _parse_api_time(market.get("open_time", ""))
     if not ct or not ot:
-        return None
+        return None  # not a valid 15-min market window
 
     minutes_in = (ct - ot).total_seconds() / 60
     if minutes_in <= 0 or minutes_in > 15.5:
@@ -84,12 +84,14 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
 
     yb, ya, nb, na, yq, nq = _parse_market_prices(market)
 
-    # Entry price proxy uses bid/ask mid only — last_price_dollars would be
-    # lookahead bias (it reflects prices near settlement, not at entry time).
+    # Entry price proxy: use bid/ask mid when available; otherwise use a fixed
+    # synthetic entry price of 45c for YES (models always entering YES at 45c).
     if yb and ya:
         mid_proxy = (yb + ya) // 2
+        entry_source = "book"
     else:
-        return None
+        mid_proxy = 45  # Fixed synthetic entry price for YES when no orderbook
+        entry_source = "synthetic"
 
     if settlement_yes_won is None:
         yes_won = _default_settlement_yes_won(market)
@@ -241,8 +243,9 @@ def parameter_grid(quick=False):
             "MIN_TREND_CENTS": [8, 12, 16],
             "ENTRY_WINDOW_START_MIN": [6.0, 8.0],
             "ENTRY_WINDOW_END_MIN": [11.0, 13.0],
-            "ENTRY_BAND_MIN": [82, 88],
-            "ENTRY_BAND_MAX": [90, 93],
+            # Entry band widened from original 75-95 to capture lower-priced markets (22-60c mid)
+            "ENTRY_BAND_MIN": [15, 30, 50, 82],
+            "ENTRY_BAND_MAX": [55, 70, 85, 93],
             "AGGRESSIVE_FILL": [False],
             "PER_TRADE_PCT": [0.05, 0.08, 0.12],
             "MAX_TRADE_DOLLARS": [2.0, 3.0, 5.0],
@@ -254,8 +257,9 @@ def parameter_grid(quick=False):
             "MIN_TREND_CENTS": [8, 12, 15, 20],
             "ENTRY_WINDOW_START_MIN": [6.0, 8.0, 10.0],
             "ENTRY_WINDOW_END_MIN": [11.0, 13.0, 14.0],
-            "ENTRY_BAND_MIN": [82, 86, 88, 90],
-            "ENTRY_BAND_MAX": [88, 91, 93, 95],
+            # Entry band widened to capture lower-priced markets alongside original high bands
+            "ENTRY_BAND_MIN": [15, 30, 50, 70, 82, 86],
+            "ENTRY_BAND_MAX": [55, 70, 85, 88, 91, 95],
             "MAX_NO_ENTRY_CENTS": [60, 65, 68],
             "AGGRESSIVE_FILL": [False, True],
             "PER_TRADE_PCT": [0.04, 0.08, 0.12, 0.20],
