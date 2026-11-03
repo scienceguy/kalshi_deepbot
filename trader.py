@@ -1113,6 +1113,14 @@ def main():
     client = KalshiClient()
     try:
         bal = client.get_balance()
+        # Validate balance units: Kalshi returns cents, we divide by 100.
+        # Sanity check: balance should be in reasonable dollar range (0.01 to 1M).
+        if bal < 0.01 or bal > 1_000_000:
+            log.warning(
+                "Balance $%.2f outside expected range (0.01–1M) — "
+                "verify Kalshi API returns cents, not dollars. Raw value: %s",
+                bal, bal * 100
+            )
         log.info("Connected ✓ Balance: $%.2f", bal)
         state.risk.initialize(bal)
     except Exception as e:
@@ -1138,6 +1146,26 @@ def main():
             "and restart. Bot continues trading without Supabase."
         )
         sb.enabled = False
+
+    # Validate NO price format against a live market — production Kalshi v2
+    # returns NO prices directly (complement=False). If the format changes,
+    # all NO side prices will be inverted.
+    try:
+        sample_market = client.get_market(config.TARGET_SERIES[0] + "-26NOV010000-00")
+        has_no_ask = "no_ask" in sample_market and sample_market.get("no_ask") is not None
+        has_no_ask_dollars = "no_ask_dollars" in sample_market and sample_market.get("no_ask_dollars") is not None
+        has_no_price_dollars = "no_price_dollars" in sample_market and sample_market.get("no_price_dollars") is not None
+        if has_no_ask or has_no_ask_dollars or has_no_price_dollars:
+            log.info("NO price format validated: market has NO price fields (complement=False)")
+        else:
+            log.warning(
+                "NO price format UNVERIFIED: market %s lacks NO price fields. "
+                "If NO_PRICE_IS_COMPLEMENT=False (default), NO side prices may be inverted. "
+                "Check Kalshi API docs and set NO_PRICE_IS_COMPLEMENT=True if needed.",
+                config.TARGET_SERIES[0]
+            )
+    except Exception as e:
+        log.debug("NO price format check skipped: %s", e)
 
     # Seed resting orders from Kalshi so intra-cycle cash tracking accounts
     # for orders already resting from a previous run.

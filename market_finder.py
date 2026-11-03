@@ -256,7 +256,9 @@ def find_active_markets(client: KalshiClient):
                 except Exception:
                     ob_map[m["ticker"]] = {}
 
-    # Process ALL mains passing the entry band — not just the one closest to 50c.
+    # Process ALL mains passing the entry band (multi-market mode).
+    # Earlier versions picked the single closest to 50c; now we keep all
+    # that pass the entry band to maximize opportunity.
     for mkt, ct, ml, mid in all_mains:
         ob = ob_map.get(mkt["ticker"], {})
         series = mkt.get("series_ticker", "")
