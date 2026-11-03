@@ -178,7 +178,7 @@ MAX_OPEN_POSITIONS = _env_int("MAX_OPEN_POSITIONS", 4)
 MAX_ORDERS_PER_CYCLE = _env_int("MAX_ORDERS_PER_CYCLE", 2)
 MIN_ORDER_GAP_SECONDS = _env_float("MIN_ORDER_GAP_SECONDS", 10.0)
 MAX_ORDERS_PER_DAY = _env_int("MAX_ORDERS_PER_DAY", 50)
-BALANCE_PCT_PER_TRADE = _env_float("BALANCE_PCT_PER_TRADE", 0.05)  # 5% per trade — conservative for small balance
+BALANCE_PCT_PER_TRADE = _env_float("BALANCE_PCT_PER_TRADE", 0.50)  # 50% per trade - allows trades with small balance
 POSITION_FRACTION = _env_float("POSITION_FRACTION", 0.30)
 WINDOW_TRADE_PCT = _env_float("WINDOW_TRADE_PCT", 1.00)
 CASH_RESERVED_PCT = _env_float("CASH_RESERVED_PCT", 0.02)
@@ -196,7 +196,7 @@ if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0 + _SUM_EPSILON:
         f"CASH_FLOOR_PCT ({CASH_FLOOR_PCT:.2f}) + EXPOSURE_CEILING_PCT ({EXPOSURE_CEILING_PCT:.2f}) > 1.0. "
         f"Sum must be <= 1.0 to avoid over-reserving cash."
     )
-PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.10)  # 10% per trade - safer for small balance
+PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.50)  # 50% per trade - allows trades with small balance
 MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
 DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.15)
 MAX_DRAWDOWN_PCT = _env_float("MAX_DRAWDOWN_PCT", 0.12)
