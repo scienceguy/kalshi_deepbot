@@ -198,6 +198,16 @@ if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0 + _SUM_EPSILON:
     )
 PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.50)  # 50% per trade - allows trades with small balance
 MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
+
+# Paper-mode sizing (dry runs only). Dry runs deploy the whole paper balance so
+# a favourite at 75-95c can actually be bought: with a 70% cash floor and a
+# $1.00 absolute floor, a $1.22 bankroll can never afford one 90c contract and
+# no trade — and no compounding — ever happens. Live keeps the conservative
+# knobs above.
+PAPER_CASH_FLOOR_PCT = _env_float("PAPER_CASH_FLOOR_PCT", 0.02)
+PAPER_EXPOSURE_CEILING_PCT = _env_float("PAPER_EXPOSURE_CEILING_PCT", 0.95)
+PAPER_PER_TRADE_PCT = _env_float("PAPER_PER_TRADE_PCT", 0.95)
+PAPER_MIN_CASH_ABSOLUTE = _env_float("PAPER_MIN_CASH_ABSOLUTE", 0.02)
 DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.15)
 MAX_DRAWDOWN_PCT = _env_float("MAX_DRAWDOWN_PCT", 0.12)
 STALE_ORDER_MINS = _env_float("STALE_ORDER_MINS", 5.0)

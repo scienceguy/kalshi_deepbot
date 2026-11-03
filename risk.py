@@ -130,10 +130,15 @@ class RiskManager:
         return total_loss >= max_daily_loss
 
     def max_trade_dollars(self, cash: float, exposure: float,
-                          resting_orders_value: float = 0.0) -> float:
+                          resting_orders_value: float = 0.0,
+                          paper: bool = False) -> float:
         """
         Maximum we can spend on one trade right now.
         Returns 0.0 if no trades should be placed.
+
+        paper=True uses the dry-run knobs (see config.PAPER_*): a paper run
+        must be able to buy one 75-95c favourite contract or it never trades
+        and never compounds.
         """
         if self.state.halted:
             return 0.0
@@ -146,23 +151,30 @@ class RiskManager:
         if portfolio <= 0:
             return 0.0
 
+        floor_pct = config.PAPER_CASH_FLOOR_PCT if paper else config.CASH_FLOOR_PCT
+        min_cash = config.PAPER_MIN_CASH_ABSOLUTE if paper else config.MIN_CASH_ABSOLUTE
+        ceiling_pct = (config.PAPER_EXPOSURE_CEILING_PCT if paper
+                       else config.EXPOSURE_CEILING_PCT)
+        per_trade_pct = config.PAPER_PER_TRADE_PCT if paper else config.PER_TRADE_PCT
+
         # Exposure room under ceiling
-        exposure_room = max(0.0, portfolio * config.EXPOSURE_CEILING_PCT - exposure)
+        exposure_room = max(0.0, portfolio * ceiling_pct - exposure)
 
         # Cash room while keeping floor — subtract resting orders so we don't
         # double-spend cash already committed to open limit orders.
-        floor_needed = max(config.MIN_CASH_ABSOLUTE, portfolio * config.CASH_FLOOR_PCT)
+        floor_needed = max(min_cash, portfolio * floor_pct)
         cash_room = max(0.0, cash - resting_orders_value - floor_needed)
 
         # Per-trade cap
-        per_trade_cap = cash * config.PER_TRADE_PCT
+        per_trade_cap = cash * per_trade_pct
 
         return min(exposure_room, cash_room, per_trade_cap, config.MAX_TRADE_DOLLARS)
 
     def check(self, cash: float, exposure: float,
               trade_cost: float, ticker: str,
               total_value: float = None,
-              resting_orders_value: float = 0.0) -> Tuple[bool, str]:
+              resting_orders_value: float = 0.0,
+              paper: bool = False) -> Tuple[bool, str]:
         """Final pre-order check. Returns (allowed, reason)."""
         if self.state.halted:
             return False, f"session halted ({self.state.halt_reason})"
@@ -174,7 +186,7 @@ class RiskManager:
         if self.market_loss_exceeded(ticker, config.MARKET_DAILY_LOSS_PCT):
             return False, f"market daily loss limit reached: {self.state.market_daily_losses.get(ticker, 0.0):.2f} >= {cash * config.MARKET_DAILY_LOSS_PCT:.2f}"
 
-        max_trade = self.max_trade_dollars(cash, exposure, resting_orders_value)
+        max_trade = self.max_trade_dollars(cash, exposure, resting_orders_value, paper=paper)
 
         if trade_cost > max_trade:
             portfolio = cash + exposure
@@ -184,8 +196,9 @@ class RiskManager:
                 f"portfolio=${portfolio:.2f})"
             )
 
-        if cash - trade_cost < config.MIN_CASH_ABSOLUTE:
-            return False, f"cash floor: ${cash:.2f} - ${trade_cost:.2f} < ${config.MIN_CASH_ABSOLUTE:.2f}"
+        min_cash = config.PAPER_MIN_CASH_ABSOLUTE if paper else config.MIN_CASH_ABSOLUTE
+        if cash - trade_cost < min_cash:
+            return False, f"cash floor: ${cash:.2f} - ${trade_cost:.2f} < ${min_cash:.2f}"
 
         return True, "ok"
 

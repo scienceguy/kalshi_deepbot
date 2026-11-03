@@ -45,6 +45,7 @@ n8nEventLog-*.log
 bot.log
 dry_state.json
 settlement_queue.json
+paper_state.json
 .lock
 *.log
 

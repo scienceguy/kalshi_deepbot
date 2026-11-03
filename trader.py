@@ -61,7 +61,7 @@ from signals import TradeSignal  # noqa: E402
 import signals as se  # noqa: E402
 from resilience import CycleSupervisor  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
-from latency_arb import evaluate_market as latency_evaluate_market  # noqa: E402
+import paper_mode  # noqa: E402
 
 lf = Path(config.LOG_FILE).expanduser()
 lf.parent.mkdir(parents=True, exist_ok=True)
@@ -273,6 +273,7 @@ class BotState:
         allowed, reason = self.risk.check(
             cash, exposure, sig.dollar_risk, ticker, total_value,
             resting_orders_value=sum(self.resting_value.values()),
+            paper=config.DRY_RUN,
         )
         if not allowed:
             log.info("RISK BLOCK %s — %s", ticker, reason)
@@ -310,6 +311,7 @@ class BotState:
             "entry_price": sig.entry_price,
             "contracts": filled,
             "order_id": oid,
+            "paper": config.DRY_RUN,
         }
         self.window["entered"].add(ticker)
         self.resting_value.pop(oid, None)
@@ -668,6 +670,12 @@ def cycle(client: KalshiClient):
         log.warning("Balance fetch failed: %s — treating cash as unknown", e)
         cash = None
 
+    # Dry runs place no real orders, so the exchange balance never moves. Swap
+    # in a paper balance derived from recorded settlement P&L so the dry run
+    # actually compounds and its sizing tracks the curve.
+    if config.DRY_RUN and cash is not None:
+        cash = paper_mode.cash(cash, sum(state.position_risk.values()))
+
     # Fetch positions
     try:
         positions = client.get_positions()
@@ -772,8 +780,19 @@ def cycle(client: KalshiClient):
     api_tickers = {p.get("ticker", "") for p in positions if "15M" in p.get("ticker", "").upper()}
     settled = [t for t in list(state.positions.keys()) if t not in api_tickers]
     for t in settled:
+        # A paper position never appears in the exchange position list, so it
+        # looks "settled" the moment it is opened. Only clear it once the market
+        # has a real settlement value, otherwise the paper trade is dropped
+        # before it can book P&L.
+        if state.positions.get(t, {}).get("paper"):
+            try:
+                if _settle_yes_cents(client.get_market(t)) is None:
+                    continue
+            except Exception:
+                continue
         pos_info = state.positions.pop(t, {})
         reserved = state.position_risk.pop(t, 0.0)
+        is_paper = bool(pos_info.get("paper"))
         side = pos_info.get("side", "")
         entry_price = pos_info.get("entry_price", 0)
         contracts = pos_info.get("contracts", 0)
@@ -823,6 +842,12 @@ def cycle(client: KalshiClient):
             state.risk.record_trade_outcome(won, realized_pnl)
             if not won:
                 state.risk.record_market_loss(t, abs(realized_pnl))
+
+            # Credit the paper ledger so the dry-run curve compounds. The local
+            # settle_key ledger below is shared with live runs, so paper P&L is
+            # kept separate to keep the two curves from contaminating.
+            if is_paper:
+                paper_mode.add_pnl(client.get_balance(), realized_pnl)
 
             # Record settlement P&L idempotently — use idempotency key so replays
             # after a crash can't double-count. Key is "settle:<ticker>:<order_id>".
@@ -972,6 +997,13 @@ def cycle(client: KalshiClient):
         state.window["used"], state.window["budget"],
         state.trades_placed, state.cycles,
     )
+    if config.DRY_RUN and cash_available:
+        start = paper_mode.start_balance(cash)
+        pct = (cash - start) / start * 100 if start else 0.0
+        log.info(
+            "📈 paper: start=$%.2f pnl=$%+.2f open=$%.2f cash=$%.2f (%+.1f%%)",
+            start, paper_mode.pnl(cash), sum(state.position_risk.values()), cash, pct,
+        )
 
     # Record bot state to Supabase only when something changed (avoid unnecessary writes)
     last_logged = getattr(state, "_last_logged_state", None)
@@ -1009,8 +1041,9 @@ def cycle(client: KalshiClient):
     max_trade = state.risk.max_trade_dollars(
         cash if cash_available else 0.0, mark_to_market_exposure,
         resting_orders_value=sum(state.resting_value.values()),
+        paper=config.DRY_RUN,
     )
-    if cash_available and max_trade < 0.20:
+    if cash_available and max_trade < 0.01:
         log.info("Max trade $%.2f too small — protecting cash floor", max_trade)
         return
 
@@ -1027,40 +1060,10 @@ def cycle(client: KalshiClient):
             if sig.is_trade:
                 signals.append(sig)
 
-    # Latency arb evaluation — separate signal path for last-minute entries.
-    # OFF by default (LATENCY_ARB_ENABLED): the edge model is unvalidated for
-    # live fills, so it must not place real-money taker orders unless enabled.
-    if config.LATENCY_ARB_ENABLED:
-        for m in markets:
-            ticker = m.ticker
-            if ticker in state.positions:
-                continue
-            # Convert MarketInfo to dict for latency_arb
-            market_dict = {
-                "ticker": m.ticker,
-                "series": m.series,
-                "yes_bid": m.yes_bid,
-                "yes_ask": m.yes_ask,
-                "no_bid": m.no_bid,
-                "no_ask": m.no_ask,
-                "close_time": m.close_time.isoformat() if m.close_time else "",
-                "minutes_left": m.minutes_left,
-            }
-            sig = latency_evaluate_market(market_dict)
-            if sig:
-                # Convert to TradeSignal for uniform handling through ranking/placement
-                trade_sig = TradeSignal(
-                    direction=sig["direction"],
-                    side=sig["side"],
-                    entry_price=sig["entry_price_cents"],
-                    contracts=sig["contracts"],
-                    dollar_risk=sig["contracts"] * sig["entry_price_cents"] / 100.0,
-                    reason=f"Latency arb: edge={sig['edge_cents']:.1f}c",
-                    market=m,
-                    strength=sig["edge_cents"],
-                    confidence=1.0,
-                )
-                signals.append(trade_sig)
+    # Latency-arb is deliberately NOT wired in: it buys the underdog at the
+    # taker price (e.g. NO at 3c when YES is 98c), which is the opposite of the
+    # favourite-maker strategy and pays taker fees. Keep it disabled until a
+    # real edge is measured; the module is still here for experiments.
 
     ranked = se.rank_signals(signals)
     if not ranked:
@@ -1096,6 +1099,7 @@ def cycle(client: KalshiClient):
         max_trade = state.risk.max_trade_dollars(
             cash, current_exposure,
             resting_orders_value=sum(state.resting_value.values()),
+            paper=config.DRY_RUN,
         )
 
         total_value = cash + current_exposure
@@ -1119,6 +1123,12 @@ def cycle(client: KalshiClient):
             # reconciled against get_orders() each cycle.
             # fill_count_fp is the NEW field; filledCount is the legacy alias.
             fill_count = _order_fill_count(resp)
+            if config.DRY_RUN:
+                # Paper fill at the posted maker price so the dry run reaches
+                # settlement and compounds. shortcut: assumes the maker order
+                # fills — real fill rate is unmodelled, so a dry run overstates
+                # trade count (and compounding speed), not per-trade edge.
+                fill_count = float(int(sig.contracts))
             if fill_count > 0:
                 fees_dollars = fees.taker_fee_cents(
                     sig.contracts, sig.entry_price / 100.0
@@ -1160,8 +1170,12 @@ def main():
     log.info("Maker mode: %s | Max trade: $%.2f | Max positions: %d",
              "ON (limit orders)" if not config.AGGRESSIVE_FILL else "OFF (taker)",
              config.MAX_TRADE_DOLLARS, config.MAX_OPEN_POSITIONS)
-    log.info("Risk: 70%% cash floor | 30%% exposure ceiling | "
-             "8%% per-trade | 15%% drawdown halt")
+    log.info("Risk: %.0f%% cash floor | %.0f%% exposure ceiling | %.0f%% per-trade | %.0f%% drawdown halt%s",
+             (config.PAPER_CASH_FLOOR_PCT if config.DRY_RUN else config.CASH_FLOOR_PCT) * 100,
+             (config.PAPER_EXPOSURE_CEILING_PCT if config.DRY_RUN else config.EXPOSURE_CEILING_PCT) * 100,
+             (config.PAPER_PER_TRADE_PCT if config.DRY_RUN else config.PER_TRADE_PCT) * 100,
+             config.DRAWDOWN_HALT_PCT * 100,
+             " (paper — dry runs fill at the posted maker price and settle for real)" if config.DRY_RUN else "")
     log.info("LLM eval: %s | Supabase: %s",
              "enabled (NVIDIA)" if config.NVIDIA_API_KEY else "disabled",
              "enabled" if get_supabase_client().enabled else "disabled")
