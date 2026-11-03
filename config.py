@@ -121,8 +121,8 @@ else:
 # ═════════════════════════════════════════════════════════════════════
 MIN_SKEW_CENTS = _env_int("MIN_SKEW_CENTS", 3)
 MIN_TREND_CENTS = _env_int("MIN_TREND_CENTS", 8)
-ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 6.0)
-ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 11.0)
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 13.0)
+ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.5)
 MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 1)
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
 MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 3)
