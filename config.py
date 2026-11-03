@@ -81,15 +81,14 @@ def _env_int(name, default):
 
 def _env_bool(name, default):
     val = os.environ.get(name, "").strip().lower()
-    if val and val not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
-        log.warning(
-            "Unrecognized boolean value for %s: '%r'. Using default %s.",
-            name, val, default,
-        )
+    if not val:
         return default
-    # Unset or empty → safe default; a recognized value → its boolean meaning.
-    # An unrecognized value must NOT silently flip DRY_RUN into live mode.
-    return val in ("1", "true", "yes", "on") if val else default
+    if val not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
+        raise ValueError(
+            f"Unrecognized boolean value for {name}: '{val}'. "
+            f"Expected one of: 1, true, yes, on, 0, false, no, off"
+        )
+    return val in ("1", "true", "yes", "on")
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -135,11 +134,10 @@ MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
 AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", False)
 AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
 ORDER_TIME_IN_FORCE = "good_till_canceled"
-# Entry band: favourite maker enters at 15-85c range to capture current market prices
-# (markets trade 22-60c mid; band widened from original 75-95 to capture more signals)
-# Best from backtests: band=15-85 → captures favourites across all price levels
-ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 15)
-ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 85)
+# Entry band: favourite maker enters at 75-95c range (best from HuggingFace backtest:
+# band=75-95 → EV=$0.1359/trade, 39 trades, 97.4% win rate, $5.30 total P&L, 19.7% maxDD)
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 75)
+ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 95)
 MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 88)
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 82)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)

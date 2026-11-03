@@ -1,12 +1,13 @@
 """Tests for config.py — env var parsing, especially _env_bool safety.
 
 _env_bool must never silently flip a safety-critical flag (e.g. DRY_RUN)
-into live mode when given an unparseable value; it must fall back to the
-declared default and log a warning instead.
+into live mode when given an unparseable value; it must raise ValueError
+instead of silently falling back to the default.
 """
 import importlib
 
 import config
+import pytest
 
 
 def _reload_with(monkeypatch, **env):
@@ -20,18 +21,41 @@ def _reload_with(monkeypatch, **env):
     return config
 
 
-def test_env_bool_unrecognized_defaults_safe(monkeypatch):
-    # DRY_RUN=garbage must fall back to the safe default (True = dry-run),
-    # NOT False (live). Previously returned False → silently enabled live trading.
-    cfg = _reload_with(monkeypatch, DRY_RUN="maybe")
+def test_env_bool_unrecognized_raises(monkeypatch):
+    # Unrecognized values must raise ValueError, NOT silently fall back to default.
+    with pytest.raises(ValueError, match="Unrecognized boolean value"):
+        _reload_with(monkeypatch, DRY_RUN="maybe")
+    with pytest.raises(ValueError, match="Unrecognized boolean value"):
+        _reload_with(monkeypatch, DRY_RUN="garbage")
+    with pytest.raises(ValueError, match="Unrecognized boolean value"):
+        _reload_with(monkeypatch, AGGRESSIVE_FILL="garbage")
+
+    # Valid values still work (each call isolates env vars)
+    cfg = _reload_with(monkeypatch, DRY_RUN="yes", AGGRESSIVE_FILL="false")
+    assert cfg.DRY_RUN is True
+    assert cfg.AGGRESSIVE_FILL is False
+    cfg = _reload_with(monkeypatch, DRY_RUN="on", AGGRESSIVE_FILL="true")
+    assert cfg.DRY_RUN is True
+    assert cfg.AGGRESSIVE_FILL is True
+    cfg = _reload_with(monkeypatch, DRY_RUN="1", AGGRESSIVE_FILL="false")
+    assert cfg.DRY_RUN is True
+    assert cfg.AGGRESSIVE_FILL is False
+    cfg = _reload_with(monkeypatch, DRY_RUN="no", AGGRESSIVE_FILL="true")
+    assert cfg.DRY_RUN is False
+    assert cfg.AGGRESSIVE_FILL is True
+    cfg = _reload_with(monkeypatch, DRY_RUN="0", AGGRESSIVE_FILL="false")
+    assert cfg.DRY_RUN is False
+    assert cfg.AGGRESSIVE_FILL is False
+    cfg = _reload_with(monkeypatch, DRY_RUN="off", AGGRESSIVE_FILL="true")
+    assert cfg.DRY_RUN is False
+    assert cfg.AGGRESSIVE_FILL is True
+
+
+def test_env_bool_unset_uses_default(monkeypatch):
+    cfg = _reload_with(monkeypatch, DRY_RUN=None)
     assert cfg.DRY_RUN is True
 
-    cfg = _reload_with(monkeypatch, DRY_RUN="yes")
-    assert cfg.DRY_RUN is True
-    cfg = _reload_with(monkeypatch, DRY_RUN="on")
-    assert cfg.DRY_RUN is True
-
-    cfg = _reload_with(monkeypatch, AGGRESSIVE_FILL="garbage")
+    cfg = _reload_with(monkeypatch, AGGRESSIVE_FILL=None)
     assert cfg.AGGRESSIVE_FILL is False
 
 

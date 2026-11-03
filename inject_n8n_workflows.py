@@ -437,8 +437,6 @@ def main():
             'webhook_id': 'superbot-trade-auto',
             'node_name': 'SuperBot Trade',
             'workflow_type': 'settlement_processor',
-            'supabase_url': os.environ.get('SUPABASE_URL', ''),
-            'supabase_key': os.environ.get('SUPABASE_SERVICE_KEY', ''),
         },
         {
             'id': new_id(),
