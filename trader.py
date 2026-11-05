@@ -57,7 +57,7 @@ from kalshi_client import KalshiClient  # noqa: E402
 from market_finder import find_active_markets, _parse_api_time, _dollars_str_to_cents, _parse_market_prices, _settle_yes_cents  # noqa: E402
 from risk import RiskManager  # noqa: E402
 from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
-from signals import TradeSignal  # noqa: E402
+from signals import floor_contracts, TradeSignal  # noqa: E402
 import signals as se  # noqa: E402
 from resilience import CycleSupervisor  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
@@ -135,6 +135,8 @@ class BotState:
         self.position_risk: dict = {}
         self.llm_hold_to_expiry: set = set()
         self.llm_trade_insights: dict = {}
+        self.paper_resting: dict = {}  # oid -> {"sig": sig, "placed_at": ts}
+        self.live_resting_orders: list = []  # raw resting orders seen this cycle
         self.last_order_time: float = 0.0
         self.orders_today: int = 0
         self.today: str = ""
@@ -168,6 +170,13 @@ class BotState:
                 should_block, eval_result = should_block_trade(
                     signal_info, min_probability=config.LLM_EVAL_MIN_PROBABILITY
                 )
+                if should_block and not config.LLM_EVAL_ENFORCE:
+                    log.info(
+                        "LLM DISAGREE %s (prob=%s) — advisory only, not enforced",
+                        ticker,
+                        eval_result["probability_of_net_profit"] if eval_result else "N/A",
+                    )
+                    should_block = False
                 if should_block:
                     prob = eval_result["probability_of_net_profit"] if eval_result else "N/A"
                     layer = eval_result["layer"] if eval_result else "unavailable"
@@ -194,12 +203,32 @@ class BotState:
                         log.warning("Supabase insert_signal failed for %s: %s", ticker, e)
                     return False
 
-                # Record LLM insight
-                self.llm_trade_insights[ticker.upper()] = {
-                    "probability": eval_result["probability_of_net_profit"],
-                    "hold_confidence": eval_result["confidence_hold_to_expiry"],
-                    "timestamp": time.time(),
-                }
+                # Record LLM insight. eval_result is None when the eval failed
+                # open — indexing it crashed every cycle and, with fail-open on,
+                # stopped the bot from placing any order at all.
+                if eval_result:
+                    self.llm_trade_insights[ticker.upper()] = {
+                        "probability": eval_result["probability_of_net_profit"],
+                        "hold_confidence": eval_result["confidence_hold_to_expiry"],
+                        "layer": eval_result.get("layer", ""),
+                        "timestamp": time.time(),
+                    }
+                    # Persist the insight so the LLM's verdict is auditable next
+                    # to the order, instead of living only in memory.
+                    try:
+                        get_supabase_client().insert_signal({
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "ticker": ticker,
+                            "side": sig.side,
+                            "price_cents": sig.entry_price,
+                            "contracts": sig.contracts,
+                            "reason": (f"LLM pass via {eval_result.get('layer', '?')}: "
+                                       f"{eval_result.get('reasoning', '')}")[:500],
+                            "executed": False,
+                            "blocked_reason": None,
+                        })
+                    except Exception as e:
+                        log.warning("Supabase insert_signal (LLM insight) failed for %s: %s", ticker, e)
 
         # Per-window budget gate
         remaining_window = max(0.0, self.window["budget"] - self.window["used"])
@@ -210,8 +239,8 @@ class BotState:
 
         if sig.dollar_risk > hard_cap + WINDOW_EPSILON:
             cost_per = sig.entry_price / 100.0
-            n = int(hard_cap / cost_per) if cost_per > 0 else 0
-            if n < 1:
+            n = floor_contracts(hard_cap / cost_per) if cost_per > 0 else 0.0
+            if n < 0.01:
                 log.info(
                     "WINDOW BLOCK %s — need $%.2f, remaining $%.2f of $%.2f",
                     ticker, sig.dollar_risk, remaining_window, self.window["budget"],
@@ -253,7 +282,7 @@ class BotState:
 
         # Per-market daily loss limit (skip if cash unknown)
         if cash is not None:
-            market_daily_loss = state.risk.state.market_daily_losses.get(ticker, 0.0)
+            market_daily_loss = self.risk.state.market_daily_losses.get(ticker, 0.0)
             if market_daily_loss >= cash * config.MARKET_DAILY_LOSS_PCT:
                 log.info(
                     "MARKET DAILY LOSS BLOCK %s — daily loss $%.2f >= limit $%.2f",
@@ -304,7 +333,7 @@ class BotState:
         # Record the ACTUAL filled contracts (int), not the intended size — a
         # partial fill would otherwise mis-book PnL at settlement and over-reserve
         # capital at risk.
-        filled = float(int(fill_count)) if fill_count else float(int(sig.contracts))
+        filled = floor_contracts(fill_count) if fill_count else floor_contracts(sig.contracts)
         filled_risk = filled * sig.entry_price / 100.0
         self.positions[ticker] = {
             "side": sig.side,
@@ -493,6 +522,8 @@ def _order_fill_count(resp):
     """Filled contract count from an order response (new + legacy)."""
     v = resp.get("fill_count_fp")
     if v is None:
+        v = resp.get("fill_count")
+    if v is None:
         v = resp.get("filledCount", 0)
     try:
         return float(v or 0)
@@ -590,8 +621,8 @@ def _resolve_pending_settlement(client, payload):
         return None
     exit_price = (float(settled_yes) / 100.0 if side == "yes"
                   else float(100 - settled_yes) / 100.0)
-    buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0)
-    sell_revenue = fees.sell_cash_in(contracts, exit_price)
+    buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0, taker=False)
+    sell_revenue = fees.sell_cash_in(contracts, exit_price, taker=False)
     return {
         **payload,
         "status": "settled",
@@ -684,11 +715,11 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     is_paper = bool(pos.get("paper"))
 
     exit_price = exit_cents / 100.0
-    buy_cost = fees.buy_cash_out(filled, entry_price / 100.0)
-    sell_revenue = fees.sell_cash_in(filled, exit_price)
+    buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=False)   # maker entry
+    sell_revenue = fees.sell_cash_in(filled, exit_price, taker=False)        # maker exit
     realized_pnl = sell_revenue - buy_cost
     won = sell_revenue > buy_cost
-    fees_dollars = fees.taker_fee_cents(filled, exit_price) / 100.0
+    fees_dollars = 0.0  # both legs are maker limit orders
 
     state.risk.record_trade_outcome(won, realized_pnl)
     if not won:
@@ -700,7 +731,7 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     try:
         applied = get_local_db().apply_settlement_pnl(
             key, ticker, realized_pnl, fee_dollars=fees_dollars, source="local")
-        pnl_to_add = realized_pnl if applied else 0.0
+        pnl_to_add = 0.0 if applied is False else realized_pnl
     except Exception:
         log.warning("Failed to record exit P&L for %s — using fallback", ticker)
         pnl_to_add = realized_pnl
@@ -729,16 +760,74 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
             "ticker": ticker,
             "side": side,
             "contracts": filled,
-        }, max_retries=0)
+        }, max_retries=1)
     except Exception:
         log.warning("Failed to record exit for %s via n8n webhook (not queued — exits are not settlements)", ticker)
+
+
+def _manage_paper_fills(markets, client):
+    """Fill paper maker orders only when the book actually crosses them.
+
+    A posted bid does not fill because we posted it. It fills when someone
+    sells into it, which shows up as that side's ask coming down to our price.
+    Filling at placement overstated the dry run's trade count and compounding
+    speed, which is the number we tune against.
+    """
+    by_ticker = {m.ticker: m for m in markets}
+    now = time.time()
+    for oid, rec in list(state.paper_resting.items()):
+        sig = rec["sig"]
+        ticker = sig.market.ticker
+        m = by_ticker.get(ticker)
+        if m is None:
+            # Window closed (or market no longer returned) — the order died with it.
+            state.paper_resting.pop(oid, None)
+            state.resting_value.pop(oid, None)
+            continue
+        ask = m.yes_ask if sig.side == "yes" else m.no_ask
+        if ask and ask <= sig.entry_price:
+            state._record_filled_order(
+                client, sig, oid, sig.contracts, "executed", 0.0, state.cycles
+            )
+            state.paper_resting.pop(oid, None)
+            client.invalidate_markets(series_ticker=sig.market.series)
+        elif now - rec["placed_at"] > config.STALE_ORDER_MINS * 60:
+            state.paper_resting.pop(oid, None)
+            state.resting_value.pop(oid, None)
+            log.info("Paper order %s unfilled after %.0fmin — cancelled",
+                     ticker, config.STALE_ORDER_MINS)
+
+
+def clear_resting_orders(client, ticker: str):
+    """Cancel every resting order on `ticker` (Kalshi blocks a close while any exist)."""
+    for o in list(state.live_resting_orders):
+        if o.get("ticker") != ticker:
+            continue
+        oid = o.get("order_id") or o.get("id")
+        if not oid:
+            continue
+        if not config.DRY_RUN:
+            try:
+                client.cancel_order(oid)
+            except Exception as e:
+                log.debug("Could not cancel resting order %s: %s", oid, e)
+        state.resting_value.pop(oid, None)
+        state.live_resting_orders.remove(o)
+    # A parked paper entry on this ticker must go too, or it would fill after exit.
+    for oid, rec in list(state.paper_resting.items()):
+        if rec["sig"].market.ticker == ticker:
+            state.paper_resting.pop(oid, None)
+            state.resting_value.pop(oid, None)
 
 
 def _manage_exits(client):
     """Sell open positions that hit the profit target or the stop.
 
     Positions that are simply left to expiry lock their cash for the rest of
-    the window; exiting at the bid frees it for the next entry.
+    the window; exiting at the bid frees it for the next entry. The exit rests
+    as a maker order at the bid, which is fee-free but need not fill — Kalshi
+    also blocks it entirely while any other resting order exists on the market,
+    so clear_resting_orders() runs first.
     """
     if not config.EXIT_ENABLED:
         return
@@ -758,7 +847,7 @@ def _manage_exits(client):
 
         yes_bid, no_bid, minutes_left = quote
         if minutes_left <= config.EXIT_MIN_MINUTES_LEFT:
-            continue  # settlement is imminent; a sell here pays taker fees for nothing
+            continue  # settlement is imminent and free; an exit adds queue risk for nothing
         bid = yes_bid if side == "yes" else no_bid
         if not bid or not 1 <= bid <= 99:
             continue
@@ -771,9 +860,15 @@ def _manage_exits(client):
         else:
             continue
 
+        # Kalshi blocks an early-exit sell while ANY resting order exists on the
+        # market, so clear every resting order for this ticker first: any
+        # earlier unfilled exit, and any resting entry that would add contracts.
+        clear_resting_orders(client, ticker)
+        pos.pop("exit_order_id", None)
+
         try:
             resp = client.sell_position(
-                ticker, side, int(contracts), int(bid),
+                ticker, side, contracts, int(bid),
                 client_order_id=f"exit-{ticker}-{int(time.time())}",
             )
         except Exception as e:
@@ -782,7 +877,11 @@ def _manage_exits(client):
         if resp is None:
             continue
 
-        filled = float(int(contracts)) if config.DRY_RUN else _order_fill_count(resp)
+        exit_oid = (resp.get("order") or {}).get("order_id") or resp.get("order_id", "")
+        if exit_oid:
+            pos["exit_order_id"] = exit_oid
+
+        filled = floor_contracts(contracts) if config.DRY_RUN else _order_fill_count(resp)
         if filled <= 0:
             log.info("Exit order for %s did not fill — retrying next cycle", ticker)
             continue
@@ -847,17 +946,14 @@ def cycle(client: KalshiClient):
             "Continuing signal evaluation (no orders will be placed)."
         )
 
-    # Compute mark-to-market exposure using current orderbook data.
-    # Uses the NEW position schema (position_fp / market_exposure_dollars) with
-    # the legacy fields as a fallback.
-    mark_to_market_exposure = _mark_to_market_exposure(positions, markets)
-
     # Reconcile resting orders: fetch open orders from Kalshi, sync into
     # state.resting_value for intra-cycle cash tracking, and cancel any
     # order older than STALE_ORDER_MINS so stale limit orders don't tie up
-    # capital indefinitely.
+    # capital indefinitely. Live only — a dry run has no exchange orders, and
+    # the empty list would wipe the paper reservations every cycle.
+    resting_orders = [] if config.DRY_RUN else client.get_orders(status="resting")
+    state.live_resting_orders = resting_orders or []
     try:
-        resting_orders = client.get_orders(status="resting")
         now = time.time()
         live_ids = set()
         for o in resting_orders:
@@ -892,6 +988,9 @@ def cycle(client: KalshiClient):
                 state.resting_value.pop(stale_oid, None)
     except Exception as e:
         log.warning("Could not reconcile resting orders: %s", e)
+
+    if config.DRY_RUN:
+        _manage_paper_fills(markets, client)
 
     # Record any position that appeared on the exchange but is not in local
     # state — e.g. a resting limit order that filled since the last cycle.
@@ -967,13 +1066,14 @@ def cycle(client: KalshiClient):
 
         # Only book PnL when we have real settlement data.
         if exit_price is not None:
-            buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0)
-            sell_revenue = fees.sell_cash_in(contracts, exit_price)
+            buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0, taker=False)
+            sell_revenue = fees.sell_cash_in(contracts, exit_price, taker=False)
             realized_pnl = sell_revenue - buy_cost
             won = sell_revenue > buy_cost
 
             # Fees in dollars for the order
-            fees_dollars = fees.taker_fee_cents(contracts, entry_price / 100.0) / 100.0
+            # Maker limit order: Kalshi charges the taker, so entry fees are 0.
+            fees_dollars = 0.0
 
             log.info(
                 "Cleared settled position: %s (side=%s, released $%.2f, realized P&L $%.2f, won=%s)",
@@ -1000,7 +1100,7 @@ def cycle(client: KalshiClient):
                     fee_dollars=fees_dollars,
                     source="local",
                 )
-                if not applied:
+                if applied is False:
                     log.info("Settlement P&L already recorded for %s — skipping duplicate", t)
                     # Still queue webhook for n8n but don't credit local session_pnl again
                     pnl_to_add = 0.0
@@ -1091,6 +1191,10 @@ def cycle(client: KalshiClient):
     # (single pass via _mark_to_market_exposure; the previous duplicate loop
     # here was identical to the one above and computed the same value twice).
     mark_to_market_exposure = _mark_to_market_exposure(positions, markets)
+    if config.DRY_RUN:
+        # Paper fills never appear on the exchange account, so mark exposure from
+        # the local paper book — otherwise the ceiling and drawdown halt are inert.
+        mark_to_market_exposure = sum(state.position_risk.values())
 
     # Track unrealized losses per market for per-market daily loss limit.
     # Unrealized loss = cost basis - mark-to-market value (when position is losing).
@@ -1178,11 +1282,14 @@ def cycle(client: KalshiClient):
         log.warning("Cash $%.2f below minimum $1.00", cash)
         return
 
-    open_count = sum(
-        1 for p in positions
-        if "15M" in p.get("ticker", "").upper()
-        and (_pos_yes(p) or _pos_no(p))
-    )
+    if config.DRY_RUN:
+        open_count = len(state.positions)
+    else:
+        open_count = sum(
+            1 for p in positions
+            if "15M" in p.get("ticker", "").upper()
+            and (_pos_yes(p) or _pos_no(p))
+        )
     if open_count >= config.MAX_OPEN_POSITIONS:
         log.info("Position limit (%d/%d)", open_count, config.MAX_OPEN_POSITIONS)
         return
@@ -1273,15 +1380,12 @@ def cycle(client: KalshiClient):
             # fill_count_fp is the NEW field; filledCount is the legacy alias.
             fill_count = _order_fill_count(resp)
             if config.DRY_RUN:
-                # Paper fill at the posted maker price so the dry run reaches
-                # settlement and compounds. shortcut: assumes the maker order
-                # fills — real fill rate is unmodelled, so a dry run overstates
-                # trade count (and compounding speed), not per-trade edge.
-                fill_count = float(int(sig.contracts))
+                # A maker bid does not fill because we posted it. Park it and let
+                # _manage_paper_fills() fill it only once the book crosses.
+                state.paper_resting[oid] = {"sig": sig, "placed_at": time.time()}
+                fill_count = 0.0
             if fill_count > 0:
-                fees_dollars = fees.taker_fee_cents(
-                    sig.contracts, sig.entry_price / 100.0
-                ) / 100.0
+                fees_dollars = 0.0  # maker limit order — no taker fee
                 state._record_filled_order(
                     client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
                 )
@@ -1346,15 +1450,6 @@ def main():
     except ValueError as e:
         log.error("Band validation failed: %s — continuing without band checks", e)
 
-    # Warn if NO_PRICE_IS_COMPLEMENT is True in live mode — production Kalshi v2
-    # returns NO prices directly (complement=False). If True, NO prices are inverted.
-    if not config.DRY_RUN and config.NO_PRICE_IS_COMPLEMENT:
-        log.warning(
-            "NO_PRICE_IS_COMPLEMENT=True in live mode — production Kalshi v2 returns NO "
-            "prices directly. This will invert NO side prices. Set NO_PRICE_IS_COMPLEMENT=False "
-            "in .env or pass KALSHI_NO_PRICE_IS_COMPLEMENT=false."
-        )
-
     client = KalshiClient()
     try:
         bal = client.get_balance()
@@ -1392,9 +1487,9 @@ def main():
         )
         sb.enabled = False
 
-    # Validate NO price format against a live market — production Kalshi v2
-    # returns NO prices directly (complement=False). If the format changes,
-    # all NO side prices will be inverted.
+    # Validate the NO market-data format against a live market. This only
+    # affects how NO quotes are read; order pricing always sends the YES-leg
+    # complement (see KalshiClient.no_price_to_api_price).
     try:
         markets = client.get_markets(status="open", limit=5)
         if markets:
@@ -1407,8 +1502,8 @@ def main():
             else:
                 log.warning(
                     "NO price format UNVERIFIED: market %s lacks NO price fields. "
-                    "If NO_PRICE_IS_COMPLEMENT=False (default), NO side prices may be inverted. "
-                    "Check Kalshi API docs and set NO_PRICE_IS_COMPLEMENT=True if needed.",
+                    "NO quotes may be read inverted. Check how the API reports "
+                    "NO prices and set NO_PRICE_IS_COMPLEMENT accordingly.",
                     sample.get("ticker", "unknown"),
                 )
         else:

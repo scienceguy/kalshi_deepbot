@@ -35,7 +35,11 @@ class StratParams:
     MAX_TRADE_DOLLARS: float = 3.00
     MAX_OPEN_POSITIONS: int = 4
     BALANCE_PCT_PER_TRADE: float = 0.10
-    STARTING_BALANCE: float = 100.00
+    STARTING_BALANCE: float = 10.00
+    # 0 = hold to settlement. >0 sells at the bid once the book is that many
+    # cents below entry, matching trader._manage_exits, and caps the loss that
+    # would otherwise settle at 0. Only usable when minute_quotes are present.
+    EXIT_STOP_LOSS_CENTS: int = 0
 
 
 _cached_markets = None
@@ -125,11 +129,12 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
 
     max_dollars = min(params.MAX_TRADE_DOLLARS, balance * params.BALANCE_PCT_PER_TRADE)
     cost = ep / 100.0
-    n = int(max_dollars / cost)
-    if n < 1 and max_dollars >= cost:
-        n = 1
-    n = max(0, n)
-    if n < 1:
+    # Fractional contracts. Whole-contract rounding makes a $10 bankroll fall
+    # off a cliff: 12% of $10 is $1.20, which buys 2 x 50c contracts (24%) or,
+    # at 55c, only 1 (5.5%). Fractional sizing keeps the sweep measuring the
+    # sizing rule instead of the granularity of a cent.
+    n = max_dollars / cost if cost > 0 else 0.0
+    if n < 0.01:
         return None
 
     dollar_risk = n * ep / 100.0
@@ -141,10 +146,28 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
         0.0 if yes_won else 1.0
     )
 
-    buy_cost = buy_cash_out(n, entry_price_dollars)
-    sell_revenue = sell_cash_in(n, exit_price_dollars)
+    buy_cost = buy_cash_out(n, entry_price_dollars, taker=False)   # maker: no fee
+
+    # Early stop: if the book trades at or below entry minus the stop, we sell
+    # into that bid instead of riding the position to zero at settlement.
+    stopped = False
+    if quotes and params.EXIT_STOP_LOSS_CENTS > 0:
+        limit = ep - params.EXIT_STOP_LOSS_CENTS
+        entry_minute_key = min(quotes, key=lambda m: abs(m - params.ENTRY_WINDOW_START_MIN))
+        for minute in sorted(quotes):
+            if minute <= entry_minute_key:
+                continue  # only the entry minute and later
+            bid, _ask = quotes[minute]
+            if bid and bid <= limit:
+                exit_price_dollars = bid / 100.0
+                stopped = True
+                break
+
+    # The early exit is a maker limit order at the bid, so only the maker fee
+    # applies — zero on these markets. Settlement is not a trade either.
+    sell_revenue = sell_cash_in(n, exit_price_dollars, taker=False)
     pnl = sell_revenue - buy_cost
-    won = sell_revenue > buy_cost
+    won = pnl > 0
 
     return {
         "ticker": ticker,
@@ -155,6 +178,7 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
         "buy_cost": buy_cost,
         "sell_revenue": sell_revenue,
         "settled_yes": 100 if yes_won else 0,
+        "stopped": stopped,
         "won": won,
         "pnl": pnl,
         "minutes_in": minutes_in,
@@ -174,7 +198,7 @@ def _default_settlement_yes_won(market):
         return None
 
 
-def run_backtest(params, markets, starting_balance=100.0, settlement_yes_won=None):
+def run_backtest(params, markets, starting_balance=10.0, settlement_yes_won=None):
     """Run the full backtest for one parameter set.
 
     Markets are sorted by close_time before simulation so that the balance
@@ -193,9 +217,11 @@ def run_backtest(params, markets, starting_balance=100.0, settlement_yes_won=Non
         result = simulate_trade(m, params, balance, settlement_yes_won)
         if not result:
             continue
-        if result["dollar_risk"] > balance * params.PER_TRADE_PCT:
+        # Tolerance: fractional contracts make dollar_risk land exactly on the
+        # cap, and binary float error would otherwise reject a valid trade.
+        if result["dollar_risk"] > balance * params.PER_TRADE_PCT + 1e-9:
             continue
-        if result["dollar_risk"] > params.MAX_TRADE_DOLLARS:
+        if result["dollar_risk"] > params.MAX_TRADE_DOLLARS + 1e-9:
             continue
         balance -= result["buy_cost"]
         balance += result["sell_revenue"]
@@ -247,29 +273,26 @@ def parameter_grid(quick=False):
     """Generate parameter combinations to test."""
     if quick:
         grids = {
-            "MIN_SKEW_CENTS": [3, 5, 7],
-            "MIN_TREND_CENTS": [8, 12, 16],
+            # Only knobs simulate_trade actually reads are swept. MIN_SKEW,
+            # MIN_TREND, ENTRY_WINDOW_END and MAX_NO_ENTRY were swept before but
+            # never read, so every value scored identically and the "best" rows
+            # were tie-breaks. The live trend/skew gates stay untested here.
             "ENTRY_WINDOW_START_MIN": [6.0, 8.0],
-            "ENTRY_WINDOW_END_MIN": [11.0, 13.0],
-            # Entry band widened from original 75-95 to capture lower-priced markets (22-60c mid)
-            "ENTRY_BAND_MIN": [15, 30, 50, 82],
-            "ENTRY_BAND_MAX": [55, 70, 85, 93],
+            "ENTRY_BAND_MIN": [15, 30, 50],
+            "ENTRY_BAND_MAX": [55, 70, 85],
             "AGGRESSIVE_FILL": [False],
+            "EXIT_STOP_LOSS_CENTS": [0, 8],
             "PER_TRADE_PCT": [0.05, 0.08, 0.12],
             "MAX_TRADE_DOLLARS": [2.0, 3.0, 5.0],
             "BALANCE_PCT_PER_TRADE": [0.05, 0.10, 0.15],
         }
     else:
         grids = {
-            "MIN_SKEW_CENTS": [3, 5, 7, 10],
-            "MIN_TREND_CENTS": [8, 12, 15, 20],
-            "ENTRY_WINDOW_START_MIN": [6.0, 8.0, 10.0],
-            "ENTRY_WINDOW_END_MIN": [11.0, 13.0, 14.0],
-            # Entry band widened to capture lower-priced markets alongside original high bands
+            "ENTRY_WINDOW_START_MIN": [4.0, 6.0, 8.0, 10.0],
             "ENTRY_BAND_MIN": [15, 30, 50, 70, 82, 86],
             "ENTRY_BAND_MAX": [55, 70, 85, 88, 91, 95],
-            "MAX_NO_ENTRY_CENTS": [60, 65, 68],
             "AGGRESSIVE_FILL": [False, True],
+            "EXIT_STOP_LOSS_CENTS": [0, 5, 8, 12],
             "PER_TRADE_PCT": [0.04, 0.08, 0.12, 0.20],
             "MAX_TRADE_DOLLARS": [2.0, 3.0, 5.0, 10.0],
             "BALANCE_PCT_PER_TRADE": [0.05, 0.10, 0.15, 0.25],
@@ -282,17 +305,19 @@ def parameter_grid(quick=False):
 def format_params(p):
     """Format a params dict for display."""
     return (
-        f"skew={p.get('MIN_SKEW_CENTS','-')} "
-        f"trend={p.get('MIN_TREND_CENTS','-')} "
-        f"win={p.get('ENTRY_WINDOW_START_MIN','-')}-{p.get('ENTRY_WINDOW_END_MIN','-')}min "
+        f"win={p.get('ENTRY_WINDOW_START_MIN','-')}min "
         f"band={p.get('ENTRY_BAND_MIN','-')}-{p.get('ENTRY_BAND_MAX','-')} "
+        f"stop={p.get('EXIT_STOP_LOSS_CENTS','-')}c "
         f"agg={p.get('AGGRESSIVE_FILL','-')}"
     )
 
 
 def print_results(results, n_markets, n_combos, top=10):
     """Print ranked backtest results to stdout."""
-    results.sort(key=lambda r: r["ev"], reverse=True)
+    # Rank by return per unit of drawdown. Sorting on EV alone chose the
+    # highest-DD parameter set (57% drawdown), which is not a strategy we can
+    # run. /0.01 keeps a zero-drawdown set from dividing by zero.
+    results.sort(key=lambda r: r["total_pnl"] / (r["max_drawdown"] + 0.01), reverse=True)
 
     print("\n" + "=" * 90)
     print(f"BACKTEST RESULTS — {n_markets} markets, {n_combos} parameter sets")
@@ -340,7 +365,7 @@ def print_best(results):
 
 def run_sweep(markets, settlement_yes_won=None, quick=False, limit=None,
               top=10, jobs=4, out_path="backtest_results.json",
-              starting_balance=100.0):
+              starting_balance=10.0):
     """Run a full parameter sweep and print/save results.
 
     Args:

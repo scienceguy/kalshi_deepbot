@@ -91,6 +91,8 @@ def main():
     ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--jobs", type=int, default=2)
     ap.add_argument("--out", default="hf_sweep_results.json")
+    ap.add_argument("--balance", type=float, default=10.0,
+                    help="Starting bankroll per run (default 10, the live bankroll scale)")
     args = ap.parse_args()
 
     markets = load_markets(args.days, args.series)
@@ -107,6 +109,7 @@ def main():
         top=args.top,
         jobs=args.jobs,
         out_path=args.out,
+        starting_balance=args.balance,
     )
     return 0
 

@@ -36,17 +36,24 @@ def taker_fee_cents(contracts: float, price_dollars: float, multiplier: float = 
     return math.ceil(raw * 100 - 1e-9)
 
 
-def buy_cash_out(contracts: float, price_dollars: float, multiplier: float = 1.0) -> float:
-    """Exact cash leaving the balance for a buy, per the rounding rules."""
+def buy_cash_out(contracts: float, price_dollars: float, multiplier: float = 1.0,
+                 taker: bool = True) -> float:
+    """Exact cash leaving the balance for a buy, per the rounding rules.
+
+    Kalshi charges the fee to the taker only, and settlement is not a trade.
+    A maker limit order therefore pays no fee: pass taker=False for our own
+    posted orders and for settlement payouts.
+    """
     cost = contracts * price_dollars
-    fee = taker_fee_dollars(contracts, price_dollars, multiplier)
+    fee = taker_fee_dollars(contracts, price_dollars, multiplier) if taker else 0.0
     return math.ceil((cost + fee) * 100 - 1e-9) / 100.0
 
 
-def sell_cash_in(contracts: float, price_dollars: float, multiplier: float = 1.0) -> float:
+def sell_cash_in(contracts: float, price_dollars: float, multiplier: float = 1.0,
+                 taker: bool = True) -> float:
     """Exact cash credited for a sell (revenue minus fee, floored to the cent grid)."""
     proceeds = contracts * price_dollars
-    fee = taker_fee_dollars(contracts, price_dollars, multiplier)
+    fee = taker_fee_dollars(contracts, price_dollars, multiplier) if taker else 0.0
     return math.floor((proceeds - fee) * 100 + 1e-9) / 100.0
 
 

@@ -142,9 +142,10 @@ MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 55)
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 15)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 
-# NO side price format: Kalshi returns NO prices directly (not complemented).
-# Set NO_PRICE_IS_COMPLEMENT=False for production. Default False for safety.
-# If True, Kalshi returns NO price as complement (100 - internal), and we must convert.
+# NO *market data* format only: Kalshi returns NO prices directly (not
+# complemented), so this stays False. It does NOT affect order pricing —
+# KalshiClient.no_price_to_api_price always sends the YES-leg complement
+# (buy NO at 85c -> ask YES at 15c) for both buys and sells.
 NO_PRICE_IS_COMPLEMENT = _env_bool("NO_PRICE_IS_COMPLEMENT", False)
 
 # ═════════════════════════════════════════════════════════════════════
@@ -179,7 +180,7 @@ PANIC_FADE_WINDOW_SECONDS = _env_int("PANIC_FADE_WINDOW_SECONDS", 120)  # lookba
 # ═════════════════════════════════════════════════════════════════════
 EXIT_ENABLED = _env_bool("EXIT_ENABLED", True)
 EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 20)  # bid moved +20c vs entry
-EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 10)     # bid moved -10c vs entry
+EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 8)      # bid moved -8c vs entry
 EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 1.0)  # don't dump into a dead book
 
 # ═════════════════════════════════════════════════════════════════════
@@ -190,7 +191,9 @@ EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 1.0)  # don't dump i
 MAX_TRADE_DOLLARS = _env_float("MAX_TRADE_DOLLARS", 5.00)
 MAX_CONTRACTS_CAP = _env_int("MAX_CONTRACTS_CAP", 3)
 CONTRACTS_PER_BALANCE_UNIT = _env_float("CONTRACTS_PER_BALANCE_UNIT", 10.0)
-MAX_OPEN_POSITIONS = _env_int("MAX_OPEN_POSITIONS", 4)
+# 2, not 3+: BTC/ETH/SOL/XRP/DOGE move together, so concurrent 15M positions are
+# one correlated crypto bet, not diversification.
+MAX_OPEN_POSITIONS = _env_int("MAX_OPEN_POSITIONS", 2)
 MAX_ORDERS_PER_CYCLE = _env_int("MAX_ORDERS_PER_CYCLE", 2)
 MIN_ORDER_GAP_SECONDS = _env_float("MIN_ORDER_GAP_SECONDS", 10.0)
 MAX_ORDERS_PER_DAY = _env_int("MAX_ORDERS_PER_DAY", 50)
@@ -212,7 +215,7 @@ if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0 + _SUM_EPSILON:
         f"CASH_FLOOR_PCT ({CASH_FLOOR_PCT:.2f}) + EXPOSURE_CEILING_PCT ({EXPOSURE_CEILING_PCT:.2f}) > 1.0. "
         f"Sum must be <= 1.0 to avoid over-reserving cash."
     )
-PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.08)  # 8% per trade - backtest optimal
+PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.05)  # quarter-Kelly-ish, up to 5%
 MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
 
 # Paper-mode sizing (dry runs only). Dry runs deploy the whole paper balance so
@@ -220,11 +223,19 @@ MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
 # $1.00 absolute floor, a $1.22 bankroll can never afford one 90c contract and
 # no trade — and no compounding — ever happens. Live keeps the conservative
 # knobs above.
-PAPER_CASH_FLOOR_PCT = _env_float("PAPER_CASH_FLOOR_PCT", 0.02)
-PAPER_EXPOSURE_CEILING_PCT = _env_float("PAPER_EXPOSURE_CEILING_PCT", 0.95)
-PAPER_PER_TRADE_PCT = _env_float("PAPER_PER_TRADE_PCT", 0.95)
+# Paper runs use the same shape as live but sized so one bad tail cannot take
+# the bankroll: 15% per trade, 45% total exposure, 55% never at risk. The old
+# 0.95/0.95/0.02 profile put ~95% of cash in a single trade, so one loss was a
+# ~95% drawdown — which is what the dry-run curve was actually measuring.
+# One contract at the cheap end of the 15-55c entry band is ~12% of a $1.22
+# bankroll, so below that the bot simply cannot trade — the granularity, not
+# the risk appetite, sets the floor here. Kelly sizing on a near-fair binary
+# is 2-5% per position, so 12% is the maximum this bankroll can express.
+PAPER_CASH_FLOOR_PCT = _env_float("PAPER_CASH_FLOOR_PCT", 0.70)
+PAPER_EXPOSURE_CEILING_PCT = _env_float("PAPER_EXPOSURE_CEILING_PCT", 0.30)
+PAPER_PER_TRADE_PCT = _env_float("PAPER_PER_TRADE_PCT", 0.12)
 PAPER_MIN_CASH_ABSOLUTE = _env_float("PAPER_MIN_CASH_ABSOLUTE", 0.02)
-DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.15)
+DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.08)
 MAX_DRAWDOWN_PCT = _env_float("MAX_DRAWDOWN_PCT", 0.12)
 STALE_ORDER_MINS = _env_float("STALE_ORDER_MINS", 5.0)
 ADVERSE_MOVE_CENTS = _env_int("ADVERSE_MOVE_CENTS", 10)
@@ -285,7 +296,16 @@ NVIDIA_MODEL = os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
 LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", True)
 LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.65)
 LLM_EVAL_MIN_CONFIDENCE = _env_float("LLM_EVAL_MIN_CONFIDENCE", 0.45)
-LLM_EVAL_FAIL_OPEN = _env_bool("LLM_EVAL_FAIL_OPEN", False)
+# Fail OPEN by default: the LLM is an optional extra check, so a provider
+# outage must not silently stop the bot from trading. Fail-closed turned a
+# single unreachable endpoint into "no orders ever placed".
+LLM_EVAL_FAIL_OPEN = _env_bool("LLM_EVAL_FAIL_OPEN", True)
+# Off by default. Every verdict is still requested, logged and stored, but the
+# LLM does not veto orders unless this is turned on. Evidence for an LLM filter
+# helping short-horizon binaries is absent (the one published test found the
+# model just re-picked the favourite and lost after fees), so enforcement is an
+# explicit opt-in rather than the default.
+LLM_EVAL_ENFORCE = _env_bool("LLM_EVAL_ENFORCE", False)
 # Deadline for the full LLM evaluation so a slow/hung LLM can't
 # blow the cycle timeout. Must be < CYCLE_TIMEOUT_SECONDS.
 LLM_EVAL_DEADLINE_SECONDS = _env_float("LLM_EVAL_DEADLINE_SECONDS", 25.0)

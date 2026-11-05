@@ -357,8 +357,11 @@ class LocalDB:
         """Apply settlement P&L exactly once via idempotency key.
 
         Returns True if the P&L was newly applied, False if it was already
-        recorded (duplicate key). Uses INSERT ... ON CONFLICT DO NOTHING so
-        concurrent processes can't double-count.
+        recorded (duplicate key), None if the write failed. Callers must treat
+        None as "not recorded" and book the P&L locally — returning False on
+        error made a locked/full database silently swallow realized P&L.
+        Uses INSERT ... ON CONFLICT DO NOTHING so concurrent processes can't
+        double-count.
         """
         conn = self._get_conn()
         with self._lock:
@@ -383,7 +386,7 @@ class LocalDB:
             except Exception as e:
                 log.warning("apply_settlement_pnl(%s, %s) error: %s",
                             idempotency_key, market_ticker, e)
-                return False
+                return None
 
     def get_total_realized_pnl(self) -> float:
         """Sum of all applied realized P&L (net of fees)."""

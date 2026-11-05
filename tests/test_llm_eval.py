@@ -1,7 +1,6 @@
-"""Tests for llm_eval.py — NVIDIA-only evaluation path.
+"""Tests for llm_eval.py — 7-layer provider fallback and response parsing.
 
-Covers the response parser and that evaluate_trade() uses exactly one
-provider (NVIDIA), with a mocked HTTP call so no network is touched.
+Every provider call is mocked; no network is touched.
 """
 from unittest.mock import MagicMock, patch
 
@@ -9,13 +8,19 @@ import llm_eval
 
 
 class TestLayers:
-    def test_single_nvidia_layer(self):
-        """Exactly one layer, and it is the NVIDIA endpoint."""
-        assert len(llm_eval.LAYERS) == 1
-        layer = llm_eval.LAYERS[0]
-        assert layer["name"] == "nvidia"
-        assert layer["env_key"] == "NVIDIA_API_KEY"
-        assert layer["base_url"] == "https://integrate.api.nvidia.com/v1"
+    def test_seven_layers_in_fallback_order(self):
+        names = [l["name"] for l in llm_eval.LAYERS]
+        assert names == [
+            "nvidia", "openrouter", "groq", "deepseek", "openai", "gemini",
+            "dsh_our_free_model",
+        ]
+
+    def test_nvidia_is_first_and_ollama_is_gone(self):
+        first = llm_eval.LAYERS[0]
+        assert first["env_key"] == "NVIDIA_API_KEY"
+        assert first["base_url"] == "https://integrate.api.nvidia.com/v1"
+        assert "ollama" not in [l["name"] for l in llm_eval.LAYERS]
+        assert not any("11434" in l["base_url"] for l in llm_eval.LAYERS)
 
     def test_primary_model_not_duplicated_in_fallbacks(self):
         """The primary model must not also appear in free_models (wasted retry)."""
@@ -70,16 +75,43 @@ class TestEvaluateTrade:
         assert result["probability_of_net_profit"] == 0.6
         assert post.call_args[0][0] == "https://integrate.api.nvidia.com/v1/chat/completions"
 
-    def test_no_key_returns_none(self):
-        """With no NVIDIA key, evaluation fails cleanly instead of hitting the net."""
+    def test_without_provider_keys_only_the_local_gateway_is_tried(self):
+        """No key means no remote call — only the local layer is reachable."""
+        resp = MagicMock()
+        resp.status_code = 500
+        env = llm_eval.os.environ
         with patch.dict("os.environ", {}, clear=False), \
-             patch.object(llm_eval.requests, "post") as post:
-            llm_eval.os.environ.pop("NVIDIA_API_KEY_FILE", None)
-            llm_eval.os.environ.pop("NVIDIA_API_KEY", None)
+             patch.object(llm_eval.requests, "post", return_value=resp) as post:
+            for name in ("NVIDIA", "OPENROUTER", "GROQ", "DEEPSEEK", "OPENAI", "GEMINI"):
+                env.pop(f"{name}_API_KEY", None)
+                env.pop(f"{name}_API_KEY_FILE", None)
             result = llm_eval.evaluate_trade({"ticker": "KXBTC15M-T1"})
 
         assert result is None
-        post.assert_not_called()
+        urls = {c[0][0] for c in post.call_args_list}
+        assert urls == {"http://127.0.0.1:18900/v1/chat/completions"}
+
+    def test_fail_open_allows_the_trade_when_every_layer_fails(self, monkeypatch):
+        monkeypatch.setattr(llm_eval.config, "LLM_EVAL_FAIL_OPEN", True)
+        with patch.object(llm_eval, "evaluate_trade", return_value=None):
+            blocked, result = llm_eval.should_block_trade({})
+        assert blocked is False
+        assert result is None
+
+    def test_fail_closed_blocks_the_trade_when_configured(self, monkeypatch):
+        monkeypatch.setattr(llm_eval.config, "LLM_EVAL_FAIL_OPEN", False)
+        with patch.object(llm_eval, "evaluate_trade", return_value=None):
+            blocked, _ = llm_eval.should_block_trade({})
+        assert blocked is True
+
+    def test_min_probability_argument_is_honoured(self):
+        verdict = {"probability_of_net_profit": 0.5,
+                   "confidence_hold_to_expiry": 0.9}
+        with patch.object(llm_eval, "evaluate_trade", return_value=verdict):
+            lenient, _ = llm_eval.should_block_trade({}, min_probability=0.4)
+            strict, _ = llm_eval.should_block_trade({}, min_probability=0.6)
+        assert lenient is False
+        assert strict is True
 
     def test_should_block_when_probability_low(self):
         with patch.object(llm_eval, "evaluate_trade",

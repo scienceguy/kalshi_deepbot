@@ -174,3 +174,30 @@ class TestHistoricalMarkets:
             assert result["ticker"] == "KXBTC15M-26NOV011145-45"
             assert len(result["candlesticks"]) == 1
             assert result["candlesticks"][0]["o"] == 0.50
+
+class TestOrderPayload:
+    """Every order is quoted on the YES leg, so NO prices must be complemented."""
+
+    def _client(self):
+        from kalshi_client import KalshiClient
+        c = KalshiClient.__new__(KalshiClient)
+        sent = {}
+        c._request = lambda method, path, json=None, **kw: (sent.update(json) or {"order_id": "x"})
+        return c, sent
+
+    def test_buy_no_is_ask_at_complement(self, monkeypatch):
+        import kalshi_client
+        monkeypatch.setattr(kalshi_client.config, "DRY_RUN", False)
+        c, sent = self._client()
+        c.place_order("T", "no", 5, 85, "cid-1")
+        assert sent["side"] == "ask"
+        assert sent["price"] == "0.1500"  # buy NO at 85c == sell YES at 15c
+        assert sent["count"] == "5.00"
+
+    def test_buy_yes_is_bid_at_price(self, monkeypatch):
+        import kalshi_client
+        monkeypatch.setattr(kalshi_client.config, "DRY_RUN", False)
+        c, sent = self._client()
+        c.place_order("T", "yes", 2, 61, "cid-2")
+        assert sent["side"] == "bid"
+        assert sent["price"] == "0.6100"

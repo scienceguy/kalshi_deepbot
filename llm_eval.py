@@ -1,15 +1,24 @@
 """
-llm_eval.py — LLM trade evaluation via NVIDIA API (integrate.api.nvidia.com).
+llm_eval.py — LLM trade evaluation with a 7-layer fallback across free providers.
 
-Single provider: NVIDIA's OpenAI-compatible endpoint, authenticated with
-NVIDIA_API_KEY. The primary model is ``NVIDIA_MODEL``; the free models in
-``LAYERS[0]["free_models"]`` are tried when the primary returns a non-200.
+Layers are tried in order; a layer is skipped when its API key is unset or its
+circuit breaker is open:
+
+  1. NVIDIA  (NVIDIA_API_KEY, integrate.api.nvidia.com)
+  2. OpenRouter free models (OPENROUTER_API_KEY)
+  3. Groq free tier (GROQ_API_KEY)
+  4. DeepSeek (DEEPSEEK_API_KEY)
+  5. OpenAI (OPENAI_API_KEY)
+  6. Gemini (GEMINI_API_KEY)
+  7. DSH our-free-model local gateway (http://127.0.0.1:18900, no key)
+
+Ollama local is deliberately not a layer.
 
 Each call returns a dict:
   {"probability_of_net_profit": float (0-1), "confidence_hold_to_expiry": float (0-1),
    "reasoning": str, "layer": str, "model": str}
 
-Returns None if the API call fails (caller decides fail-open vs fail-safe).
+Returns None if every layer fails (caller decides fail-open vs fail-safe).
 """
 
 import json
@@ -76,6 +85,70 @@ LAYERS = [
         "free_models": [
             "meta/llama-3.2-90b-vision-instruct",
         ],
+    },
+    {
+        "name": "openrouter",
+        "env_key": "OPENROUTER_API_KEY",
+        "base_url": os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+        "model": os.environ.get("OPENROUTER_MODEL", "openrouter/free"),
+        "chat_path": "/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "free_models": [
+            "openrouter/free", "openrouter/auto",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "google/gemma-2-9b-it:free",
+        ],
+    },
+    {
+        "name": "groq",
+        "env_key": "GROQ_API_KEY",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
+        "chat_path": "/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "free_models": ["llama-3.1-8b-instant", "gemma2-9b-it"],
+    },
+    {
+        "name": "deepseek",
+        "env_key": "DEEPSEEK_API_KEY",
+        "base_url": "https://api.deepseek.com/v1",
+        "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        "chat_path": "/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "free_models": ["deepseek-chat"],
+    },
+    {
+        "name": "openai",
+        "env_key": "OPENAI_API_KEY",
+        "base_url": "https://api.openai.com/v1",
+        "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        "chat_path": "/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "free_models": ["gpt-4o-mini"],
+    },
+    {
+        "name": "gemini",
+        "env_key": "GEMINI_API_KEY",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "model": os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
+        "chat_path": "/openai/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "free_models": ["gemini-2.5-flash"],
+    },
+    {
+        "name": "dsh_our_free_model",
+        "env_key": None,  # local gateway, no key
+        "base_url": os.environ.get("DSH_BASE_URL", "http://127.0.0.1:18900"),
+        "model": os.environ.get("DSH_MODEL", "free-model"),
+        "chat_path": "/v1/chat/completions",
+        "auth_header": None,
+        "auth_prefix": None,
+        "free_models": ["free-model", "kimi-k3-dsh", "deepseek-v4.1-flash-free"],
     },
 ]
 
@@ -282,18 +355,14 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
         reasoning, layer, model — or None if the API call fails.
     """
     system_prompt = (
-        "You are a disciplined Kalshi 15-minute market trading analyst focused on RAPID COMPOUNDING via trend-following limit orders. "
-        "Return ONLY valid JSON with exactly these keys: "
-        "\"probability_of_net_profit\" (number 0-1) and "
-        "\"confidence_hold_to_expiry\" (number 0-1). "
-        "Optionally include \"reasoning\" (string) explaining the verdict. "
-        "CONSIDER: Kalshi's 7% quadratic taker fee (peaks at 50¢). "
-        "Maker orders pay 0 fee on most 15M series. PRIORITIZE MAKER LIMIT ORDERS. "
-        "FAVORITE MAKER STRATEGY: Bet YES at 75-95¢ when trend confirms direction, or NO at 5-25¢. "
-        "HIGH PROBABILITY SETUPS: Strong trend (|trend|≥20c) + price in favorite band (YES≥75¢ or NO≥75¢) + ≤3min remaining. "
-        "AVOID: prices 30-70¢ (high fees, low edge), underdog bets (low win rate), early window (>10min left). "
-        "PANIC FADE: If YES drops >15¢ in 2min → buy YES at 75-95¢ (mean reversion). If YES spikes >15¢ → buy NO at 5-25¢. "
-        "CALIBRATION: Be conservative. Most 15-min markets are coin flips. Require STRONG trend (|trend|≥15c) + favorable skew. "
+        "You are a disciplined Kalshi 15-minute crypto market trading analyst. "
+        "The strategy you are grading is a FAVOURITE MAKER: post a maker limit order on the favourite side, "
+        "roughly 1c inside the spread, 6-11 minutes into the 15-minute window, in a 15-55c entry band. "
+        "Maker orders pay no fee on these series; a taker order pays 7% x price x (1-price). "
+        "The position is held to settlement unless an early exit fires at +20c take-profit or -8c stop. "
+        "Grade the SPECIFIC signal you are given, using its own price, skew, trend, source and minutes_left. "
+        "Note there is no edge in simply buying a favourite: an entry at 52c needs a win rate above 52% to break even. "
+        "Weigh whether the signal's trend and skew justify a win rate above its own entry price, and be sceptical of weak trends. "
         "Return ONLY valid JSON with exactly these keys: "
         "\"probability_of_net_profit\" (number 0-1) and "
         "\"confidence_hold_to_expiry\" (number 0-1). "
@@ -378,12 +447,14 @@ def should_block_trade(signal_info: dict, min_probability: float = 0.65) -> tupl
     
     prob = result["probability_of_net_profit"]
     conf = result.get("confidence_hold_to_expiry", 0.0)
-    
-    should_block = prob < config.LLM_EVAL_MIN_PROBABILITY or conf < config.LLM_EVAL_MIN_CONFIDENCE
+
+    # Use the caller's threshold. Reading config here made the min_probability
+    # argument a no-op, so a caller that tightened it silently changed nothing.
+    should_block = prob < min_probability or conf < config.LLM_EVAL_MIN_CONFIDENCE
     if should_block:
         log.info(
             "LLM BLOCK %s — prob=%.2f conf=%.2f (min_prob=%.2f min_conf=%.2f)",
             signal_info.get("ticker", "?"), prob, conf,
-            config.LLM_EVAL_MIN_PROBABILITY, config.LLM_EVAL_MIN_CONFIDENCE
+            min_probability, config.LLM_EVAL_MIN_CONFIDENCE
         )
     return should_block, result

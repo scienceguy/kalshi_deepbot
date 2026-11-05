@@ -11,6 +11,7 @@ Returns a list of TradeSignal (0 or 1 per market).
 
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -62,15 +63,27 @@ def max_contracts_for_cash(cash: float) -> int:
     return max(1, min(config.MAX_CONTRACTS_CAP, n))
 
 
+def floor_contracts(n: float) -> float:
+    """Floor a contract count to Kalshi's 0.01 minimum lot, or 0 if below it.
+
+    Kalshi trades fractional contracts (min 0.01), so a small bankroll can size
+    in exact dollars instead of rounding down to whole contracts.
+    """
+    if n is None:
+        return 0.0
+    return round(math.floor(float(n) * 100) / 100, 2)
+
+
 def _size(entry_cents: int, max_dollars: float, max_contracts: int = 0) -> float:
-    """Convert a dollar budget into contracts."""
+    """Convert a dollar budget into contracts (fractional, 2dp)."""
     if entry_cents <= 0 or entry_cents >= 100 or max_dollars <= 0:
         return 0.0
     cost = entry_cents / 100
     n = min(max_dollars, config.MAX_TRADE_DOLLARS) / cost
     if max_contracts and max_contracts > 0:
         n = min(n, float(max_contracts))
-    return max(0.0, round(n, 4))
+    n = floor_contracts(n)
+    return n if n >= 0.01 else 0.0
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -315,7 +328,7 @@ def _evaluate_common(
     # Contract count must be an integer: the API order uses int(count), so a
     # fractional size would over-reserve cash (resting_value/dollar_risk) and
     # mis-book PnL at settlement.
-    n = float(int(n))
+    n = floor_contracts(n)
     if n <= 0:
         return _pass(f"Budget ${max_dollars:.2f} too low for {ep}c entry")
 
@@ -405,7 +418,7 @@ def _evaluate_panic_fade(market: MarketInfo, max_dollars: float, max_contracts: 
         avail = market.yes_liquidity
         if avail and n > avail:
             n = min(n, float(avail))
-        n = float(int(n))
+        n = floor_contracts(n)
         if n <= 0:
             return results
         
@@ -429,7 +442,7 @@ def _evaluate_panic_fade(market: MarketInfo, max_dollars: float, max_contracts: 
         avail = market.no_liquidity
         if avail and n > avail:
             n = min(n, float(avail))
-        n = float(int(n))
+        n = floor_contracts(n)
         if n <= 0:
             return results
         
@@ -498,7 +511,7 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
     avail = market.no_liquidity
     if avail and n > avail:
         n = min(n, float(avail))
-    n = float(int(n))  # integer contracts — API order uses int(count)
+    n = floor_contracts(n)
     if n <= 0:
         _pass(f"Budget ${max_dollars:.2f} too low for {ep}c entry")
         return results

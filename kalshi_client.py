@@ -6,6 +6,9 @@ Handles auth headers, rate limiting, and all API calls the bot needs.
 import os
 import stat
 import time
+
+# Kalshi's smallest tradable lot: fractional contracts down to 0.01.
+MIN_CONTRACTS = 0.01
 import base64
 import logging
 import threading
@@ -400,17 +403,16 @@ class KalshiClient:
         Kalshi v2 API: buying NO = selling YES at complement price.
         Internal: NO at 85c means we want to buy NO at 85c.
         API: We sell YES at (100 - 85) = 15c = "0.1500".
-        
-        If NO_PRICE_IS_COMPLEMENT=False (production), Kalshi stores NO price directly,
-        so the complement is NOT applied here.
+
+        This complement is unconditional. NO_PRICE_IS_COMPLEMENT only describes
+        how *market data* reports NO prices; it must not change order pricing.
+        Sharing one flag made buys send the raw NO price on the YES leg (buying
+        NO at 85c as "ask 85c" = buying NO at 15c) while sells used the
+        complement, so at least one direction was always wrong.
         """
         if not 1 <= price_cents <= 99:
             raise ValueError(f"price_cents={price_cents} out of valid range (1-99)")
-        if config.NO_PRICE_IS_COMPLEMENT:
-            complement_cents = 100 - price_cents
-        else:
-            complement_cents = price_cents
-        return f"{complement_cents / 100:.4f}"
+        return f"{(100 - price_cents) / 100:.4f}"
 
     @staticmethod
     def yes_price_to_api_price(price_cents: int) -> str:
@@ -448,8 +450,9 @@ class KalshiClient:
             log.error("place_order: price_cents=%s out of valid range (1-99), rejecting", price_cents)
             return None
 
-        if contracts <= 0:
-            log.error("place_order: contracts=%s must be > 0, rejecting", contracts)
+        if contracts < MIN_CONTRACTS:
+            log.error("place_order: contracts=%s below Kalshi minimum %.2f, rejecting",
+                      contracts, MIN_CONTRACTS)
             return None
 
         if side == "yes":
@@ -464,10 +467,15 @@ class KalshiClient:
             "ticker":                      ticker,
             "client_order_id":             client_order_id,
             "side":                        api_side,
-            "count":                       str(int(contracts)),
+            "count":                       f"{contracts:.2f}",
             "price":                       price_dollars,
             "time_in_force":               "good_till_canceled",
             "self_trade_prevention_type":  "taker_at_cross",
+            # Maker orders must never cross: crossing would fill as a taker and
+            # pay a fee the zero-maker-fee model does not budget for. Post-only
+            # makes Kalshi reject the cross instead. Aggressive mode wants the
+            # cross, so it opts out.
+            "post_only":                   not config.AGGRESSIVE_FILL,
         }
 
         if config.DRY_RUN:
@@ -482,8 +490,12 @@ class KalshiClient:
 
     def sell_position(self, ticker: str, side: str, contracts: int,
                       price_cents: int, client_order_id: str = "",
-                      time_in_force: str = "immediate_or_cancel") -> dict:
+                      time_in_force: str = "good_till_canceled") -> dict:
         """Close a position by selling it back at price_cents (the current bid).
+
+        The order is a maker limit that rests at the bid, so it pays the maker
+        fee (zero on these markets) rather than the taker fee. An unfilled exit
+        simply rests until _manage_exits retries or it goes stale.
 
         Kalshi's unified book quotes the YES leg: selling YES is an ask at the
         YES price, selling NO is a bid at (100 - NO price). Sending the NO price
@@ -491,8 +503,9 @@ class KalshiClient:
         """
         if not 1 <= price_cents <= 99:
             raise ValueError(f"sell_position: price_cents={price_cents} out of range (1-99)")
-        if contracts <= 0:
-            raise ValueError(f"sell_position: contracts={contracts} must be > 0")
+        if contracts < MIN_CONTRACTS:
+            raise ValueError(
+                f"sell_position: contracts={contracts} below Kalshi minimum {MIN_CONTRACTS}")
 
         if side == "yes":
             api_side, yes_leg_cents = "ask", price_cents
@@ -505,10 +518,11 @@ class KalshiClient:
             "ticker":                      ticker,
             "client_order_id":             client_order_id or f"exit-{ticker}-{int(time.time())}",
             "side":                        api_side,
-            "count":                       str(int(contracts)),
+            "count":                       f"{contracts:.2f}",
             "price":                       f"{yes_leg_cents / 100:.4f}",
             "time_in_force":               time_in_force,
             "self_trade_prevention_type":  "taker_at_cross",
+            "post_only":                   time_in_force == "good_till_canceled",
         }
 
         if config.DRY_RUN:

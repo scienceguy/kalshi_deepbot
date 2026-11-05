@@ -109,7 +109,7 @@ class TestSellPayload:
         c.sell_position("T", "yes", 2, 52)
         assert sent["side"] == "ask"
         assert sent["price"] == "0.5200"
-        assert sent["count"] == "2"
+        assert sent["count"] == "2.00"  # Kalshi fixed-point contract count
 
     def test_sell_no_is_bid_at_complement(self, monkeypatch):
         monkeypatch.setattr(kalshi_client.config, "DRY_RUN", False)
@@ -117,7 +117,7 @@ class TestSellPayload:
         c.sell_position("T", "no", 3, 80)
         assert sent["side"] == "bid"
         assert sent["price"] == "0.2000"  # 100 - 80 on the YES leg
-        assert sent["count"] == "3"
+        assert sent["count"] == "3.00"
 
     def test_rejects_bad_input(self):
         c, _ = self._client()
@@ -127,3 +127,55 @@ class TestSellPayload:
             c.sell_position("T", "yes", 1, 0)
         with pytest.raises(ValueError):
             c.sell_position("T", "maybe", 1, 50)
+
+
+class TestBookExit:
+    """Money math for a booked exit: maker entry, taker sell, once-only ledger."""
+
+    def _wire(self, monkeypatch, applied=True, raises=False):
+        ldb = MagicMock()
+        if raises:
+            ldb.apply_settlement_pnl.side_effect = RuntimeError("database is locked")
+        else:
+            ldb.apply_settlement_pnl.return_value = applied
+        sb = MagicMock()
+        sb.set_bot_state_batch.return_value = True
+        n8n = MagicMock()
+        monkeypatch.setattr(trader, "get_local_db", lambda: ldb)
+        monkeypatch.setattr(trader, "get_supabase_client", lambda: sb)
+        monkeypatch.setattr(trader, "get_n8n_client", lambda: n8n)
+        monkeypatch.setattr(trader.paper_mode, "add_pnl", lambda bal, pnl: None)
+        risk = MagicMock()
+        monkeypatch.setattr(trader.state, "risk", risk)
+        monkeypatch.setattr(trader.state, "session_pnl", 0.0)
+        return ldb, n8n, risk
+
+    def test_both_legs_are_maker_so_no_taker_fee(self, monkeypatch):
+        ldb, n8n, risk = self._wire(monkeypatch)
+        trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 52, 2, "take profit")
+
+        # 2x30c = $0.60 in, 2x52c = $1.04 out; maker exit, so no taker fee
+        risk.record_trade_outcome.assert_called_once()
+        assert risk.record_trade_outcome.call_args[0][0] is True
+        assert risk.record_trade_outcome.call_args[0][1] == pytest.approx(0.44)
+        assert trader.state.session_pnl == pytest.approx(0.44)
+        assert ldb.apply_settlement_pnl.call_args[0][0] == "exit:KXBTC15M-1:ord-1"
+        assert n8n.execute_webhook.call_args[0][0] == "superbot-trade"
+        assert n8n.execute_webhook.call_args[0][1]["action"] == "exit"
+
+    def test_duplicate_exit_does_not_double_book(self, monkeypatch):
+        self._wire(monkeypatch, applied=False)
+        trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 52, 2, "take profit")
+        assert trader.state.session_pnl == 0.0
+
+    def test_ledger_error_still_books_the_pnl(self, monkeypatch):
+        self._wire(monkeypatch, raises=True)
+        trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 52, 2, "take profit")
+        assert trader.state.session_pnl == pytest.approx(0.44)
+
+    def test_stop_loss_is_recorded_as_a_losing_trade(self, monkeypatch):
+        _, _, risk = self._wire(monkeypatch)
+        trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 18, 2, "stop loss")
+        risk.record_trade_outcome.assert_called_once()
+        assert risk.record_trade_outcome.call_args[0][0] is False
+        risk.record_market_loss.assert_called_once()

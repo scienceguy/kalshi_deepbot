@@ -62,7 +62,11 @@ class RiskManager:
         if self.state.start_balance <= 0:
             return
 
-        drawdown = (total_value - self.state.start_balance) / self.state.start_balance
+        # Measure from the peak, not the opening balance: measuring from the
+        # start meant profits could be given back entirely before the halt
+        # fired, which is the drawdown this is supposed to stop.
+        peak = max(self.state.session_high, self.state.start_balance)
+        drawdown = (total_value - peak) / peak
 
         if drawdown <= -config.DRAWDOWN_HALT_PCT and not self.state.halted:
             self.state.halted = True
@@ -72,11 +76,13 @@ class RiskManager:
             log.warning("🛑 RISK HALT — %s. No new entries until balance recovers.",
                         self.state.halt_reason)
 
-        if self.state.halted and total_value >= self.state.start_balance:
+        # Resume once the drawdown has halved, not only at a full new high —
+        # requiring the old peak would leave the bot halted indefinitely.
+        if self.state.halted and drawdown > -config.DRAWDOWN_HALT_PCT / 2:
             self.state.halted = False
             self.state.halt_reason = ""
-            log.info("✅ Risk halt lifted — balance $%.2f recovered to start $%.2f",
-                     total_value, self.state.start_balance)
+            log.info("✅ Risk halt lifted — drawdown recovered to %.1f%% (peak $%.2f)",
+                     drawdown * 100, peak)
 
     def record_trade_outcome(self, won: bool, profit: float):
         """Track consecutive losses for cooldown logic (from Momentum v16)."""

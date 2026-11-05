@@ -191,11 +191,56 @@ class TestParameterGrid:
 
     def test_grid_contains_expected_keys(self):
         combo = next(iter(parameter_grid(quick=True)))
+        # Only knobs simulate_trade reads. Sweeping unread knobs made every
+        # value score identically and produced bogus "optimal parameters".
         expected_keys = {
-            "MIN_SKEW_CENTS", "MIN_TREND_CENTS",
-            "ENTRY_WINDOW_START_MIN", "ENTRY_WINDOW_END_MIN",
-            "ENTRY_BAND_MIN", "ENTRY_BAND_MAX",
-            "AGGRESSIVE_FILL", "PER_TRADE_PCT",
+            "ENTRY_WINDOW_START_MIN", "ENTRY_BAND_MIN", "ENTRY_BAND_MAX",
+            "AGGRESSIVE_FILL", "EXIT_STOP_LOSS_CENTS", "PER_TRADE_PCT",
             "MAX_TRADE_DOLLARS", "BALANCE_PCT_PER_TRADE",
         }
         assert set(combo.keys()) == expected_keys
+
+
+class TestStopLoss:
+    """The early stop must cap the loss instead of letting it settle at zero."""
+
+    def _market(self, quotes, result):
+        close = datetime.now(timezone.utc) + timedelta(minutes=15)
+        return {
+            "ticker": "KXBTC15M-STOP",
+            "open_time": (close - timedelta(minutes=15)).isoformat(),
+            "close_time": close.isoformat(),
+            "minute_quotes": quotes,
+            "result": result,
+        }
+
+    def _settle(self, mk):
+        return mk["result"] == "yes"
+
+    def _params(self, stop):
+        return StratParams(ENTRY_WINDOW_START_MIN=6.0, ENTRY_BAND_MIN=15,
+                           ENTRY_BAND_MAX=55, EXIT_STOP_LOSS_CENTS=stop,
+                           MAX_TRADE_DOLLARS=1.0, BALANCE_PCT_PER_TRADE=1.0,
+                           PER_TRADE_PCT=1.0)
+
+    def test_without_stop_a_loser_settles_at_zero(self):
+        # never dips below 22c, then settles NO -> full loss
+        m = self._market({6: (30, 31), 7: (28, 29), 9: (40, 41)}, "no")
+        r = simulate_trade(m, self._params(0), balance=100.0, settlement_yes_won=self._settle)
+        assert r["won"] is False
+        assert r["pnl"] < -0.2  # ~full stake lost
+
+    def test_stop_exits_at_the_bid_and_caps_the_loss(self):
+        # dips to 21c at minute 9 -> stopped at 21c instead of settling at 0
+        m = self._market({6: (30, 31), 7: (25, 26), 9: (21, 22)}, "no")
+        r = simulate_trade(m, self._params(8), balance=100.0, settlement_yes_won=self._settle)
+        assert r["stopped"] is True
+        # 3 contracts @30c in, out at 21c less the taker fee: a small loss, not the stake
+        assert -0.31 < r["pnl"] < 0
+
+    def test_stop_uses_only_quotes_after_entry(self):
+        # minute 5 is already below the stop but we are not in the trade yet
+        m = self._market({5: (10, 11), 6: (30, 31), 8: (35, 36)}, "yes")
+        r = simulate_trade(m, self._params(8), balance=100.0, settlement_yes_won=self._settle)
+        assert r["stopped"] is False
+        assert r["won"] is True

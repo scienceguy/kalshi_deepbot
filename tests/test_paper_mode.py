@@ -37,11 +37,19 @@ def test_cash_accounts_for_paper_pnl_and_open_risk(ledger):
     assert json.loads(ledger.read_text())["pnl"] == pytest.approx(0.10)
 
 
-def test_paper_sizing_affords_one_favourite_contract():
+def test_paper_sizing_caps_single_trade_risk():
+    """12% per trade, so one loss cannot take the bankroll (was 95%)."""
     rm = RiskManager()
-    max_trade = rm.max_trade_dollars(1.22, 0.0, paper=True)
-    assert max_trade >= 0.90, "paper run must be able to buy a 90c favourite"
+    # At a $10 bankroll the sizing rule is what binds: $1.20 per trade.
+    assert rm.max_trade_dollars(10.0, 0.0, paper=True) == pytest.approx(1.20, abs=0.01)
+    assert rm.max_trade_dollars(1.22, 0.0, paper=True) == pytest.approx(1.22 * 0.12, abs=0.01)
+
+    # A 90c favourite needs 74% of a $1.22 bankroll — refused as drawdown risk.
     allowed, reason = rm.check(1.22, 0.0, 0.90, "KXBTC15M-TEST", paper=True)
+    assert not allowed, reason
+
+    # At $10 a whole 90c favourite fits inside the 12% cap.
+    allowed, reason = rm.check(10.0, 0.0, 0.90, "KXBTC15M-TEST", paper=True)
     assert allowed, reason
 
 

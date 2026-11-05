@@ -223,8 +223,8 @@ def test_cycle_does_not_crash_on_unknown_balance(monkeypatch):
     trader.cycle(client)  # must not raise
 
 
-def test_hedge_contracts_are_integer():
-    """_evaluate_hedge floors fractional size to an integer contract count."""
+def test_hedge_contracts_are_two_decimal_fractions():
+    """_evaluate_hedge floors size to Kalshi's 0.01 contract lot, not to whole."""
     from market_finder import MarketInfo
     from signals import _evaluate_hedge
     from unittest.mock import patch
@@ -238,10 +238,11 @@ def test_hedge_contracts_are_integer():
     with patch('signals.config.HEDGE_MIN_NO_ENTRY_CENTS', 82), \
          patch('signals.config.HEDGE_MAX_NO_ENTRY_CENTS', 88), \
          patch('signals.config.NO_PRICE_IS_COMPLEMENT', False):
-        res = _evaluate_hedge(m, 1.0)  # $1 budget at 84c -> 1.19 -> floored to 1
+        res = _evaluate_hedge(m, 1.0)  # $1 budget at 84c -> 1.19 -> floored to 1.19
         sig = res[0]
         assert sig.is_trade
-        assert sig.contracts == float(int(sig.contracts))
+        assert sig.contracts == 1.19
+        assert round(sig.contracts, 2) == sig.contracts
         assert sig.dollar_risk == sig.contracts * sig.entry_price / 100
 
 
@@ -476,3 +477,38 @@ class TestPositionHelpers:
 
     def test_order_fill_count_missing(self):
         assert trader._order_fill_count({}) == 0.0
+
+
+def test_pre_trade_check_survives_failed_open_llm_eval(fresh_state, mock_client, monkeypatch):
+    """A failed LLM eval with fail-open on must not crash the cycle.
+
+    Regression: the insight block indexed eval_result unconditionally, so
+    (False, None) from fail-open raised TypeError and no order was ever placed.
+    """
+    monkeypatch.setattr(config, "NVIDIA_API_KEY", "test-key", raising=False)
+    monkeypatch.setattr(config, "LLM_EVALUATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(config, "LLM_EVAL_FAIL_OPEN", True, raising=False)
+    monkeypatch.setattr(trader, "should_block_trade", lambda *a, **k: (False, None))
+
+    market = MagicMock()
+    market.ticker = "KXBTC15M-LLM"
+    market.minutes_left = 6.0            # -> 9.0 min in, inside the entry window
+    market.mid_yes = 50
+    market.skew = 5
+
+    sig = MagicMock()
+    sig.dollar_risk = 2.0
+    sig.entry_price = 50
+    sig.contracts = 4
+    sig.side = "yes"
+    sig.direction = "YES"
+    sig.strength = 10
+
+    fresh_state.window["budget"] = 100.0
+    fresh_state.window["used"] = 0.0
+
+    allowed = fresh_state._pre_trade_check(
+        sig, market, cash=100.0, exposure=0.0, total_value=100.0, client=mock_client
+    )
+    assert allowed is True
+    assert not fresh_state.llm_trade_insights  # nothing recorded for a None verdict
