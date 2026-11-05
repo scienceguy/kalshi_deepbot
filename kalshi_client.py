@@ -490,12 +490,15 @@ class KalshiClient:
 
     def sell_position(self, ticker: str, side: str, contracts: int,
                       price_cents: int, client_order_id: str = "",
-                      time_in_force: str = "good_till_canceled") -> dict:
+                      time_in_force: str = "immediate_or_cancel") -> dict:
         """Close a position by selling it back at price_cents (the current bid).
 
-        The order is a maker limit that rests at the bid, so it pays the maker
-        fee (zero on these markets) rather than the taker fee. An unfilled exit
-        simply rests until _manage_exits retries or it goes stale.
+        This is a taker order: a sell priced AT the best bid crosses the spread
+        and matches it, so it cannot rest as a maker — Kalshi would reject a
+        post_only order like that, and the exit would never happen. A maker sell
+        would have to rest at or above the ask, which only fills if the market
+        moves further in our favour, i.e. it caps the position instead of
+        closing it. Taker it is, and _book_exit charges the taker fee to match.
 
         Kalshi's unified book quotes the YES leg: selling YES is an ask at the
         YES price, selling NO is a bid at (100 - NO price). Sending the NO price
@@ -522,7 +525,8 @@ class KalshiClient:
             "price":                       f"{yes_leg_cents / 100:.4f}",
             "time_in_force":               time_in_force,
             "self_trade_prevention_type":  "taker_at_cross",
-            "post_only":                   time_in_force == "good_till_canceled",
+            # post_only only when it is genuinely resting; an exit crosses.
+            "post_only":                   time_in_force != "immediate_or_cancel",
         }
 
         if config.DRY_RUN:

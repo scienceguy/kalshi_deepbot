@@ -149,7 +149,9 @@ class BotState:
         # Requires both an API key and explicit LLM_EVALUATION_ENABLED=true.
         # Only evaluate if we're within the entry window.
         minutes_in = 15.0 - market.minutes_left
-        if config.NVIDIA_API_KEY and config.LLM_EVALUATION_ENABLED:
+        # Any of the 7 layers may serve the verdict, so do not require the
+        # NVIDIA key specifically — a missing one skipped the whole gate.
+        if config.LLM_EVALUATION_ENABLED:
             if config.ENTRY_WINDOW_START_MIN <= minutes_in <= config.ENTRY_WINDOW_END_MIN:
                 signal_info = {
                     "ticker": ticker,
@@ -716,10 +718,10 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
 
     exit_price = exit_cents / 100.0
     buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=False)   # maker entry
-    sell_revenue = fees.sell_cash_in(filled, exit_price, taker=False)        # maker exit
+    sell_revenue = fees.sell_cash_in(filled, exit_price, taker=True)         # taker exit
     realized_pnl = sell_revenue - buy_cost
     won = sell_revenue > buy_cost
-    fees_dollars = 0.0  # both legs are maker limit orders
+    fees_dollars = fees.taker_fee_cents(filled, exit_price) / 100.0
 
     state.risk.record_trade_outcome(won, realized_pnl)
     if not won:
@@ -824,10 +826,10 @@ def _manage_exits(client):
     """Sell open positions that hit the profit target or the stop.
 
     Positions that are simply left to expiry lock their cash for the rest of
-    the window; exiting at the bid frees it for the next entry. The exit rests
-    as a maker order at the bid, which is fee-free but need not fill — Kalshi
-    also blocks it entirely while any other resting order exists on the market,
-    so clear_resting_orders() runs first.
+    the window; exiting at the bid frees it for the next entry. The exit crosses
+    the spread (taker), so it actually fills and pays the taker fee. Kalshi
+    blocks a close while any resting order exists on the market, so
+    clear_resting_orders() runs first.
     """
     if not config.EXIT_ENABLED:
         return
@@ -886,10 +888,16 @@ def _manage_exits(client):
             log.info("Exit order for %s did not fill — retrying next cycle", ticker)
             continue
 
-        # Pop before booking, matching the settlement path: once the exchange
-        # position is gone the settle loop must not book it a second time.
-        state.positions.pop(ticker, None)
-        state.position_risk.pop(ticker, None)
+        # Only remove what was actually sold: an IOC sell can fill partially,
+        # and popping the whole position would drop the unsold contracts from
+        # local state (they would reappear next cycle at a recomputed basis).
+        remaining = round(contracts - filled, 2)
+        if remaining >= 0.01:
+            pos["contracts"] = remaining
+            state.position_risk[ticker] = remaining * entry / 100.0
+        else:
+            state.positions.pop(ticker, None)
+            state.position_risk.pop(ticker, None)
         _book_exit(client, ticker, pos, int(bid), filled, reason)
         client.invalidate_markets(series_ticker=ticker.split("-")[0])
 
@@ -955,7 +963,10 @@ def cycle(client: KalshiClient):
     state.live_resting_orders = resting_orders or []
     try:
         now = time.time()
-        live_ids = set()
+        # In a dry run the exchange has no orders, so the live set would be
+        # empty and the prune below would erase every paper reservation each
+        # cycle — letting the bot park more bids than it has cash for.
+        live_ids = set(state.paper_resting) if config.DRY_RUN else set()
         for o in resting_orders:
             oid = o.get("order_id") or o.get("id")
             if not oid:

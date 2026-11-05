@@ -222,15 +222,16 @@ class RiskManager:
     def reset_daily(self):
         """Reset drawdown tracking for a new trading day.
 
-        Clears the session high and halt flag so a drawdown halt from a
-        previous day doesn't carry over. Call this at the start of each
-        new trading day.
+        Resets the per-day counters (order count, consecutive losses,
+        per-market losses). The drawdown peak and any active halt are carried
+        over — a halt lasts until the drawdown actually recovers.
         """
-        self.state.session_high = self.state.start_balance
-        self.state.halted = False
-        self.state.halt_reason = ""
+        # Carry the peak and the halt across the day boundary: clearing them at
+        # midnight un-halted a bot that was still deep in drawdown and threw
+        # away the peak-based protection. Only per-day counters reset here.
+        self.state.session_high = max(self.state.session_high, self.state.start_balance)
         self.state.consecutive_losses = 0
         # Clear both realized and unrealized per-market losses
         self.state.market_daily_losses.clear()
-        log.info("✅ Risk daily reset — session_high reset to $%.2f, halt cleared, consecutive_losses cleared, market losses cleared",
-                 self.state.start_balance)
+        log.info("✅ Risk daily reset — peak kept at $%.2f, halt=%s, consecutive_losses cleared, market losses cleared",
+                 self.state.session_high, self.state.halted)

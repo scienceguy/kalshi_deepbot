@@ -11,15 +11,16 @@ restarting the bot does not reset the curve. Paper P&L is tracked here rather
 than reusing `session_pnl` so live settlements from an earlier session can
 never leak into the paper curve.
 
-shortcut: paper fills assume the posted maker price fills. The real fill rate
-for ask-1c maker orders is unmodelled, so trade counts (and therefore
-compounding speed) are optimistic — per-trade edge is not. Upgrade to a fill
-model when orderbook history is available.
+Paper fills are modelled in trader._manage_paper_fills(): a parked bid fills
+only when that side's ask crosses it, so adverse selection is reflected rather
+than assumed away. Exits still fill at the quoted price.
 """
 import json
 import logging
 import os
 from pathlib import Path
+
+import config
 
 log = logging.getLogger("paper_mode")
 
@@ -31,8 +32,19 @@ STATE_FILE = Path(os.environ.get(
 _state = None
 
 
+def _seed(real_balance: float) -> float:
+    """Starting paper bankroll: config.DRY_STARTING_BALANCE, else the real one.
+
+    The live account is $1-2, where one contract is already ~12% of the balance,
+    so a percentage sizing rule cannot be expressed at all. DRY_STARTING_BALANCE
+    lets a dry run compound at a measurable scale (the same $10 the backtest
+    uses) instead of being blocked by cent granularity.
+    """
+    return round(float(config.DRY_STARTING_BALANCE or real_balance), 4)
+
+
 def _load(real_balance: float) -> dict:
-    """Load the ledger, seeding start_balance from the real account once."""
+    """Load the ledger, seeding start_balance once."""
     global _state
     if _state is not None:
         return _state
@@ -43,11 +55,11 @@ def _load(real_balance: float) -> dict:
             "pnl": float(data.get("pnl", 0.0)),
         }
     except FileNotFoundError:
-        _state = {"start_balance": round(real_balance, 4), "pnl": 0.0}
-        log.info("Paper ledger seeded at $%.2f", real_balance)
+        _state = {"start_balance": _seed(real_balance), "pnl": 0.0}
+        log.info("Paper ledger seeded at $%.2f", _state["start_balance"])
     except Exception as e:
         log.warning("Could not read %s (%s) — reseeding", STATE_FILE, e)
-        _state = {"start_balance": round(real_balance, 4), "pnl": 0.0}
+        _state = {"start_balance": _seed(real_balance), "pnl": 0.0}
     _save()
     return _state
 

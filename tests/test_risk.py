@@ -53,12 +53,14 @@ def test_risk_check_blocks():
     assert "risk cap" in reason
 
 
-def test_reset_daily():
+def test_reset_daily_keeps_the_peak_and_the_halt():
+    """A day roll must not un-halt a bot that is still deep in drawdown."""
     r = RiskManager()
     r.state.start_balance = 100.0
     r.state.session_high = 150.0
     r.state.halted = True
+    r.state.consecutive_losses = 3
     r.reset_daily()
-    assert r.state.session_high == 100.0
-    assert not r.state.halted
-    assert r.state.halt_reason == ""
+    assert r.state.session_high == 150.0  # peak carried over
+    assert r.state.halted is True         # halt lasts until the drawdown recovers
+    assert r.state.consecutive_losses == 0

@@ -110,6 +110,9 @@ class TestSellPayload:
         assert sent["side"] == "ask"
         assert sent["price"] == "0.5200"
         assert sent["count"] == "2.00"  # Kalshi fixed-point contract count
+        # Default exit must cross, or it can never fill at the bid.
+        assert sent["time_in_force"] == "immediate_or_cancel"
+        assert sent["post_only"] is False
 
     def test_sell_no_is_bid_at_complement(self, monkeypatch):
         monkeypatch.setattr(kalshi_client.config, "DRY_RUN", False)
@@ -150,15 +153,15 @@ class TestBookExit:
         monkeypatch.setattr(trader.state, "session_pnl", 0.0)
         return ldb, n8n, risk
 
-    def test_both_legs_are_maker_so_no_taker_fee(self, monkeypatch):
+    def test_maker_entry_plus_taker_exit(self, monkeypatch):
         ldb, n8n, risk = self._wire(monkeypatch)
         trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 52, 2, "take profit")
 
-        # 2x30c = $0.60 in, 2x52c = $1.04 out; maker exit, so no taker fee
+        # 2x30c = $0.60 in; 2x52c = $1.04 out less the 7% taker fee -> $1.00
         risk.record_trade_outcome.assert_called_once()
         assert risk.record_trade_outcome.call_args[0][0] is True
-        assert risk.record_trade_outcome.call_args[0][1] == pytest.approx(0.44)
-        assert trader.state.session_pnl == pytest.approx(0.44)
+        assert risk.record_trade_outcome.call_args[0][1] == pytest.approx(0.40)
+        assert trader.state.session_pnl == pytest.approx(0.40)
         assert ldb.apply_settlement_pnl.call_args[0][0] == "exit:KXBTC15M-1:ord-1"
         assert n8n.execute_webhook.call_args[0][0] == "superbot-trade"
         assert n8n.execute_webhook.call_args[0][1]["action"] == "exit"
@@ -171,7 +174,7 @@ class TestBookExit:
     def test_ledger_error_still_books_the_pnl(self, monkeypatch):
         self._wire(monkeypatch, raises=True)
         trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 52, 2, "take profit")
-        assert trader.state.session_pnl == pytest.approx(0.44)
+        assert trader.state.session_pnl == pytest.approx(0.40)
 
     def test_stop_loss_is_recorded_as_a_losing_trade(self, monkeypatch):
         _, _, risk = self._wire(monkeypatch)

@@ -37,12 +37,13 @@ def mock_client():
 
 @pytest.fixture(autouse=True)
 def disable_llm_eval(monkeypatch):
-    """Disable LLM evaluation in tests by removing NVIDIA_API_KEY."""
-    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    monkeypatch.delenv("NVIDIA_API_KEY_FILE", raising=False)
-    # Also patch config module directly
+    """Disable LLM evaluation by default in tests.
+
+    The gate is no longer keyed on NVIDIA_API_KEY (any of the 7 layers may
+    answer), so tests must turn the feature off explicitly.
+    """
     import config
-    monkeypatch.setattr(config, "NVIDIA_API_KEY", "", raising=False)
+    monkeypatch.setattr(config, "LLM_EVALUATION_ENABLED", False, raising=False)
 
 
 def test_pre_trade_check_blocks_over_cap(fresh_state, mock_client):

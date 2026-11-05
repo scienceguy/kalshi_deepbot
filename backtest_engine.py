@@ -229,7 +229,8 @@ def run_backtest(params, markets, starting_balance=10.0, settlement_yes_won=None
 
     if not trades:
         return {"ev": 0.0, "total_pnl": 0.0, "n_trades": 0, "win_rate": 0.0,
-                "avg_pnl": 0.0, "final_balance": balance, "max_drawdown": 0.0}
+                "avg_pnl": 0.0, "final_balance": balance, "max_drawdown": 0.0,
+                "avg_entry_cents": 0.0, "gross_edge_cents": 0.0}
 
     total_pnl = sum(t["pnl"] for t in trades)
     wins = sum(1 for t in trades if t["won"])
@@ -248,9 +249,17 @@ def run_backtest(params, markets, starting_balance=10.0, settlement_yes_won=None
         if dd > max_dd:
             max_dd = dd
 
+    # The decisive metric: does the win rate actually beat the price paid?
+    # An entry at 52c needs a win rate above 52% to break even before fees, so
+    # a positive per-trade P&L on a losing edge means the sizing is lying.
+    avg_entry_cents = sum(t["entry_price"] for t in trades) / len(trades)
+    gross_edge_cents = win_rate * 100.0 - avg_entry_cents
+
     return {
         "ev": ev_per_trade,
         "total_pnl": total_pnl,
+        "avg_entry_cents": avg_entry_cents,
+        "gross_edge_cents": gross_edge_cents,
         "n_trades": len(trades),
         "win_rate": win_rate,
         "avg_pnl": avg_pnl,
@@ -262,9 +271,9 @@ def run_backtest(params, markets, starting_balance=10.0, settlement_yes_won=None
 
 def _backtest_one(args):
     """Worker function for parallel backtest."""
-    combo, starting_balance = args
+    combo, starting_balance, settlement_yes_won = args
     params = StratParams(**combo)
-    result = run_backtest(params, _cached_markets, starting_balance)
+    result = run_backtest(params, _cached_markets, starting_balance, settlement_yes_won)
     result["params"] = combo
     return result
 
@@ -323,12 +332,13 @@ def print_results(results, n_markets, n_combos, top=10):
     print(f"BACKTEST RESULTS — {n_markets} markets, {n_combos} parameter sets")
     print("=" * 90)
     print(f"\n{'Rank':<5} {'EV/trade':<9} {'Total P&L':<10} {'Trades':<7} "
-          f"{'Win%':<7} {'Avg P&L':<9} {'MaxDD':<7} {'Params'}")
+          f"{'Win%':<7} {'Entry':<6} {'Edge/ct':<8} {'MaxDD':<7} {'Params'}")
     print("-" * 90)
     for i, r in enumerate(results[:top]):
         p = r["params"]
         print(f"{i+1:<5} {r['ev']:<9.4f} {r['total_pnl']:<10.2f} {r['n_trades']:<7} "
-              f"{r['win_rate']*100:<6.1f}% {r['avg_pnl']:<9.4f} {r['max_drawdown']*100:<6.1f}% "
+              f"{r['win_rate']*100:<6.1f}% {r.get('avg_entry_cents', 0):<6.1f} "
+              f"{r.get('gross_edge_cents', 0):<+8.1f} {r['max_drawdown']*100:<6.1f}% "
               f"{format_params(p)}")
 
 
@@ -395,7 +405,7 @@ def run_sweep(markets, settlement_yes_won=None, quick=False, limit=None,
     jobs = min(jobs, os.cpu_count() or 4)
     log.info("Testing %d parameter combinations with %d workers...", len(combos), jobs)
 
-    work_items = [(c, starting_balance) for c in combos]
+    work_items = [(c, starting_balance, settlement_yes_won) for c in combos]
 
     with Pool(processes=jobs, initializer=init_worker, initargs=(markets,)) as pool:
         results = pool.map(_backtest_one, work_items)
