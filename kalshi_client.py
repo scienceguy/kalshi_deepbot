@@ -480,6 +480,46 @@ class KalshiClient:
             resp["order_id"] = resp["order"].get("order_id", "")
         return resp
 
+    def sell_position(self, ticker: str, side: str, contracts: int,
+                      price_cents: int, client_order_id: str = "",
+                      time_in_force: str = "immediate_or_cancel") -> dict:
+        """Close a position by selling it back at price_cents (the current bid).
+
+        Kalshi's unified book quotes the YES leg: selling YES is an ask at the
+        YES price, selling NO is a bid at (100 - NO price). Sending the NO price
+        on the YES leg would invert the order, so the complement is applied here.
+        """
+        if not 1 <= price_cents <= 99:
+            raise ValueError(f"sell_position: price_cents={price_cents} out of range (1-99)")
+        if contracts <= 0:
+            raise ValueError(f"sell_position: contracts={contracts} must be > 0")
+
+        if side == "yes":
+            api_side, yes_leg_cents = "ask", price_cents
+        elif side == "no":
+            api_side, yes_leg_cents = "bid", 100 - price_cents
+        else:
+            raise ValueError(f"sell_position: side must be 'yes' or 'no', got {side!r}")
+
+        payload = {
+            "ticker":                      ticker,
+            "client_order_id":             client_order_id or f"exit-{ticker}-{int(time.time())}",
+            "side":                        api_side,
+            "count":                       str(int(contracts)),
+            "price":                       f"{yes_leg_cents / 100:.4f}",
+            "time_in_force":               time_in_force,
+            "self_trade_prevention_type":  "taker_at_cross",
+        }
+
+        if config.DRY_RUN:
+            log.info("[DRY RUN] sell %s", payload)
+            return {"dry_run": True, "order_id": payload["client_order_id"]}
+
+        resp = self._request("POST", "/portfolio/events/orders", json=payload)
+        if resp and "order_id" not in resp and "order" in resp:
+            resp["order_id"] = resp["order"].get("order_id", "")
+        return resp
+
     def cancel_order(self, order_id: str) -> dict:
         """Cancel an open order by order_id."""
         if config.DRY_RUN:

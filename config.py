@@ -172,6 +172,17 @@ PANIC_FADE_WINDOW_SECONDS = _env_int("PANIC_FADE_WINDOW_SECONDS", 120)  # lookba
 # Uses ENTRY_BAND_MIN/MAX (15-55c) for fade entries
 
 # ═════════════════════════════════════════════════════════════════════
+# EARLY EXIT (sell before settlement so capital compounds intra-window)
+# Without this every position is held to expiry and cash is locked for the
+# rest of the 15m window. Exit at the current bid (taker) when either the
+# profit target or the stop is hit.
+# ═════════════════════════════════════════════════════════════════════
+EXIT_ENABLED = _env_bool("EXIT_ENABLED", True)
+EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 20)  # bid moved +20c vs entry
+EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 10)     # bid moved -10c vs entry
+EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 1.0)  # don't dump into a dead book
+
+# ═════════════════════════════════════════════════════════════════════
 # POSITION SIZING (Kelly criterion from kalshi_codex_bot momentum backtests)
 # Best: MOM_88-93_dynTrue_netTrue_kelly2 → Kelly=0.10, Sharpe 6.60
 # Survival-first: max 3 contracts, 1 per $10 cash (avoids wiping account)

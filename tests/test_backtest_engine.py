@@ -136,6 +136,50 @@ class TestDefaultSettlement:
         assert _default_settlement_yes_won({"expiration_value": 1.0, "floor_strike": None}) is None
 
 
+class TestMinuteQuotes:
+    """Real per-minute book: the entry must use the quote at the window start."""
+
+    def _market(self, quotes, result="yes"):
+        close = datetime.now(timezone.utc) + timedelta(minutes=15)
+        return {
+            "ticker": "KXBTC15M-MQ",
+            "open_time": (close - timedelta(minutes=15)).isoformat(),
+            "close_time": close.isoformat(),
+            "minute_quotes": quotes,
+            "result": result,
+        }
+
+    def test_enters_at_quote_for_window_start(self):
+        # minute 6 is 30c, minute 12 is 90c — window start 6 must pick 30c
+        m = self._market({1: (20, 21), 6: (30, 31), 12: (90, 91)})
+        r = simulate_trade(
+            m, StratParams(ENTRY_WINDOW_START_MIN=6.0, ENTRY_BAND_MIN=15, ENTRY_BAND_MAX=55),
+            balance=100.0, settlement_yes_won=lambda mk: mk["result"] == "yes",
+        )
+        assert r is not None
+        assert r["entry_price"] == 30
+
+    def test_window_change_changes_entry_price(self):
+        m = self._market({1: (20, 21), 6: (30, 31), 12: (50, 51)})
+        settle = lambda mk: mk["result"] == "yes"
+        early = simulate_trade(m, StratParams(ENTRY_WINDOW_START_MIN=6.0,
+                                              ENTRY_BAND_MIN=15, ENTRY_BAND_MAX=55),
+                               balance=100.0, settlement_yes_won=settle)
+        late = simulate_trade(m, StratParams(ENTRY_WINDOW_START_MIN=12.0,
+                                             ENTRY_BAND_MIN=15, ENTRY_BAND_MAX=55),
+                              balance=100.0, settlement_yes_won=settle)
+        assert early["entry_price"] == 30
+        assert late["entry_price"] == 50
+
+    def test_settles_on_result(self):
+        m = self._market({6: (30, 31)}, result="no")
+        r = simulate_trade(
+            m, StratParams(ENTRY_WINDOW_START_MIN=6.0, ENTRY_BAND_MIN=15, ENTRY_BAND_MAX=55),
+            balance=100.0, settlement_yes_won=lambda mk: mk["result"] == "yes",
+        )
+        assert r["won"] is False
+
+
 class TestParameterGrid:
     """Tests for parameter_grid — combination generation."""
 

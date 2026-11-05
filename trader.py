@@ -51,10 +51,10 @@ if args.debug:
 
 import fees  # noqa: E402
 from supabase_client import get_supabase  # noqa: E402
-from local_db import get_local_db_api  # noqa: E402
+from local_db import get_local_db_api, get_local_db  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient  # noqa: E402
-from market_finder import find_active_markets, _parse_api_time, _dollars_str_to_cents, _settle_yes_cents  # noqa: E402
+from market_finder import find_active_markets, _parse_api_time, _dollars_str_to_cents, _parse_market_prices, _settle_yes_cents  # noqa: E402
 from risk import RiskManager  # noqa: E402
 from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
 from signals import TradeSignal  # noqa: E402
@@ -653,6 +653,148 @@ def _replay_settlement_queue(client=None):
 # CYCLE
 # ═════════════════════════════════════════════════════════════════════
 
+def _exit_quote(client, ticker: str):
+    """(bid_cents, minutes_left) for the side we want out of, or None.
+
+    Fetched per position rather than from find_active_markets(): that list is
+    filtered to the entry window/band, so an open position whose price moved
+    out of the band would never be seen and never exit.
+    """
+    mkt = client.get_market(ticker)
+    if not mkt:
+        return None
+    yes_bid, _, no_bid, _, _, _ = _parse_market_prices(mkt)
+    close = _parse_api_time(mkt.get("close_time") or mkt.get("expected_expiration_time") or "")
+    if close is None:
+        return None
+    minutes_left = (close - datetime.now(timezone.utc)).total_seconds() / 60.0
+    return yes_bid, no_bid, minutes_left
+
+
+def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, reason: str):
+    """Book realized P&L for an early exit.
+
+    Mirrors the settlement accounting (paper ledger, idempotent local ledger,
+    session P&L, risk outcomes) but tags the webhook action as 'exit' so the
+    settlement replay queue never treats it as a settlement.
+    """
+    side = pos.get("side", "")
+    entry_price = pos.get("entry_price", 0)
+    order_id = pos.get("order_id", ticker)
+    is_paper = bool(pos.get("paper"))
+
+    exit_price = exit_cents / 100.0
+    buy_cost = fees.buy_cash_out(filled, entry_price / 100.0)
+    sell_revenue = fees.sell_cash_in(filled, exit_price)
+    realized_pnl = sell_revenue - buy_cost
+    won = sell_revenue > buy_cost
+    fees_dollars = fees.taker_fee_cents(filled, exit_price) / 100.0
+
+    state.risk.record_trade_outcome(won, realized_pnl)
+    if not won:
+        state.risk.record_market_loss(ticker, abs(realized_pnl))
+    if is_paper:
+        paper_mode.add_pnl(client.get_balance(), realized_pnl)
+
+    key = f"exit:{ticker}:{order_id}"
+    try:
+        applied = get_local_db().apply_settlement_pnl(
+            key, ticker, realized_pnl, fee_dollars=fees_dollars, source="local")
+        pnl_to_add = realized_pnl if applied else 0.0
+    except Exception:
+        log.warning("Failed to record exit P&L for %s — using fallback", ticker)
+        pnl_to_add = realized_pnl
+
+    new_session_pnl = state.session_pnl + pnl_to_add
+    try:
+        if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
+            state.session_pnl = new_session_pnl
+    except Exception:
+        log.warning("Supabase session_pnl write failed — keeping local state only")
+        state.session_pnl = new_session_pnl
+
+    log.info(
+        "EXIT %s (%s) %.0fx @%dc -> @%dc, P&L $%+.2f, won=%s",
+        ticker, reason, filled, entry_price, exit_cents, realized_pnl, won,
+    )
+
+    try:
+        get_n8n_client().execute_webhook("superbot-trade", {
+            "action": "exit",
+            "order_id": order_id,
+            "status": "exited",
+            "fill_price_cents": int(exit_cents),
+            "outcome_won": won,
+            "pnl_dollars": realized_pnl,
+            "ticker": ticker,
+            "side": side,
+            "contracts": filled,
+        }, max_retries=0)
+    except Exception:
+        log.warning("Failed to record exit for %s via n8n webhook (not queued — exits are not settlements)", ticker)
+
+
+def _manage_exits(client):
+    """Sell open positions that hit the profit target or the stop.
+
+    Positions that are simply left to expiry lock their cash for the rest of
+    the window; exiting at the bid frees it for the next entry.
+    """
+    if not config.EXIT_ENABLED:
+        return
+    for ticker, pos in list(state.positions.items()):
+        side = pos.get("side")
+        entry = pos.get("entry_price", 0)
+        contracts = pos.get("contracts", 0)
+        if side not in ("yes", "no") or contracts <= 0 or entry <= 0:
+            continue
+        try:
+            quote = _exit_quote(client, ticker)
+        except Exception as e:
+            log.warning("Exit quote fetch failed for %s: %s", ticker, e)
+            continue
+        if quote is None:
+            continue
+
+        yes_bid, no_bid, minutes_left = quote
+        if minutes_left <= config.EXIT_MIN_MINUTES_LEFT:
+            continue  # settlement is imminent; a sell here pays taker fees for nothing
+        bid = yes_bid if side == "yes" else no_bid
+        if not bid or not 1 <= bid <= 99:
+            continue
+
+        delta = bid - entry
+        if delta >= config.EXIT_TAKE_PROFIT_CENTS:
+            reason = f"take profit +{delta}c"
+        elif -delta >= config.EXIT_STOP_LOSS_CENTS:
+            reason = f"stop loss {delta}c"
+        else:
+            continue
+
+        try:
+            resp = client.sell_position(
+                ticker, side, int(contracts), int(bid),
+                client_order_id=f"exit-{ticker}-{int(time.time())}",
+            )
+        except Exception as e:
+            log.error("Exit order failed for %s: %s", ticker, e)
+            continue
+        if resp is None:
+            continue
+
+        filled = float(int(contracts)) if config.DRY_RUN else _order_fill_count(resp)
+        if filled <= 0:
+            log.info("Exit order for %s did not fill — retrying next cycle", ticker)
+            continue
+
+        # Pop before booking, matching the settlement path: once the exchange
+        # position is gone the settle loop must not book it a second time.
+        state.positions.pop(ticker, None)
+        state.position_risk.pop(ticker, None)
+        _book_exit(client, ticker, pos, int(bid), filled, reason)
+        client.invalidate_markets(series_ticker=ticker.split("-")[0])
+
+
 def cycle(client: KalshiClient):
     state.cycles += 1
     log.info("── Cycle %d ──────────────────────", state.cycles)
@@ -937,6 +1079,13 @@ def cycle(client: KalshiClient):
                 },
             })
             _save_settlement_queue(queue)
+
+    # Sell positions that hit the profit target or stop, so cash compounds
+    # inside the same 15m window instead of sitting locked until settlement.
+    try:
+        _manage_exits(client)
+    except Exception as e:
+        log.warning("Exit management failed: %s", e)
 
     # Compute mark-to-market exposure using current orderbook data for positions
     # (single pass via _mark_to_market_exposure; the previous duplicate loop

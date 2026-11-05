@@ -84,6 +84,14 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
 
     yb, ya, nb, na, yq, nq = _parse_market_prices(market)
 
+    quotes = market.get("minute_quotes")
+    if quotes:
+        # Real per-minute book (HF history): enter at the quote available when
+        # the entry window opens. Without this the window parameter has no
+        # effect on the sweep and every combo scores identically.
+        minute = min(quotes, key=lambda m: abs(m - params.ENTRY_WINDOW_START_MIN))
+        yb, ya = quotes[minute]
+
     # Entry price proxy: use bid/ask mid when available; otherwise use a fixed
     # synthetic entry price of 45c for YES (models always entering YES at 45c).
     if yb and ya:
