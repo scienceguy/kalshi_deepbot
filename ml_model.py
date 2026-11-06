@@ -12,6 +12,7 @@ No orders are placed anywhere.
 from __future__ import annotations
 
 import math
+import os
 from datetime import datetime
 from typing import List, Optional
 
@@ -25,7 +26,6 @@ FEATURES = [
     "sigma_min",       # per-minute realised vol
     "kalshi_mid",      # Kalshi venue mid (probability)
     "spread",          # Kalshi book width (liquidity / adverse-selection hint)
-    "poly_mid",        # Polymarket mid (cross-venue check)
     "fair_lognormal",  # baseline spot-implied fair value
 ]
 
@@ -34,8 +34,8 @@ def row_to_features(row: dict, spot: float, sigma_min: float,
                     minutes_left: float) -> np.ndarray:
     """Flatten one `three_way` row into the fixed feature vector.
 
-    Required keys: `strike`, `kalshi`, `fair`. `spread` and `poly` default to 0
-    if absent (historical snapshots don't carry them).
+    Required keys: `strike`, `kalshi`, `fair`. `spread` defaults to 0
+    if absent (historical snapshots don't carry it).
     """
     strike = row.get("strike")
     kalshi = row.get("kalshi")
@@ -44,14 +44,15 @@ def row_to_features(row: dict, spot: float, sigma_min: float,
         missing = [k for k, v in (("strike", strike), ("kalshi", kalshi),
                                   ("fair", fair)) if v is None]
         raise ValueError(f"row missing required feature key(s): {missing}")
-    moneyness = math.log(spot / strike) if spot > 0 and strike > 0 else 0.0
+    if spot <= 0 or strike <= 0:
+        raise ValueError(f"Invalid spot/strike: {spot}/{strike}")
+    moneyness = math.log(spot / strike)
     return np.array([
         moneyness,
         float(minutes_left),
         float(sigma_min),
         float(kalshi),
         float(row.get("spread", 0.0)),
-        float(row.get("poly", kalshi)),
         float(fair),
     ], dtype=np.float32)
 
@@ -75,6 +76,7 @@ class MLFairValue(nn.Module):
     def predict_proba(self, row: dict, spot: float, sigma_min: float,
                       minutes_left: float) -> float:
         x = torch.from_numpy(row_to_features(row, spot, sigma_min, minutes_left))
+        x = x.to(next(self.parameters()).device)
         return float(torch.sigmoid(self.forward(x)))
 
     def fit(self, X: np.ndarray, y: np.ndarray, epochs: int = 1000,

@@ -15,10 +15,10 @@ def _row(strike, spot=100000.0, settle=100500.0, kalshi=None):
     }
 
 
-def test_row_to_features_has_seven_values():
+def test_row_to_features_has_six_values():
     row = _row(100000)
     f = m.row_to_features(row, 100000.0, 0.0007, 30.0)
-    assert len(f) == 7
+    assert len(f) == 6
     # moneyness log(spot/strike) = log(1) = 0 at the money
     assert f[0] == 0.0
 

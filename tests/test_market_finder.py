@@ -60,8 +60,8 @@ class TestMarketInfo:
             bracket_role="MAIN",
             raw={},
         )
-        # mid_yes returns 50.0 as default when no quotes
-        assert m.mid_yes == 50.0
+        # mid_yes returns None when both bid and ask are None (no quotes)
+        assert m.mid_yes is None
 
 
 class TestFindActiveMarkets:

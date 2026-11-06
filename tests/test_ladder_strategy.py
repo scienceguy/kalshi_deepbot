@@ -102,7 +102,8 @@ def test_overpriced_rung_flips_to_the_no_side():
 
 
 def test_time_gate_blocks_the_settlement_race():
-    plans = ls.plan_orders([_row(100, 0.50, 0.60, minutes=1.0)])
+    # Default min_minutes is now 1.0, so use 0.5 to test the gate
+    plans = ls.plan_orders([_row(100, 0.50, 0.60, minutes=0.5)])
     assert plans[0].tradeable is False
     assert "hold window" in plans[0].reason
 

@@ -38,8 +38,15 @@ from crossvenue import KALSHI_BASE
 
 log = logging.getLogger("crossvenue_history")
 
-SERIES_ASSET = {"KXBTCD": "BTC", "KXETHD": "ETH", "KXBTC": "BTC", "KXETH": "ETH",
-                "KXBTC15M": "BTC", "KXETH15M": "ETH"}
+SERIES_ASSET = {
+    "KXBTCD": "BTC", "KXETHD": "ETH",
+    "KXBTC": "BTC", "KXETH": "ETH",
+    "KXBTC15M": "BTC", "KXETH15M": "ETH",
+    "KXBTC15M-D": "BTC", "KXETH15M-D": "ETH",
+    "KXSOL15M": "SOL", "KXXRP15M": "XRP", "KXDOGE15M": "DOGE",
+    "KXBNB15M": "BNB", "KXHYPE15M": "HYPE", "KXZEC15M": "ZEC",
+    "KXNEAR15M": "NEAR",
+}
 REQUEST_GAP = 0.12  # stay well inside Kalshi's public rate limit
 
 _last = 0.0
@@ -77,11 +84,19 @@ def settled_events(series: str, limit: int = 200) -> List[dict]:
             ev = m.get("event_ticker")
             if not ev or m.get("expiration_value") in (None, ""):
                 continue
+            if not m.get("close_time"):
+                continue
+            try:
+                ev_val = float(m["expiration_value"])
+            except (TypeError, ValueError):
+                continue
+            if not (100 < ev_val < 1_000_000):
+                continue
             if ev not in events:
                 events[ev] = {
                     "event": ev,
                     "close_time": m.get("close_time"),
-                    "expiration_value": float(m["expiration_value"]),
+                    "expiration_value": ev_val,
                     "strikes": {},
                 }
             try:
@@ -96,27 +111,60 @@ def settled_events(series: str, limit: int = 200) -> List[dict]:
 
 
 def candles(ticker: str, series: str, start: int, end: int) -> List[dict]:
-    payload = _get(f"/series/{series}/markets/{ticker}/candlesticks",
+    payload = _get(f"/historical/markets/{ticker}/candlesticks",
                    {"start_ts": start, "end_ts": end, "period_interval": 1})
     return (payload or {}).get("candlesticks", []) if payload else []
 
 
-def _f(d) -> Optional[float]:
+def _ohlc(d) -> Optional[float]:
+    """Read close from a nested BidAskDistribution dict."""
     if not isinstance(d, dict):
         return None
-    v = d.get("close_dollars")
+    v = d.get("close")
     try:
         return float(v)
     except (TypeError, ValueError):
         return None
 
 
+def _f(d) -> Optional[float]:
+    return _ohlc(d)
+
+
 def spot_closes(symbol: str, start: int, end: int) -> Dict[int, float]:
     rows = binance_feed.get_klines_range(symbol, start * 1000, end * 1000, "1m")
     out = {}
     for r in rows or []:
-        ts = int(r[0]) // 1000          # Binance returns ms
+        close_ms = int(r[0]) + 60000     # align to close time, not open
+        ts = close_ms // 1000
         out[ts - ts % 60] = float(r[4])
+    return out
+
+
+def sigma_curve(symbol: str, start_ts: int, end_ts: int,
+                window: int = 60) -> Dict[int, Optional[float]]:
+    """Precompute per-minute sigma for the whole window (one API call)."""
+    rows = binance_feed.get_klines_range(symbol, start_ts * 1000,
+                                         end_ts * 1000, "1m")
+    out: Dict[int, Optional[float]] = {}
+    if not rows:
+        return out
+    import math
+    closes = [(int(r[0]) // 1000, float(r[4])) for r in rows]
+    for i, (ts, _) in enumerate(closes):
+        if i < window:
+            out[ts - ts % 60] = None
+            continue
+        window_closes = [c for _, c in closes[i - window:i + 1]]
+        rets = [math.log(b / a) for a, b in zip(window_closes, window_closes[1:])
+                if a > 0 and b > 0]
+        if len(rets) < 5:
+            out[ts - ts % 60] = None
+            continue
+        mean = sum(rets) / len(rets)
+        out[ts - ts % 60] = (
+            sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+        ) ** 0.5
     return out
 
 
@@ -136,10 +184,14 @@ def sigma_at(minute_ts: int, symbol: str, window: int = 60) -> Optional[float]:
 
 def event_basis(event: dict, series: str, asset: str, minutes: int = 60) -> List[dict]:
     """Invert the ladder at each minute and compare to the exchange composite."""
+    if not event.get("close_time"):
+        return []
     close = datetime.fromisoformat(event["close_time"].replace("Z", "+00:00"))
     close_ts = int(close.timestamp())
     start_ts = close_ts - minutes * 60
     settle = event["expiration_value"]
+    if settle <= 0:
+        return []
     symbol = f"{asset}USDT"
 
     # Only strikes near the settlement value carry information; the wings sit at
@@ -152,7 +204,7 @@ def event_basis(event: dict, series: str, asset: str, minutes: int = 60) -> List
     for strike, ticker in sorted(near.items()):
         for c in candles(ticker, series, start_ts, close_ts):
             ts = int(c["end_period_ts"])
-            bid, ask = _f(c.get("yes_bid")), _f(c.get("yes_ask"))
+            bid, ask = _ohlc(c.get("yes_bid")), _ohlc(c.get("yes_ask"))
             if bid is None or ask is None or ask < bid:
                 continue
             if ask - bid > 0.08:
@@ -163,6 +215,7 @@ def event_basis(event: dict, series: str, asset: str, minutes: int = 60) -> List
             ladders.setdefault(ts, []).append({"strike": strike, "kalshi": mid})
 
     spots = spot_closes(symbol, start_ts, close_ts)
+    sigmas = sigma_curve(symbol, start_ts, close_ts)
     out = []
     for ts, rungs in sorted(ladders.items()):
         if len(rungs) < 4:
@@ -173,7 +226,7 @@ def event_basis(event: dict, series: str, asset: str, minutes: int = 60) -> List
         mins_left = (close_ts - ts) / 60.0
         if mins_left <= 0:
             continue
-        sigma = sigma_at(ts, symbol)
+        sigma = sigmas.get(ts - ts % 60)
         if not sigma:
             continue
         implied = ls.implied_spot(rungs, sigma, mins_left)

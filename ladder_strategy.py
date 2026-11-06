@@ -67,7 +67,8 @@ MAX_VOL_MULTIPLE = 3.0
 # Do not hold a resting order into the last minutes; settlement races are pure
 # adverse selection, and the lognormal plus a dollar-denominated basis error both
 # degenerate as the horizon shrinks.
-MIN_MINUTES_TO_HOLD = 10.0
+# For 15M markets (minutes_left 4-9 during entry window), default to 1.0 min.
+MIN_MINUTES_TO_HOLD = 1.0
 MAX_MINUTES_TO_HOLD = 240.0
 
 # First-touch toxicity (predictionmarketspicks, 39,786 KXBTC15M touches):

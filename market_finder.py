@@ -56,7 +56,9 @@ class MarketInfo:
     @property
     def mid_yes(self):
         if self.yes_bid and self.yes_ask: return (self.yes_bid + self.yes_ask) / 2
-        return float(self.yes_ask or self.yes_bid or 50)
+        if self.yes_ask: return float(self.yes_ask)
+        if self.yes_bid: return float(self.yes_bid)
+        return None
 
     @property
     def skew(self): return self.yes_bid - self.no_bid
@@ -71,6 +73,12 @@ def _parse_api_time(v):
         return datetime.fromisoformat(v.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
+
+def _compute_mid(bid, ask):
+    """Shared mid-price helper: matches MarketInfo.mid_yes exactly."""
+    if bid and ask: return (bid + ask) / 2
+    return float(ask or bid) if (ask or bid) else None
+
 
 def _dollars_to_cents(v):
     """Kalshi v2 *_dollars fields are decimal strings, always dollars.
@@ -97,7 +105,10 @@ def _price_field(mkt, dollars_key, legacy_key):
 def _q(v):
     if v in (None, ""): return 0
     try:
-        return int(float(v))
+        f = float(v)
+        if f < 1.0:  # looks like dollars
+            return int(round(f * 100))
+        return int(f)  # looks like cents
     except (ValueError, TypeError):
         return 0
 
@@ -145,9 +156,14 @@ def _build(mkt, series, ct, ml, ob, role="MAIN"):
     nb = max(0, min(100, nb)); na = max(0, min(100, na))
     yq = max(0, yq); nq = max(0, nq)
 
+    strike_val = mkt.get("floor_strike")
+    if strike_val is None:
+        strike_val = mkt.get("strike", 0)
+    strike=float(strike_val)
+
     return MarketInfo(
         ticker=mkt.get("ticker",""), series=series, close_time=ct,
-        strike=float(mkt.get("floor_strike") or mkt.get("strike") or 0),
+        strike=strike,
         strike_type=str(mkt.get("strike_type") or ""),
         yes_bid=yb, yes_ask=ya, no_bid=nb, no_ask=na,
         yes_liquidity=yq, no_liquidity=nq,
@@ -157,7 +173,11 @@ def _fetch_orderbook(client: KalshiClient, ticker: str) -> dict:
     """Fetch orderbook for a single market, returning {} on failure."""
     try:
         return client.get_orderbook(ticker, depth=5)
-    except Exception:
+    except KalshiAPIError as e:
+        log.warning("Orderbook fetch failed for %s: %s", ticker, e)
+        return {}
+    except Exception as e:
+        log.warning("Unexpected error fetching orderbook for %s: %s", ticker, e)
         return {}
 
 
@@ -203,7 +223,7 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
         yb, ya, nb, na, yq, nq = _parse_market_prices(mkt)
         # Float mid matches MarketInfo.mid_yes so the pre-filter and the final
         # band check agree on the same value (no rounding boundary flips).
-        mid = (yb + ya) / 2 if (yb and ya) else (ya or yb or 0)
+        mid = _compute_mid(yb, ya)
 
         log.debug("  %s ml=%.1f mid=%.1fc ya=%dc yb=%dc", ticker, ml, mid, ya, yb)
 
@@ -237,7 +257,9 @@ def find_active_markets(client: KalshiClient):
     # fetch orderbooks concurrently below. This avoids spending several
     # seconds on sequential per-series fetches inside the 30s cycle timeout.
     with ThreadPoolExecutor(max_workers=min(len(config.TARGET_SERIES), 4)) as ex:
-        for mains, hedges in ex.map(_fetch_one, config.TARGET_SERIES):
+        futs = {ex.submit(_fetch_one, s): s for s in config.TARGET_SERIES}
+        for fut in as_completed(futs):
+            mains, hedges = fut.result()
             all_mains.extend(mains)
             all_hedges.extend(hedges)
 
@@ -284,7 +306,7 @@ def find_active_markets(client: KalshiClient):
         ob = ob_map.get(mkt["ticker"], {})
         series = mkt.get("series_ticker", "")
         info = _build(mkt, series, ct, ml, ob, "HEDGE_NO")
-        if 0 < info.no_ask <= config.HEDGE_NO_ASK_MAX:
+        if 0 < info.yes_ask <= config.HEDGE_NO_ASK_MAX:
             result.append(info)
             log.info("✓ HEDGE %s %.1fmin yes_ask=%dc no_ask=%dc prob≈%d%%",
                      info.ticker, ml, info.yes_ask, info.no_ask, 100 - info.no_ask)

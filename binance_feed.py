@@ -16,6 +16,9 @@ Falls back to OKX, then Coinbase, then Kraken if the Binance data domain is
 unreachable. Those quote BTC-USD / BTC-USDT, which differ by a few dollars of
 USDT basis — acceptable for fair value, not for reconciliation.
 
+`sigma_per_minute` has no fallback — it depends on Binance klines only.
+`composite_sigma` adds OKX/Coinbase kline fallback for volatility.
+
 Read-only. No keys, no orders.
 """
 
@@ -24,44 +27,79 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, Dict, List, Optional
+
+import time
 
 import requests
 
 log = logging.getLogger("binance_feed")
+
+_session = requests.Session()
 
 BINANCE_REST = "https://data-api.binance.vision/api/v3"
 BINANCE_WS = "wss://data-stream.binance.vision/ws"
 
 _KRAKEN_PAIR = {"BTC": "XBTUSD", "ETH": "ETHUSD"}
 
+_KNOWN_BASES = {"BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE", "ZEC", "NEAR"}
+
+
+def _base_asset(symbol: str) -> Optional[str]:
+    """Strip USDT/USDC suffix and validate against known bases.
+
+    Avoids lossy parsing like KXBUSDT → KXBU (truncation of HYPE).
+    """
+    base = symbol.replace("USDT", "").replace("USDC", "").upper()
+    return base if base in _KNOWN_BASES else None
+
 
 def _fallback_sources(base: str):
-    """Fallback quote URLs for one asset, e.g. base='ETH'."""
+    """Fallback quote URLs for one asset, e.g. base='ETH'.
+
+    Kraken is skipped for assets it does not quote (only BTC/ETH).
+    """
+    pair = _KRAKEN_PAIR.get(base)
+    kraken = ()
+    if pair:
+        kraken = (
+            ("kraken", f"https://api.kraken.com/0/public/Ticker?pair={pair}",
+             lambda d: float(next(iter(d["result"].values()))["c"][0])),
+        )
     return (
         ("okx", f"https://www.okx.com/api/v5/market/ticker?instId={base}-USDT",
          lambda d: float(d["data"][0]["last"])),
         ("coinbase", f"https://api.exchange.coinbase.com/products/{base}-USD/ticker",
          lambda d: float(d["price"])),
-        ("kraken", f"https://api.kraken.com/0/public/Ticker?pair={_KRAKEN_PAIR[base]}",
-         lambda d: float(next(iter(d["result"].values()))["c"][0])),
+        *kraken,
     )
+
+
+def _remaining(timeout: int, deadline: float) -> int:
+    """Seconds left before deadline, floored to 1 (never 0 or negative)."""
+    return max(1, int(deadline - time.monotonic()))
 
 
 def get_price(symbol: str = "BTCUSDT", timeout: int = 10) -> Optional[float]:
     """Latest Binance spot price, or None if unavailable. Use composite_price()
     when you need to be robust to a single exchange's basis."""
+    deadline = time.monotonic() + timeout
     try:
-        resp = requests.get(f"{BINANCE_REST}/ticker/price",
-                            params={"symbol": symbol}, timeout=timeout)
+        resp = _session.get(f"{BINANCE_REST}/ticker/price",
+                            params={"symbol": symbol},
+                            timeout=_remaining(timeout, deadline))
         resp.raise_for_status()
         return float(resp.json()["price"])
     except Exception as e:
         log.warning("binance ticker unavailable (%s), trying fallbacks", e)
 
-    for name, url, pick in _fallback_sources(symbol.replace("USDT", "")):
+    base = _base_asset(symbol)
+    if not base:
+        log.error("unknown base asset in symbol %s", symbol)
+        return None
+    for name, url, pick in _fallback_sources(base):
         try:
-            resp = requests.get(url, timeout=timeout)
+            resp = _session.get(url, timeout=_remaining(timeout, deadline))
             resp.raise_for_status()
             px = pick(resp.json())
             log.warning("using %s fallback price %.2f", name, px)
@@ -81,20 +119,23 @@ def price_sources(symbol: str = "BTCUSDT", timeout: int = 10) -> Dict[str, float
     enough to price against.
     """
     out: Dict[str, float] = {}
+    deadline = time.monotonic() + timeout
     try:
-        resp = requests.get(f"{BINANCE_REST}/ticker/price",
-                            params={"symbol": symbol}, timeout=timeout)
+        resp = _session.get(f"{BINANCE_REST}/ticker/price",
+                            params={"symbol": symbol}, timeout=_remaining(timeout, deadline))
         resp.raise_for_status()
         out["binance"] = float(resp.json()["price"])
     except Exception as e:
         log.warning("binance ticker unavailable: %s", e)
-    for name, url, pick in _fallback_sources(symbol.replace("USDT", "")):
-        try:
-            resp = requests.get(url, timeout=timeout)
-            resp.raise_for_status()
-            out[name] = pick(resp.json())
-        except Exception:
-            continue
+    base = _base_asset(symbol)
+    if base:
+        for name, url, pick in _fallback_sources(base):
+            try:
+                resp = _session.get(url, timeout=_remaining(timeout, deadline))
+                resp.raise_for_status()
+                out[name] = pick(resp.json())
+            except Exception:
+                continue
     return out
 
 
@@ -106,12 +147,53 @@ def composite_price(symbol: str = "BTCUSDT", timeout: int = 10) -> Optional[floa
     cannot see its weights, so a persistent basis against BRTI remains.
     """
     prices = sorted(price_sources(symbol, timeout).values())
+    # Filter out NaN and inf
+    prices = [p for p in prices if math.isfinite(p)]
     if not prices:
+        log.warning("composite_price: no valid prices from any source")
         return None
+    if len(prices) == 1:
+        log.warning("composite_price: only one venue available (%s)", list(price_sources(symbol, timeout).keys())[0])
     mid = len(prices) // 2
     if len(prices) % 2:
         return prices[mid]
     return (prices[mid - 1] + prices[mid]) / 2.0
+
+
+def composite_sigma(symbol: str = "BTCUSDT", lookback: int = 60,
+                    timeout: int = 10) -> Optional[float]:
+    """Per-minute volatility with fallback venues.
+
+    Tries Binance first (most liquid), then OKX, then Coinbase klines.
+    This provides redundancy if Binance is unreachable.
+    """
+    # Try Binance first
+    sigma = sigma_per_minute(symbol, lookback)
+    if sigma is not None:
+        return sigma
+    # Fallback: OKX klines
+    base = _base_asset(symbol)
+    if base:
+        okx_symbol = f"{base}-USDT"
+        try:
+            resp = _session.get("https://www.okx.com/api/v5/market/history-candles",
+                                params={"instId": okx_symbol, "bar": "1m", "limit": lookback + 1},
+                                timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if data:
+                # OKX returns [ts, o, h, l, c, ...] oldest first
+                closes = [float(row[3]) for row in data]  # close is index 3
+                rets = [math.log(b / a) for a, b in zip(closes, closes[1:]) if a > 0 and b > 0]
+                if len(rets) >= 5:
+                    mean = sum(rets) / len(rets)
+                    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+                    log.warning("using OKX fallback sigma: %.6f", math.sqrt(var))
+                    return math.sqrt(var)
+        except Exception as e:
+            log.warning("OKX sigma fallback failed: %s", e)
+    log.warning("composite_sigma: no valid sigma from any source")
+    return None
 
 
 def get_klines(symbol: str = "BTCUSDT", interval: str = "1m",
@@ -186,12 +268,12 @@ async def stream_trades(symbol: str = "btcusdt") -> AsyncIterator[float]:
     surface for a number that changes nothing within a 60-second cycle.
     """
     import websockets
+    import json
 
     url = f"{BINANCE_WS}/{symbol.lower()}@trade"
-    async with websockets.connect(url, open_timeout=10, ping_interval=20) as ws:
+    async with websockets.connect(url, open_timeout=10, close_timeout=10, ping_interval=20) as ws:
         async for raw in ws:
             try:
-                import json
                 yield float(json.loads(raw)["p"])
             except (ValueError, KeyError, TypeError):
                 continue

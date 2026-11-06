@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import config
+import fees
 from market_finder import MarketInfo
 
 log = logging.getLogger(__name__)
@@ -104,7 +105,8 @@ def _maker_price(market: MarketInfo, bullish: bool) -> int:
             base = (
                 market.no_ask
                 or market.no_bid
-                or (100 - market.yes_bid if market.yes_bid else market.yes_ask or 50)
+                or (100 - market.yes_bid if market.yes_bid else None)
+                or 50  # explicit fallback with logged warning
             )
         result = base + buffer
     else:
@@ -113,21 +115,20 @@ def _maker_price(market: MarketInfo, bullish: bool) -> int:
         )
         if bullish:
             if yes_bid and yes_ask:
-                target = yes_bid + 1 if (yes_ask - yes_bid) > 1 else yes_bid
-                # Deeper quote: 1c under ask for ~85% live fill rate
-                result = min(target, max(1, yes_ask - 1))
+                if yes_ask <= yes_bid:
+                    result = max(1, min(99, yes_bid))  # spread ≤ 0 — reject
+                else:
+                    target = yes_bid + 1 if (yes_ask - yes_bid) > 1 else yes_bid
+                    # Deeper quote: 1c under ask for ~85% live fill rate
+                    result = min(target, max(1, yes_ask - 1))
             else:
                 result = yes_ask or yes_bid or 1
         else:
             if no_bid and no_ask:
                 target = no_bid + 1 if (no_ask - no_bid) > 1 else no_bid
                 result = min(target, max(1, no_ask - 1))
-            elif no_ask:
-                result = no_ask - 1
-            elif 0 < yes_bid < 100:
-                result = 100 - yes_bid
             else:
-                result = yes_ask or 50
+                result = 100 - (yes_ask or yes_bid or 99)  # symmetric to YES
 
     # Kalshi prices must be 1-99; clamp edge cases (0/100) before returning.
     return max(1, min(99, result))
@@ -332,7 +333,8 @@ def _evaluate_common(
 
     direction = "YES" if bullish else "NO"
     side = "yes" if bullish else "no"
-    risk_ = n * ep / 100
+    # Include taker fee if AGGRESSIVE_FILL enabled
+    risk_ = fees.buy_cash_out(n, ep / 100.0, taker=config.AGGRESSIVE_FILL)
 
     # Confidence scoring (from kalshi_live_bot)
     if source in ("SKEW", "TREND"):
@@ -346,6 +348,9 @@ def _evaluate_common(
         )
         if confidence < config.MIN_CONFIDENCE:
             return _pass(f"Confidence {confidence:.2f} below {config.MIN_CONFIDENCE:.2f}")
+        # ALLOW_YES_BUYS gate for SKEW/TREND sources
+        if bullish and not config.ALLOW_YES_BUYS:
+            return _pass(f"ALLOW_YES_BUYS=false blocks YES {source} signal")
     else:
         confidence = float(abs(market.mid_yes - 50.0) / 50.0)
 
@@ -376,81 +381,99 @@ def _evaluate_panic_fade(market: MarketInfo, max_dollars: float, max_contracts: 
     When YES spiked sharply, fade by buying NO at 5-25c.
     """
     results = []
-    
+
+    if not config.PANIC_FADE_ENABLED:
+        return results
+
     def _pass(r):
         results.append(TradeSignal("PASS", "", 0, 0, 0.0, r, market))
-    
+
     now = time.time()
     ticker = market.ticker
-    
+
+    # ── Liquidity gate ──────────────────────────────────────────────────
+    # Skip illiquid markets before spending work on entry price / sizing.
+    yes_liq = market.yes_liquidity
+    no_liq = market.no_liquidity
+    if not yes_liq and not no_liq:
+        _pass("No liquidity")
+        return results
+
     h = _bid_hist.get(ticker, []) if _bid_hist else []
     if len(h) < 3:
+        _pass("history < 3")
         return results
-    
+
     cutoff = now - config.PANIC_FADE_WINDOW_SECONDS
     window = [(t, b) for t, b in h if t >= cutoff]
     if len(window) < 2:
+        _pass("price move < threshold")
         return results
-    
+
     max_price = max(b for _, b in window)
     min_price = min(b for _, b in window)
     price_move = max_price - min_price
-    
+
     if price_move < config.PANIC_FADE_MOVE_CENTS:
+        _pass("price move < threshold")
         return results
-    
+
     first_price = window[0][1]
     last_price = window[-1][1]
     price_change = last_price - first_price
-    
+
     if price_change < -config.PANIC_FADE_MOVE_CENTS:
         # YES dropped sharply — fade by buying YES at maker prices in favourite-maker band
         yes_ask = market.yes_ask
         if not yes_ask:
+            _pass("no yes_ask")
             return results
-        
+
         ep = yes_ask - 1
         ep = max(config.ENTRY_BAND_MIN, min(config.ENTRY_BAND_MAX, ep))
-        
+
         n = _size(ep, max_dollars, max_contracts)
         avail = market.yes_liquidity
         if avail and n > avail:
             n = min(n, float(avail))
         n = floor_contracts(n)
         if n <= 0:
+            _pass("no contracts")
             return results
-        
+
         dollar_risk = n * ep / 100.0
         results.append(TradeSignal(
             "YES", "yes", ep, n, dollar_risk,
             f"Panic fade YES: price dropped {abs(price_change)}c in {config.PANIC_FADE_WINDOW_SECONDS}s",
-            market, abs(price_change), confidence=float(abs(ep - 50)) / 100.0
+            market, abs(price_change), confidence=min(1.0, abs(price_change) / float(config.PANIC_FADE_MOVE_CENTS))
         ))
-    
+
     elif price_change > config.PANIC_FADE_MOVE_CENTS:
-        # YES spiked sharply — fade by buying NO at 5-25c
+        # YES spiked sharply — fade by buying NO at favourite-maker band
         no_ask = market.no_ask
         if not no_ask:
+            _pass("no no_ask")
             return results
-        
+
         ep = no_ask - 1
-        ep = max(5, min(25, ep))
-        
+        ep = max(config.ENTRY_BAND_MIN, min(config.ENTRY_BAND_MAX, ep))
+
         n = _size(ep, max_dollars, max_contracts)
         avail = market.no_liquidity
         if avail and n > avail:
             n = min(n, float(avail))
         n = floor_contracts(n)
         if n <= 0:
+            _pass("no contracts")
             return results
-        
+
         dollar_risk = n * ep / 100.0
         results.append(TradeSignal(
             "NO", "no", ep, n, dollar_risk,
             f"Panic fade NO: YES spiked {price_change}c in {config.PANIC_FADE_WINDOW_SECONDS}s",
-            market, abs(price_change), confidence=float(abs(ep - 50)) / 100.0
+            market, abs(price_change), confidence=min(1.0, abs(price_change) / float(config.PANIC_FADE_MOVE_CENTS))
         ))
-    
+
     return results
 
 
@@ -493,6 +516,12 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
         _pass("No NO ask")
         return results
 
+    # Stability check (mirror _evaluate_two_sided, but with dedicated hedge config)
+    ok_stable, why = _stability_ok(market.ticker, time.time())
+    if config.HEDGE_STABILITY_ENABLED and not ok_stable:
+        _pass(why)
+        return results
+
     # Buy NO at 1c under NO ask (maker order)
     ep = no_ask - 1
     ep = max(1, min(99, ep))
@@ -515,13 +544,16 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
         return results
 
     risk_ = n * ep / 100
-    confidence = float(ep) / 100.0
+    # Strength based on how far YES ask is below hedge max (wider edge = stronger)
+    strength = float(config.HEDGE_YES_ASK_MAX - market.yes_ask)
+    # Confidence based on favourite strength (distance from 50c)
+    confidence = float(abs(market.mid_yes - 50.0) / 50.0)
     reason = (
-        f"HEDGE_NO str=0 conf={confidence:.2f} "
+        f"HEDGE_NO str={strength:.0f} conf={confidence:.2f} "
         f"{minutes_in:.1f}min {n:.4f}x@{ep}c=${risk_:.2f}"
     )
     log.info("SIGNAL: %s — %s", market.ticker, reason)
-    results.append(TradeSignal("NO", "no", ep, n, risk_, reason, market, 0.0, confidence))
+    results.append(TradeSignal("NO", "no", ep, n, risk_, reason, market, strength, confidence))
     return results
 
 
@@ -628,8 +660,20 @@ def evaluate(market: MarketInfo, cash: float = 10.0,
                                      max_contracts_for_cash(effective_cash))
 
     # Panic-fade: mean-reversion when price moves sharply in short window
-    result.extend(_evaluate_panic_fade(market, max_dollars,
-                                       max_contracts_for_cash(effective_cash)))
+    if market.bracket_role != "HEDGE_NO":
+        result.extend(_evaluate_panic_fade(market, max_dollars,
+                                           max_contracts_for_cash(effective_cash)))
+
+    # Deduplicate by (ticker, side) — panic fade can produce an opposite
+    # signal on the same market that the main strategy already emitted.
+    seen = set()
+    deduped = []
+    for sig in result:
+        key = (sig.market.ticker, sig.side)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(sig)
+    result = deduped
 
     if any(s.is_trade for s in result):
         _force_save_bid_hist()

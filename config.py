@@ -121,11 +121,13 @@ else:
 # ═════════════════════════════════════════════════════════════════════
 MIN_SKEW_CENTS = _env_int("MIN_SKEW_CENTS", 3)
 MIN_TREND_CENTS = _env_int("MIN_TREND_CENTS", 8)
+SKEW_ENTRY_MIN = _env_int("SKEW_ENTRY_MIN", 3)
+SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
 ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 6.0)
 ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 11.0)
 MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 1)
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
-MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 3)
+MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 50)
 MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
 
 # ═════════════════════════════════════════════════════════════════════
@@ -171,6 +173,8 @@ PANIC_FADE_ENABLED = _env_bool("PANIC_FADE_ENABLED", True)
 PANIC_FADE_MOVE_CENTS = _env_int("PANIC_FADE_MOVE_CENTS", 15)  # min cents move to trigger
 PANIC_FADE_WINDOW_SECONDS = _env_int("PANIC_FADE_WINDOW_SECONDS", 120)  # lookback window
 # Uses ENTRY_BAND_MIN/MAX (15-55c) for fade entries
+PANIC_FADE_NO_BAND_MIN = _env_int("PANIC_FADE_NO_BAND_MIN", 15)
+PANIC_FADE_NO_BAND_MAX = _env_int("PANIC_FADE_NO_BAND_MAX", 55)
 
 # ═════════════════════════════════════════════════════════════════════
 # EARLY EXIT (sell before settlement so capital compounds intra-window)
@@ -247,12 +251,13 @@ STABILITY_ENABLED = _env_bool("STABILITY_ENABLED", True)
 STABILITY_LOOKBACK_MIN = _env_int("STABILITY_LOOKBACK_MIN", 3)
 STABILITY_MIN_COVERAGE_MIN = _env_float("STABILITY_MIN_COVERAGE_MIN", 2.5)
 STABILITY_MAX_YES_BID_CENTS = _env_int("STABILITY_MAX_YES_BID_CENTS", 8)
+HEDGE_STABILITY_ENABLED = _env_bool("HEDGE_STABILITY_ENABLED", True)
 
 # ═════════════════════════════════════════════════════════════════════
 # CONFIDENCE SCORING (from kalshi_live_bot)
 # ═════════════════════════════════════════════════════════════════════
 MIN_CONFIDENCE = _env_float("MIN_CONFIDENCE", 0.4)
-CONFIDENCE_STRENGTH_SCALE = _env_float("CONFIDENCE_STRENGTH_SCALE", 6.0)
+CONFIDENCE_STRENGTH_SCALE = _env_float("CONFIDENCE_STRENGTH_SCALE", 100.0)
 CONFIDENCE_MID_WEIGHT = _env_float("CONFIDENCE_MID_WEIGHT", 0.4)
 CONFIDENCE_STRENGTH_WEIGHT = _env_float("CONFIDENCE_STRENGTH_WEIGHT", 0.6)
 
@@ -443,3 +448,15 @@ def validate_bands():
         )
     if errors:
         raise ValueError("Entry band configuration invalid:\n" + "\n".join(errors))
+
+# ═════════════════════════════════════════════════════════════════════
+# AUTO-VALIDATION ON IMPORT
+# ═════════════════════════════════════════════════════════════════════
+# Run validation on import to catch misconfiguration early.
+# This is safe because all validation functions only check config values,
+# they don't require credentials or network access.
+try:
+    validate_bands()
+except ValueError as e:
+    log.critical("Config validation failed on import: %s", e)
+    raise
