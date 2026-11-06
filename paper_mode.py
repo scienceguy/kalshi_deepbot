@@ -66,7 +66,9 @@ def _load(real_balance: float) -> dict:
 
 def _save():
     try:
-        STATE_FILE.write_text(json.dumps(_state))
+        tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
+        tmp.write_text(json.dumps(_state))
+        tmp.replace(STATE_FILE)  # atomic on same filesystem
     except Exception as e:
         log.warning("Could not write %s: %s", STATE_FILE, e)
 

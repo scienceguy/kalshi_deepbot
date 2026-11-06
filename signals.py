@@ -203,10 +203,8 @@ def _maybe_save_bid_hist(now: float):
         try:
             _save_bid_hist()
             _bid_hist_dirty = False
-        except Exception:
-            # Save failed — keep dirty flag so we retry, but advance timestamp
-            # so we don't retry every cycle on a persistent failure.
-            pass
+        except Exception as e:
+            log.warning("Failed to save bid history: %s — retrying next cycle", e)
         _last_bid_hist_save = now
 
 
@@ -628,6 +626,10 @@ def evaluate(market: MarketInfo, cash: float = 10.0,
         # Two-sided favourite maker strategy (Approach D)
         result = _evaluate_two_sided(market, max_dollars,
                                      max_contracts_for_cash(effective_cash))
+
+    # Panic-fade: mean-reversion when price moves sharply in short window
+    result.extend(_evaluate_panic_fade(market, max_dollars,
+                                       max_contracts_for_cash(effective_cash)))
 
     if any(s.is_trade for s in result):
         _force_save_bid_hist()
