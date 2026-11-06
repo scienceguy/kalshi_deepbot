@@ -1223,6 +1223,7 @@ def cycle(client: KalshiClient):
             # Record settlement P&L idempotently — use idempotency key so replays
             # after a crash can't double-count. Key is "settle:<ticker>:<order_id>".
             settle_key = f"settle:{t}:{order_id}"
+            applied = True  # default: treat as not-yet-applied; DB failure falls through to credit PnL
             try:
                 applied = get_local_db().apply_settlement_pnl(
                     settle_key, t, realized_pnl,
@@ -1239,17 +1240,19 @@ def cycle(client: KalshiClient):
                 log.warning("Failed to record settlement P&L to local ledger for %s — using fallback", t)
                 pnl_to_add = realized_pnl
 
-            new_session_pnl = state.session_pnl + pnl_to_add
-            # Write PnL to Supabase FIRST, then update local state.
-            # This ensures: if process crashes after Supabase write, local state is
-            # reconciled on restart.
-            try:
-                if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
+            new_session_pnl = state.session_pnl
+            if applied:
+                new_session_pnl = state.session_pnl + pnl_to_add
+                # Write PnL to Supabase FIRST, then update local state.
+                # This ensures: if process crashes after Supabase write, local state is
+                # reconciled on restart.
+                try:
+                    if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
+                        state.session_pnl = new_session_pnl
+                    log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
+                except Exception:
+                    log.warning("Supabase session_pnl write failed — keeping local state only", t)
                     state.session_pnl = new_session_pnl
-                log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
-            except Exception:
-                log.warning("Supabase session_pnl write failed — keeping local state only", t)
-                state.session_pnl = new_session_pnl
 
             # Invalidate market cache after settlement — the market is no longer open.
             series = t.split("-")[0] if "-" in t else t
