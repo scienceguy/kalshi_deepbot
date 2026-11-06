@@ -321,8 +321,8 @@ def main() -> int:
     for asset in ("BTC", "ETH"):
         symbol = f"{asset}USDT"
         spot = binance_feed.composite_price(symbol)
-        sigma_now = binance_feed.sigma_per_minute(symbol, lookback=60)
-        sigma_base = binance_feed.sigma_per_minute(symbol, lookback=1440)
+        sigma_now = binance_feed.composite_sigma(symbol, lookback=60)
+        sigma_base = binance_feed.composite_sigma(symbol, lookback=1440)
         if spot is None or sigma_now is None:
             print(f"{symbol}: no spot/vol")
             continue

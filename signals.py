@@ -220,7 +220,7 @@ def _force_save_bid_hist():
 def _track_bid(ticker: str, yes_bid_cents: int, now: float):
     global _bid_hist_dirty
     if not _bid_hist:
-        _load_bid_hist()
+        _load_bid_hist_for_read()
     h = _bid_hist.setdefault(ticker, [])
     h.append((now, max(0, min(100, int(yes_bid_cents or 0)))))
     cutoff = now - (config.STABILITY_LOOKBACK_MIN + 1.5) * 60
@@ -231,8 +231,36 @@ def _track_bid(ticker: str, yes_bid_cents: int, now: float):
     if len(_bid_hist) > 200:
         for k in list(_bid_hist)[:-120]:
             _bid_hist.pop(k, None)
+    # TTL-based cleanup: remove entries older than lookback + 1 hour
+    ttl_cutoff = now - (config.STABILITY_LOOKBACK_MIN + 60) * 60
+    for ticker_key in list(_bid_hist.keys()):
+        h = _bid_hist[ticker_key]
+        h[:] = [(t, b) for t, b in h if t >= ttl_cutoff]
+        if not h:
+            _bid_hist.pop(ticker_key, None)
     _bid_hist_dirty = True
     return h
+
+
+def _load_bid_hist_for_read():
+    """Load bid history with shared lock for concurrent reads."""
+    global _bid_hist
+    try:
+        hist_file = _bid_hist_file()
+        if hist_file.exists():
+            with open(hist_file) as f:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                data = json.load(f)
+            _bid_hist = {k: [(float(t), int(b)) for t, b in v] for k, v in data.items()}
+    except FileNotFoundError:
+        _bid_hist = {}
+    except json.JSONDecodeError as e:
+        log.error("Bid history file corrupted: %s — starting fresh", e)
+        _bid_hist = {}
+    except Exception as e:
+        log.error("Failed to load bid history: %s — starting fresh", e)
+        _bid_hist = {}
 
 
 def _stability_ok(ticker: str, now: float):
@@ -243,6 +271,8 @@ def _stability_ok(ticker: str, now: float):
     """
     if not getattr(config, "STABILITY_ENABLED", True):
         return True, ""
+    if not _bid_hist:
+        _load_bid_hist_for_read()
     h = _bid_hist.get(ticker) or []
     cutoff = now - config.STABILITY_LOOKBACK_MIN * 60
     window = [(t, b) for t, b in h if t >= cutoff]

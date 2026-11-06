@@ -1224,6 +1224,7 @@ def cycle(client: KalshiClient):
             # after a crash can't double-count. Key is "settle:<ticker>:<order_id>".
             settle_key = f"settle:{t}:{order_id}"
             applied = True  # default: treat as not-yet-applied; DB failure falls through to credit PnL
+            pnl_to_add = 0.0
             try:
                 applied = get_local_db().apply_settlement_pnl(
                     settle_key, t, realized_pnl,
@@ -1240,7 +1241,9 @@ def cycle(client: KalshiClient):
                 log.warning("Failed to record settlement P&L to local ledger for %s — using fallback", t)
                 pnl_to_add = realized_pnl
 
-            new_session_pnl = state.session_pnl
+            # Write PnL to Supabase FIRST, then update local state.
+            # This ensures: if process crashes after Supabase write, local state is
+            # reconciled on restart. Only credit local session_pnl if DB write succeeds.
             if applied:
                 new_session_pnl = state.session_pnl + pnl_to_add
                 # Write PnL to Supabase FIRST, then update local state.
@@ -1252,7 +1255,11 @@ def cycle(client: KalshiClient):
                     log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
                 except Exception:
                     log.warning("Supabase session_pnl write failed — keeping local state only", t)
-                    state.session_pnl = new_session_pnl
+                    # Do NOT update local state on DB failure — will retry on next cycle
+                    # via the idempotency key check in apply_settlement_pnl
+            else:
+                # applied is False (already recorded) or error path — no PnL to add
+                pass
 
             # Invalidate market cache after settlement — the market is no longer open.
             series = t.split("-")[0] if "-" in t else t

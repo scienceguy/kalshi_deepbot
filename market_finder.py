@@ -227,9 +227,11 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
 
         log.debug("  %s ml=%.1f mid=%.1fc ya=%dc yb=%dc", ticker, ml, mid, ya, yb)
 
-        if MIN_P <= mid <= MAX_P:
+        if mid is not None and MIN_P <= mid <= MAX_P:
             mains.append((mkt, ct, ml, mid))
-        elif 1 <= ya <= HMAX:
+        
+        # Hedge check is independent of main check
+        if 1 <= ya <= HMAX:
             hedges.append((mkt, ct, ml, ya))
 
     return mains, hedges

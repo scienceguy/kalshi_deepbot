@@ -209,7 +209,6 @@ def train_from_history(series: str = "KXBTCD", events: int = 6,
                     "spot": spot,
                     "sigma": sigma,
                     "kalshi": mid,
-                    "poly": mid,            # no separate PM history; mirror
                     "spread": ask - bid,
                     "fair": prob_above(spot, float(strike), sigma, mins_left),
                     "minutes_left": mins_left,

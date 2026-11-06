@@ -72,6 +72,7 @@ def settled_events(series: str, limit: int = 200) -> List[dict]:
     """Settled events for a series, newest first, with their settlement value."""
     events: Dict[str, dict] = {}
     cursor = None
+    prev_cursor = None
     pages = 0
     while pages < 12 and len(events) < limit:
         params = {"series_ticker": series, "limit": 200}
@@ -103,8 +104,13 @@ def settled_events(series: str, limit: int = 200) -> List[dict]:
                 events[ev]["strikes"][float(m["floor_strike"])] = m["ticker"]
             except (TypeError, ValueError):
                 continue
+        prev_cursor = cursor
         cursor = payload.get("cursor")
         pages += 1
+        # Detect stuck cursor (same cursor returned repeatedly)
+        if cursor and cursor == prev_cursor:
+            log.warning("Pagination cursor stuck for series %s after %d pages -- breaking", series, pages)
+            break
         if not cursor:
             break
     return list(events.values())
@@ -169,8 +175,12 @@ def sigma_curve(symbol: str, start_ts: int, end_ts: int,
 
 
 def sigma_at(minute_ts: int, symbol: str, window: int = 60) -> Optional[float]:
+    # minute_ts is the end of the minute (e.g., 14:30:00).
+    # We want klines from (minute_ts - window*60) to minute_ts inclusive.
+    # Binance klines use open_time, so we need end_ms = (minute_ts + 60) * 1000
+    # to include the kline that closes at minute_ts.
     rows = binance_feed.get_klines_range(symbol, (minute_ts - window * 60) * 1000,
-                                         minute_ts * 1000, "1m")
+                                         (minute_ts + 60) * 1000, "1m")
     if not rows or len(rows) < 10:
         return None
     import math
@@ -220,13 +230,16 @@ def event_basis(event: dict, series: str, asset: str, minutes: int = 60) -> List
     for ts, rungs in sorted(ladders.items()):
         if len(rungs) < 4:
             continue
-        spot = spots.get(ts - ts % 60)
+        # Use spot/sigma from previous minute to avoid lookahead bias:
+        # Kalshi candle at `ts` (end_period_ts) covers [ts-60, ts].
+        # The spot at `ts` is not known until after the minute ends.
+        spot = spots.get(ts - 60)
         if spot is None:
             continue
         mins_left = (close_ts - ts) / 60.0
         if mins_left <= 0:
             continue
-        sigma = sigmas.get(ts - ts % 60)
+        sigma = sigmas.get(ts - 60)
         if not sigma:
             continue
         implied = ls.implied_spot(rungs, sigma, mins_left)

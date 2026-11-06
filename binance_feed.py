@@ -25,6 +25,7 @@ Read-only. No keys, no orders.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 from typing import AsyncIterator, Dict, List, Optional
@@ -284,7 +285,6 @@ async def stream_trades(symbol: str = "btcusdt") -> AsyncIterator[float]:
     This function reconnects automatically on disconnect with exponential backoff.
     """
     import websockets
-    import json
 
     url = f"{BINANCE_WS}/{symbol.lower()}@trade"
     backoff = 1
