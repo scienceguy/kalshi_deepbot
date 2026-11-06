@@ -54,3 +54,6 @@
 {"ts": "2026-11-06T05:29:00.191779+00:00", "ticker": "KXBTC15M-TEST", "side": "yes", "fill_price_cents": 85, "settle_price_cents": 0, "markout_cents": -85, "contracts": 1, "realized_pnl_dollars": -0.85, "won": false}
 {"ts": "2026-11-06T05:29:59.189293+00:00", "ticker": "KXBTC15M-TEST", "side": "yes", "fill_price_cents": 85, "settle_price_cents": 0, "markout_cents": -85, "contracts": 1, "realized_pnl_dollars": -0.85, "won": false}
 {"ts": "2026-11-06T05:30:34.105651+00:00", "ticker": "KXBTC15M-TEST", "side": "yes", "fill_price_cents": 85, "settle_price_cents": 0, "markout_cents": -85, "contracts": 1, "realized_pnl_dollars": -0.85, "won": false}
+{"ts": "2026-11-06T05:32:22.118694+00:00", "ticker": "KXBTC15M-TEST", "side": "yes", "fill_price_cents": 85, "settle_price_cents": 0, "markout_cents": -85, "contracts": 1, "realized_pnl_dollars": -0.85, "won": false}
+{"ts": "2026-11-06T05:34:34.166370+00:00", "ticker": "KXBTC15M-TEST", "side": "yes", "fill_price_cents": 85, "settle_price_cents": 0, "markout_cents": -85, "contracts": 1, "realized_pnl_dollars": -0.85, "won": false}
+{"ts": "2026-11-06T05:35:03.074628+00:00", "ticker": "KXBTC15M-TEST", "side": "yes", "fill_price_cents": 85, "settle_price_cents": 0, "markout_cents": -85, "contracts": 1, "realized_pnl_dollars": -0.85, "won": false}

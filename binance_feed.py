@@ -40,7 +40,11 @@ _session = requests.Session()
 BINANCE_REST = "https://data-api.binance.vision/api/v3"
 BINANCE_WS = "wss://data-stream.binance.vision/ws"
 
-_KRAKEN_PAIR = {"BTC": "XBTUSD", "ETH": "ETHUSD"}
+_KRAKEN_PAIR = {
+    "BTC": "XBTUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
+    "XRP": "XRPUSD", "DOGE": "XDGUSD", "BNB": "BNBUSD",
+    "HYPE": "HYPEUSD", "ZEC": "ZECUSD", "NEAR": "NEARUSD",
+}
 
 _KNOWN_BASES = {"BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE", "ZEC", "NEAR"}
 
@@ -212,14 +216,24 @@ def get_klines(symbol: str = "BTCUSDT", interval: str = "1m",
 
 def get_klines_range(symbol: str, start_ms: int, end_ms: int,
                      interval: str = "1m", timeout: int = 20) -> Optional[List[List]]:
-    """Klines for a historical window, for backtests. Binance caps at 1000/response."""
+    """Klines for a historical window, for backtests. Binance caps at 1000/response.
+    Uses pagination to fetch all klines in the window."""
+    all_klines = []
+    cursor_start = start_ms
     try:
-        resp = requests.get(f"{BINANCE_REST}/klines",
-                            params={"symbol": symbol, "interval": interval,
-                                    "startTime": start_ms, "endTime": end_ms, "limit": 1000},
-                            timeout=timeout)
-        resp.raise_for_status()
-        return resp.json()
+        while cursor_start < end_ms:
+            resp = _session.get(f"{BINANCE_REST}/klines",
+                                params={"symbol": symbol, "interval": interval,
+                                        "startTime": cursor_start, "endTime": end_ms, "limit": 1000},
+                                timeout=timeout)
+            resp.raise_for_status()
+            klines = resp.json()
+            if not klines:
+                break
+            all_klines.extend(klines)
+            # Advance cursor to just after the last kline's open time
+            cursor_start = klines[-1][0] + 1
+        return all_klines
     except Exception as e:
         log.warning("binance klines range failed: %s", e)
         return None
@@ -266,17 +280,30 @@ async def stream_trades(symbol: str = "btcusdt") -> AsyncIterator[float]:
     Provided for streaming callers. The trading loop decides once per cycle, so
     `get_price` is the correct path there — a websocket would add a reconnect
     surface for a number that changes nothing within a 60-second cycle.
+
+    This function reconnects automatically on disconnect with exponential backoff.
     """
     import websockets
     import json
 
     url = f"{BINANCE_WS}/{symbol.lower()}@trade"
-    async with websockets.connect(url, open_timeout=10, close_timeout=10, ping_interval=20) as ws:
-        async for raw in ws:
-            try:
-                yield float(json.loads(raw)["p"])
-            except (ValueError, KeyError, TypeError):
-                continue
+    backoff = 1
+    max_backoff = 60
+    while True:
+        try:
+            async with websockets.connect(url, open_timeout=10, close_timeout=10, ping_interval=20) as ws:
+                backoff = 1  # Reset on successful connection
+                async for raw in ws:
+                    try:
+                        yield float(json.loads(raw)["p"])
+                    except (ValueError, KeyError, TypeError):
+                        continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("stream_trades disconnected: %s — reconnecting in %ds", e, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
 
 
 if __name__ == "__main__":
