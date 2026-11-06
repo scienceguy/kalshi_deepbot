@@ -250,18 +250,42 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="plan ladder orders; places nothing")
     ap.add_argument("--layers", type=int, default=3)
     ap.add_argument("--safety", type=float, default=MIN_SAFETY_MULTIPLE)
-    ap.add_argument("--basis-dollars", type=float, default=None,
-                    help="historical median (Kalshi implied spot - composite spot). "
-                         "Omitting it means the reference basis is unestimated, so "
-                         "no rung is tradeable.")
-    ap.add_argument("--basis-noise-dollars", type=float, default=0.0,
-                    help="historical stdev of that basis; charged per rung at its "
-                         "own moneyness and combined with the fee barrier.")
+    ap.add_argument("--basis", type=str, action="append", default=[],
+                    metavar="ASSET=DOLLARS",
+                    help="historical median (Kalshi implied spot - composite spot) "
+                         "for one asset, e.g. --basis BTC=13.46. Repeat per asset. "
+                         "An asset with no basis is not traded (the offset would be "
+                         "indistinguishable from an edge).")
+    ap.add_argument("--basis-noise", type=str, action="append", default=[],
+                    metavar="ASSET=DOLLARS",
+                    help="historical stdev of that basis for one asset, e.g. "
+                         "--basis-noise BTC=21.02. Charged per rung at its own "
+                         "moneyness and combined with the fee barrier.")
+    ap.add_argument("--ml-model", type=str, default=None,
+                    help="path to a saved torch fair-value model (ml_model.py). "
+                         "When given, its predict_proba overrides the lognormal "
+                         "fair value on every rung.")
     args = ap.parse_args()
+
+    basis_dollars: dict = {}
+    for item in args.basis:
+        if "=" in item:
+            k, v = item.split("=", 1)
+            basis_dollars[k.strip().upper()] = float(v)
+    basis_noise_dollars: dict = {}
+    for item in args.basis_noise:
+        if "=" in item:
+            k, v = item.split("=", 1)
+            basis_noise_dollars[k.strip().upper()] = float(v)
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
     found = 0
+    ml = None
+    if args.ml_model:
+        import ml_model
+        ml = ml_model.MLFairValue.load(args.ml_model)
+        print(f"ML model loaded from {args.ml_model}")
     for asset in ("BTC", "ETH"):
         symbol = f"{asset}USDT"
         spot = binance_feed.composite_price(symbol)
@@ -297,18 +321,22 @@ def main() -> int:
                       f"({100 * basis / (spot * sigma_now * max(minutes, 1) ** 0.5):+.0f}% "
                       f"of one sigma)")
 
-                if args.basis_dollars is None:
-                    print("NO TRADE: basis unestimated. Every rung shows the same "
-                          "offset, which is the basis, not an edge. Pass "
-                          "--basis-dollars once the collector has measured it.")
+                basis_d = basis_dollars.get(asset)
+                if basis_d is None:
+                    print(f"NO TRADE: basis unestimated for {asset}. Every rung "
+                          f"shows the same offset, which is the basis, not an edge. "
+                          f"Pass --basis {asset}=<dollars> once the collector has "
+                          f"measured it.")
                     continue
 
                 # Price fair value against Kalshi's own reference, not ours.
-                spot_ref = spot + args.basis_dollars
+                spot_ref = spot + basis_d
+                noise_d = basis_noise_dollars.get(asset, 0.0)
                 rows = cv.three_way(kalshi, poly, spot_ref, sigma_now)
                 plans = plan_orders(rows, vol_mult=vm, safety=args.safety,
-                                    basis_stdev_dollars=args.basis_noise_dollars,
-                                    spot=spot_ref, sigma_min=sigma_now)
+                                    basis_stdev_dollars=noise_d,
+                                    spot=spot_ref, sigma_min=sigma_now,
+                                    ml=ml)
                 s = summarise(plans)
                 found += s["tradeable"]
                 print(f"rungs {s['rungs']}  tradeable {s['tradeable']}  "
