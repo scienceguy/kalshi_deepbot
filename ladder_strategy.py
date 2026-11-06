@@ -51,6 +51,13 @@ TAKER_FEE_RATE = 0.07  # matches fees.FEE_RATE
 
 # How much of the taker-fee barrier to demand as discount. 1.0 means "only trade
 # where being filled implies the taker had no edge beyond their own fee".
+#
+# Adverse-selection research (Bartlett & O'Hara SSRN 6615739; Becker SSRN 7217640):
+# maker E[PnL|fill] = +1.91c single-name but losing fills cost ~23c vs winning
+# ~16c (magnitude deficit -3.4c), and toxicity is ~5x higher ATM than tails.
+# The fee is a *lower bound* on the informed edge of whoever fills us. vol_mult
+# (capped at MAX_VOL_MULTIPLE) and basis_noise_c add further margin; tune
+# MIN_SAFETY_MULTIPLE up if fills prove toxic in live/dry runs.
 MIN_SAFETY_MULTIPLE = 1.0
 
 # Cap the volatility multiplier so a spike widens quotes instead of shutting us
