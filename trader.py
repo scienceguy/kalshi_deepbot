@@ -37,6 +37,10 @@ parser.add_argument("--debug", action="store_true")
 parser.add_argument("--interval", type=int, default=config.LOOP_INTERVAL_SECONDS)
 parser.add_argument("--cycle-limit", type=int, default=0,
                     help="stop after this many cycles (0 = disabled)")
+parser.add_argument("--ml-model", type=str, default=None,
+                    help="path to saved torch fair-value model (ml_model.py). "
+                         "When given, ML fair value overrides venue-implied fair "
+                         "as an additional entry filter.")
 args = parser.parse_args()
 
 # Set DRY_RUN directly on the config module — avoids mutating os.environ
@@ -62,6 +66,24 @@ import signals as se  # noqa: E402
 from resilience import CycleSupervisor  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
 import paper_mode  # noqa: E402
+
+# Lazy-loaded ML fair-value model (only when --ml-model is passed).
+_ml_model = None
+
+
+def _load_ml_model(path: str):
+    """Lazy-load a saved torch fair-value model. Returns None on failure."""
+    global _ml_model
+    if _ml_model is not None:
+        return _ml_model
+    try:
+        import ml_model
+        _ml_model = ml_model.MLFairValue.load(path)
+        log.info("ML fair-value model loaded from %s", path)
+    except Exception as e:
+        log.warning("Failed to load ML model from %s: %s — continuing without ML", path, e)
+    return _ml_model
+
 
 lf = Path(config.LOG_FILE).expanduser()
 lf.parent.mkdir(parents=True, exist_ok=True)
@@ -1361,6 +1383,38 @@ def cycle(client: KalshiClient):
             if sig.is_trade:
                 signals.append(sig)
 
+    # ML fair-value override: re-score signals through the ML model.
+    # If ML fair value disagrees with venue-implied fair on direction, or if
+    # ML fair is below the entry bar, drop the signal.
+    if _ml_model is not None:
+        import ladder_strategy as ls
+        ml_filtered = []
+        for sig in signals:
+            m = sig.market
+            minutes_left = m.minutes_left
+            kalshi_mid = (m.yes_bid + m.yes_ask) / 200.0 if (m.yes_bid and m.yes_ask) else sig.entry_price / 100.0
+            row = {
+                "strike": float(m.strike),
+                "kalshi": kalshi_mid,
+                "fair": kalshi_mid,        # venue-implied fair (overridden by ML)
+                "poly": kalshi_mid,
+                "spread": (m.yes_ask - m.yes_bid) / 100.0 if (m.yes_bid and m.yes_ask) else 0.0,
+                "minutes_left": minutes_left,
+            }
+            plans = ls.plan_orders([row], spot=float(m.strike), sigma_min=0.0007,
+                                   ml=_ml_model, basis_stdev_dollars=0.0)
+            if not plans or not plans[0].tradeable:
+                log.info("ML BLOCK %s — ML fair below entry bar", m.ticker)
+                continue
+            # ML and venue must agree on direction (YES vs NO).
+            ml_side = plans[0].side.lower()
+            if ml_side != sig.side:
+                log.info("ML BLOCK %s — venue side %s vs ML side %s",
+                         m.ticker, sig.side, ml_side)
+                continue
+            ml_filtered.append(sig)
+        signals = ml_filtered
+
     # Latency-arb is deliberately NOT wired in: it buys the underdog at the
     # taker price (e.g. NO at 3c when YES is 98c), which is the opposite of the
     # favourite-maker strategy and pays taker fees. Keep it disabled until a
@@ -1519,6 +1573,12 @@ def main():
         log.warning("n8n health check failed — settlement webhooks may not work. "
                     "Bot continues trading without n8n routing.")
     log.info("n8n health check %s", "✓" if n8n_ok else "✗")
+
+    # Lazy-load ML fair-value model if requested (torch import is heavy;
+    # only pay the cost when --ml-model is passed).
+    if args.ml_model:
+        _load_ml_model(args.ml_model)
+        log.info("ML fair-value filtering enabled")
 
     # Validate the Supabase service key at startup — an invalid/leaked key
     # (e.g. the one previously committed to git history) returns 401 on every

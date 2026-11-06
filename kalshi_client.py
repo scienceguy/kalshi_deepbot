@@ -258,13 +258,12 @@ class KalshiClient:
         data = self._request("GET", "/portfolio/balance")
         cents = data.get("balance", 0)
         dollars = cents / 100.0
-        # Sanity guard: if the raw value looks like dollars already (> $10k),
-        # something is wrong — log loudly instead of silently mispricing
-        # everything by 100x.
-        if cents > 100_000 and dollars < 1_000_000:
+        # Sanity guard: raw >$10B as cents, or <$0.01 after division — both
+        # indicate a unit mismatch (dollars vs cents).
+        if cents > 1_000_000_000 or (cents > 0 and dollars < 0.01):
             log.warning(
-                "Balance raw value %d seems like dollars not cents "
-                "(converted to $%.2f) — verify KALSHI balance units",
+                "Balance raw value %s seems mislabeled (converted to $%.2f) — "
+                "verify KALSHI balance units (cents vs dollars)",
                 cents, dollars,
             )
         return dollars
