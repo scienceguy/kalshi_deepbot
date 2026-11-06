@@ -1,0 +1,89 @@
+2026-11-05 16:27:25,899 INFO — HTTP Request: GET https://huggingface.co/api/datasets/papylove/kalshi-15m-data/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-11-05 16:27:26,009 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-09-28.parquet "HTTP/1.1 302 Found"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-11-05 16:27:26,010 WARNING — Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-11-05 16:27:26,089 INFO — HTTP Request: GET https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-09-28.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:27:26,730 INFO — HTTP Request: GET https://us.aws.cdn.hf.co/xet-bridge-us/6aaf088d4a43a3fea0ac7c8b/95a302fa815cd1fb3b07af76eaa7cbb1d229a04d39fba5e1e2243a3177312587?user_id=public&X-Xet-Cas-Uid=public&xip=cg1K1i0jGtU&response-content-disposition=inline%3B+filename*%3DUTF-8%27%272026-09-28.parquet%3B+filename%3D%222026-09-28.parquet%22%3B&Expires=1793924844&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly91cy5hd3MuY2RuLmhmLmNvL3hldC1icmlkZ2UtdXMvNmFhZjA4OGQ0YTQzYTNmZWEwYWM3YzhiLzk1YTMwMmZhODE1Y2QxZmIzYjA3YWY3NmVhYTdjYmIxZDIyOWEwNGQzOWZiYTVlMWUyMjQzYTMxNzczMTI1ODdcXD91c2VyX2lkPXB1YmxpYyZYLVhldC1DYXMtVWlkPXB1YmxpYyZ4aXA9Y2cxSzFpMGpHdFUmcmVzcG9uc2UtY29udGVudC1kaXNwb3NpdGlvbj1pbmxpbmUlM0IrZmlsZW5hbWUlMkElM0RVVEYtOCUyNyUyNzIwMjYtMDktMjgucGFycXVldCUzQitmaWxlbmFtZSUzRCUyMjIwMjYtMDktMjgucGFycXVldCUyMiUzQiIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiRXBvY2hUaW1lIjoxNzkzOTI0ODQ0fX19XX0_&Signature=MEYCIQDjTpLmkxOJzlvAAjcoDOViAaDfHhwSbZUWv-ge%7Em9kbgIhALyf5yR6t38LoZmgUxKTZVE1IRd6FqRwsYFdC1aw4TZy&Key-Pair-Id=01KXEF4KZ1B6FV465MAWR4M21F&Hash-Algorithm=SHA256 "HTTP/1.1 200 OK"
+2026-11-05 16:27:31,720 INFO — quote_history/2026-09-28.parquet: 1238 windows so far
+2026-11-05 16:27:31,887 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-09-29.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:27:31,970 INFO — HTTP Request: GET https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-09-29.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:27:32,324 INFO — HTTP Request: GET https://us.aws.cdn.hf.co/xet-bridge-us/6aaf088d4a43a3fea0ac7c8b/bac1aea4096b27f500c6b75eef85df8b5b9e3b66a14b146459a7b971557af832?xip=cg1K1i0jGtU&response-content-disposition=inline%3B+filename*%3DUTF-8%27%272026-09-29.parquet%3B+filename%3D%222026-09-29.parquet%22%3B&X-Xet-Cas-Uid=public&user_id=public&Expires=1793924850&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly91cy5hd3MuY2RuLmhmLmNvL3hldC1icmlkZ2UtdXMvNmFhZjA4OGQ0YTQzYTNmZWEwYWM3YzhiL2JhYzFhZWE0MDk2YjI3ZjUwMGM2Yjc1ZWVmODVkZjhiNWI5ZTNiNjZhMTRiMTQ2NDU5YTdiOTcxNTU3YWY4MzJcXD94aXA9Y2cxSzFpMGpHdFUmcmVzcG9uc2UtY29udGVudC1kaXNwb3NpdGlvbj1pbmxpbmUlM0IrZmlsZW5hbWUlMkElM0RVVEYtOCUyNyUyNzIwMjYtMDktMjkucGFycXVldCUzQitmaWxlbmFtZSUzRCUyMjIwMjYtMDktMjkucGFycXVldCUyMiUzQiZYLVhldC1DYXMtVWlkPXB1YmxpYyZ1c2VyX2lkPXB1YmxpYyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiRXBvY2hUaW1lIjoxNzkzOTI0ODUwfX19XX0_&Signature=MEQCIBsAlLL5Jts7kEsnPe-jWlS88HbTvMql-Sj7eTHtQDSxAiAL1WBPcDyuJocIAHh2aO-1VMZOD1R2trl0sI0mGC%7EwnQ__&Key-Pair-Id=01KXEF4KZ1B6FV465MAWR4M21F&Hash-Algorithm=SHA256 "HTTP/1.1 200 OK"
+2026-11-05 16:27:36,732 INFO — quote_history/2026-09-29.parquet: 2476 windows so far
+2026-11-05 16:27:36,822 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-09-30.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:27:36,902 INFO — HTTP Request: GET https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-09-30.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:27:37,461 INFO — HTTP Request: GET https://us.aws.cdn.hf.co/xet-bridge-us/6aaf088d4a43a3fea0ac7c8b/09c2e84b2be9df78548938bc00fdfb72af074fd657b30df922e36aca6bbc3d37?xip=cg1K1i0jGtU&response-content-disposition=inline%3B+filename*%3DUTF-8%27%272026-09-30.parquet%3B+filename%3D%222026-09-30.parquet%22%3B&user_id=public&X-Xet-Cas-Uid=public&Expires=1793924854&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly91cy5hd3MuY2RuLmhmLmNvL3hldC1icmlkZ2UtdXMvNmFhZjA4OGQ0YTQzYTNmZWEwYWM3YzhiLzA5YzJlODRiMmJlOWRmNzg1NDg5MzhiYzAwZmRmYjcyYWYwNzRmZDY1N2IzMGRmOTIyZTM2YWNhNmJiYzNkMzdcXD94aXA9Y2cxSzFpMGpHdFUmcmVzcG9uc2UtY29udGVudC1kaXNwb3NpdGlvbj1pbmxpbmUlM0IrZmlsZW5hbWUlMkElM0RVVEYtOCUyNyUyNzIwMjYtMDktMzAucGFycXVldCUzQitmaWxlbmFtZSUzRCUyMjIwMjYtMDktMzAucGFycXVldCUyMiUzQiZ1c2VyX2lkPXB1YmxpYyZYLVhldC1DYXMtVWlkPXB1YmxpYyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiRXBvY2hUaW1lIjoxNzkzOTI0ODU0fX19XX0_&Signature=MEUCIQCMDKZkERtXZp67pXzV8o%7EibkzvT30svgYPTZ2nLNYMNgIga0r2si9uGltIV7RtkGo-4D4vjnnJbwHTOfVN1wGc5iU_&Key-Pair-Id=01KXEF4KZ1B6FV465MAWR4M21F&Hash-Algorithm=SHA256 "HTTP/1.1 200 OK"
+2026-11-05 16:27:42,479 INFO — quote_history/2026-09-30.parquet: 3714 windows so far
+2026-11-05 16:27:42,645 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-01.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:27:42,727 INFO — HTTP Request: GET https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-01.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:27:43,520 INFO — HTTP Request: GET https://us.aws.cdn.hf.co/xet-bridge-us/6aaf088d4a43a3fea0ac7c8b/44fbc150b93faac97a77856311936ab16eefd463f1240f806e75d03e07b1f34a?X-Xet-Cas-Uid=public&xip=cg1K1i0jGtU&user_id=public&response-content-disposition=inline%3B+filename*%3DUTF-8%27%272026-10-01.parquet%3B+filename%3D%222026-10-01.parquet%22%3B&Expires=1793924860&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly91cy5hd3MuY2RuLmhmLmNvL3hldC1icmlkZ2UtdXMvNmFhZjA4OGQ0YTQzYTNmZWEwYWM3YzhiLzQ0ZmJjMTUwYjkzZmFhYzk3YTc3ODU2MzExOTM2YWIxNmVlZmQ0NjNmMTI0MGY4MDZlNzVkMDNlMDdiMWYzNGFcXD9YLVhldC1DYXMtVWlkPXB1YmxpYyZ4aXA9Y2cxSzFpMGpHdFUmdXNlcl9pZD1wdWJsaWMmcmVzcG9uc2UtY29udGVudC1kaXNwb3NpdGlvbj1pbmxpbmUlM0IrZmlsZW5hbWUlMkElM0RVVEYtOCUyNyUyNzIwMjYtMTAtMDEucGFycXVldCUzQitmaWxlbmFtZSUzRCUyMjIwMjYtMTAtMDEucGFycXVldCUyMiUzQiIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiRXBvY2hUaW1lIjoxNzkzOTI0ODYwfX19XX0_&Signature=MEQCIBaZ0naEA5XNAOI8PkK6-Af7MZTnq8QczQsjIsaDb9QrAiAjJ1bnL3rdXAdVWs-H8YtxNbby-zFIixfpYsiqUDJ4gw__&Key-Pair-Id=01KXEF4KZ1B6FV465MAWR4M21F&Hash-Algorithm=SHA256 "HTTP/1.1 200 OK"
+2026-11-05 16:27:47,914 INFO — quote_history/2026-10-01.parquet: 4820 windows so far
+2026-11-05 16:27:48,059 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-02.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:27:52,618 INFO — quote_history/2026-10-02.parquet: 6008 windows so far
+2026-11-05 16:27:52,696 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-03.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:27:56,029 INFO — quote_history/2026-10-03.parquet: 6776 windows so far
+2026-11-05 16:27:56,159 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-04.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:27:59,198 INFO — quote_history/2026-10-04.parquet: 7595 windows so far
+2026-11-05 16:27:59,278 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-05.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:28:04,446 INFO — quote_history/2026-10-05.parquet: 9010 windows so far
+2026-11-05 16:28:04,673 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-06.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:28:10,661 INFO — quote_history/2026-10-06.parquet: 10425 windows so far
+2026-11-05 16:28:10,806 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-07.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:28:17,457 INFO — quote_history/2026-10-07.parquet: 11840 windows so far
+2026-11-05 16:28:17,595 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-08.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:28:24,176 INFO — quote_history/2026-10-08.parquet: 13120 windows so far
+2026-11-05 16:28:24,323 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-09.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:28:31,492 INFO — quote_history/2026-10-09.parquet: 14500 windows so far
+2026-11-05 16:28:31,677 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-10.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:28:35,824 INFO — quote_history/2026-10-10.parquet: 15300 windows so far
+2026-11-05 16:28:35,964 INFO — HTTP Request: HEAD https://huggingface.co/datasets/papylove/kalshi-15m-data/resolve/main/quote_history/2026-10-11.parquet "HTTP/1.1 302 Found"
+2026-11-05 16:28:36,675 INFO — quote_history/2026-10-11.parquet: 15420 windows so far
+2026-11-05 16:28:36,676 INFO — Loaded 15420 windows with real quotes
+2026-11-05 16:28:36,680 INFO — Testing 972 parameter combinations with 2 workers...
+
+==========================================================================================
+BACKTEST RESULTS — 15420 markets, 972 parameter sets
+==========================================================================================
+
+Rank  EV/trade  Total P&L  Trades  Win%    Avg P&L   MaxDD   Params
+------------------------------------------------------------------------------------------
+1     0.0037    17.67      4816    43.4  % 0.0037    92.5  % win=8.0min band=50-85 stop=8c agg=False
+2     0.0024    11.69      4816    43.4  % 0.0024    95.8  % win=8.0min band=50-85 stop=8c agg=False
+3     0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+4     0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+5     0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+6     0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+7     0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+8     0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+9     0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+10    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+11    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+12    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+13    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+14    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+15    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+16    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+17    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=0c agg=False
+18    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=8c agg=False
+19    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=8c agg=False
+20    0.0000    0.00       0       0.0   % 0.0000    0.0   % win=6.0min band=15-55 stop=8c agg=False
+2026-11-05 16:35:34,461 INFO — Full results saved to hf_sweep_results.json
+
+================================================================================
+BEST PARAMETERS (highest EV):
+================================================================================
+  ENTRY_WINDOW_START_MIN: 8.0
+  ENTRY_BAND_MIN: 50
+  ENTRY_BAND_MAX: 85
+  AGGRESSIVE_FILL: False
+  EXIT_STOP_LOSS_CENTS: 8
+  PER_TRADE_PCT: 0.12
+  MAX_TRADE_DOLLARS: 2.0
+  BALANCE_PCT_PER_TRADE: 0.1
+
+  EV/trade: $0.0037
+  Total P&L: $17.67
+  Trades: 4816
+  Win rate: 43.4%
+  Max drawdown: 92.5%
+  Final balance: $27.67
+EXIT=0

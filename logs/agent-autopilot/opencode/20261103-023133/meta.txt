@@ -1,0 +1,33 @@
+tool=opencode
+cwd=/data/data/com.termux/files/home/kalshi_superbot
+minutes=480
+turn_minutes=5
+wrap_up_minutes=3
+model=dsh-our-free-model/nvidia-nemotron-3-ultra-550b-a55b-free
+stop_file=/data/data/com.termux/files/home/kalshi_superbot/logs/agent-autopilot/opencode/20261103-023133/STOP
+attach_url=
+resume=0
+prefer_json=0
+dry_run=0
+
+mission:
+CONTINUOUS OPTIMIZATION MISSION: Achieve rapidly compounding net profitable positions for the live Kalshi bot.
+
+FOCUS AREAS:
+1. CODE OPTIMIZATION: Fix all 4 failing tests, eliminate any bugs from audit reports, harden error handling, reduce latency in hot paths (market_finder, signals, kalshi_client)
+
+2. STRATEGY OPTIMIZATION: Analyze live_trader.log and bot.log for actual PnL patterns. Improve entry/exit logic in signals.py (two-sided favourite maker, stability check, confidence scoring, panic fade). Optimize hedge selection in market_finder.py. Tune risk parameters in risk.py (cash floor, exposure ceiling, per-trade cap, drawdown halt).
+
+3. PARAMETER OPTIMIZATION: Run backtests (backtest_engine.py, parallel_backtest.py) with parameter sweeps to find optimal: ENTRY_WINDOW, ENTRY_BAND_MIN/MAX, MIN_SKEW/TREND, PER_TRADE_PCT, STOP_LOSS/TAKE_PROFIT, FEE_RATE. Use historical_data/ and kalshieye_data/ for realistic simulation.
+
+REQUIREMENTS:
+- All 151 tests must pass (currently 147/151)
+- Dry-run must execute full cycle without errors
+- Live connectivity: Kalshi API (balance check), n8n webhooks (4/4 HTTP 200), Supabase (schema applied)
+- No unfixed issues after ponytail-audit
+- Commit all changes to git with descriptive messages
+- Document optimal parameters in AGENTS.md
+
+LOOP: Run tests → Fix failures → Run backtests → Analyze logs → Optimize params → Update code → Repeat until compounding PnL verified in live dry-run cycles.
+
+NO TIME LIMIT: Continue until all criteria met and bot is demonstrably profitable.

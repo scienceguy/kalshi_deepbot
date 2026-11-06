@@ -516,7 +516,7 @@ def _order_count(o):
         if v in (None, "", 0, "0", "0.00"):
             continue
         try:
-            return int(float(v))
+            return float(float(v))
         except (TypeError, ValueError):
             continue
     return 0
@@ -945,7 +945,12 @@ def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
     for sig in signals:
         m = sig.market
         series = m.ticker.split("-")[0] if "-" in m.ticker else m.ticker
-        asset = series[:3]  # e.g. KXBTC -> BTC, KXETH -> ETH
+        # Strip "KX" prefix (KXBTC15M → BTC15M), then strip suffix (BTC15M → BTC)
+        asset = series[2:]
+        if asset.endswith("15M"):
+            asset = asset[:-3]
+        elif asset.endswith("D"):
+            asset = asset[:-1]
         if asset not in spot_cache:
             try:
                 spot_cache[asset] = binance_feed.composite_price(f"{asset}USDT")

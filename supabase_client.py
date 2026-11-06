@@ -278,11 +278,10 @@ class SupabaseClient:
                     else:
                         log.debug("Supabase %s %s: table not created yet", method, path)
                     return None
-                log.warning("Supabase %s %s failed: %s %s",
-                            method, path, resp.status_code, resp.text[:200])
-                if resp.status_code in (400, 403, 404):
-                    log.error("Supabase schema/auth error on %s %s — audit trail may be incomplete",
-                              method, path)
+                # Persistent 4xx (other than auth) — record failure for circuit breaker
+                log.warning("Supabase %s %s: HTTP %s — recording failure",
+                            method, path, resp.status_code)
+                _supabase_record_failure()
                 return None
             except requests.RequestException as e:
                 last_err = e

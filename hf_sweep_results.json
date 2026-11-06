@@ -1,0 +1,956 @@
+{
+  "n_markets": 15420,
+  "n_combos": 972,
+  "results": [
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 8.0,
+        "ENTRY_BAND_MIN": 50,
+        "ENTRY_BAND_MAX": 85,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0036690199335548132,
+      "total_pnl": 17.66999999999998,
+      "n_trades": 4816,
+      "win_rate": 0.4339700996677741,
+      "avg_pnl": 0.0036690199335548132,
+      "final_balance": 27.67000000000002,
+      "max_drawdown": 0.9253391950276663
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 8.0,
+        "ENTRY_BAND_MIN": 50,
+        "ENTRY_BAND_MAX": 85,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0024273255813953305,
+      "total_pnl": 11.689999999999912,
+      "n_trades": 4816,
+      "win_rate": 0.4339700996677741,
+      "avg_pnl": 0.0024273255813953305,
+      "final_balance": 21.689999999999593,
+      "max_drawdown": 0.9575015041295217
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 55,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.08,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 0,
+        "PER_TRADE_PCT": 0.12,
+        "MAX_TRADE_DOLLARS": 5.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 2.0,
+        "BALANCE_PCT_PER_TRADE": 0.15
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    },
+    {
+      "params": {
+        "ENTRY_WINDOW_START_MIN": 6.0,
+        "ENTRY_BAND_MIN": 15,
+        "ENTRY_BAND_MAX": 70,
+        "AGGRESSIVE_FILL": false,
+        "EXIT_STOP_LOSS_CENTS": 8,
+        "PER_TRADE_PCT": 0.05,
+        "MAX_TRADE_DOLLARS": 3.0,
+        "BALANCE_PCT_PER_TRADE": 0.1
+      },
+      "ev": 0.0,
+      "total_pnl": 0.0,
+      "n_trades": 0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "final_balance": 10.0,
+      "max_drawdown": 0.0
+    }
+  ]
+}
