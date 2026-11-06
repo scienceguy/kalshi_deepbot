@@ -38,7 +38,8 @@ from crossvenue import KALSHI_BASE
 
 log = logging.getLogger("crossvenue_history")
 
-SERIES_ASSET = {"KXBTCD": "BTC", "KXETHD": "ETH", "KXBTC": "BTC", "KXETH": "ETH"}
+SERIES_ASSET = {"KXBTCD": "BTC", "KXETHD": "ETH", "KXBTC": "BTC", "KXETH": "ETH",
+                "KXBTC15M": "BTC", "KXETH15M": "ETH"}
 REQUEST_GAP = 0.12  # stay well inside Kalshi's public rate limit
 
 _last = 0.0

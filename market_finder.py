@@ -241,8 +241,7 @@ def find_active_markets(client: KalshiClient):
             all_mains.extend(mains)
             all_hedges.extend(hedges)
 
-    # Fetch orderbooks concurrently for all mains passing the band filter,
-    # plus up to MAX_HEDGE_PER_SERIES hedges per series.
+    # Fetch orderbooks concurrently for all rungs passing the band filter,
     fetch_list = []  # (mkt, ct, ml, role)
     for mkt, ct, ml, mid in all_mains:
         fetch_list.append((mkt, ct, ml, "MAIN"))

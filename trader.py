@@ -1132,7 +1132,7 @@ def cycle(client: KalshiClient):
             except Exception:
                 continue
         pos_info = state.positions.get(t, {})
-        reserved = state.position_risk.pop(t, 0.0)
+        reserved = state.position_risk.get(t, 0.0)
         is_paper = bool(pos_info.get("paper"))
         side = pos_info.get("side", "")
         entry_price = pos_info.get("entry_price", 0)
