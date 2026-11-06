@@ -330,6 +330,8 @@ def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
         return []
     lo, hi = p[0, 0], p[-1, 0]
 
+    spread_map = {float(r.strike): (r.spread or 0.0) for r in kalshi.sorted_rungs()}
+
     rows = []
     for strike, kalshi_mid in k:
         if not (lo <= strike <= hi):
@@ -342,6 +344,7 @@ def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
             "strike": float(strike),
             "fair": fair,
             "kalshi": float(kalshi_mid),
+            "spread": float(spread_map.get(strike, 0.0)),
             "poly": poly_mid,
             "kalshi_edge_c": (fair - kalshi_mid) * 100.0,
             "poly_edge_c": (fair - poly_mid) * 100.0,

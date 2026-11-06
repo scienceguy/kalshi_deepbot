@@ -40,6 +40,44 @@ def test_vol_multiple_is_clamped():
     assert ls.vol_multiple(0.0001, 0.001) == pytest.approx(1.0)  # never below 1
 
 
+# --- reference noise --------------------------------------------------------
+
+def test_dp_ds_is_largest_at_the_money():
+    near = ls.dp_ds(80000, 80000, 0.0007, 45)
+    wing = ls.dp_ds(80000, 84000, 0.0007, 45)
+    assert near > 0
+    assert near > wing * 10
+
+
+def test_basis_noise_scales_linearly_with_basis_stdev():
+    a = ls.basis_noise_cents(80000, 80000, 0.0007, 45, 21.0)
+    b = ls.basis_noise_cents(80000, 80000, 0.0007, 45, 42.0)
+    assert b == pytest.approx(2 * a)
+
+
+def test_basis_noise_at_the_money_is_a_few_cents():
+    # Measured BTC basis stdev is ~$21 at ~45 min. A dollar of spot is about
+    # 0.1c of probability there, so this should land near 2c, not 20c.
+    c = ls.basis_noise_cents(80000, 80000, 0.0007, 45, 21.0)
+    assert 1.0 < c < 4.0
+
+
+def test_required_edge_combines_fee_and_noise_in_quadrature():
+    fee_only = ls.required_edge_cents(50, 1.0, 1.0, 0.0)
+    with_noise = ls.required_edge_cents(50, 1.0, 1.0, 2.0)
+    assert with_noise == pytest.approx((fee_only ** 2 + 2.0 ** 2) ** 0.5)
+    assert with_noise > fee_only
+
+
+def test_noise_makes_the_bar_harder_at_the_money_than_in_the_wings():
+    rows = [_row(80000, 0.50, 0.56), _row(86000, 0.02, 0.04)]
+    plans = ls.plan_orders(rows, basis_stdev_dollars=21.0, spot=80000, sigma_min=0.0007)
+    atm = next(p for p in plans if p.strike == 80000)
+    wing = next(p for p in plans if p.strike == 86000)
+    assert atm.noise_c > wing.noise_c
+    assert atm.required_c > wing.required_c
+
+
 # --- the entry rule ---------------------------------------------------------
 
 def test_edge_below_the_fee_bar_is_not_tradeable():

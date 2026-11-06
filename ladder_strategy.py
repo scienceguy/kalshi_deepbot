@@ -38,6 +38,7 @@ This module only *plans*. It places nothing.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -57,8 +58,9 @@ MIN_SAFETY_MULTIPLE = 1.0
 MAX_VOL_MULTIPLE = 3.0
 
 # Do not hold a resting order into the last minutes; settlement races are pure
-# adverse selection and the lognormal is meaningless there.
-MIN_MINUTES_TO_HOLD = 5.0
+# adverse selection, and the lognormal plus a dollar-denominated basis error both
+# degenerate as the horizon shrinks.
+MIN_MINUTES_TO_HOLD = 10.0
 MAX_MINUTES_TO_HOLD = 240.0
 
 # Rungs at 0c or 100c cannot be entered as a maker with any edge.
@@ -82,9 +84,43 @@ def vol_multiple(sigma_now: float, sigma_base: float) -> float:
 
 
 def required_edge_cents(price_cents: float, vol_mult: float = 1.0,
-                        safety: float = MIN_SAFETY_MULTIPLE) -> float:
-    """Discount to fair demanded before a resting bid at this price is worth it."""
-    return safety * taker_fee_cents(price_cents) * vol_mult
+                        safety: float = MIN_SAFETY_MULTIPLE,
+                        basis_noise_c: float = 0.0) -> float:
+    """Discount to fair demanded before a resting bid at this price is worth it.
+
+    Two independent sources of error have to be beaten:
+
+      * the taker fee, which bounds the informed edge of whoever fills us;
+      * the reference basis noise, because our fair value is computed from a
+        spot composite while Kalshi settles on CF Benchmarks BRTI.
+
+    They are combined in quadrature: both are errors in our estimate of the
+    true probability, and either one alone can manufacture a fake edge.
+    """
+    fee = safety * taker_fee_cents(price_cents) * vol_mult
+    return math.hypot(fee, basis_noise_c)
+
+
+def dp_ds(spot: float, strike: float, sigma_min: float, minutes: float) -> float:
+    """dP(price > strike)/dSpot: converts a dollar reference error to probability.
+
+    Near the money a dollar of spot moves the probability a lot; deep in the
+    wings it barely moves it. That is why basis noise hurts most in the strikes
+    we would actually want to trade.
+    """
+    if spot <= 0 or strike <= 0 or sigma_min <= 0 or minutes <= 0:
+        return 0.0
+    denom = sigma_min * math.sqrt(minutes)
+    if denom <= 0:
+        return 0.0
+    d2 = (math.log(spot / strike) - 0.5 * denom * denom) / denom
+    return math.exp(-0.5 * d2 * d2) / (math.sqrt(2.0 * math.pi) * spot * denom)
+
+
+def basis_noise_cents(spot: float, strike: float, sigma_min: float, minutes: float,
+                      basis_stdev_dollars: float) -> float:
+    """Reference-error uncertainty at this strike, in cents of probability."""
+    return basis_stdev_dollars * dp_ds(spot, strike, sigma_min, minutes) * 100.0
 
 
 def implied_spot(rows: List[dict], sigma_min: float, minutes_left: float) -> Optional[float]:
@@ -128,10 +164,15 @@ class Plan:
     net_edge_c: float
     tradeable: bool
     reason: str = ""
+    noise_c: float = 0.0
 
 
 def plan_orders(rows: List[dict], *, vol_mult: float = 1.0,
                 safety: float = MIN_SAFETY_MULTIPLE,
+                basis_stdev_dollars: float = 0.0,
+                spot: Optional[float] = None,
+                sigma_min: Optional[float] = None,
+                ml: Optional[object] = None,
                 min_minutes: float = MIN_MINUTES_TO_HOLD,
                 max_minutes: float = MAX_MINUTES_TO_HOLD) -> List[Plan]:
     """Rank candidate maker orders from `crossvenue.three_way` rows.
@@ -139,28 +180,46 @@ def plan_orders(rows: List[dict], *, vol_mult: float = 1.0,
     `rows` each carry strike, fair, kalshi (mid), minutes_left. Buying YES and
     buying NO are exact mirrors on a binary, so one signed edge covers both:
         fair > price  ->  buy YES;  fair < price  ->  buy NO.
+
+    Pass `basis_stdev_dollars` (with spot and sigma) to charge each rung for the
+    reference-error noise at its own moneyness. Deep wings are cheap to trade
+    because a dollar of reference error barely moves their probability.
+
+    Pass an `ml` model (anything with `predict_proba(row, spot, sigma, minutes)`)
+    to override the lognormal `fair` with a learned probability. The model is
+    trained on settled history (see ml_model.train_from_history).
     """
     plans: List[Plan] = []
     for r in rows:
         minutes = r["minutes_left"]
         price_c = r["kalshi"] * 100.0
+
         fair_c = r["fair"] * 100.0
+        if ml is not None and spot is not None and sigma_min is not None:
+            fair_c = ml.predict_proba(r, spot, sigma_min, minutes) * 100.0
+
         signed = fair_c - price_c
         side = "YES" if signed >= 0 else "NO"
 
+        noise_c = 0.0
+        if basis_stdev_dollars and spot and sigma_min:
+            noise_c = basis_noise_cents(spot, r["strike"], sigma_min, minutes,
+                                        basis_stdev_dollars)
+
         if not (PRICE_FLOOR_C <= price_c <= PRICE_CEIL_C):
             plans.append(Plan(r["strike"], side, price_c, fair_c, signed, 0.0, 0.0,
-                              False, "price at boundary"))
+                              False, "price at boundary", noise_c))
             continue
         if not (min_minutes <= minutes <= max_minutes):
             plans.append(Plan(r["strike"], side, price_c, fair_c, signed, 0.0, 0.0,
-                              False, f"{minutes:.0f} min outside hold window"))
+                              False, f"{minutes:.0f} min outside hold window", noise_c))
             continue
 
-        required = required_edge_cents(price_c, vol_mult, safety)
+        required = required_edge_cents(price_c, vol_mult, safety, noise_c)
         net = abs(signed) - required
         plans.append(Plan(r["strike"], side, price_c, fair_c, abs(signed), required,
-                          net, net > 0, "ok" if net > 0 else "below adverse-selection bar"))
+                          net, net > 0, "ok" if net > 0 else "below adverse-selection bar",
+                          noise_c))
     return plans
 
 
@@ -195,6 +254,9 @@ def main() -> int:
                     help="historical median (Kalshi implied spot - composite spot). "
                          "Omitting it means the reference basis is unestimated, so "
                          "no rung is tradeable.")
+    ap.add_argument("--basis-noise-dollars", type=float, default=0.0,
+                    help="historical stdev of that basis; charged per rung at its "
+                         "own moneyness and combined with the fee barrier.")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
@@ -242,8 +304,11 @@ def main() -> int:
                     continue
 
                 # Price fair value against Kalshi's own reference, not ours.
-                rows = cv.three_way(kalshi, poly, spot + args.basis_dollars, sigma_now)
-                plans = plan_orders(rows, vol_mult=vm, safety=args.safety)
+                spot_ref = spot + args.basis_dollars
+                rows = cv.three_way(kalshi, poly, spot_ref, sigma_now)
+                plans = plan_orders(rows, vol_mult=vm, safety=args.safety,
+                                    basis_stdev_dollars=args.basis_noise_dollars,
+                                    spot=spot_ref, sigma_min=sigma_now)
                 s = summarise(plans)
                 found += s["tradeable"]
                 print(f"rungs {s['rungs']}  tradeable {s['tradeable']}  "
@@ -252,7 +317,8 @@ def main() -> int:
                 for p in sorted(plans, key=lambda p: -p.net_edge_c)[:4]:
                     print(f"  {p.strike:>10,.0f} {p.side:>3} @ {p.price_c:>5.1f}c  "
                           f"fair {p.fair_c:>5.1f}c  edge {p.gross_edge_c:>5.1f}c  "
-                          f"need {p.required_c:>4.2f}c  net {p.net_edge_c:>+5.1f}c")
+                          f"noise {p.noise_c:>4.2f}c  need {p.required_c:>4.2f}c  "
+                          f"net {p.net_edge_c:>+5.1f}c")
                 for p in layered(plans, args.layers):
                     print(f"  -> LAYER {p.side} {p.strike:,.0f} "
                           f"net {p.net_edge_c:+.1f}c")
