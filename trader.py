@@ -1221,11 +1221,10 @@ def cycle(client: KalshiClient):
                 paper_mode.add_pnl(client.get_balance(), realized_pnl)
 
             # Record settlement P&L idempotently — use idempotency key so replays
-            # after a crash can't double-count. Key is "settle:<event_ticker>:<order_id>".
-            # Use event_ticker from market data (includes event date, not just market ticker)
-            # to avoid cross-event collisions when same market ticker reuses order_id.
-            event_ticker = market.get("event_ticker", t.split("-")[0] if "-" in t else t)
-            settle_key = f"settle:{event_ticker}:{order_id}"
+            # after a crash can't double-count. Key is "settle:<ticker>:<order_id>".
+            # The market ticker is unique per event (includes date/strike), so use it
+            # directly to avoid cross-event collisions.
+            settle_key = f"settle:{t}:{order_id}"
             applied = True  # default: treat as not-yet-applied; DB failure falls through to credit PnL
             pnl_to_add = 0.0
             try:
@@ -1651,32 +1650,45 @@ def main():
     # affects how NO quotes are read; order pricing always sends the YES-leg
     # complement (see KalshiClient.no_price_to_api_price).
     try:
-        markets = client.get_markets(status="open", limit=5)
+        markets = client.get_markets(status="open", limit=10)
         if markets:
-            sample = markets[0]
-            has_no_ask = "no_ask" in sample and sample.get("no_ask") is not None
-            has_no_ask_dollars = "no_ask_dollars" in sample and sample.get("no_ask_dollars") is not None
-            has_no_price_dollars = "no_price_dollars" in sample and sample.get("no_price_dollars") is not None
-            api_has_no_prices = has_no_ask or has_no_ask_dollars or has_no_price_dollars
+            # Check all markets for consistency (not just first)
+            has_no_ask_any = False
+            has_no_ask_none = False
+            for sample in markets:
+                has_no_ask = "no_ask" in sample and sample.get("no_ask") is not None
+                has_no_ask_dollars = "no_ask_dollars" in sample and sample.get("no_ask_dollars") is not None
+                has_no_price_dollars = "no_price_dollars" in sample and sample.get("no_price_dollars") is not None
+                if has_no_ask or has_no_ask_dollars or has_no_price_dollars:
+                    has_no_ask_any = True
+                else:
+                    has_no_ask_none = True
             
-            if api_has_no_prices and config.NO_PRICE_IS_COMPLEMENT:
+            if has_no_ask_any and has_no_ask_none:
+                # Inconsistent: some markets have NO prices, others don't
+                log.warning(
+                    "NO price format INCONSISTENT across markets: some have NO prices, others don't. "
+                    "Using config.NO_PRICE_IS_COMPLEMENT=%s",
+                    config.NO_PRICE_IS_COMPLEMENT,
+                )
+            elif has_no_ask_any and config.NO_PRICE_IS_COMPLEMENT:
                 # API returns NO prices directly but config says they're complemented
                 msg = (
-                    f"NO_PRICE_IS_COMPLEMENT=true but API returns NO prices directly for {sample.get('ticker')}. "
+                    f"NO_PRICE_IS_COMPLEMENT=true but API returns NO prices directly. "
                     f"Set NO_PRICE_IS_COMPLEMENT=false in .env"
                 )
                 log.warning(msg)
-            elif not api_has_no_prices and not config.NO_PRICE_IS_COMPLEMENT:
+            elif has_no_ask_none and not config.NO_PRICE_IS_COMPLEMENT:
                 # API doesn't return NO prices but config says they're not complemented
                 msg = (
-                    f"NO_PRICE_IS_COMPLEMENT=false but API lacks NO price fields for {sample.get('ticker')}. "
+                    f"NO_PRICE_IS_COMPLEMENT=false but API lacks NO price fields. "
                     f"Set NO_PRICE_IS_COMPLEMENT=true in .env"
                 )
                 log.warning(msg)
-            elif api_has_no_prices:
-                log.info("NO price format validated: market has NO price fields (complement=False)")
+            elif has_no_ask_any:
+                log.info("NO price format validated: markets have NO price fields (complement=False)")
             else:
-                log.info("NO price format validated: market lacks NO price fields (complement=True)")
+                log.info("NO price format validated: markets lack NO price fields (complement=True)")
         else:
             log.warning("No markets available to validate NO price format")
     except Exception as e:

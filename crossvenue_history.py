@@ -156,8 +156,6 @@ def sigma_curve(symbol: str, start_ts: int, end_ts: int,
     out: Dict[int, Optional[float]] = {}
     if not rows:
         return out
-    # Safety: ensure klines are sorted by timestamp (oldest first)
-    rows.sort(key=lambda r: r[0])
     # Align to close time like spot_closes: open_time + 60s = close_time
     closes = [((int(r[0]) + 60000) // 1000, float(r[4])) for r in rows]
     for i, (ts, _) in enumerate(closes):
@@ -186,8 +184,6 @@ def sigma_at(minute_ts: int, symbol: str, window: int = 60) -> Optional[float]:
                                              (minute_ts + 60) * 1000, "1m")
     if not rows or len(rows) < 10:
         return None
-    # Safety: ensure klines are sorted by timestamp
-    rows.sort(key=lambda r: r[0])
     # Align to close time: open_time + 60s
     closes = [float(r[4]) for r in rows]
     rets = [math.log(b / a) for a, b in zip(closes, closes[1:]) if a > 0 and b > 0]

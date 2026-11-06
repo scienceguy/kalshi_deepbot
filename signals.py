@@ -237,7 +237,9 @@ def _track_bid(ticker: str, yes_bid_cents: int, now: float):
     global _track_bid_call_count
     _track_bid_call_count = getattr(_track_bid, "_call_count", 0) + 1
     _track_bid._call_count = _track_bid_call_count
-    if _track_bid_call_count % 50 == 0:
+    # Also run cleanup if total entries exceed threshold (size-based trigger)
+    total_entries = sum(len(h) for h in _bid_hist.values())
+    if _track_bid_call_count % 50 == 0 or total_entries > 50000:
         ttl_cutoff = now - (config.STABILITY_LOOKBACK_MIN + 60) * 60
         for ticker_key in list(_bid_hist.keys()):
             h = _bid_hist[ticker_key]

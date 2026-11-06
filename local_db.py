@@ -435,14 +435,12 @@ class LocalDB:
         
         Used when Supabase sync fails after local insert — we need to remove
         the local record so it can be retried on the next cycle.
-        Only deletes entries with source='local' to avoid deleting another
-        process's records in a multi-process setup.
         """
         conn = self._get_conn()
         with self._lock:
             try:
                 conn.execute(
-                    "DELETE FROM pnl_ledger WHERE idempotency_key = ? AND source = 'local'",
+                    "DELETE FROM pnl_ledger WHERE idempotency_key = ?",
                     (idempotency_key,),
                 )
                 conn.commit()

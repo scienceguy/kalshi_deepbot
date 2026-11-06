@@ -252,7 +252,9 @@ def _fetch_klines_paginated(
                 all_klines.extend(data)  # append
             # Advance cursor based on pagination direction
             if reverse_results:
-                cursor = int(data[0][0]) - 1  # OKX: before oldest
+                # OKX returns newest first; we reversed to oldest-first.
+                # data[-1] is the newest in this batch. Use it to advance.
+                cursor = int(data[-1][0]) - 1  # OKX: before newest
             else:
                 cursor = int(data[-1][0]) + 1  # Binance: after newest
             if len(data) < limit_per_req:
