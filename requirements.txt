@@ -3,5 +3,15 @@ cryptography==41.0.0
 pandas==2.2.0
 pyarrow==14.0.1
 
+# Required by crossvenue.py and ladder_strategy.py (CDF interpolation).
+numpy>=1.24
+
+# Required by hf_backtest.py (Hugging Face dataset loader).
+huggingface_hub>=0.20
+
 # Optional — only needed for kalshi_price_data_client.py
 # kalshi-price-data
+
+# Optional — only needed for binance_feed.stream_trades (live streaming).
+# The trading loop uses the REST path and does not need this.
+# websockets>=12

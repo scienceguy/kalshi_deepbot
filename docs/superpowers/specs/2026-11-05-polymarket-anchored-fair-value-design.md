@@ -191,7 +191,6 @@ mirror for NO), replacing the skew/trend gates.
 - Polymarket is read-only. No Polymarket account, no Polymarket orders, ever.
 
 ## What is left to the builder
-
 - Exact cost buffer value, deviation threshold grid, and hold/exit horizon.
 - How much history the Polymarket endpoints actually return at finer fidelity,
   and whether that is enough to train C on cross-venue pairs (the running recon
@@ -201,3 +200,47 @@ mirror for NO), replacing the skew/trend gates.
 - Model form for C: logistic first, and only escalate if the lift justifies it.
 - Whether the 15–55c favourite-maker band is retired outright or kept as a
   fallback when no anchor deviation exists.
+
+## Status after measurement (2026-11-05)
+
+The measurement changed the plan in four ways. Recording them here so the design
+and the code do not drift apart.
+
+**1. Strikes never need matching pairwise.** Both venues publish threshold
+ladders, and a ladder is a sampled CDF. Interpolating each ladder and comparing
+distributions sidesteps the off-by-one-strike failure that invalidates ~44% of
+naive cross-venue pairs. `crossvenue.py` does this.
+
+**2. Polymarket is the stale venue, not Kalshi.** On hourly BTC/ETH ladders,
+Kalshi tracks the spot-implied fair value to within a few cents while
+Polymarket's ladder sat ~20c rich across every strike. The anchor therefore
+points the wrong way: the reference is **spot**, not Polymarket. Polymarket is
+demoted from "anchor" to "cross-check".
+
+**3. The reference basis dominates every edge candidate.** Priced against
+Binance alone, Kalshi looked 10c cheap. Priced against a four-venue composite,
+Kalshi was fair and Polymarket was rich. Exchanges disagree by ~$127 on BTC,
+which is ~39% of one 39-minute sigma — larger than the edge being hunted. So a
+single snapshot cannot distinguish mispricing from reference error. The planner
+refuses to trade until the basis is estimated, and the estimate comes from
+history, not from waiting.
+
+**4. The free Kalshi historical endpoints make this measurable now.**
+`/historical/cutoff`, `/historical/markets` (settlement `result` and
+`expiration_value`), `/series/{s}/markets/{t}/candlesticks` (per-minute bid/ask
+OHLC) and `/historical/trades` (with `taker_side`) are all open without auth.
+`crossvenue_history.py` uses them to estimate the basis from settled events.
+
+**Cost model, confirmed from Kalshi's own documentation.** Trading fees are
+charged only on orders that are immediately matched; resting orders are free
+(except the series listed under Maker Fees), and settlement is not a trade. The
+cheapest structure is therefore maker entry, hold to settlement — zero entry
+fee, zero exit fee, zero exit spread. That leaves **adverse selection as the
+only cost**, and the entry rule in `ladder_strategy.py` is built around it: a
+taker only crosses when their edge beats the fee they pay, so the taker fee is a
+lower bound on the informed edge of whoever fills us. The required discount to
+fair starts at `0.07 * p * (1-p)` and scales with the volatility regime.
+
+Still open: the cancel-all kill switch on scheduled events (needs an event
+calendar and a streaming trigger), and realistic fill simulation, for which full
+L2 depth must be bought (CryptoStruct, from €1 per instrument-day) or collected.

@@ -128,6 +128,21 @@ def get_klines(symbol: str = "BTCUSDT", interval: str = "1m",
         return None
 
 
+def get_klines_range(symbol: str, start_ms: int, end_ms: int,
+                     interval: str = "1m", timeout: int = 20) -> Optional[List[List]]:
+    """Klines for a historical window, for backtests. Binance caps at 1000/response."""
+    try:
+        resp = requests.get(f"{BINANCE_REST}/klines",
+                            params={"symbol": symbol, "interval": interval,
+                                    "startTime": start_ms, "endTime": end_ms, "limit": 1000},
+                            timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        log.warning("binance klines range failed: %s", e)
+        return None
+
+
 def sigma_per_minute(symbol: str = "BTCUSDT", lookback: int = 60) -> Optional[float]:
     """Std dev of 1-minute log returns over the lookback window.
 
