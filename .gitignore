@@ -48,6 +48,7 @@ settlement_queue.json
 paper_state.json
 .lock
 *.log
+markout_log.jsonl
 
 # OS
 .DS_Store

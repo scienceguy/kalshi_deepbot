@@ -1239,7 +1239,8 @@ def cycle(client: KalshiClient):
                     pnl_to_add = realized_pnl
             except Exception:
                 log.warning("Failed to record settlement P&L to local ledger for %s — using fallback", t)
-                pnl_to_add = realized_pnl
+                applied = False
+                pnl_to_add = 0.0
 
             # Write PnL to Supabase FIRST, then update local state.
             # This ensures: if process crashes after Supabase write, local state is

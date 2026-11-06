@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import statistics
 import time
 from datetime import datetime, timezone
@@ -155,7 +156,6 @@ def sigma_curve(symbol: str, start_ts: int, end_ts: int,
     out: Dict[int, Optional[float]] = {}
     if not rows:
         return out
-    import math
     closes = [(int(r[0]) // 1000, float(r[4])) for r in rows]
     for i, (ts, _) in enumerate(closes):
         if i < window:

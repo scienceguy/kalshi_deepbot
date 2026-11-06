@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import math
+import websockets
 from typing import AsyncIterator, Dict, List, Optional
 
 import time
@@ -167,9 +168,9 @@ def composite_price(symbol: str = "BTCUSDT", timeout: int = 10) -> Optional[floa
 
 def composite_sigma(symbol: str = "BTCUSDT", lookback: int = 60,
                     timeout: int = 10) -> Optional[float]:
-    """Per-minute volatility with fallback venues.
+    """Per-minute volatility with fallback venue.
 
-    Tries Binance first (most liquid), then OKX, then Coinbase klines.
+    Tries Binance first (most liquid), then OKX klines.
     This provides redundancy if Binance is unreachable.
     """
     # Try Binance first
@@ -284,7 +285,6 @@ async def stream_trades(symbol: str = "btcusdt") -> AsyncIterator[float]:
 
     This function reconnects automatically on disconnect with exponential backoff.
     """
-    import websockets
 
     url = f"{BINANCE_WS}/{symbol.lower()}@trade"
     backoff = 1
