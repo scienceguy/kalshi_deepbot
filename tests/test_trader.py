@@ -663,3 +663,31 @@ class TestMLFairValueFilter:
 
         assert len(result) == 1
         assert result[0] is sig
+
+    def test_ml_filter_allows_entry_window_minutes(self, monkeypatch):
+        """ML filter keeps signals whose minutes_left is in the entry window (4-9).
+
+        Regression: plan_orders defaults min_minutes=10.0, which blocked every
+        entry-window signal because they have only 4-9 minutes_left
+        (minutes_in 6-11 means minutes_left 9-4). The ML filter now passes
+        min_minutes/max_minutes that match the entry window so these signals
+        are evaluated on their ML edge, not rejected by the time gate.
+        """
+        import trader
+
+        mock_ml = MagicMock()
+        mock_ml.predict_proba.return_value = 0.95  # ML says 95% YES
+        trader._ml_model = mock_ml
+
+        monkeypatch.setattr(trader.binance_feed, "composite_price",
+                            MagicMock(return_value=78000.0))
+
+        m = self._make_market(minutes_left=5.0)
+        sig = self._make_signal(side="yes", entry_price=45)
+        sig.market.minutes_left = 5.0  # minutes_in = 10, inside the 6-11 window
+        signals = [sig]
+
+        result = trader._ml_filter_signals(signals, [m], mock_ml)
+
+        assert len(result) == 1
+        assert result[0] is sig

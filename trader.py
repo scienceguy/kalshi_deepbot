@@ -973,7 +973,8 @@ def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
             "minutes_left": minutes_left,
         }
         plans = ls.plan_orders([row], spot=spot, sigma_min=0.0007,
-                               ml=ml_model, basis_stdev_dollars=0.0)
+                               ml=ml_model, basis_stdev_dollars=0.0,
+                               min_minutes=1.0, max_minutes=15.5)
         if not plans or not plans[0].tradeable:
             log.info("ML BLOCK %s — ML fair below entry bar", m.ticker)
             continue
@@ -1130,7 +1131,7 @@ def cycle(client: KalshiClient):
                     continue
             except Exception:
                 continue
-        pos_info = state.positions.pop(t, {})
+        pos_info = state.positions.get(t, {})
         reserved = state.position_risk.pop(t, 0.0)
         is_paper = bool(pos_info.get("paper"))
         side = pos_info.get("side", "")
@@ -1287,6 +1288,11 @@ def cycle(client: KalshiClient):
                     },
                 })
                 _save_settlement_queue(queue)
+            # Only pop the position AFTER PnL is fully booked and recorded.
+            # This ensures: if process crashes between PnL booking and position
+            # removal, the position is still in state and will be re-processed
+            # on restart (via the settlement queue replay path).
+            state.positions.pop(t, {})
         else:
             # No settlement data available — queue for retry without booking PnL.
             # Position is already released from state.positions above.
