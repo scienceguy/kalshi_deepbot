@@ -82,3 +82,6 @@ kalshieye_test/
 
 # Local SQLite database (runtime state, not source)
 local_data/
+
+# cross-venue measurement output
+data/crossvenue/
