@@ -250,7 +250,7 @@ def find_active_markets(client: KalshiClient):
     for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
         fetch_list.append((mkt, ct, ml, "HEDGE_NO"))
 
-    # Fetch all orderbooks concurrently instead of one HTTP call per market.
+    # Fetch orderbooks for all rungs passing the band filter,
     # Cap workers so we don't burst past Kalshi's ~10 req/s rate limit and
     # trigger 429s when many markets are candidates.
     ob_map = {}
