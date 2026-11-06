@@ -1022,16 +1022,16 @@ def cycle(client: KalshiClient):
         # falling back to the legacy average-price fields.
         exposure = _pos_cost_basis(p)
         entry_price = int(round(exposure * 100 / contracts)) if contracts else 0
+        # Only adopt positions this bot created (order_id starts with "sb_").
+        # Foreign positions from another bot or a manual trade are left alone
+        # — booking them would misattribute P&L and corrupt risk math.
+        order_id = p.get("order_id", "")
+        if not order_id.startswith("sb_"):
+            continue
         state.positions[tk] = {
             "side": side, "entry_price": entry_price,
-            "contracts": contracts, "order_id": p.get("order_id", tk),
+            "contracts": contracts, "order_id": order_id,
         }
-        state.position_risk[tk] = contracts * entry_price / 100.0
-        log.info("Synced new position from exchange: %s side=%s contracts=%d @%dc",
-                 tk, side, contracts, entry_price)
-        state.position_risk[tk] = contracts * entry_price / 100.0
-        log.info("Synced new position from exchange: %s side=%s contracts=%d @%dc",
-                 tk, side, contracts, entry_price)
 
     # Sync positions from Kalshi API — clear settled tickers from state
     api_tickers = {p.get("ticker", "") for p in positions if "15M" in p.get("ticker", "").upper()}
@@ -1640,7 +1640,6 @@ def main():
                 log.info("Cycle limit %d reached — stopping", args.cycle_limit)
                 break
         except Exception as e:
-            sig_mod.alarm(0)
             log.exception("Unhandled cycle error: %s", e)
             delay = state.resilience.mark_failure(e)
             if state.resilience.should_rebuild_client():

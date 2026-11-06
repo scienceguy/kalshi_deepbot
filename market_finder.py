@@ -30,6 +30,8 @@ def _settle_yes_cents(market: dict) -> int | None:
         return 100
     if r == "no":
         return 0
+    # Legacy fallback: expiration_value is the raw underlying price, NOT a payout.
+    # Only accept it if it already reads as 0 or 100 (a payout in disguise).
     ev = market.get("expiration_value")
     if ev not in (None, ""):
         try:

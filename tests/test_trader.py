@@ -273,6 +273,7 @@ def test_cycle_syncs_new_position_from_exchange(monkeypatch):
     client.get_positions.return_value = [{
         "ticker": "KXBTC15M-NEW", "yes_position": 2, "no_position": 0,
         "yes_avg_price_dollars": "0.85", "no_avg_price_dollars": "0",
+        "order_id": "sb_" + "a" * 32,
     }]
     client.invalidate_markets.return_value = None
     client.get_orders.return_value = []
