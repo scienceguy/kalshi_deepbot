@@ -347,7 +347,7 @@ def _evaluate_common(
         if confidence < config.MIN_CONFIDENCE:
             return _pass(f"Confidence {confidence:.2f} below {config.MIN_CONFIDENCE:.2f}")
     else:
-        confidence = float(implied_prob) / 100.0
+        confidence = float(abs(market.mid_yes - 50.0) / 50.0)
 
     reason = (
         f"{direction} ({source}) str={strength:.0f} conf={confidence:.2f} "
@@ -424,7 +424,7 @@ def _evaluate_panic_fade(market: MarketInfo, max_dollars: float, max_contracts: 
         results.append(TradeSignal(
             "YES", "yes", ep, n, dollar_risk,
             f"Panic fade YES: price dropped {abs(price_change)}c in {config.PANIC_FADE_WINDOW_SECONDS}s",
-            market, abs(price_change), confidence=float(ep)/100.0
+            market, abs(price_change), confidence=float(abs(ep - 50)) / 100.0
         ))
     
     elif price_change > config.PANIC_FADE_MOVE_CENTS:
@@ -448,7 +448,7 @@ def _evaluate_panic_fade(market: MarketInfo, max_dollars: float, max_contracts: 
         results.append(TradeSignal(
             "NO", "no", ep, n, dollar_risk,
             f"Panic fade NO: YES spiked {price_change}c in {config.PANIC_FADE_WINDOW_SECONDS}s",
-            market, abs(price_change), confidence=float(ep)/100.0
+            market, abs(price_change), confidence=float(abs(ep - 50)) / 100.0
         ))
     
     return results
