@@ -2,6 +2,7 @@
 
 Tests mock the HTTP requests to avoid making real network calls.
 """
+import json
 import time
 
 import pytest
@@ -210,6 +211,122 @@ class TestSupabaseClientSetBotStateBatch:
             # Should process all keys, but return False because one failed
             post_calls = [c for c in calls if c[0] == "POST"]
             assert len(post_calls) == 3  # All 3 keys attempted
+
+
+class TestSupabaseClientSetBotState:
+    """Tests for SupabaseClient.set_bot_state single-key upsert.
+
+    set_bot_state issues a single POST with the merge-duplicates Prefer
+    header. The test class name is intentionally singular — it covers the
+    one-key path that set_bot_state_batch delegates to.
+    """
+
+    def _make_client(self, monkeypatch):
+        monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
+        monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
+        import importlib
+        import supabase_client
+        importlib.reload(supabase_client)
+        return supabase_client.SupabaseClient()
+
+    def test_single_key_upsert_succeeds(self, monkeypatch):
+        """set_bot_state POSTs one row with merge-duplicates and returns True."""
+        client = self._make_client(monkeypatch)
+
+        captured = {}
+
+        def fake_request(method, path, data=None, params=None,
+                         extra_headers=None, max_retries=3):
+            captured["method"] = method
+            captured["path"] = path
+            captured["data"] = data
+            captured["extra_headers"] = extra_headers
+            return {"data": [{"key": data["key"], "id": 1}]}
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            result = client.set_bot_state("session_pnl", 42.5)
+
+        assert result is True
+        assert captured["method"] == "POST"
+        assert captured["path"] == "bot_state"
+        assert captured["data"]["key"] == "session_pnl"
+        assert json.loads(captured["data"]["value_json"]) == 42.5
+        assert "ts" in captured["data"]
+        assert captured["extra_headers"] == {"Prefer": "resolution=merge-duplicates"}
+
+    def test_multiple_keys_batched_correctly(self, monkeypatch):
+        """set_bot_state_batch delegates each key to set_bot_state.
+
+        Each key produces exactly one POST with merge-duplicates; no
+        GET/PATCH round-trips are performed.
+        """
+        client = self._make_client(monkeypatch)
+
+        calls = []
+
+        def fake_request(method, path, data=None, params=None,
+                         extra_headers=None, max_retries=3):
+            calls.append((method, path, data, extra_headers))
+            if method in ("POST", "PATCH"):
+                return {"data": [{"key": data.get("key")}]}
+            return {}
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            result = client.set_bot_state_batch(
+                {"session_pnl": 42.5, "cycles": 3, "last_ts": "2024-01-01T00:00:00+00:00"}
+            )
+
+        assert result is True
+        post_calls = [c for c in calls if c[0] == "POST"]
+        assert len(post_calls) == 3  # one POST per key
+        keys = {c[2]["key"] for c in post_calls}
+        assert keys == {"session_pnl", "cycles", "last_ts"}
+        # every POST carries the merge-duplicates Prefer header
+        for c in post_calls:
+            assert c[3] == {"Prefer": "resolution=merge-duplicates"}
+        # no GET/PATCH round-trips
+        assert not any(c[0] in ("GET", "PATCH") for c in calls)
+
+    def test_merge_duplicates_resolution_works(self, monkeypatch):
+        """POST with merge-duplicates is used even when a row already exists.
+
+        The merge-duplicates Prefer header tells Supabase to update on
+        conflict rather than error, so re-writing the same key is idempotent.
+        """
+        client = self._make_client(monkeypatch)
+
+        calls = []
+
+        def fake_request(method, path, data=None, params=None,
+                         extra_headers=None, max_retries=3):
+            calls.append((method, path, data, extra_headers))
+            return {"data": [{"key": data["key"], "id": 5}]}
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            # First write — new key
+            ok1 = client.set_bot_state("session_pnl", 100.0)
+            # Second write — same key, new value (merge-duplicates should update)
+            ok2 = client.set_bot_state("session_pnl", 200.0)
+
+        assert ok1 is True
+        assert ok2 is True
+        post_calls = [c for c in calls if c[0] == "POST"]
+        assert len(post_calls) == 2
+        for c in post_calls:
+            assert c[3] == {"Prefer": "resolution=merge-duplicates"}
+        # values differ between the two writes
+        assert json.loads(post_calls[0][2]["value_json"]) == 100.0
+        assert json.loads(post_calls[1][2]["value_json"]) == 200.0
+
+    def test_set_bot_state_returns_false_on_failure(self, monkeypatch):
+        """set_bot_state returns False when the upsert POST fails."""
+        client = self._make_client(monkeypatch)
+
+        with patch.object(client, "_request", return_value=None):
+            result = client.set_bot_state("bad_key", 1.0)
+
+        assert result is False
 
 
 class TestCircuitBreakerReset:
