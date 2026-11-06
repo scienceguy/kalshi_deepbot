@@ -5,7 +5,7 @@ Mocks KalshiClient and n8n_client to avoid real API calls.
 """
 import sys
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
 
 # Set sys.argv before importing trader to avoid argparse SystemExit
@@ -514,3 +514,152 @@ def test_pre_trade_check_survives_failed_open_llm_eval(fresh_state, mock_client,
     )
     assert allowed is True
     assert not fresh_state.llm_trade_insights  # nothing recorded for a None verdict
+
+
+class TestMLModelLoading:
+    """Tests for _load_ml_model lazy loading."""
+
+    def test_load_ml_model_success(self, monkeypatch):
+        """_load_ml_model loads model via ml_model.MLFairValue.load."""
+        import trader
+
+        mock_model = MagicMock()
+        monkeypatch.setattr(trader, "_ml_model", None)
+
+        with patch.object(trader.ml_model.MLFairValue, "load", return_value=mock_model):
+            result = trader._load_ml_model("fake_model.pt")
+            assert result is mock_model
+            assert trader._ml_model is mock_model
+
+    def test_load_ml_model_failure_returns_none(self, monkeypatch, caplog):
+        """_load_ml_model returns None on load failure, logs warning."""
+        import trader
+
+        monkeypatch.setattr(trader, "_ml_model", None)
+
+        with patch.object(trader.ml_model.MLFairValue, "load", side_effect=RuntimeError("file not found")), \
+             caplog.at_level("WARNING", logger="trader"):
+            result = trader._load_ml_model("fake_model.pt")
+            assert result is None
+            assert trader._ml_model is None
+            assert "Failed to load ML model" in caplog.text
+
+    def test_load_ml_model_cached(self, monkeypatch):
+        """_load_ml_model returns cached model without reloading."""
+        import trader
+
+        mock_model = MagicMock()
+        trader._ml_model = mock_model
+
+        with patch.object(trader.ml_model.MLFairValue, "load") as fake_load:
+            result = trader._load_ml_model("fake_model.pt")
+            assert result is mock_model
+            fake_load.assert_not_called()
+
+
+class TestMLFairValueFilter:
+    """Tests for ML fair-value override filtering."""
+
+    def _make_signal(self, ticker="TEST", side="yes", entry_price=50):
+        """Create a TradeSignal mock."""
+        sig = MagicMock()
+        sig.side = side
+        sig.entry_price = entry_price
+        sig.market = MagicMock()
+        sig.market.ticker = f"{ticker}-26NOV052245-45"
+        sig.market.yes_bid = 48 if side == "yes" else 52
+        sig.market.yes_ask = 52 if side == "yes" else 56
+        sig.market.strike = 78000
+        sig.market.minutes_left = 30.0
+        return sig
+
+    def _make_market(self, ticker="TEST", yes_bid=48, yes_ask=52, strike=78000, minutes_left=30.0):
+        """Create a MarketInfo mock."""
+        m = MagicMock()
+        m.ticker = ticker
+        m.yes_bid = yes_bid
+        m.yes_ask = yes_ask
+        m.strike = strike
+        m.minutes_left = minutes_left
+        return m
+
+    def test_ml_filter_blocks_below_entry_bar(self, monkeypatch):
+        """ML filter drops signal when ML fair is below entry bar (not tradeable)."""
+        import trader
+
+        mock_ml = MagicMock()
+        trader._ml_model = mock_ml
+
+        mock_plan = MagicMock()
+        mock_plan.tradeable = False
+
+        monkeypatch.setattr(trader.ls, "plan_orders", MagicMock(return_value=[mock_plan]))
+        monkeypatch.setattr(trader.binance_feed, "composite_price", MagicMock(return_value=78000.0))
+
+        m = self._make_market()
+        sig = self._make_signal(side="yes", entry_price=45)
+        signals = [sig]
+
+        result = trader._ml_filter_signals(signals, [m], mock_ml)
+
+        assert len(result) == 0
+
+    def test_ml_filter_blocks_disagreement_on_direction(self, monkeypatch):
+        """ML filter drops signal when ML side disagrees with venue side."""
+        import trader
+
+        mock_ml = MagicMock()
+        trader._ml_model = mock_ml
+
+        mock_plan = MagicMock()
+        mock_plan.tradeable = True
+        mock_plan.side = "NO"  # Opposite of signal side ("yes")
+
+        monkeypatch.setattr(trader.ls, "plan_orders", MagicMock(return_value=[mock_plan]))
+        monkeypatch.setattr(trader.binance_feed, "composite_price", MagicMock(return_value=78000.0))
+
+        m = self._make_market()
+        sig = self._make_signal(side="yes", entry_price=45)
+        signals = [sig]
+
+        result = trader._ml_filter_signals(signals, [m], mock_ml)
+
+        assert len(result) == 0
+
+    def test_ml_filter_allows_agreeing_signal(self, monkeypatch):
+        """ML filter keeps signal when ML agrees with venue and clears entry bar."""
+        import trader
+
+        mock_ml = MagicMock()
+        trader._ml_model = mock_ml
+
+        mock_plan = MagicMock()
+        mock_plan.tradeable = True
+        mock_plan.side = "yes"  # Same side as signal
+
+        monkeypatch.setattr(trader.ls, "plan_orders", MagicMock(return_value=[mock_plan]))
+        monkeypatch.setattr(trader.binance_feed, "composite_price", MagicMock(return_value=78000.0))
+
+        m = self._make_market()
+        sig = self._make_signal(side="yes", entry_price=45)
+        signals = [sig]
+
+        result = trader._ml_filter_signals(signals, [m], mock_ml)
+
+        assert len(result) == 1
+        assert result[0] is sig
+
+    def test_ml_filter_no_model_passthrough(self, monkeypatch):
+        """ML filter passes signals through unchanged when _ml_model is None."""
+        import trader
+
+        trader._ml_model = None
+
+        m = self._make_market()
+        sig = self._make_signal(side="yes", entry_price=45)
+        signals = [sig]
+
+        result = trader._ml_filter_signals(signals, [m], None)
+
+        assert len(result) == 1
+        assert result[0] is sig

@@ -171,7 +171,7 @@ def train_from_history(series: str = "KXBTCD", events: int = 6,
         if settle <= 0:
             continue
         near = {s: t for s, t in ev["strikes"].items()
-                if settle > 0 and abs(s - settle) / settle < 0.02}
+                if abs(s - settle) / settle < 0.02}
         if len(near) < 4:
             continue
 

@@ -201,3 +201,68 @@ class TestOrderPayload:
         c.place_order("T", "yes", 2, 61, "cid-2")
         assert sent["side"] == "bid"
         assert sent["price"] == "0.6100"
+
+
+class TestGetBalance:
+    """Tests for get_balance() sanity guard."""
+
+    def test_get_balance_normal_cents(self, monkeypatch):
+        """Normal balance in cents divides by 100 correctly."""
+        monkeypatch.setattr(config, "KALSHI_KEY_ID", "test_key_id")
+        monkeypatch.setattr(config, "REQUEST_MIN_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(config, "REQUEST_TIMEOUT_SECONDS", 10)
+
+        with patch.object(KalshiClient, "_load_private_key") as mock_load, \
+             patch.object(KalshiClient, "_verify_key"):
+            mock_load.return_value = MagicMock()
+            mock_load.return_value.sign.return_value = b"fake_signature_bytes"
+            client = KalshiClient()
+
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"balance": 12250}  # 12250 cents = $122.50
+            mock_resp.status_code = 200
+
+            with patch.object(client.session, "request", return_value=mock_resp):
+                assert client.get_balance() == 122.50
+
+    def test_get_balance_raw_cents_over_10b_warns(self, monkeypatch, caplog):
+        """Raw >$10B as cents warns (unit mismatch) but still divides."""
+        monkeypatch.setattr(config, "KALSHI_KEY_ID", "test_key_id")
+        monkeypatch.setattr(config, "REQUEST_MIN_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(config, "REQUEST_TIMEOUT_SECONDS", 10)
+
+        with patch.object(KalshiClient, "_load_private_key") as mock_load, \
+             patch.object(KalshiClient, "_verify_key"):
+            mock_load.return_value = MagicMock()
+            mock_load.return_value.sign.return_value = b"fake_signature_bytes"
+            client = KalshiClient()
+
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"balance": 15_000_000_000}  # $150B as cents — implausible
+            mock_resp.status_code = 200
+
+            with patch.object(client.session, "request", return_value=mock_resp), \
+                 caplog.at_level("WARNING", logger="kalshi_client"):
+                result = client.get_balance()
+                assert result == 150_000_000.0  # still divides
+                assert "seems mislabeled" in caplog.text
+
+    def test_get_balance_zero(self, monkeypatch):
+        """Zero balance returns 0.0 without warning."""
+        monkeypatch.setattr(config, "KALSHI_KEY_ID", "test_key_id")
+        monkeypatch.setattr(config, "REQUEST_MIN_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(config, "REQUEST_TIMEOUT_SECONDS", 10)
+
+        with patch.object(KalshiClient, "_load_private_key") as mock_load, \
+             patch.object(KalshiClient, "_verify_key"):
+            mock_load.return_value = MagicMock()
+            mock_load.return_value.sign.return_value = b"fake_signature_bytes"
+            client = KalshiClient()
+
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"balance": 0}  # 0 cents -> $0.00, no warning needed
+            mock_resp.status_code = 200
+
+            with patch.object(client.session, "request", return_value=mock_resp):
+                assert client.get_balance() == 0.0
+

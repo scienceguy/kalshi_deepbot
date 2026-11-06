@@ -55,6 +55,9 @@ if args.debug:
 
 import fees  # noqa: E402
 from supabase_client import get_supabase  # noqa: E402
+import binance_feed  # noqa: E402
+import ladder_strategy as ls  # noqa: E402
+import ml_model  # noqa: E402
 from local_db import get_local_db_api, get_local_db  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient  # noqa: E402
@@ -926,6 +929,59 @@ def _manage_exits(client):
         client.invalidate_markets(series_ticker=ticker.split("-")[0])
 
 
+def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
+    """Filter signals through ML fair-value model.
+
+    Drops signals where ML fair value disagrees with venue-implied fair on
+    direction, or where ML fair is below the entry bar.
+    """
+    if ml_model is None:
+        return list(signals)
+
+    import ladder_strategy as ls
+    import binance_feed
+    spot_cache: dict = {}
+    ml_filtered = []
+    for sig in signals:
+        m = sig.market
+        series = m.ticker.split("-")[0] if "-" in m.ticker else m.ticker
+        asset = series[:3]  # e.g. KXBTC -> BTC, KXETH -> ETH
+        if asset not in spot_cache:
+            try:
+                spot_cache[asset] = binance_feed.composite_price(f"{asset}USDT")
+            except Exception:
+                log.warning("ML BLOCK %s — no spot for %s, skipping ML filter",
+                            m.ticker, asset)
+                continue
+        spot = spot_cache[asset]
+        if spot is None:
+            continue
+
+        minutes_left = m.minutes_left
+        kalshi_mid = (m.yes_bid + m.yes_ask) / 200.0 if (m.yes_bid and m.yes_ask) else sig.entry_price / 100.0
+        row = {
+            "strike": float(m.strike),
+            "kalshi": kalshi_mid,
+            "fair": kalshi_mid,        # venue-implied fair (overridden by ML)
+            "poly": kalshi_mid,
+            "spread": (m.yes_ask - m.yes_bid) / 100.0 if (m.yes_bid and m.yes_ask) else 0.0,
+            "minutes_left": minutes_left,
+        }
+        plans = ls.plan_orders([row], spot=spot, sigma_min=0.0007,
+                               ml=ml_model, basis_stdev_dollars=0.0)
+        if not plans or not plans[0].tradeable:
+            log.info("ML BLOCK %s — ML fair below entry bar", m.ticker)
+            continue
+        # ML and venue must agree on direction (YES vs NO).
+        ml_side = plans[0].side.lower()
+        if ml_side != sig.side:
+            log.info("ML BLOCK %s — venue side %s vs ML side %s",
+                     m.ticker, sig.side, ml_side)
+            continue
+        ml_filtered.append(sig)
+    return ml_filtered
+
+
 def cycle(client: KalshiClient):
     state.cycles += 1
     log.info("── Cycle %d ──────────────────────", state.cycles)
@@ -1387,33 +1443,7 @@ def cycle(client: KalshiClient):
     # If ML fair value disagrees with venue-implied fair on direction, or if
     # ML fair is below the entry bar, drop the signal.
     if _ml_model is not None:
-        import ladder_strategy as ls
-        ml_filtered = []
-        for sig in signals:
-            m = sig.market
-            minutes_left = m.minutes_left
-            kalshi_mid = (m.yes_bid + m.yes_ask) / 200.0 if (m.yes_bid and m.yes_ask) else sig.entry_price / 100.0
-            row = {
-                "strike": float(m.strike),
-                "kalshi": kalshi_mid,
-                "fair": kalshi_mid,        # venue-implied fair (overridden by ML)
-                "poly": kalshi_mid,
-                "spread": (m.yes_ask - m.yes_bid) / 100.0 if (m.yes_bid and m.yes_ask) else 0.0,
-                "minutes_left": minutes_left,
-            }
-            plans = ls.plan_orders([row], spot=float(m.strike), sigma_min=0.0007,
-                                   ml=_ml_model, basis_stdev_dollars=0.0)
-            if not plans or not plans[0].tradeable:
-                log.info("ML BLOCK %s — ML fair below entry bar", m.ticker)
-                continue
-            # ML and venue must agree on direction (YES vs NO).
-            ml_side = plans[0].side.lower()
-            if ml_side != sig.side:
-                log.info("ML BLOCK %s — venue side %s vs ML side %s",
-                         m.ticker, sig.side, ml_side)
-                continue
-            ml_filtered.append(sig)
-        signals = ml_filtered
+        signals = _ml_filter_signals(signals, markets, _ml_model)
 
     # Latency-arb is deliberately NOT wired in: it buys the underdog at the
     # taker price (e.g. NO at 3c when YES is 98c), which is the opposite of the
