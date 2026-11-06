@@ -1,0 +1,16 @@
+#!/bin/bash
+# Wrapper to run Python with xgboost/lightgbm via proot-debian
+# Usage: ./ml_python <script.py> [args...]
+#        ./ml_python -c "import xgboost; print(xgboost.__version__)"
+PROOT_PYTHON="/usr/bin/python3"
+PROOT_PIP="/usr/bin/pip"
+
+if [ "$1" = "-c" ]; then
+    shift
+    proot-distro login debian -- /bin/bash -c "${PROOT_PYTHON} -c \"$*\""
+elif [ "$1" = "-m" ]; then
+    shift
+    proot-distro login debian -- /bin/bash -c "${PROOT_PYTHON} -m \"$@\""
+else
+    proot-distro login debian -- /bin/bash -c "${PROOT_PYTHON} \"$@\""
+fi
