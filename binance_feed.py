@@ -17,7 +17,7 @@ unreachable. Those quote BTC-USD / BTC-USDT, which differ by a few dollars of
 USDT basis — acceptable for fair value, not for reconciliation.
 
 `sigma_per_minute` has no fallback — it depends on Binance klines only.
-`composite_sigma` adds OKX/Coinbase kline fallback for volatility.
+`composite_sigma` adds OKX kline fallback for volatility.
 
 Read-only. No keys, no orders.
 """

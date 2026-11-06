@@ -430,6 +430,25 @@ class LocalDB:
                 log.warning("mark_pnl_synced(%s) error: %s", idempotency_key, e)
                 return False
 
+    def delete_pnl_ledger_entry(self, idempotency_key: str) -> bool:
+        """Delete a pnl_ledger entry by idempotency key.
+        
+        Used when Supabase sync fails after local insert — we need to remove
+        the local record so it can be retried on the next cycle.
+        """
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                conn.execute(
+                    "DELETE FROM pnl_ledger WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                )
+                conn.commit()
+                return True
+            except Exception as e:
+                log.warning("delete_pnl_ledger_entry(%s) error: %s", idempotency_key, e)
+                return False
+
     # ── backtest_runs ───────────────────────────────────────────────────────────
 
     def insert_backtest_run(self, params: Dict[str, Any], metrics: Dict[str, Any]) -> bool:

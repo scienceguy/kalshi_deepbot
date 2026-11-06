@@ -1247,17 +1247,15 @@ def cycle(client: KalshiClient):
             # reconciled on restart. Only credit local session_pnl if DB write succeeds.
             if applied:
                 new_session_pnl = state.session_pnl + pnl_to_add
-                # Write PnL to Supabase FIRST, then update local state.
-                # This ensures: if process crashes after Supabase write, local state is
-                # reconciled on restart.
                 try:
                     if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
                         state.session_pnl = new_session_pnl
                     log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
                 except Exception:
-                    log.warning("Supabase session_pnl write failed — keeping local state only", t)
-                    # Do NOT update local state on DB failure — will retry on next cycle
-                    # via the idempotency key check in apply_settlement_pnl
+                    log.warning("Supabase session_pnl write failed — removing local idempotency key to allow retry", t)
+                    # Supabase write failed but local ledger already has the idempotency key.
+                    # Delete it so we can retry on the next cycle instead of permanently losing PnL.
+                    get_local_db().delete_pnl_ledger_entry(settle_key)
             else:
                 # applied is False (already recorded) or error path — no PnL to add
                 pass

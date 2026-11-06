@@ -231,7 +231,10 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
             mains.append((mkt, ct, ml, mid))
         
         # Hedge check is independent of main check
-        if 1 <= ya <= HMAX:
+        # Skip if yes_ask is 0 or missing (no liquidity to hedge against)
+        if ya <= 0:
+            pass
+        elif 1 <= ya <= HMAX:
             hedges.append((mkt, ct, ml, ya))
 
     return mains, hedges
