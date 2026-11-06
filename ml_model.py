@@ -178,11 +178,8 @@ def train_from_history(series: str = "KXBTCD", events: int = 6,
             continue
 
         # Collect per-minute sigma once (shared across strikes at a minute).
-        sigma_by_minute: dict = {}
-        for ts in sorted(spots):
-            s = ch.sigma_at(ts, symbol)
-            if s:
-                sigma_by_minute[ts] = s
+        # Use sigma_curve to fetch all klines in one API call and compute sigma for all minutes.
+        sigma_by_minute = ch.sigma_curve(symbol, start_ts, close_ts)
 
         for strike in sorted(near):
             ticker = near[strike]
@@ -195,7 +192,7 @@ def train_from_history(series: str = "KXBTCD", events: int = 6,
                 mid = (bid + ask) / 2.0
                 if not 0.0 < mid < 1.0:
                     continue
-                spot = spots.get(ts - ts % 60)
+                spot = spots.get(ts - 60)
                 if spot is None:
                     continue
                 mins_left = (close_ts - ts) / 60.0
