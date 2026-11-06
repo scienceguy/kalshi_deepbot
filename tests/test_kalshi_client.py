@@ -266,3 +266,39 @@ class TestGetBalance:
             with patch.object(client.session, "request", return_value=mock_resp):
                 assert client.get_balance() == 0.0
 
+    def test_get_balance_sub_cent(self, monkeypatch, caplog):
+        """Sub-cent balances (1-99 cents) convert correctly without false warning."""
+        monkeypatch.setattr(config, "KALSHI_KEY_ID", "test_key_id")
+        monkeypatch.setattr(config, "REQUEST_MIN_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(config, "REQUEST_TIMEOUT_SECONDS", 10)
+
+        with patch.object(KalshiClient, "_load_private_key") as mock_load, \
+             patch.object(KalshiClient, "_verify_key"):
+            mock_load.return_value = MagicMock()
+            mock_load.return_value.sign.return_value = b"fake_signature_bytes"
+            client = KalshiClient()
+
+            # 1 cent = $0.01 — smallest non-zero balance, should NOT warn
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"balance": 1}
+            mock_resp.status_code = 200
+
+            with patch.object(client.session, "request", return_value=mock_resp), \
+                 caplog.at_level("WARNING", logger="kalshi_client"):
+                assert client.get_balance() == 0.01
+                assert "seems mislabeled" not in caplog.text
+
+            # 5 cents = $0.05
+            mock_resp.json.return_value = {"balance": 5}
+            with patch.object(client.session, "request", return_value=mock_resp), \
+                 caplog.at_level("WARNING", logger="kalshi_client"):
+                assert client.get_balance() == 0.05
+                assert "seems mislabeled" not in caplog.text
+
+            # 99 cents = $0.99 — sub-dollar, still no warning
+            mock_resp.json.return_value = {"balance": 99}
+            with patch.object(client.session, "request", return_value=mock_resp), \
+                 caplog.at_level("WARNING", logger="kalshi_client"):
+                assert client.get_balance() == 0.99
+                assert "seems mislabeled" not in caplog.text
+
