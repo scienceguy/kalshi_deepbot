@@ -178,6 +178,7 @@ def _load_bid_hist():
         log.error("Failed to load bid history: %s — starting fresh", e)
         _bid_hist = {}
 
+
 # Load bid history at module import so it's available immediately on startup.
 _load_bid_hist()
 

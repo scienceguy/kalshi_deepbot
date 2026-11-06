@@ -183,7 +183,6 @@ def sigma_at(minute_ts: int, symbol: str, window: int = 60) -> Optional[float]:
                                          (minute_ts + 60) * 1000, "1m")
     if not rows or len(rows) < 10:
         return None
-    import math
     closes = [float(r[4]) for r in rows]
     rets = [math.log(b / a) for a, b in zip(closes, closes[1:]) if a > 0 and b > 0]
     if len(rets) < 5:
