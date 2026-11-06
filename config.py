@@ -449,14 +449,5 @@ def validate_bands():
     if errors:
         raise ValueError("Entry band configuration invalid:\n" + "\n".join(errors))
 
-# ═════════════════════════════════════════════════════════════════════
-# AUTO-VALIDATION ON IMPORT
-# ═════════════════════════════════════════════════════════════════════
-# Run validation on import to catch misconfiguration early.
-# This is safe because all validation functions only check config values,
-# they don't require credentials or network access.
-try:
-    validate_bands()
-except ValueError as e:
-    log.critical("Config validation failed on import: %s", e)
-    raise
+# Validation is called explicitly by trader.py at startup.
+# Do not run on import to allow graceful handling of config errors.

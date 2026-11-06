@@ -28,7 +28,6 @@ import asyncio
 import json
 import logging
 import math
-import websockets
 from typing import AsyncIterator, Dict, List, Optional
 
 import time
@@ -216,29 +215,64 @@ def get_klines(symbol: str = "BTCUSDT", interval: str = "1m",
         return None
 
 
+def _fetch_klines_paginated(
+    url: str,
+    params_builder,
+    start_ms: int,
+    end_ms: int,
+    timeout: int,
+    limit_per_req: int = 1000,
+    reverse_results: bool = False,
+) -> Optional[List[List]]:
+    """Generic pagination helper for fetching klines from any venue.
+    
+    Args:
+        url: API endpoint URL
+        params_builder: function(cursor, start_ms, end_ms) -> dict of params
+        start_ms: window start time (ms)
+        end_ms: window end time (ms)
+        timeout: request timeout
+        limit_per_req: max results per request
+        reverse_results: if True, each batch is newest-first and will be reversed
+    """
+    all_klines = []
+    cursor = end_ms
+    try:
+        while cursor > start_ms:
+            params = params_builder(cursor, start_ms, end_ms)
+            resp = _session.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            if not data:
+                break
+            if reverse_results:
+                data.reverse()
+                all_klines = data + all_klines  # prepend
+            else:
+                all_klines.extend(data)  # append
+            # Advance cursor based on pagination direction
+            if reverse_results:
+                cursor = int(data[0][0]) - 1  # OKX: before oldest
+            else:
+                cursor = int(data[-1][0]) + 1  # Binance: after newest
+            if len(data) < limit_per_req:
+                break
+        return all_klines
+    except Exception as e:
+        log.warning("klines paginated fetch failed: %s", e)
+        return None
+
+
 def get_klines_range(symbol: str, start_ms: int, end_ms: int,
                      interval: str = "1m", timeout: int = 20) -> Optional[List[List]]:
     """Klines for a historical window, for backtests. Binance caps at 1000/response.
     Uses pagination to fetch all klines in the window."""
-    all_klines = []
-    cursor_start = start_ms
-    try:
-        while cursor_start < end_ms:
-            resp = _session.get(f"{BINANCE_REST}/klines",
-                                params={"symbol": symbol, "interval": interval,
-                                        "startTime": cursor_start, "endTime": end_ms, "limit": 1000},
-                                timeout=timeout)
-            resp.raise_for_status()
-            klines = resp.json()
-            if not klines:
-                break
-            all_klines.extend(klines)
-            # Advance cursor to just after the last kline's open time
-            cursor_start = klines[-1][0] + 1
-        return all_klines
-    except Exception as e:
-        log.warning("binance klines range failed: %s", e)
-        return None
+    def _params(cursor, start_ms, end_ms):
+        return {"symbol": symbol, "interval": interval,
+                "startTime": cursor, "endTime": end_ms, "limit": 1000}
+    return _fetch_klines_paginated(
+        f"{BINANCE_REST}/klines", _params, start_ms, end_ms, timeout, 1000, False
+    )
 
 
 def _get_okx_klines_range(symbol: str, start_ms: int, end_ms: int,
@@ -258,46 +292,34 @@ def _get_okx_klines_range(symbol: str, start_ms: int, end_ms: int,
     bar_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1H": "1H", "4H": "4H", "1D": "1D"}
     okx_bar = bar_map.get(interval, "1m")
     
-    all_klines = []
-    cursor_end = end_ms
-    try:
-        while cursor_end > start_ms:
-            params = {
-                "instId": okx_symbol,
-                "bar": okx_bar,
-                "before": str(cursor_end),
-                "limit": 100
-            }
-            resp = _session.get("https://www.okx.com/api/v5/market/history-candles",
-                                params=params, timeout=timeout)
-            resp.raise_for_status()
-            data = resp.json().get("data", [])
-            if not data:
-                break
-            # OKX returns newest first, we need oldest first
-            data.reverse()
-            all_klines.extend(data)
-            # Advance cursor to before the oldest returned kline
-            cursor_end = int(data[0][0]) - 1
-            if len(data) < 100:
-                break
-        # Convert OKX format [ts, o, h, l, c, vol, ...] to Binance format [open_time, o, h, l, c, v, ...]
-        converted = []
-        for k in all_klines:
-            converted.append([
-                int(k[0]),      # open_time (ms)
-                float(k[1]),    # open
-                float(k[2]),    # high
-                float(k[3]),    # low
-                float(k[4]),    # close
-                float(k[5]),    # volume
-                # Add remaining fields as 0/empty to match Binance format
-                0, 0, 0, 0, 0, 0
-            ])
-        return converted
-    except Exception as e:
-        log.warning("OKX klines range failed: %s", e)
+    def _params(cursor, start_ms, end_ms):
+        return {
+            "instId": okx_symbol,
+            "bar": okx_bar,
+            "before": str(cursor),
+            "limit": 100
+        }
+    
+    klines = _fetch_klines_paginated(
+        "https://www.okx.com/api/v5/market/history-candles",
+        _params, start_ms, end_ms, timeout, 100, True
+    )
+    if klines is None:
         return None
+    # Convert OKX format [ts, o, h, l, c, vol, ...] to Binance format [open_time, o, h, l, c, v, ...]
+    converted = []
+    for k in klines:
+        converted.append([
+            int(k[0]),      # open_time (ms)
+            float(k[1]),    # open
+            float(k[2]),    # high
+            float(k[3]),    # low
+            float(k[4]),    # close
+            float(k[5]),    # volume
+            # Add remaining fields as 0/empty to match Binance format
+            0, 0, 0, 0, 0, 0
+        ])
+    return converted
 
 
 def composite_klines_range(symbol: str, start_ms: int, end_ms: int,
@@ -359,6 +381,7 @@ async def stream_trades(symbol: str = "btcusdt") -> AsyncIterator[float]:
 
     This function reconnects automatically on disconnect with exponential backoff.
     """
+    import websockets
 
     url = f"{BINANCE_WS}/{symbol.lower()}@trade"
     backoff = 1

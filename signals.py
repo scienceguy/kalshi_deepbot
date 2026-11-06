@@ -233,11 +233,11 @@ def _track_bid(ticker: str, yes_bid_cents: int, now: float):
         for k in list(_bid_hist)[:-120]:
             _bid_hist.pop(k, None)
     # TTL-based cleanup: remove entries older than lookback + 1 hour
-    # Run periodically (every 100 calls) to avoid O(N) on every call
+    # Run periodically (every 50 calls) to avoid O(N) on every call
     global _track_bid_call_count
     _track_bid_call_count = getattr(_track_bid, "_call_count", 0) + 1
     _track_bid._call_count = _track_bid_call_count
-    if _track_bid_call_count % 100 == 0:
+    if _track_bid_call_count % 50 == 0:
         ttl_cutoff = now - (config.STABILITY_LOOKBACK_MIN + 60) * 60
         for ticker_key in list(_bid_hist.keys()):
             h = _bid_hist[ticker_key]

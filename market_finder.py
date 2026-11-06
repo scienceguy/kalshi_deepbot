@@ -269,13 +269,13 @@ def find_active_markets(client: KalshiClient):
             all_hedges.extend(hedges)
 
     # Fetch orderbooks concurrently for all rungs passing the band filter,
-    fetch_list = []  # (mkt, ct, ml, role)
+    fetch_list = []  # (mkt, ct, ml, role, ya)
     for mkt, ct, ml, mid in all_mains:
-        fetch_list.append((mkt, ct, ml, "MAIN"))
+        fetch_list.append((mkt, ct, ml, "MAIN", None))
 
     all_hedges.sort(key=lambda x: x[3])
     for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
-        fetch_list.append((mkt, ct, ml, "HEDGE_NO"))
+        fetch_list.append((mkt, ct, ml, "HEDGE_NO", ya))
 
     # Fetch orderbooks for all rungs passing the band filter,
     # Cap workers so we don't burst past Kalshi's ~10 req/s rate limit and
@@ -283,20 +283,20 @@ def find_active_markets(client: KalshiClient):
     ob_map = {}
     if fetch_list:
         with ThreadPoolExecutor(max_workers=min(len(fetch_list), 4)) as ex:
-            futs = {ex.submit(_fetch_orderbook, client, m["ticker"]): (m, ct, ml, role)
-                    for m, ct, ml, role in fetch_list}
+            futs = {ex.submit(_fetch_orderbook, client, m["ticker"]): (m, ct, ml, role, ya)
+                    for m, ct, ml, role, ya in fetch_list}
             for fut in as_completed(futs):
-                m, ct, ml, role = futs[fut]
+                m, ct, ml, role, ya = futs[fut]
                 try:
-                    ob_map[m["ticker"]] = fut.result()
+                    ob_map[m["ticker"]] = (fut.result(), ya)
                 except Exception:
-                    ob_map[m["ticker"]] = {}
+                    ob_map[m["ticker"]] = ({}, ya)
 
     # Process ALL mains passing the entry band (multi-market mode).
     # Earlier versions picked the single closest to 50c; now we keep all
     # that pass the entry band to maximize opportunity.
     for mkt, ct, ml, mid in all_mains:
-        ob = ob_map.get(mkt["ticker"], {})
+        ob = ob_map.get(mkt["ticker"], ({}, None))[0]
         series = mkt.get("series_ticker", "")
         info = _build(mkt, series, ct, ml, ob, "MAIN")
         if MIN_P <= info.mid_yes <= MAX_P:
@@ -308,15 +308,17 @@ def find_active_markets(client: KalshiClient):
 
     # Process HEDGE_NO
     for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
-        ob = ob_map.get(mkt["ticker"], {})
+        ob, hedge_ya = ob_map.get(mkt["ticker"], ({}, ya))
         series = mkt.get("series_ticker", "")
         info = _build(mkt, series, ct, ml, ob, "HEDGE_NO")
-        if 0 < info.yes_ask <= config.HEDGE_NO_ASK_MAX:
+        # Use the pre-filter yes_ask (ya) for hedge check, not the orderbook yes_ask
+        # which might be 0/stale if orderbook fetch failed
+        if 0 < hedge_ya <= config.HEDGE_YES_ASK_MAX:
             result.append(info)
             log.info("✓ HEDGE %s %.1fmin yes_ask=%dc no_ask=%dc prob≈%d%%",
                      info.ticker, ml, info.yes_ask, info.no_ask, 100 - info.no_ask)
         else:
-            log.debug("Hedge filtered no_ask=%dc: %s", info.no_ask, mkt["ticker"])
+            log.debug("Hedge filtered hedge_ya=%dc: %s", hedge_ya, mkt["ticker"])
 
     log.info("Found %d tradeable brackets", len(result))
     return result
