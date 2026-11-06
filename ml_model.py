@@ -186,8 +186,8 @@ def train_from_history(series: str = "KXBTCD", events: int = 6,
             ticker = near[strike]
             for c in ch.candles(ticker, series, start_ts, close_ts):
                 ts = int(c["end_period_ts"])
-                bid = ch._f(c.get("yes_bid"))
-                ask = ch._f(c.get("yes_ask"))
+                bid = c.get("yes_bid")
+                ask = c.get("yes_ask")
                 if bid is None or ask is None or ask < bid or ask - bid > 0.08:
                     continue
                 mid = (bid + ask) / 2.0
