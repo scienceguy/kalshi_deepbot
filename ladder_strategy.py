@@ -70,6 +70,15 @@ MAX_VOL_MULTIPLE = 3.0
 MIN_MINUTES_TO_HOLD = 10.0
 MAX_MINUTES_TO_HOLD = 240.0
 
+# First-touch toxicity (predictionmarketspicks, 39,786 KXBTC15M touches):
+# a 5–45c fill with 7+ minutes left wins 1.4pp less often than implied —
+# resting fill here is adverse selection (price still falling). Charge a
+# surcharge in that band; at the tails (<20c / >80c) the NO side is structurally
+# less toxic (NO EV +23% vs YES −41% at 1c), so discount required edge for NO.
+TOXICITY_SURCHARGE_C = 1.4   # cents added to required edge, 5–45c band, 7+ min left
+NO_SIDE_EDGE_DISCOUNT_C = 0.5  # cents discounted for NO buys at tails
+TAIL_THRESHOLD_C = 20.0   # below this (or above 100-this) is a "tail" rung
+
 # Rungs at 0c or 100c cannot be entered as a maker with any edge.
 PRICE_FLOOR_C = 1.0
 PRICE_CEIL_C = 99.0
@@ -223,6 +232,21 @@ def plan_orders(rows: List[dict], *, vol_mult: float = 1.0,
             continue
 
         required = required_edge_cents(price_c, vol_mult, safety, noise_c)
+
+        # First-touch toxicity surcharge: resting fill in the 5–45c / 55–95c
+        # band with 7+ minutes left wins 1.4pp less than implied (price still
+        # moving against you). Charge it as extra required edge.
+        in_toxic_band = (5.0 <= price_c <= 45.0) or (55.0 <= price_c <= 95.0)
+        if in_toxic_band and minutes >= 7.0:
+            required += TOXICITY_SURCHARGE_C
+
+        # NO-side longshot bias: at extremes, NO is structurally less toxic
+        # (NO EV +23% vs YES −41% at 1c). Discount required edge for NO buys
+        # in the tails.
+        is_tail = price_c <= TAIL_THRESHOLD_C or price_c >= 100.0 - TAIL_THRESHOLD_C
+        if side == "NO" and is_tail:
+            required -= NO_SIDE_EDGE_DISCOUNT_C
+
         net = abs(signed) - required
         plans.append(Plan(r["strike"], side, price_c, fair_c, abs(signed), required,
                           net, net > 0, "ok" if net > 0 else "below adverse-selection bar",
