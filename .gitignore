@@ -85,3 +85,8 @@ local_data/
 
 # cross-venue measurement output
 data/crossvenue/
+
+# Trained ML models (don't commit binaries)
+*.pt
+*.pkl
+*.safetensors
