@@ -1101,6 +1101,35 @@ def cycle(client: KalshiClient):
             if not won:
                 state.risk.record_market_loss(t, abs(realized_pnl))
 
+            # --- Markout instrumentation: record fill-vs-settlement toxicity ---
+            # markout_cents = settlement_payout - fill_price (positive = filled
+            # below eventual payout = good fill for us). Tagged by side so we
+            # can later compute fill-conditioned adverse selection by moneyness
+            # band and time-to-expiry.
+            settled_yes_cents = int(round(settled_yes)) if settled_yes is not None else None
+            if settled_yes_cents is not None:
+                if side == "yes":
+                    markout_cents = settled_yes_cents - entry_price
+                else:  # NO side: payout = 100 - settled_yes
+                    markout_cents = (100 - settled_yes_cents) - entry_price
+                markout_rec = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "ticker": t,
+                    "side": side,
+                    "fill_price_cents": entry_price,
+                    "settle_price_cents": settled_yes_cents,
+                    "markout_cents": markout_cents,
+                    "contracts": contracts,
+                    "realized_pnl_dollars": realized_pnl,
+                    "won": won,
+                }
+                try:
+                    mf_path = Path(__file__).resolve().parent / "markout_log.jsonl"
+                    with open(mf_path, "a") as mf:
+                        mf.write(json.dumps(markout_rec) + "\n")
+                except Exception:
+                    log.warning("Failed to write markout log for %s", t)
+
             # Credit the paper ledger so the dry-run curve compounds. The local
             # settle_key ledger below is shared with live runs, so paper P&L is
             # kept separate to keep the two curves from contaminating.

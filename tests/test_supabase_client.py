@@ -119,7 +119,7 @@ class TestSupabaseClientSetBotStateBatch:
     """
 
     def test_batch_all_keys_succeed(self, monkeypatch):
-        """set_bot_state_batch processes each key individually and returns True on success."""
+        """set_bot_state_batch upserts each key with a single POST per key."""
         monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
         monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
         monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
@@ -131,30 +131,26 @@ class TestSupabaseClientSetBotStateBatch:
         calls = []
 
         def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
-            calls.append((method, path, data))
-            if method == "GET" and "key=eq." in path:
-                return []  # Key doesn't exist
-            elif method == "GET" and "order=id.desc" in path:
-                return [{"id": 0}]  # Max id is 0
-            elif method in ("POST", "PATCH"):
+            calls.append((method, path, data, extra_headers))
+            if method in ("POST", "PATCH"):
                 return {"data": [{"key": data.get("key")}]}
             return {}
 
         with patch.object(client, "_request", side_effect=fake_request):
             result = client.set_bot_state_batch({"session_pnl": 42.5, "cycles": 3})
             assert result is True
-            # Should make: 2 GET (check key exists) + 2 GET (max id) + 2 POST (insert) = 6 calls
-            # But our implementation does: check exists -> if not exists, get max id -> insert
-            # For 2 new keys: 2 * (GET + GET + POST) = 6 calls
-            assert len(calls) == 6
-            # Check all keys were processed
+            # One upsert POST per key (2 keys = 2 POST calls)
+            assert len(calls) == 2
             post_calls = [c for c in calls if c[0] == "POST"]
             assert len(post_calls) == 2
             keys = {c[2]["key"] for c in post_calls}
             assert keys == {"session_pnl", "cycles"}
+            # Upsert uses the merge-duplicates prefer header
+            upsert_calls = [c for c in calls if c[3] is not None and "merge-duplicates" in str(c[3])]
+            assert len(upsert_calls) == 2
 
     def test_batch_existing_keys_use_patch(self, monkeypatch):
-        """set_bot_state_batch uses PATCH for existing keys."""
+        """set_bot_state_batch upserts existing keys (POST with merge-duplicates, not PATCH)."""
         monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
         monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
         monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
@@ -167,20 +163,20 @@ class TestSupabaseClientSetBotStateBatch:
 
         def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
             calls.append((method, path, data))
-            if method == "GET" and "key=eq." in path:
-                return [{"id": 123}]  # Key exists
-            elif method == "PATCH":
+            if method in ("POST", "PATCH"):
                 return {"data": [{"key": data.get("key")}]}
             return {}
 
         with patch.object(client, "_request", side_effect=fake_request):
             result = client.set_bot_state_batch({"session_pnl": 42.5, "cycles": 3})
             assert result is True
-            # For 2 existing keys: 2 * (GET + PATCH) = 4 calls
-            assert len(calls) == 4
+            # Upsert: one POST per key, no GET/PATCH round-trips
+            assert len(calls) == 2
+            post_calls = [c for c in calls if c[0] == "POST"]
+            assert len(post_calls) == 2
             patch_calls = [c for c in calls if c[0] == "PATCH"]
-            assert len(patch_calls) == 2
-            keys = {c[2]["key"] for c in patch_calls}
+            assert len(patch_calls) == 0
+            keys = {c[2]["key"] for c in post_calls}
             assert keys == {"session_pnl", "cycles"}
 
     def test_batch_stops_on_first_failure(self, monkeypatch):

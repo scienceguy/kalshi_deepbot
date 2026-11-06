@@ -257,7 +257,17 @@ class KalshiClient:
         """
         data = self._request("GET", "/portfolio/balance")
         cents = data.get("balance", 0)
-        return cents / 100.0
+        dollars = cents / 100.0
+        # Sanity guard: if the raw value looks like dollars already (> $10k),
+        # something is wrong — log loudly instead of silently mispricing
+        # everything by 100x.
+        if cents > 100_000 and dollars < 1_000_000:
+            log.warning(
+                "Balance raw value %d seems like dollars not cents "
+                "(converted to $%.2f) — verify KALSHI balance units",
+                cents, dollars,
+            )
+        return dollars
 
     def get_positions(self) -> list:
         """Return list of open market positions."""

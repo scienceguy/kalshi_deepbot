@@ -12,7 +12,9 @@ from binance_feed import prob_above
 def test_parse_kalshi_event_rejects_other_series():
     assert cv.parse_kalshi_event("KXBTCD-26NOV0521") == ("BTC", datetime(2026, 11, 5, 21))
     assert cv.parse_kalshi_event("KXETHD-26NOV0617") == ("ETH", datetime(2026, 11, 6, 17))
-    assert cv.parse_kalshi_event("KXBTC15M-26NOV052100") is None
+    # 15M series are now supported: HHMM time format
+    assert cv.parse_kalshi_event("KXBTC15M-26NOV052245") == ("BTC", datetime(2026, 11, 5, 22, 45))
+    assert cv.parse_kalshi_event("KXETH15M-26NOV052100") == ("ETH", datetime(2026, 11, 5, 21, 0))
     assert cv.parse_kalshi_event("") is None
 
 

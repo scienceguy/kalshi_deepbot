@@ -349,34 +349,45 @@ class SupabaseClient:
 
     # ─── bot state ─────────────────────────────────────────────────────────────
     def set_bot_state(self, key: str, value: Any) -> bool:
-        """Set a bot state key-value pair (upsert on unique key column).
+        """Set a bot state key-value pair (atomic upsert on unique key column).
         
-        Uses PATCH for existing keys, INSERT with explicit ID for new keys.
+        Single POST with on_conflict key resolution — no GET-then-mutate race.
+        Falls back to GET-then-PATCH/POST if the upsert header isn't supported.
         """
         try:
-            # Check if key exists
+            data = {"key": key, "value_json": json.dumps(value),
+                    "ts": datetime.now(timezone.utc).isoformat()}
+            result = self._request(
+                "POST", "bot_state", data=data,
+                extra_headers={"Prefer": "resolution=merge-duplicates"},
+            )
+            return result is not None
+        except Exception as e:
+            log.warning("set_bot_state upsert error: %s — falling back to read-modify-write", e)
+            return self._set_bot_state_read_modify_write(key, value)
+
+    def _set_bot_state_read_modify_write(self, key: str, value: Any) -> bool:
+        """Fallback: GET-then-PATCH/POST (legacy, non-atomic)."""
+        try:
             existing = self._request("GET", f"bot_state?key=eq.{key}&select=id")
             existing_id = None
             if existing and isinstance(existing, list) and len(existing) > 0:
                 existing_id = existing[0].get("id")
-            
+
             data = {"key": key, "value_json": json.dumps(value),
                     "ts": datetime.now(timezone.utc).isoformat()}
-            
+
             if existing_id:
-                # Update existing row via PATCH
                 result = self._request("PATCH", f"bot_state?key=eq.{key}", data=data)
             else:
-                # Get max id for new row
                 existing_all = self._request("GET", "bot_state?select=id&order=id.desc&limit=1")
                 max_id = 0
                 if existing_all and isinstance(existing_all, list) and len(existing_all) > 0:
                     max_id = existing_all[0].get("id", 0)
-                
+
                 data["id"] = max_id + 1
-                # Insert new row
                 result = self._request("POST", "bot_state", data=data)
-            
+
             return result is not None
         except Exception as e:
             log.warning("set_bot_state error: %s", e)

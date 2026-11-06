@@ -33,7 +33,7 @@ GAMMA_BASE = "https://gamma-api.polymarket.com"
 
 ASSETS = {"bitcoin": "BTC", "btc": "BTC", "ethereum": "ETH", "eth": "ETH"}
 
-_KALSHI_EVENT = re.compile(r"^KX(BTC|ETH)D?-(\d{2})([A-Z]{3})(\d{2})(\d{2})$")
+_KALSHI_EVENT = re.compile(r"^KX(BTC|ETH)(?:D|15M)?-(\d{2})([A-Z]{3})(\d{2})(\d{2}|\d{4})$")
 _PM_SLUG = re.compile(r"^(bitcoin|ethereum|btc|eth)-above-on-([a-z]+)-(\d{1,2})-(\d{4})(?:-(\d{1,2})([ap]m)-et)?$")
 
 _MONTHS = {m: i + 1 for i, m in enumerate(
@@ -109,13 +109,16 @@ def _f(x, default=None):
 
 
 def parse_kalshi_event(event_ticker: str) -> Optional[Tuple[str, datetime]]:
-    """KXBTCD-26NOV0521 -> ('BTC', 2026-11-05 21:00 ET). Ticker hour is ET."""
+    """KXBTCD-26NOV0521 -> ('BTC', 2026-11-05 21:00 ET). Ticker hour is ET.
+    KXBTC15M-26NOV052245 -> ('BTC', 2026-11-05 22:45 ET). 15M time is HHMM."""
     m = _KALSHI_EVENT.match(event_ticker or "")
     if not m:
         return None
-    asset, yy, mon, dd, hh = m.groups()
+    asset, yy, mon, dd, hhmm = m.groups()
     try:
-        return asset, datetime(2000 + int(yy), _MONTHS[mon], int(dd), int(hh))
+        hour = int(hhmm[:2])
+        minute = int(hhmm[2:]) if len(hhmm) > 2 else 0
+        return asset, datetime(2000 + int(yy), _MONTHS[mon], int(dd), hour, minute)
     except (KeyError, ValueError):
         return None
 
@@ -261,7 +264,7 @@ def compare(kalshi: Ladder, poly: Ladder) -> List[Deviation]:
     return out
 
 
-def discover_kalshi_events(series: Tuple[str, ...] = ("KXBTCD", "KXETHD", "KXBTC", "KXETH"),
+def discover_kalshi_events(series: Tuple[str, ...] = ("KXBTCD", "KXETHD", "KXBTC", "KXETH", "KXBTC15M", "KXETH15M"),
                            timeout: int = 20) -> List[str]:
     """Open event tickers for the given series, e.g. ['KXBTCD-26NOV0521']."""
     out: List[str] = []
