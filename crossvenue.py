@@ -292,22 +292,31 @@ def candidate_pm_slugs(asset: str, expiry_et: datetime) -> List[str]:
     return [f"{base}-{h12}{ampm}-et"]
 
 
+def _et_offset_hours(naive_et: datetime) -> int:
+    """US Eastern offset from UTC for a naive ET wall-clock date.
+
+    Uses the post-2007 DST rule directly instead of zoneinfo: on a host without
+    tzdata, zoneinfo raises and a hardcoded -5 puts summer expiries an hour
+    early, which scales the variance by ~2x.
+    """
+    year = naive_et.year
+    # Second Sunday in March; first Sunday in November. Both can start on the
+    # 8th/1st respectively, and the modulo term moves them to the right Sunday.
+    second_sunday_mar = 8 + (6 - datetime(year, 3, 8).weekday()) % 7
+    first_sunday_nov = 1 + (6 - datetime(year, 11, 1).weekday()) % 7
+    dst_start = datetime(year, 3, second_sunday_mar, 2)
+    dst_end = datetime(year, 11, first_sunday_nov, 2)
+    return -4 if dst_start <= naive_et < dst_end else -5
+
+
 def to_utc(naive_et: datetime) -> datetime:
-    """ET wall clock -> aware UTC. Falls back to fixed EST if no tzdata present."""
-    try:
-        from zoneinfo import ZoneInfo
-        return naive_et.replace(tzinfo=ZoneInfo("America/New_York")).astimezone(timezone.utc)
-    except Exception:
-        return naive_et.replace(tzinfo=timezone(timedelta(hours=-5))).astimezone(timezone.utc)
+    """ET wall clock -> aware UTC."""
+    offset = _et_offset_hours(naive_et)
+    return naive_et.replace(tzinfo=timezone(timedelta(hours=offset))).astimezone(timezone.utc)
 
 
 def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
               now: Optional[datetime] = None) -> List[dict]:
-    """Compare both venues against a spot-implied fair value.
-
-    The venue furthest from fair is the stale one — that is the trade. A large
-    Kalshi-vs-Polymarket gap alone says nothing about which side is wrong.
-    """
     from binance_feed import prob_above
 
     now = now or datetime.now(timezone.utc)

@@ -54,7 +54,7 @@ from supabase_client import get_supabase  # noqa: E402
 from local_db import get_local_db_api, get_local_db  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient  # noqa: E402
-from market_finder import find_active_markets, _parse_api_time, _dollars_str_to_cents, _parse_market_prices, _settle_yes_cents  # noqa: E402
+from market_finder import find_active_markets, _parse_api_time, _dollars_to_cents, _parse_market_prices, _settle_yes_cents  # noqa: E402
 from risk import RiskManager  # noqa: E402
 from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
 from signals import floor_contracts, TradeSignal  # noqa: E402
@@ -479,8 +479,8 @@ def _pos_cost_basis(p):
             pass
     yes = _pos_yes(p)
     no = _pos_no(p)
-    yp = _dollars_str_to_cents(p.get("yes_avg_price_dollars", 0) or 0) / 100.0
-    np_ = _dollars_str_to_cents(p.get("no_avg_price_dollars", 0) or 0) / 100.0
+    yp = _dollars_to_cents(p.get("yes_avg_price_dollars", 0) or 0) / 100.0
+    np_ = _dollars_to_cents(p.get("no_avg_price_dollars", 0) or 0) / 100.0
     return yes * yp + no * np_
 
 
@@ -1716,18 +1716,16 @@ if __name__ == "__main__":
                     lock_fd = None
                 continue
             else:
-                if os.environ.get("DRY_RUN", "true").lower() == "true" or os.environ.get("ONCE_MODE"):
-                    log.warning("Could not acquire lock after 5 attempts — proceeding anyway (once mode)")
-                else:
-                    log.error("Could not acquire lock after 5 attempts — another instance running")
-                    sys.exit(1)
+                # Never proceed without the lock. The old check read the shell's
+                # DRY_RUN, but --live only changes config.DRY_RUN, so a live bot
+                # started with the documented env saw "dry run" and ran anyway —
+                # two live bots, one account, two ideas of available cash.
+                log.error("Could not acquire lock after 5 attempts — another instance running")
+                sys.exit(1)
     else:
         # This runs if the loop wasn't broken (shouldn't happen)
-        if os.environ.get("DRY_RUN", "true").lower() == "true" or os.environ.get("ONCE_MODE"):
-            print("Could not acquire lock after 5 attempts — proceeding anyway (once mode)")
-        else:
-            log.error("Could not acquire lock after 5 attempts — another instance running")
-            sys.exit(1)
+        log.error("Could not acquire lock after 5 attempts — another instance running")
+        sys.exit(1)
     # Write PID to lock file for debugging
     with os.fdopen(lock_fd, "w") as f:
         f.write(str(os.getpid()))

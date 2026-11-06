@@ -70,19 +70,27 @@ def _parse_api_time(v):
     except (ValueError, TypeError):
         return None
 
-def _dollars_str_to_cents(v):
-    """Convert Kalshi dollar string ('0.3900') or int/float to integer cents."""
-    if v in (None, "", 0): return 0
+def _dollars_to_cents(v):
+    """Kalshi v2 *_dollars fields are decimal strings, always dollars.
+
+    Parsing by magnitude (``if f < 1``) silently turned a "1.0000" dollar field
+    into 1 cent, which made an unsellable side look like a ~50c market.
+    """
+    if v in (None, ""):
+        return 0
     try:
-        f = float(v)
-        # Kalshi v2 *_dollars fields are decimal strings like "0.3900".
-        # Values < 1 are dollar amounts; values >= 1 are already cents.
-        if f < 1:
-            return int(round(f * 100))
-        # Already in cents (1-99 for binary markets)
-        return int(round(f))
+        return int(round(float(v) * 100))
     except (ValueError, TypeError):
         return 0
+
+
+def _price_field(mkt, dollars_key, legacy_key):
+    """Prefer the dollar-denominated field; fall back to the legacy cents int."""
+    v = mkt.get(dollars_key)
+    if v not in (None, ""):
+        return _dollars_to_cents(v)
+    return _q(mkt.get(legacy_key))
+
 
 def _q(v):
     if v in (None, ""): return 0
@@ -97,10 +105,10 @@ def _parse_market_prices(mkt):
     Kalshi v2 uses _dollars suffix fields with string decimal values.
     """
     # Primary: *_dollars fields (confirmed from live API)
-    yb = _dollars_str_to_cents(mkt.get("yes_bid_dollars") or mkt.get("yes_bid"))
-    ya = _dollars_str_to_cents(mkt.get("yes_ask_dollars") or mkt.get("yes_ask"))
-    nb = _dollars_str_to_cents(mkt.get("no_bid_dollars")  or mkt.get("no_bid"))
-    na = _dollars_str_to_cents(mkt.get("no_ask_dollars")  or mkt.get("no_ask"))
+    yb = _price_field(mkt, "yes_bid_dollars", "yes_bid")
+    ya = _price_field(mkt, "yes_ask_dollars", "yes_ask")
+    nb = _price_field(mkt, "no_bid_dollars",  "no_bid")
+    na = _price_field(mkt, "no_ask_dollars",  "no_ask")
 
     yq = _q(mkt.get("yes_bid_size_fp") or mkt.get("yes_bid_size"))
     nq = _q(mkt.get("no_bid_size_fp")  or mkt.get("no_bid_size"))

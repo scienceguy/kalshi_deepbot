@@ -104,18 +104,17 @@ class RiskManager:
 
     def record_unrealized_loss(self, ticker: str, unrealized_loss: float):
         """Track unrealized loss for an open position.
-        
-        This allows the per-market daily loss limit to account for
-        currently-open losing positions before they settle.
+
+        Stores the *current* unrealized loss, not a running total. Adding on
+        every cycle turned a position 5c under water into a 10c+ "daily loss"
+        within four minutes and blocked the market for the rest of the day.
+        A recovered position clears its entry.
         """
-        if unrealized_loss <= 0:
-            return
-        # Use a separate key for unrealized losses so they can be distinguished
-        # from realized losses, but still count toward the daily limit.
         key = f"{ticker}:unrealized"
-        self.state.market_daily_losses[key] = (
-            self.state.market_daily_losses.get(key, 0.0) + unrealized_loss
-        )
+        if unrealized_loss <= 0:
+            self.state.market_daily_losses.pop(key, None)
+            return
+        self.state.market_daily_losses[key] = unrealized_loss
 
     def record_realized_loss(self, ticker: str, loss: float):
         """Track realized loss for a settled position."""
@@ -188,9 +187,12 @@ class RiskManager:
         if self.state.consecutive_losses >= 3:
             return False, "consecutive loss cooldown"
 
-        # Per-market daily loss limit check
-        if self.market_loss_exceeded(ticker, config.MARKET_DAILY_LOSS_PCT):
-            return False, f"market daily loss limit reached: {self.state.market_daily_losses.get(ticker, 0.0):.2f} >= {cash * config.MARKET_DAILY_LOSS_PCT:.2f}"
+        # Per-market daily loss limit check. The config value is a fraction of
+        # cash, so it must be scaled here — trader.py does the same at its own
+        # gate, and passing the raw fraction made the two disagree by ~10x.
+        market_limit = cash * config.MARKET_DAILY_LOSS_PCT
+        if self.market_loss_exceeded(ticker, market_limit):
+            return False, f"market daily loss limit reached: {self.state.market_daily_losses.get(ticker, 0.0):.2f} >= {market_limit:.2f}"
 
         max_trade = self.max_trade_dollars(cash, exposure, resting_orders_value, paper=paper)
 
