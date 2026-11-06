@@ -1296,9 +1296,10 @@ def cycle(client: KalshiClient):
             # removal, the position is still in state and will be re-processed
             # on restart (via the settlement queue replay path).
             state.positions.pop(t, {})
+            state.position_risk.pop(t, 0.0)
         else:
             # No settlement data available — queue for retry without booking PnL.
-            # Position is already released from state.positions above.
+            # Position stays in state.positions so it can be re-processed on retry.
             queue = _load_settlement_queue()
             queue.append({
                 "order_id": order_id,
