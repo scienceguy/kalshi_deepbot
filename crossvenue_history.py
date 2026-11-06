@@ -139,7 +139,7 @@ def _f(d) -> Optional[float]:
 
 
 def spot_closes(symbol: str, start: int, end: int) -> Dict[int, float]:
-    rows = binance_feed.get_klines_range(symbol, start * 1000, end * 1000, "1m")
+    rows = binance_feed.composite_klines_range(symbol, start * 1000, end * 1000, "1m")
     out = {}
     for r in rows or []:
         close_ms = int(r[0]) + 60000     # align to close time, not open
@@ -151,8 +151,8 @@ def spot_closes(symbol: str, start: int, end: int) -> Dict[int, float]:
 def sigma_curve(symbol: str, start_ts: int, end_ts: int,
                 window: int = 60) -> Dict[int, Optional[float]]:
     """Precompute per-minute sigma for the whole window (one API call)."""
-    rows = binance_feed.get_klines_range(symbol, start_ts * 1000,
-                                         end_ts * 1000, "1m")
+    rows = binance_feed.composite_klines_range(symbol, start_ts * 1000,
+                                               end_ts * 1000, "1m")
     out: Dict[int, Optional[float]] = {}
     if not rows:
         return out
@@ -179,8 +179,8 @@ def sigma_at(minute_ts: int, symbol: str, window: int = 60) -> Optional[float]:
     # We want klines from (minute_ts - window*60) to minute_ts inclusive.
     # Binance klines use open_time, so we need end_ms = (minute_ts + 60) * 1000
     # to include the kline that closes at minute_ts.
-    rows = binance_feed.get_klines_range(symbol, (minute_ts - window * 60) * 1000,
-                                         (minute_ts + 60) * 1000, "1m")
+    rows = binance_feed.composite_klines_range(symbol, (minute_ts - window * 60) * 1000,
+                                             (minute_ts + 60) * 1000, "1m")
     if not rows or len(rows) < 10:
         return None
     closes = [float(r[4]) for r in rows]

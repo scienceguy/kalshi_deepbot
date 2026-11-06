@@ -241,6 +241,80 @@ def get_klines_range(symbol: str, start_ms: int, end_ms: int,
         return None
 
 
+def _get_okx_klines_range(symbol: str, start_ms: int, end_ms: int,
+                          interval: str = "1m", timeout: int = 20) -> Optional[List[List]]:
+    """Fetch klines from OKX as fallback.
+    
+    OKX API: GET /api/v5/market/history-candles
+    Params: instId, bar, before, after, limit
+    Returns: [[ts, o, h, l, c, vol, ...], ...] oldest first
+    """
+    base = _base_asset(symbol)
+    if not base:
+        return None
+    okx_symbol = f"{base}-USDT"
+    
+    # Convert interval to OKX bar format
+    bar_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1H": "1H", "4H": "4H", "1D": "1D"}
+    okx_bar = bar_map.get(interval, "1m")
+    
+    all_klines = []
+    cursor_end = end_ms
+    try:
+        while cursor_end > start_ms:
+            params = {
+                "instId": okx_symbol,
+                "bar": okx_bar,
+                "before": str(cursor_end),
+                "limit": 100
+            }
+            resp = _session.get("https://www.okx.com/api/v5/market/history-candles",
+                                params=params, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if not data:
+                break
+            # OKX returns newest first, we need oldest first
+            data.reverse()
+            all_klines.extend(data)
+            # Advance cursor to before the oldest returned kline
+            cursor_end = int(data[0][0]) - 1
+            if len(data) < 100:
+                break
+        # Convert OKX format [ts, o, h, l, c, vol, ...] to Binance format [open_time, o, h, l, c, v, ...]
+        converted = []
+        for k in all_klines:
+            converted.append([
+                int(k[0]),      # open_time (ms)
+                float(k[1]),    # open
+                float(k[2]),    # high
+                float(k[3]),    # low
+                float(k[4]),    # close
+                float(k[5]),    # volume
+                # Add remaining fields as 0/empty to match Binance format
+                0, 0, 0, 0, 0, 0
+            ])
+        return converted
+    except Exception as e:
+        log.warning("OKX klines range failed: %s", e)
+        return None
+
+
+def composite_klines_range(symbol: str, start_ms: int, end_ms: int,
+                           interval: str = "1m", timeout: int = 20) -> Optional[List[List]]:
+    """Klines with fallback: tries Binance first, then OKX.
+    
+    Returns klines in Binance format (oldest first).
+    """
+    # Try Binance first
+    klines = get_klines_range(symbol, start_ms, end_ms, interval, timeout)
+    if klines is not None:
+        return klines
+    # Fallback: OKX klines
+    log.warning("Binance klines failed, trying OKX fallback for %s", symbol)
+    return _get_okx_klines_range(symbol, start_ms, end_ms, interval, timeout)
+
+
 def sigma_per_minute(symbol: str = "BTCUSDT", lookback: int = 60) -> Optional[float]:
     """Std dev of 1-minute log returns over the lookback window.
 

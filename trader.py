@@ -1654,17 +1654,38 @@ def main():
             has_no_ask = "no_ask" in sample and sample.get("no_ask") is not None
             has_no_ask_dollars = "no_ask_dollars" in sample and sample.get("no_ask_dollars") is not None
             has_no_price_dollars = "no_price_dollars" in sample and sample.get("no_price_dollars") is not None
-            if has_no_ask or has_no_ask_dollars or has_no_price_dollars:
+            api_has_no_prices = has_no_ask or has_no_ask_dollars or has_no_price_dollars
+            
+            if api_has_no_prices and config.NO_PRICE_IS_COMPLEMENT:
+                # API returns NO prices directly but config says they're complemented
+                msg = (
+                    f"NO_PRICE_IS_COMPLEMENT=true but API returns NO prices directly for {sample.get('ticker')}. "
+                    f"Set NO_PRICE_IS_COMPLEMENT=false in .env"
+                )
+                if config.DRY_RUN:
+                    log.warning(msg)
+                else:
+                    log.error(msg)
+                    raise ValueError(msg)
+            elif not api_has_no_prices and not config.NO_PRICE_IS_COMPLEMENT:
+                # API doesn't return NO prices but config says they're not complemented
+                msg = (
+                    f"NO_PRICE_IS_COMPLEMENT=false but API lacks NO price fields for {sample.get('ticker')}. "
+                    f"Set NO_PRICE_IS_COMPLEMENT=true in .env"
+                )
+                if config.DRY_RUN:
+                    log.warning(msg)
+                else:
+                    log.error(msg)
+                    raise ValueError(msg)
+            elif api_has_no_prices:
                 log.info("NO price format validated: market has NO price fields (complement=False)")
             else:
-                log.warning(
-                    "NO price format UNVERIFIED: market %s lacks NO price fields. "
-                    "NO quotes may be read inverted. Check how the API reports "
-                    "NO prices and set NO_PRICE_IS_COMPLEMENT accordingly.",
-                    sample.get("ticker", "unknown"),
-                )
+                log.info("NO price format validated: market lacks NO price fields (complement=True)")
         else:
             log.warning("No markets available to validate NO price format")
+    except ValueError:
+        raise
     except Exception as e:
         log.debug("NO price format check skipped: %s", e)
 
