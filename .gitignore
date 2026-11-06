@@ -90,3 +90,6 @@ data/crossvenue/
 *.pt
 *.pkl
 *.safetensors
+
+# External ML wrapper (proot-distro Debian, not source)
+ml_python
