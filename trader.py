@@ -235,9 +235,7 @@ class BotState:
         # Per-window budget gate
         remaining_window = max(0.0, self.window["budget"] - self.window["used"])
 
-        # Per-trade cap
-        per_trade_cap = cash * config.POSITION_FRACTION
-        hard_cap = min(per_trade_cap, remaining_window)
+        hard_cap = remaining_window
 
         if sig.dollar_risk > hard_cap + WINDOW_EPSILON:
             cost_per = sig.entry_price / 100.0
@@ -378,7 +376,9 @@ state = BotState()
 # ═════════════════════════════════════════════════════════════════════
 
 def _coid(ticker: str, side: str) -> str:
-    return uuid.uuid4().hex
+    """Namespaced client order id so our positions are identifiable from
+    exchange position data (prevents adopting foreign positions on restart)."""
+    return "sb_" + uuid.uuid4().hex
 
 
 def _window_id(now: datetime) -> int:
@@ -721,7 +721,9 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     sell_revenue = fees.sell_cash_in(filled, exit_price, taker=True)         # taker exit
     realized_pnl = sell_revenue - buy_cost
     won = sell_revenue > buy_cost
-    fees_dollars = fees.taker_fee_cents(filled, exit_price) / 100.0
+    # Fee deducted inside sell_cash_in uses taker_fee_dollars (6-decimal);
+    # match it exactly instead of recomputing via taker_fee_cents (cent-ceiled).
+    fees_dollars = fees.taker_fee_dollars(filled, exit_price)
 
     state.risk.record_trade_outcome(won, realized_pnl)
     if not won:
@@ -1024,6 +1026,9 @@ def cycle(client: KalshiClient):
             "side": side, "entry_price": entry_price,
             "contracts": contracts, "order_id": p.get("order_id", tk),
         }
+        state.position_risk[tk] = contracts * entry_price / 100.0
+        log.info("Synced new position from exchange: %s side=%s contracts=%d @%dc",
+                 tk, side, contracts, entry_price)
         state.position_risk[tk] = contracts * entry_price / 100.0
         log.info("Synced new position from exchange: %s side=%s contracts=%d @%dc",
                  tk, side, contracts, entry_price)
@@ -1480,10 +1485,11 @@ def main():
 
     # Fail fast if n8n is unreachable — all settlement PnL routing depends on it.
     # Degrade gracefully instead of stopping: bot continues trading without n8n.
-    if not n8n_health_check():
+    n8n_ok = n8n_health_check()
+    if not n8n_ok:
         log.warning("n8n health check failed — settlement webhooks may not work. "
                     "Bot continues trading without n8n routing.")
-    log.info("n8n health check ✓")
+    log.info("n8n health check %s", "✓" if n8n_ok else "✗")
 
     # Validate the Supabase service key at startup — an invalid/leaked key
     # (e.g. the one previously committed to git history) returns 401 on every

@@ -22,23 +22,11 @@ import sys
 import time
 
 import config
-from backtest_engine import run_sweep
+from backtest_engine import _default_settlement_yes_won as settlement_yes_won, run_sweep
 from kalshi_client import KalshiClient
 
 log = logging.getLogger("backtest")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")
-
-
-def settlement_yes_won(market):
-    """YES wins if expiration_value >= floor_strike (matches engine default)."""
-    exp_val = market.get("expiration_value")
-    floor_strike = market.get("floor_strike")
-    if exp_val is None or exp_val == "" or floor_strike is None or floor_strike == "":
-        return None
-    try:
-        return float(exp_val) >= float(floor_strike)
-    except (ValueError, TypeError):
-        return None
 
 
 def fetch_closed_markets(client: KalshiClient, series_list, limit_per_series=100):

@@ -138,7 +138,7 @@ def train_labeled(rows: List[dict], spot: Optional[float] = None,
 
 
 def train_from_history(series: str = "KXBTCD", events: int = 6,
-                       minutes: int = 60, epochs: int = 300,
+                       minutes: int = 60, epochs: int = 300, lr: float = 0.1,
                        out: str = "ml_model.pt") -> Optional[MLFairValue]:
     """Pull settled Kalshi history, label each rung by the settlement, train,
     and save to `out`. Returns the model or None if there is no data."""

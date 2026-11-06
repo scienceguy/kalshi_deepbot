@@ -218,9 +218,32 @@ def daterange(start_date: date, end_date: date):
         current += timedelta(days=1)
 
 
+def _load_kalshieye_api_key() -> str:
+    """Resolve the Kalshi Eye API key from env file, env var, or CLI arg.
+
+    Priority: KALSHIEYE_API_KEY_FILE (chmod-600 file) > KALSHIEYE_API_KEY (env)
+    > --api-key CLI argument. No secret values are ever printed.
+    """
+    import os
+
+    key_file = os.environ.get("KALSHIEYE_API_KEY_FILE", "")
+    if key_file:
+        try:
+            return Path(key_file).expanduser().read_text().strip()
+        except OSError as e:
+            raise SystemExit(f"cannot read KALSHIEYE_API_KEY_FILE {key_file}: {e}")
+    env_key = os.environ.get("KALSHIEYE_API_KEY", "")
+    if env_key:
+        return env_key
+    raise SystemExit(
+        "Kalshi Eye API key required: set KALSHIEYE_API_KEY_FILE or "
+        "KALSHIEYE_API_KEY, or pass --api-key"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Download Kalshi Eye historical data")
-    parser.add_argument("--api-key", required=True, help="Kalshi Eye API key")
+    parser.add_argument("--api-key", default=None, help="Kalshi Eye API key")
     parser.add_argument("--series", nargs="+", default=["KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M"],
                         help="Series tickers to download")
     parser.add_argument("--start", required=True, help="Start date (YYYY-MM-DD)")
@@ -230,7 +253,8 @@ def main():
     parser.add_argument("--list-series", action="store_true", help="List available series and exit")
     args = parser.parse_args()
 
-    client = KalshieyeClient(args.api_key)
+    api_key = args.api_key or _load_kalshieye_api_key()
+    client = KalshieyeClient(api_key)
 
     if args.list_series:
         series = client.list_series()
@@ -255,15 +279,7 @@ def main():
                 continue
 
             try:
-                # Estimate first (non-fatal if endpoint unavailable)
-                est = client.estimate_request(args.dataset, date_str, date_str, series)
-                log.info("  %s %s: estimate=%s", series, date_str, est)
-            except Exception as e:
-                log.warning("  %s %s: estimate failed: %s — proceeding anyway",
-                            series, date_str, e)
-
-            # Get files
-            try:
+                # Get files
                 files = client.list_files(dataset=args.dataset, start_date=date_str,
                                           end_date=date_str, series=series)
             except Exception as e:
