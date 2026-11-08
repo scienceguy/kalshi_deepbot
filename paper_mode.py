@@ -32,18 +32,18 @@ STATE_FILE = Path(os.environ.get(
 _state = None
 
 
-def _seed(real_balance: float) -> float:
-    """Starting paper bankroll: config.DRY_STARTING_BALANCE, else the real one.
+def _seed() -> float:
+    """Starting paper bankroll: config.DRY_STARTING_BALANCE, else a default.
 
     The live account is $1-2, where one contract is already ~12% of the balance,
     so a percentage sizing rule cannot be expressed at all. DRY_STARTING_BALANCE
     lets a dry run compound at a measurable scale (the same $10 the backtest
     uses) instead of being blocked by cent granularity.
     """
-    return round(float(config.DRY_STARTING_BALANCE or real_balance), 4)
+    return round(float(config.DRY_STARTING_BALANCE or 10.0), 4)
 
 
-def _load(real_balance: float) -> dict:
+def _load() -> dict:
     """Load the ledger, seeding start_balance once."""
     global _state
     if _state is not None:
@@ -55,11 +55,11 @@ def _load(real_balance: float) -> dict:
             "pnl": float(data.get("pnl", 0.0)),
         }
     except FileNotFoundError:
-        _state = {"start_balance": _seed(real_balance), "pnl": 0.0}
+        _state = {"start_balance": _seed(), "pnl": 0.0}
         log.info("Paper ledger seeded at $%.2f", _state["start_balance"])
     except Exception as e:
         log.warning("Could not read %s (%s) — reseeding", STATE_FILE, e)
-        _state = {"start_balance": _seed(real_balance), "pnl": 0.0}
+        _state = {"start_balance": _seed(), "pnl": 0.0}
     _save()
     return _state
 
@@ -73,33 +73,33 @@ def _save():
         log.warning("Could not write %s: %s", STATE_FILE, e)
 
 
-def start_balance(real_balance: float) -> float:
-    return _load(real_balance)["start_balance"]
+def start_balance() -> float:
+    return _load()["start_balance"]
 
 
-def pnl(real_balance: float) -> float:
-    return _load(real_balance)["pnl"]
+def pnl() -> float:
+    return _load()["pnl"]
 
 
-def add_pnl(real_balance: float, realized: float) -> None:
+def add_pnl(realized: float) -> None:
     """Credit realized paper P&L when a paper position settles."""
-    data = _load(real_balance)
+    data = _load()
     data["pnl"] = round(data["pnl"] + realized, 6)
     _save()
 
 
-def cash(real_balance: float, open_risk: float) -> float:
+def cash(open_risk: float) -> float:
     """Paper cash: start + realized paper P&L - capital in open positions."""
-    data = _load(real_balance)
+    data = _load()
     return data["start_balance"] + data["pnl"] - open_risk
 
 
-def reset(real_balance: float) -> float:
-    """Restart the paper curve from the current real balance."""
+def reset() -> float:
+    """Restart the paper curve from the configured starting balance."""
     global _state
     try:
         STATE_FILE.unlink()
     except FileNotFoundError:
         pass
     _state = None
-    return start_balance(real_balance)
+    return start_balance()

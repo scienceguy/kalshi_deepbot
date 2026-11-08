@@ -30,8 +30,9 @@ import config  # noqa: E402
 
 # Parse args FIRST so env is set before config loads
 parser = argparse.ArgumentParser()
-parser.add_argument("--live", action="store_true", help="Enable LIVE trading (overrides DRY_RUN=true)")
-parser.add_argument("--dry", action="store_true")
+_mode = parser.add_mutually_exclusive_group()
+_mode.add_argument("--live", action="store_true", help="Enable LIVE trading (overrides DRY_RUN=true)")
+_mode.add_argument("--dry", action="store_true")
 parser.add_argument("--once", action="store_true")
 parser.add_argument("--debug", action="store_true")
 parser.add_argument("--interval", type=int, default=config.LOOP_INTERVAL_SECONDS)
@@ -55,7 +56,6 @@ if args.debug:
 
 import fees  # noqa: E402
 from supabase_client import get_supabase  # noqa: E402
-import binance_feed  # noqa: E402
 import ladder_strategy as ls  # noqa: E402
 import ml_model  # noqa: E402
 from local_db import get_local_db_api, get_local_db  # noqa: E402
@@ -69,6 +69,7 @@ import signals as se  # noqa: E402
 from resilience import CycleSupervisor  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
 import paper_mode  # noqa: E402
+import gates  # noqa: E402
 
 # Lazy-loaded ML fair-value model (only when --ml-model is passed).
 _ml_model = None
@@ -754,7 +755,7 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     if not won:
         state.risk.record_market_loss(ticker, abs(realized_pnl))
     if is_paper:
-        paper_mode.add_pnl(client.get_balance(), realized_pnl)
+        paper_mode.add_pnl(realized_pnl)
 
     key = f"exit:{ticker}:{order_id}"
     try:
@@ -939,7 +940,6 @@ def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
         return list(signals)
 
     import ladder_strategy as ls
-    import binance_feed
     spot_cache: dict = {}
     ml_filtered = []
     for sig in signals:
@@ -952,14 +952,11 @@ def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
         elif asset.endswith("D"):
             asset = asset[:-1]
         if asset not in spot_cache:
-            try:
-                spot_cache[asset] = binance_feed.composite_price(f"{asset}USDT")
-            except Exception:
-                log.warning("ML BLOCK %s — no spot for %s, skipping ML filter",
-                            m.ticker, asset)
-                continue
+            spot_cache[asset] = gates.spot_for(asset)
         spot = spot_cache[asset]
         if spot is None:
+            log.warning("ML BLOCK %s — no spot for %s, skipping ML filter",
+                        m.ticker, asset)
             continue
 
         minutes_left = m.minutes_left
@@ -1009,7 +1006,7 @@ def cycle(client: KalshiClient):
     # in a paper balance derived from recorded settlement P&L so the dry run
     # actually compounds and its sizing tracks the curve.
     if config.DRY_RUN and cash is not None:
-        cash = paper_mode.cash(cash, sum(state.position_risk.values()))
+        cash = paper_mode.cash(sum(state.position_risk.values()))
 
     # Fetch positions
     try:
@@ -1218,13 +1215,14 @@ def cycle(client: KalshiClient):
             # settle_key ledger below is shared with live runs, so paper P&L is
             # kept separate to keep the two curves from contaminating.
             if is_paper:
-                paper_mode.add_pnl(client.get_balance(), realized_pnl)
+                paper_mode.add_pnl(realized_pnl)
 
             # Record settlement P&L idempotently — use idempotency key so replays
-            # after a crash can't double-count. Key is "settle:<ticker>:<order_id>".
-            # The market ticker is unique per event (includes date/strike), so use it
-            # directly to avoid cross-event collisions.
-            settle_key = f"settle:{t}:{order_id}"
+            # after a crash can't double-count. Key is "settle:<event_ticker>:<order_id>".
+            # Use event_ticker from market data (groups all strikes of one event)
+            # to avoid cross-strike collisions within the same event.
+            event_ticker = market.get("event_ticker", t)
+            settle_key = f"settle:{event_ticker}:{order_id}"
             applied = True  # default: treat as not-yet-applied; DB failure falls through to credit PnL
             pnl_to_add = 0.0
             try:
@@ -1397,11 +1395,12 @@ def cycle(client: KalshiClient):
         state.trades_placed, state.cycles,
     )
     if config.DRY_RUN and cash_available:
-        start = paper_mode.start_balance(cash)
+        start = paper_mode.start_balance()
+        pnl_val = paper_mode.pnl()
         pct = (cash - start) / start * 100 if start else 0.0
         log.info(
             "📈 paper: start=$%.2f pnl=$%+.2f open=$%.2f cash=$%.2f (%+.1f%%)",
-            start, paper_mode.pnl(cash), sum(state.position_risk.values()), cash, pct,
+            start, pnl_val, sum(state.position_risk.values()), cash, pct,
         )
 
     # Record bot state to Supabase only when something changed (avoid unnecessary writes)
@@ -1461,6 +1460,21 @@ def cycle(client: KalshiClient):
         for sig in se.evaluate(m, cash, max_trade_override=max_trade):
             if sig.is_trade:
                 signals.append(sig)
+
+    # Pre-entry gates: ATR hurdle, fee-adjusted EV, time-decay cushion.
+    # Shadow mode (default) logs would-block decisions without blocking.
+    # Warm the feed caches concurrently first: a 9-series cycle would otherwise
+    # serialise one spot + one klines fetch per candidate.
+    gates.prefetch(gates.asset_for(sig.market) for sig in signals)
+    gated = []
+    for sig in signals:
+        result = gates.evaluate_entry(
+            sig.market, None, None,
+            side=sig.side, entry_price_cents=sig.entry_price,
+        )
+        if result.allowed:
+            gated.append(sig)
+    signals = gated
 
     # ML fair-value override: re-score signals through the ML model.
     # If ML fair value disagrees with venue-implied fair on direction, or if
@@ -1645,54 +1659,6 @@ def main():
             "and restart. Bot continues trading without Supabase."
         )
         sb.enabled = False
-
-    # Validate the NO market-data format against a live market. This only
-    # affects how NO quotes are read; order pricing always sends the YES-leg
-    # complement (see KalshiClient.no_price_to_api_price).
-    try:
-        markets = client.get_markets(status="open", limit=10)
-        if markets:
-            # Check all markets for consistency (not just first)
-            has_no_ask_any = False
-            has_no_ask_none = False
-            for sample in markets:
-                has_no_ask = "no_ask" in sample and sample.get("no_ask") is not None
-                has_no_ask_dollars = "no_ask_dollars" in sample and sample.get("no_ask_dollars") is not None
-                has_no_price_dollars = "no_price_dollars" in sample and sample.get("no_price_dollars") is not None
-                if has_no_ask or has_no_ask_dollars or has_no_price_dollars:
-                    has_no_ask_any = True
-                else:
-                    has_no_ask_none = True
-            
-            if has_no_ask_any and has_no_ask_none:
-                # Inconsistent: some markets have NO prices, others don't
-                log.warning(
-                    "NO price format INCONSISTENT across markets: some have NO prices, others don't. "
-                    "Using config.NO_PRICE_IS_COMPLEMENT=%s",
-                    config.NO_PRICE_IS_COMPLEMENT,
-                )
-            elif has_no_ask_any and config.NO_PRICE_IS_COMPLEMENT:
-                # API returns NO prices directly but config says they're complemented
-                msg = (
-                    f"NO_PRICE_IS_COMPLEMENT=true but API returns NO prices directly. "
-                    f"Set NO_PRICE_IS_COMPLEMENT=false in .env"
-                )
-                log.warning(msg)
-            elif has_no_ask_none and not config.NO_PRICE_IS_COMPLEMENT:
-                # API doesn't return NO prices but config says they're not complemented
-                msg = (
-                    f"NO_PRICE_IS_COMPLEMENT=false but API lacks NO price fields. "
-                    f"Set NO_PRICE_IS_COMPLEMENT=true in .env"
-                )
-                log.warning(msg)
-            elif has_no_ask_any:
-                log.info("NO price format validated: markets have NO price fields (complement=False)")
-            else:
-                log.info("NO price format validated: markets lack NO price fields (complement=True)")
-        else:
-            log.warning("No markets available to validate NO price format")
-    except Exception as e:
-        log.debug("NO price format check skipped: %s", e)
 
     # Seed resting orders from Kalshi so intra-cycle cash tracking accounts
     # for orders already resting from a previous run.

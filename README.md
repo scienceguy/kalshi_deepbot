@@ -25,6 +25,7 @@ See `.env.example` for all required variables. Never commit real credentials.
 - `trader.py` — Main trading loop
 - `signals.py` — Signal engine (two-sided favourite maker)
 - `market_finder.py` — Market discovery
+- `gates.py` — Pre-entry gates (ATR hurdle, fee-adjusted EV, time-decay cushion)
 - `kalshi_client.py` — Signed Kalshi REST client
 - `fees.py` — Kalshi fee math
 - `risk.py` — Risk management

@@ -55,17 +55,44 @@ class MarketInfo:
 
     @property
     def mid_yes(self):
-        if self.yes_bid and self.yes_ask: return (self.yes_bid + self.yes_ask) / 2
-        if self.yes_ask: return float(self.yes_ask)
-        if self.yes_bid: return float(self.yes_bid)
+        # Treat 0 as "no quote" (valid prices are 1-99)
+        yb = self.yes_bid if self.yes_bid else None
+        ya = self.yes_ask if self.yes_ask else None
+        if yb is not None and ya is not None:
+            return (yb + ya) / 2
+        if ya is not None:
+            return float(ya)
+        if yb is not None:
+            return float(yb)
+        return None
+
+    @staticmethod
+    def compute_mid(yes_bid: int, yes_ask: int):
+        """Shared mid-price helper: matches MarketInfo.mid_yes exactly."""
+        # Treat 0 as "no quote" (valid prices are 1-99)
+        yb = yes_bid if yes_bid else None
+        ya = yes_ask if yes_ask else None
+        if yb is not None and ya is not None:
+            return (yb + ya) / 2
+        if ya is not None:
+            return float(ya)
+        if yb is not None:
+            return float(yb)
         return None
 
     @property
-    def skew(self): return self.yes_bid - self.no_bid
+    def skew(self):
+        yb = self.yes_bid if self.yes_bid else None
+        nb = self.no_bid if self.no_bid else None
+        if yb is not None and nb is not None:
+            return yb - nb
+        return 0
 
     @property
     def spread(self):
-        return (self.yes_ask - self.yes_bid) if (self.yes_ask and self.yes_bid) else 99
+        yb = self.yes_bid if self.yes_bid else None
+        ya = self.yes_ask if self.yes_ask else None
+        return (ya - yb) if (ya is not None and yb is not None) else 99
 
 def _parse_api_time(v):
     if not v: return None
@@ -73,12 +100,6 @@ def _parse_api_time(v):
         return datetime.fromisoformat(v.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
-
-def _compute_mid(bid, ask):
-    """Shared mid-price helper: matches MarketInfo.mid_yes exactly."""
-    if bid and ask: return (bid + ask) / 2
-    return float(ask or bid) if (ask or bid) else None
-
 
 def _dollars_to_cents(v):
     """Kalshi v2 *_dollars fields are decimal strings, always dollars.
@@ -223,7 +244,7 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
         yb, ya, nb, na, yq, nq = _parse_market_prices(mkt)
         # Float mid matches MarketInfo.mid_yes so the pre-filter and the final
         # band check agree on the same value (no rounding boundary flips).
-        mid = _compute_mid(yb, ya)
+        mid = MarketInfo.compute_mid(yb, ya)
 
         log.debug("  %s ml=%.1f mid=%.1fc ya=%dc yb=%dc", ticker, ml, mid, ya, yb)
 

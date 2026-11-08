@@ -49,6 +49,7 @@ paper_state.json
 .lock
 *.log
 markout_log.jsonl
+gates_log.jsonl
 
 # OS
 .DS_Store
@@ -91,5 +92,9 @@ data/crossvenue/
 *.pt
 *.pkl
 *.safetensors
-fixes_todo.md
-TODO_FIXES.md
+
+# Markdown working notes (keep README.md and AGENTS.md)
+*.md
+!README.md
+!AGENTS.md
+SUMMARY_README

@@ -151,14 +151,13 @@ def composite_price(symbol: str = "BTCUSDT", timeout: int = 10) -> Optional[floa
     the reference. This is a proxy: BRTI is a volume-weighted composite, and we
     cannot see its weights, so a persistent basis against BRTI remains.
     """
-    prices = sorted(price_sources(symbol, timeout).values())
-    # Filter out NaN and inf
-    prices = [p for p in prices if math.isfinite(p)]
+    sources = price_sources(symbol, timeout)
+    prices = sorted(p for p in sources.values() if math.isfinite(p))
     if not prices:
         log.warning("composite_price: no valid prices from any source")
         return None
     if len(prices) == 1:
-        log.warning("composite_price: only one venue available (%s)", list(price_sources(symbol, timeout).keys())[0])
+        log.warning("composite_price: only one venue available (%s)", list(sources))
     mid = len(prices) // 2
     if len(prices) % 2:
         return prices[mid]
@@ -253,9 +252,11 @@ def _fetch_klines_paginated(
             # Advance cursor based on pagination direction
             if reverse_results:
                 # OKX returns newest first; we reversed to oldest-first.
-                # data[-1] is the newest in this batch. Use it to advance.
-                cursor = int(data[-1][0]) - 1  # OKX: before newest
+                # data[0] is the OLDEST in this batch. Next page should fetch
+                # klines BEFORE this oldest timestamp (OKX uses 'before' param).
+                cursor = int(data[0][0]) - 1  # OKX: before oldest
             else:
+                # Binance uses 'startTime' (after cursor), data[-1] is newest
                 cursor = int(data[-1][0]) + 1  # Binance: after newest
             if len(data) < limit_per_req:
                 break

@@ -8,6 +8,7 @@ import json
 
 import pytest
 
+import config
 import paper_mode
 from risk import RiskManager
 
@@ -20,20 +21,27 @@ def ledger(tmp_path, monkeypatch):
     return path
 
 
-def test_start_balance_is_persisted_once(ledger):
-    assert paper_mode.start_balance(1.22) == 1.22
-    # A later real-balance change must not reset the compounding curve.
-    assert paper_mode.start_balance(9.99) == 1.22
+def test_start_balance_is_persisted_once(ledger, monkeypatch):
+    # Seed with a specific starting balance
+    monkeypatch.setattr(config, "DRY_STARTING_BALANCE", 1.22)
+    paper_mode._state = None  # Force reload
+    assert paper_mode.start_balance() == 1.22
+    # A later config change must not reset the compounding curve.
+    monkeypatch.setattr(config, "DRY_STARTING_BALANCE", 9.99)
+    paper_mode._state = None  # Force reload (but state file exists, so it loads from file)
+    assert paper_mode.start_balance() == 1.22
     assert json.loads(ledger.read_text())["start_balance"] == 1.22
 
 
-def test_cash_accounts_for_paper_pnl_and_open_risk(ledger):
-    paper_mode.start_balance(1.22)
+def test_cash_accounts_for_paper_pnl_and_open_risk(ledger, monkeypatch):
+    monkeypatch.setattr(config, "DRY_STARTING_BALANCE", 1.22)
+    paper_mode._state = None
+    paper_mode.start_balance()
     # Entry: cash drops by the capital locked in the position.
-    assert paper_mode.cash(1.22, 0.90) == pytest.approx(0.32)
+    assert paper_mode.cash(0.90) == pytest.approx(0.32)
     # Settlement: risk released and paper P&L credited.
-    paper_mode.add_pnl(1.22, 0.10)
-    assert paper_mode.cash(1.22, 0.0) == pytest.approx(1.32)
+    paper_mode.add_pnl(0.10)
+    assert paper_mode.cash(0.0) == pytest.approx(1.32)
     assert json.loads(ledger.read_text())["pnl"] == pytest.approx(0.10)
 
 

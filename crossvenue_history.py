@@ -72,11 +72,12 @@ def _get(path: str, params: dict, timeout: int = 25) -> Optional[dict]:
 
 def settled_events(series: str, limit: int = 200) -> List[dict]:
     """Settled events for a series, newest first, with their settlement value."""
-    events: Dict[str, dict] = {}
+    # First pass: collect all markets grouped by event_ticker
+    events_raw: Dict[str, list] = {}
     cursor = None
     prev_cursor = None
     pages = 0
-    while pages < 12 and len(events) < limit:
+    while pages < 12 and len(events_raw) < limit * 2:  # fetch more to account for filtering
         params = {"series_ticker": series, "limit": 200}
         if cursor:
             params["cursor"] = cursor
@@ -89,32 +90,46 @@ def settled_events(series: str, limit: int = 200) -> List[dict]:
                 continue
             if not m.get("close_time"):
                 continue
-            # Use _settle_yes_cents which correctly handles both payout formats
-            # (settlement_value_dollars / result) and raw expiration_value
-            settled_yes = _settle_yes_cents(m)
-            if settled_yes is None:
-                continue
-            if ev not in events:
-                events[ev] = {
-                    "event": ev,
-                    "close_time": m.get("close_time"),
-                    "expiration_value": float(m.get("expiration_value", 0)),
-                    "strikes": {},
-                }
-            try:
-                events[ev]["strikes"][float(m["floor_strike"])] = m["ticker"]
-            except (TypeError, ValueError):
-                continue
+            events_raw.setdefault(ev, []).append(m)
         prev_cursor = cursor
         cursor = payload.get("cursor")
         pages += 1
-        # Detect stuck cursor (same cursor returned repeatedly)
         if cursor and cursor == prev_cursor:
             log.warning("Pagination cursor stuck for series %s after %d pages -- breaking", series, pages)
             break
         if not cursor:
             break
-    return list(events.values())
+
+    # Second pass: build events, determining settlement from any market that has it
+    events: Dict[str, dict] = {}
+    for ev, markets in events_raw.items():
+        # Find settlement from any market in this event
+        settled_yes = None
+        for m in markets:
+            sy = _settle_yes_cents(m)
+            if sy is not None:
+                settled_yes = sy
+                break
+        if settled_yes is None:
+            # No market in this event has settlement data - skip
+            continue
+        # Use the first market's close_time and expiration_value
+        m0 = markets[0]
+        events[ev] = {
+            "event": ev,
+            "close_time": m0.get("close_time"),
+            "expiration_value": float(m0.get("expiration_value", 0)),
+            "settled_yes": settled_yes,
+            "strikes": {},
+        }
+        for m in markets:
+            try:
+                events[ev]["strikes"][float(m["floor_strike"])] = m["ticker"]
+            except (TypeError, ValueError):
+                continue
+    # Sort by close_time descending (newest first) and limit
+    sorted_events = sorted(events.values(), key=lambda e: e["close_time"], reverse=True)
+    return sorted_events[:limit]
 
 
 def candles(ticker: str, series: str, start: int, end: int) -> List[dict]:
@@ -150,19 +165,26 @@ def spot_closes(symbol: str, start: int, end: int) -> Dict[int, float]:
 
 def sigma_curve(symbol: str, start_ts: int, end_ts: int,
                 window: int = 60) -> Dict[int, Optional[float]]:
-    """Precompute per-minute sigma for the whole window (one API call)."""
+    """Precompute per-minute sigma for the whole window (one API call).
+
+    The sigma at key `ts` (minute boundary) uses klines ENDING at `ts-60` and
+    earlier, to avoid lookahead bias. The kline ending at `ts` covers [ts-60, ts]
+    and its close is not known until after the minute ends.
+    """
     rows = binance_feed.composite_klines_range(symbol, start_ts * 1000,
                                                end_ts * 1000, "1m")
     out: Dict[int, Optional[float]] = {}
     if not rows:
         return out
-    # Align to close time like spot_closes: open_time + 60s = close_time
+    # close_time = open_time + 60s for each kline
     closes = [((int(r[0]) + 60000) // 1000, float(r[4])) for r in rows]
     for i, (ts, _) in enumerate(closes):
+        # Need `window` prior klines (ending at ts-60, ts-120, ...)
         if i < window:
             out[ts - ts % 60] = None
             continue
-        window_closes = [c for _, c in closes[i - window:i + 1]]
+        # Exclude current kline (index i) to avoid lookahead: use i-window to i-1
+        window_closes = [c for _, c in closes[i - window:i]]
         rets = [math.log(b / a) for a, b in zip(window_closes, window_closes[1:])
                 if a > 0 and b > 0]
         if len(rets) < 5:
@@ -200,9 +222,11 @@ def event_basis(event: dict, series: str, asset: str, minutes: int = 60) -> List
     close = datetime.fromisoformat(event["close_time"].replace("Z", "+00:00"))
     close_ts = int(close.timestamp())
     start_ts = close_ts - minutes * 60
-    settle = event["expiration_value"]
-    if settle <= 0:
+    # Use pre-computed settled_yes (0 or 100 cents) from settled_events
+    settled_yes = event.get("settled_yes")
+    if settled_yes is None:
         return []
+    settle = settled_yes / 100.0  # Convert to 0.0 or 1.0 for strike comparison
     symbol = f"{asset}USDT"
 
     # Only strikes near the settlement value carry information; the wings sit at

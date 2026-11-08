@@ -285,23 +285,27 @@ def _stability_ok(ticker: str, now: float):
     cutoff = now - config.STABILITY_LOOKBACK_MIN * 60
     window = [(t, b) for t, b in h if t >= cutoff]
     if not window:
-        # Fresh ticker: allow with warning (fail-open on fresh start)
-        # Only warn once per ticker per session to avoid log spam.
-        warn_key = f"{ticker}:fresh"
-        if warn_key not in _stability_warned:
-            _stability_warned.add(warn_key)
-            log.warning("Stability check: no history for %s — allowing trade (fresh start)", ticker)
-        return True, "fresh start: no history"
+        # Fresh ticker: behavior controlled by STABILITY_FAIL_OPEN
+        if config.STABILITY_FAIL_OPEN:
+            warn_key = f"{ticker}:fresh"
+            if warn_key not in _stability_warned:
+                _stability_warned.add(warn_key)
+                log.warning("Stability check: no history for %s — allowing trade (fresh start)", ticker)
+            return True, "fresh start: no history"
+        else:
+            return False, "fresh start: no history (STABILITY_FAIL_OPEN=false)"
     coverage = now - window[0][0]
     if coverage < config.STABILITY_MIN_COVERAGE_MIN * 60:
-        # Insufficient coverage: allow with warning (fail-open)
-        # Only warn once per ticker per session.
-        warn_key = f"{ticker}:coverage"
-        if warn_key not in _stability_warned:
-            _stability_warned.add(warn_key)
-            log.warning("Stability check: only %.1fmin history for %s (need %.1fmin) — allowing trade",
-                        coverage/60, ticker, config.STABILITY_MIN_COVERAGE_MIN)
-        return True, f"insufficient coverage: {coverage/60:.1f}min"
+        # Insufficient coverage: behavior controlled by STABILITY_FAIL_OPEN
+        if config.STABILITY_FAIL_OPEN:
+            warn_key = f"{ticker}:coverage"
+            if warn_key not in _stability_warned:
+                _stability_warned.add(warn_key)
+                log.warning("Stability check: only %.1fmin history for %s (need %.1fmin) — allowing trade",
+                            coverage/60, ticker, config.STABILITY_MIN_COVERAGE_MIN)
+            return True, f"insufficient coverage: {coverage/60:.1f}min"
+        else:
+            return False, f"insufficient coverage: {coverage/60:.1f}min (STABILITY_FAIL_OPEN=false)"
     peak = max(min(b, 100 - b) for _, b in window)
     if peak > config.STABILITY_MAX_YES_BID_CENTS:
         return False, (

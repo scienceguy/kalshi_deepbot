@@ -12,6 +12,7 @@ routes settlement P&L through n8n webhooks.
 | `trader.py` | Main trading loop (entry point). Dry-run by default; `--live` + `KALSHI_CONFIRM_LIVE=true` for real money. |
 | `signals.py` | Signal engine: two-sided favourite maker, stability check, confidence scoring, LLM eval integration. |
 | `market_finder.py` | Market discovery — parallel series fetch, orderbook lookup, MAIN + HEDGE_NO selection. |
+| `gates.py` | Pre-entry gates: ATR hurdle, fee-adjusted EV, time-decay cushion. Shadow mode by default; logs `gates_log.jsonl`. |
 | `kalshi_client.py` | Signed Kalshi v2 REST client (RSA-PSS, `/trade-api/v2` path prefix). |
 | `fees.py` | Kalshi taker fee math (configurable `KALSHI_FEE_RATE`, default 0.07). |
 | `risk.py` | Cash floor, exposure ceiling, per-trade cap, drawdown halt, consecutive-loss cooldown. |

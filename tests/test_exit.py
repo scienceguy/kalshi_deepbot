@@ -147,7 +147,7 @@ class TestBookExit:
         monkeypatch.setattr(trader, "get_local_db", lambda: ldb)
         monkeypatch.setattr(trader, "get_supabase_client", lambda: sb)
         monkeypatch.setattr(trader, "get_n8n_client", lambda: n8n)
-        monkeypatch.setattr(trader.paper_mode, "add_pnl", lambda bal, pnl: None)
+        monkeypatch.setattr(trader.paper_mode, "add_pnl", lambda pnl: None)
         risk = MagicMock()
         monkeypatch.setattr(trader.state, "risk", risk)
         monkeypatch.setattr(trader.state, "session_pnl", 0.0)

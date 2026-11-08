@@ -131,6 +131,46 @@ MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 50)
 MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
 
 # ═════════════════════════════════════════════════════════════════════
+# PRE-ENTRY GATES (gates.py) — ATR hurdle, fee-adjusted EV, time-decay
+# ═════════════════════════════════════════════════════════════════════
+GATES_ENABLED = _env_bool("GATES_ENABLED", True)
+# Shadow mode logs would-block decisions and never blocks an order. Set
+# GATES_SHADOW_MODE=false to let the gates actually deny entries.
+GATES_SHADOW_MODE = _env_bool("GATES_SHADOW_MODE", True)
+
+# Gate 1 — ATR hurdle
+GATES_ATR_ENABLED = _env_bool("GATES_ATR_ENABLED", True)
+GATES_ATR_LOOKBACK = _env_int("GATES_ATR_LOOKBACK", 14)
+GATES_ATR_HURDLE = _env_float("GATES_ATR_HURDLE", 1.0)
+GATES_ATR_HURDLE_BTC = _env_float("GATES_ATR_HURDLE_BTC", GATES_ATR_HURDLE)
+GATES_ATR_HURDLE_ETH = _env_float("GATES_ATR_HURDLE_ETH", GATES_ATR_HURDLE)
+GATES_ATR_HURDLE_SOL = _env_float("GATES_ATR_HURDLE_SOL", GATES_ATR_HURDLE)
+# True: Gate 1 measures the move needed *against* the position (0 for a
+# favourite already past the strike). False: the spec-literal |strike-spot|,
+# which flags nearly every in-the-money favourite.
+GATES_ATR_SIDE_AWARE = _env_bool("GATES_ATR_SIDE_AWARE", True)
+
+# Gate 2 — fee-adjusted EV (dollars per contract)
+GATES_EV_ENABLED = _env_bool("GATES_EV_ENABLED", True)
+GATES_MIN_EDGE = _env_float("GATES_MIN_EDGE", 0.005)
+# Taker fee by default (conservative: an exit may cross the book).
+# Set false when every fill and exit is a maker order.
+GATES_FEE_TAKER = _env_bool("GATES_FEE_TAKER", True)
+
+# Gate 3 — time-decay cushion
+GATES_TIME_DECAY_ENABLED = _env_bool("GATES_TIME_DECAY_ENABLED", True)
+GATES_HIGH_GAMMA_MINUTES = _env_float("GATES_HIGH_GAMMA_MINUTES", 2.0)
+GATES_DENY_HIGH_GAMMA = _env_bool("GATES_DENY_HIGH_GAMMA", False)
+
+# Feed cache + per-candidate JSONL diagnostics
+GATES_SPOT_CACHE_SECONDS = _env_int("GATES_SPOT_CACHE_SECONDS", 30)
+GATES_ATR_CACHE_SECONDS = _env_int("GATES_ATR_CACHE_SECONDS", 60)
+GATES_LOG_FILE = Path(
+    os.environ.get("GATES_LOG_FILE")
+    or Path(__file__).resolve().parent / "gates_log.jsonl"
+)
+
+# ═════════════════════════════════════════════════════════════════════
 # ORDER BEHAVIOR (favourite maker - optimized from backtests)
 # Backtest optimal: 15-55c entry band (wider = more trades, earlier window)
 # ═════════════════════════════════════════════════════════════════════
@@ -160,11 +200,6 @@ MAX_HEDGE_PER_SERIES = _env_int("MAX_HEDGE_PER_SERIES", 0)
 # Separate from favourite-maker band so both can coexist.
 HEDGE_MIN_NO_ENTRY_CENTS = _env_int("HEDGE_MIN_NO_ENTRY_CENTS", 82)
 HEDGE_MAX_NO_ENTRY_CENTS = _env_int("HEDGE_MAX_NO_ENTRY_CENTS", 88)
-
-# Latency-arb taker strategy. OFF by default: the edge model is unvalidated for
-# live fills (the 2s edge decay is only ~33% survivable per FINDINGS), so it
-# should not place real-money taker orders until it has a passing backtest.
-LATENCY_ARB_ENABLED = _env_bool("LATENCY_ARB_ENABLED", False)
 
 # Panic fade (mean reversion) strategy. Bet opposite side when price moves
 # sharply in short window — TurbineFi research found this was the ONLY
@@ -211,13 +246,6 @@ TOTAL_CASH_TRADABLE_PCT = _env_float("TOTAL_CASH_TRADABLE_PCT", 0.70)
 # ═════════════════════════════════════════════════════════════════════
 CASH_FLOOR_PCT = _env_float("CASH_FLOOR_PCT", 0.70)
 EXPOSURE_CEILING_PCT = _env_float("EXPOSURE_CEILING_PCT", 0.30)
-# Small epsilon for floating-point comparison: 0.70 + 0.30 == 1.0000000000000001
-_SUM_EPSILON = 1e-9
-if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0 + _SUM_EPSILON:
-    raise ValueError(
-        f"CASH_FLOOR_PCT ({CASH_FLOOR_PCT:.2f}) + EXPOSURE_CEILING_PCT ({EXPOSURE_CEILING_PCT:.2f}) > 1.0. "
-        f"Sum must be <= 1.0 to avoid over-reserving cash."
-    )
 PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.05)  # quarter-Kelly-ish, up to 5%
 MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
 
@@ -251,6 +279,8 @@ STABILITY_ENABLED = _env_bool("STABILITY_ENABLED", True)
 STABILITY_LOOKBACK_MIN = _env_int("STABILITY_LOOKBACK_MIN", 3)
 STABILITY_MIN_COVERAGE_MIN = _env_float("STABILITY_MIN_COVERAGE_MIN", 2.5)
 STABILITY_MAX_YES_BID_CENTS = _env_int("STABILITY_MAX_YES_BID_CENTS", 8)
+# Fail-open on fresh start (no bid history) — set false to require history before trading
+STABILITY_FAIL_OPEN = _env_bool("STABILITY_FAIL_OPEN", True)
 HEDGE_STABILITY_ENABLED = _env_bool("HEDGE_STABILITY_ENABLED", True)
 
 # ═════════════════════════════════════════════════════════════════════
@@ -446,8 +476,37 @@ def validate_bands():
             f"Empty entry window — no time to trade. "
             f"Set ENTRY_WINDOW_START_MIN < ENTRY_WINDOW_END_MIN."
         )
+    # Risk config: cash floor + exposure ceiling must not exceed 1.0
+    _SUM_EPSILON = 1e-9
+    if CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT > 1.0 + _SUM_EPSILON:
+        errors.append(
+            f"CASH_FLOOR_PCT ({CASH_FLOOR_PCT:.2f}) + EXPOSURE_CEILING_PCT ({EXPOSURE_CEILING_PCT:.2f}) > 1.0. "
+            f"Sum must be <= 1.0 to avoid over-reserving cash."
+        )
+    if PAPER_CASH_FLOOR_PCT + PAPER_EXPOSURE_CEILING_PCT > 1.0 + _SUM_EPSILON:
+        errors.append(
+            f"PAPER_CASH_FLOOR_PCT ({PAPER_CASH_FLOOR_PCT:.2f}) + PAPER_EXPOSURE_CEILING_PCT ({PAPER_EXPOSURE_CEILING_PCT:.2f}) > 1.0. "
+            f"Sum must be <= 1.0 to avoid over-reserving cash."
+        )
+    # Pre-entry gates: a non-positive hurdle or lookback below 2 makes every
+    # candidate fail closed (or makes ATR undefined), which looks like a dead bot.
+    for asset, hurdle in (("BTC", GATES_ATR_HURDLE_BTC),
+                          ("ETH", GATES_ATR_HURDLE_ETH),
+                          ("SOL", GATES_ATR_HURDLE_SOL)):
+        if hurdle <= 0:
+            errors.append(
+                f"GATES_ATR_HURDLE_{asset} ({hurdle}) must be > 0."
+            )
+    if GATES_ATR_LOOKBACK < 2:
+        errors.append(f"GATES_ATR_LOOKBACK ({GATES_ATR_LOOKBACK}) must be >= 2.")
+    if GATES_MIN_EDGE < 0:
+        errors.append(f"GATES_MIN_EDGE ({GATES_MIN_EDGE}) must be >= 0.")
+    if GATES_HIGH_GAMMA_MINUTES < 0:
+        errors.append(
+            f"GATES_HIGH_GAMMA_MINUTES ({GATES_HIGH_GAMMA_MINUTES}) must be >= 0."
+        )
     if errors:
-        raise ValueError("Entry band configuration invalid:\n" + "\n".join(errors))
+        raise ValueError("Configuration invalid:\n" + "\n".join(errors))
 
 # Validation is called explicitly by trader.py at startup.
 # Do not run on import to allow graceful handling of config errors.
