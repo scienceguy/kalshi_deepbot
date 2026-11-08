@@ -828,6 +828,18 @@ def _manage_paper_fills(markets, client):
                      ticker, config.STALE_ORDER_MINS)
 
 
+def _already_ordered(ticker: str) -> bool:
+    """True when an entry order on this ticker is already resting.
+
+    _coid() mints a fresh uuid per call, so without this check every cycle
+    re-posts the same bid: the exposure multiplies and each copy can fill.
+    """
+    if config.DRY_RUN:
+        return any(r["sig"].market.ticker == ticker
+                   for r in state.paper_resting.values())
+    return any(o.get("ticker") == ticker for o in state.live_resting_orders)
+
+
 def clear_resting_orders(client, ticker: str):
     """Cancel every resting order on `ticker` (Kalshi blocks a close while any exist)."""
     for o in list(state.live_resting_orders):
@@ -1503,6 +1515,12 @@ def cycle(client: KalshiClient):
                 state.orders_today, config.MAX_ORDERS_PER_DAY,
             )
             break
+
+        # One resting entry per ticker: the window runs 15 minutes and a new
+        # cycle every ~20s would otherwise stack four copies of the same bid.
+        if _already_ordered(sig.market.ticker):
+            log.debug("Already resting on %s — skipping duplicate entry", sig.market.ticker)
+            continue
 
         # Enforce minimum gap between orders
         now_t = time.time()

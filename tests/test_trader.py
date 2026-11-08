@@ -705,3 +705,25 @@ def test_cli_rejects_live_and_dry_together():
     )
     assert proc.returncode == 2, proc.stderr
     assert "not allowed with argument" in proc.stderr
+
+
+def test_already_ordered_blocks_duplicate_entry(monkeypatch):
+    """A fresh uuid per _coid() means nothing else stops a re-post each cycle."""
+    from types import SimpleNamespace
+
+    market = SimpleNamespace(ticker="KXBTC15M-26NOV08-1200", series="KXBTC15M")
+    sig = SimpleNamespace(market=market, side="yes")
+
+    test_state = trader.BotState()
+    monkeypatch.setattr(trader, "state", test_state)
+    monkeypatch.setattr(trader.config, "DRY_RUN", True)
+
+    assert trader._already_ordered(market.ticker) is False
+    test_state.paper_resting["oid1"] = {"sig": sig, "placed_at": 0.0}
+    assert trader._already_ordered(market.ticker) is True
+    assert trader._already_ordered("KXETH15M-26NOV08-1200") is False
+
+    monkeypatch.setattr(trader.config, "DRY_RUN", False)
+    assert trader._already_ordered(market.ticker) is False
+    test_state.live_resting_orders = [{"ticker": market.ticker, "order_id": "x"}]
+    assert trader._already_ordered(market.ticker) is True

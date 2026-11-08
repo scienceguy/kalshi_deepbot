@@ -317,7 +317,10 @@ ERROR_BACKOFF_SECONDS = _env_int("ERROR_BACKOFF_SECONDS", 5)
 ERROR_BACKOFF_MAX_SECONDS = _env_int("ERROR_BACKOFF_MAX_SECONDS", 120)
 CLIENT_REBUILD_THRESHOLD = _env_int("CLIENT_REBUILD_THRESHOLD", 5)
 REQUEST_TIMEOUT_SECONDS = _env_int("REQUEST_TIMEOUT_SECONDS", 10)
-REQUEST_MIN_GAP_SECONDS = _env_float("REQUEST_MIN_GAP_SECONDS", 1.0)
+# Kalshi allows ~10 req/s; the old 1.0s gap serialised discovery into 18s per
+# cycle (longer than the 15s loop interval). 0.2s = 5 req/s with headroom, and
+# 429s are still retried with backoff.
+REQUEST_MIN_GAP_SECONDS = _env_float("REQUEST_MIN_GAP_SECONDS", 0.2)
 KALSHI_POOL_MAXSIZE = _env_int("KALSHI_POOL_MAXSIZE", 20)
 CYCLE_TIMEOUT_SECONDS = _env_int("CYCLE_TIMEOUT_SECONDS", 30)
 CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 20)

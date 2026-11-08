@@ -281,3 +281,5 @@ Backtest results on 900 historical 15M markets:
   - `PAPER_PER_TRADE_PCT=0.95` (dry-run only)
 
 Strategy: Early entry (6-11 min into 15-min window), wide favourite-maker band (15-55c), conservative per-trade sizing (8%).
+| 61 | `trader.py` order loop | `_coid()` mints a fresh uuid, so every cycle re-posted the same bid (5 copies on one ticker in a live dry run) | FIXED — `_already_ordered()` blocks a second resting entry per ticker (`trader.py:869`) |
+| 62 | `config.py:320` | `REQUEST_MIN_GAP_SECONDS=1.0` serialised market discovery into 18s per cycle, longer than the 15s loop | FIXED — default 0.2s (5 req/s, Kalshi allows ~10); discovery 18.2s → 3.7s |
