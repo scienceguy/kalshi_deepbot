@@ -11,13 +11,22 @@ For a plain buy this means the cash leaving the account is
 ``ceil_to_cent(price * contracts + trade_fee)`` — i.e. the effective fee is the
 model fee rounded up to the next cent.
 """
+import logging
 import math
 import os
+
+log = logging.getLogger(__name__)
+
 
 # Kalshi taker fee rate (0.07 = 7% of contracts * price * (1-price)).
 # Configurable via KALSHI_FEE_RATE env var in case the fee schedule changes.
 # Validated at startup via validate_fee_rate(), not at import time.
-FEE_RATE = float(os.environ.get("KALSHI_FEE_RATE", "0.07"))
+_FEE_RATE_STR = os.environ.get("KALSHI_FEE_RATE", "0.07")
+try:
+    FEE_RATE = float(_FEE_RATE_STR)
+except ValueError:
+    log.warning("Invalid KALSHI_FEE_RATE='%s', using default 0.07", _FEE_RATE_STR)
+    FEE_RATE = 0.07
 
 
 def validate_fee_rate():

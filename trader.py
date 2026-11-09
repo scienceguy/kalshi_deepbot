@@ -331,7 +331,7 @@ class BotState:
             log.warning("Supabase insert_order failed for %s — order audit trail incomplete", ticker)
         # Track capital at risk per ticker — released on settlement, not booked as P&L.
         # Use filled_risk (actual fill) so partial fills don't over-reserve.
-        state.position_risk[ticker] = filled_risk
+        self.position_risk[ticker] = filled_risk
 
 
 # Global state
@@ -719,7 +719,7 @@ def _exit_quote(client, ticker: str):
     return yes_bid, no_bid, minutes_left
 
 
-def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, reason: str):
+def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, reason: str, exit_order_id: str = ""):
     """Book realized P&L for an early exit.
 
     Mirrors the settlement accounting (paper ledger, idempotent local ledger,
@@ -752,7 +752,10 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     if is_paper:
         paper_mode.add_pnl(realized_pnl)
 
-    key = f"exit:{ticker}:{order_id}:{filled}:{exit_cents}"
+    # Use exit_order_id in key to distinguish partial exits (different exit orders)
+    # If no exit_order_id provided, fall back to entry order_id for backward compat
+    key_order_id = exit_order_id or order_id
+    key = f"exit:{ticker}:{key_order_id}:{filled}:{exit_cents}"
     pnl_to_add = 0.0
     applied = None
     try:
@@ -953,7 +956,8 @@ def _manage_exits(client):
         else:
             state.positions.pop(ticker, None)
             state.position_risk.pop(ticker, None)
-        _book_exit(client, ticker, pos, int(bid), filled, reason)
+        exit_oid = pos.get("exit_order_id", "")
+        _book_exit(client, ticker, pos, int(bid), filled, reason, exit_oid)
         client.invalidate_markets(series_ticker=ticker.split("-")[0])
 
 
@@ -1178,8 +1182,11 @@ def cycle(client: KalshiClient):
 
         # Fetch actual settlement price from Kalshi market data.
         exit_price = None
+        event_ticker = t
+        market = None
         try:
             market = client.get_market(t)
+            event_ticker = market.get("event_ticker", t)
             settled_yes = _settle_yes_cents(market)
             if settled_yes is not None:
                 if side == "yes":
@@ -1198,8 +1205,7 @@ def cycle(client: KalshiClient):
                 "queuing for replay and clearing local state", t, waited, SETTLED_TIMEOUT_SECONDS
             )
             queue = _load_settlement_queue()
-            # Extract event_ticker from market data for idempotency key grouping
-            event_ticker = market.get("event_ticker", t) if market else t
+            # Use event_ticker already extracted above (or t as fallback)
             queue.append({
                 "order_id": order_id,
                 "payload": {
@@ -1752,8 +1758,8 @@ def cycle(client: KalshiClient):
                 current_exposure += sig.dollar_risk
             else:
                 # Live mode: maker orders rest until filled.
-                # Only record as filled when fill_count > 0.
-                if fill_count > 0:
+                # Only record as filled when floor_contracts(fill_count) > 0.
+                if floor_contracts(fill_count) > 0:
                     fees_dollars = 0.0  # maker limit order — no taker fee
                     state._record_filled_order(
                         client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
