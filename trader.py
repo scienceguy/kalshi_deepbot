@@ -1709,6 +1709,7 @@ def cycle(client: KalshiClient):
                 # Invalidate market cache so subsequent find_active_markets() calls
                 # in this cycle see updated liquidity/quotes for the filled market.
                 client.invalidate_markets(series_ticker=sig.market.series)
+                current_exposure += sig.dollar_risk
             else:
                 fees_dollars = 0.0  # maker limit order — no taker fee
                 state._record_filled_order(
