@@ -556,13 +556,13 @@ class LocalDB:
     def sync_to_supabase(self) -> Dict[str, int]:
         """Push all unsynced local changes to Supabase. Returns counts per table."""
         if not supabase_is_enabled():
-            return {"signals": 0, "orders": 0, "bot_state": 0, "backtest_runs": 0}
-        
+            return {"signals": 0, "orders": 0, "bot_state": 0, "pnl_ledger": 0, "backtest_runs": 0}
+
         try:
             supabase_client = get_supabase()
         except Exception as e:
             log.warning("Could not get Supabase client for sync: %s", e)
-            return {"signals": 0, "orders": 0, "bot_state": 0, "backtest_runs": 0}
+            return {"signals": 0, "orders": 0, "bot_state": 0, "pnl_ledger": 0, "backtest_runs": 0}
         
         results = {}
         # Sync tables with compatible schemas

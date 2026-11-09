@@ -139,7 +139,10 @@ def prefetch(assets) -> None:
         futures = [pool.submit(fn, asset)
                    for asset in unique for fn in (spot_for, atr_1m)]
         for f in futures:
-            f.result()
+            try:
+                f.result()
+            except Exception as e:
+                log.debug("prefetch future failed: %s", e)
 
 
 # ═════════════════════════════════════════════════════════════════════

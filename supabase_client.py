@@ -394,14 +394,17 @@ class SupabaseClient:
 
     def set_bot_state_batch(self, states: dict) -> bool:
         """Set multiple bot state key-value pairs using PATCH + INSERT.
-        
+
         This properly handles upsert on the unique 'key' column.
+        Returns True only if every key was written; logs per-key failures so
+        partial writes are visible rather than silent.
         """
         try:
             all_ok = True
             for k, v in states.items():
                 if not self.set_bot_state(k, v):
                     all_ok = False
+                    log.warning("set_bot_state_batch: key %r failed to write", k)
             return all_ok
         except Exception as e:
             log.warning("set_bot_state_batch error: %s", e)

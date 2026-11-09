@@ -96,7 +96,7 @@ def _save():
     try:
         tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
         tmp.write_text(json.dumps(_state))
-        tmp.replace(STATE_FILE)  # atomic on same filesystem
+        os.replace(tmp, STATE_FILE)  # atomic on same filesystem
     except Exception as e:
         log.warning("Could not write %s: %s", STATE_FILE, e)
 

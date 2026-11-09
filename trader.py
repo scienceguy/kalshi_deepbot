@@ -185,8 +185,11 @@ class BotState:
         """Pre-trade risk checks (LLM evaluation moved to cycle() as pre-entry filter)."""
         ticker = market.ticker
 
-        # Per-window budget gate
-        remaining_window = max(0.0, self.window["budget"] - self.window["used"])
+        # Per-window budget gate — subtract resting (unfilled) orders so the
+        # window cap can't be bypassed by multiple resting orders that each
+        # individually fit but collectively exceed the budget.
+        resting_dollars = sum(v["dollars"] for v in self.resting_value.values())
+        remaining_window = max(0.0, self.window["budget"] - self.window["used"] - resting_dollars)
 
         hard_cap = remaining_window
 
@@ -1396,14 +1399,14 @@ def cycle(client: KalshiClient):
     except Exception as e:
         log.warning("Exit management failed: %s", e)
 
-    # Compute mark-to-market exposure using current orderbook data for positions
-    # (single pass via _mark_to_market_exposure; the previous duplicate loop
-    # here was identical to the one above and computed the same value twice).
-    mark_to_market_exposure = _mark_to_market_exposure(positions, markets)
+    # Compute mark-to-market exposure using current orderbook data for positions.
+    # Dry-run: paper fills never appear on the exchange account, so use the local
+    # paper book (otherwise the ceiling and drawdown halt are inert). Live: fetch
+    # from orderbook data.
     if config.DRY_RUN:
-        # Paper fills never appear on the exchange account, so mark exposure from
-        # the local paper book — otherwise the ceiling and drawdown halt are inert.
         mark_to_market_exposure = sum(state.position_risk.values())
+    else:
+        mark_to_market_exposure = _mark_to_market_exposure(positions, markets)
 
     # Track unrealized losses per market for per-market daily loss limit.
     # Unrealized loss = cost basis - mark-to-market value (when position is losing).
