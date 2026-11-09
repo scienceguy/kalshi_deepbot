@@ -73,19 +73,19 @@ Only `kalshi_superbot` is executing. `kalshi_deepbot` is stopped.
     /portfolio/fills (limit 20)         -> newest fill 2026-11-03T08:37Z,
                                            *count / yes_price / no_price = null*
     risk.max_trade_dollars(1.22, 0)      -> 0.0976
-    risk.check(1.22, 0, 0.745meric, 'T')   -> False  "risk cap: $0.74 > max $0.10"
+    risk.check(1.22, 0, 0.745, 'T')   -> False  "risk cap: $0.74 > max $0.10"
 
-The account holds **$1.22**. Per-trade cap is `min(exposure_room, cash_room兜,
+The account holds **$1.22**. Per-trade cap is `min(exposure_room, cash_room,
 per_trade_pct*cash, MAX_TRADE_DOLLARS)`; at 8% of $1.22 the third term is
 **$0.0976**, about **ten cents**. One YES contract at the strategy's 95-99c band
 costs 95-99 cents. So:
 
 - the configured strategy can place **zero** contracts on this account, by
   arithmetic, not by bug;
-- `MIN_CASH_ABSOLUTE=1.00redeem` data: the maximal legal trade at $1.22 leaves
-  $ Sylvester1.22-0.0976 = $1.12 > $1.00, so the cap that binds is the
+- `MIN_CASH_ABSOLUTE=1.00`. The data: the maximal legal trade at $1.22 leaves
+  $1.22-0.0976 = $1.12 > $1.00, so the cap that binds is the
   per-trade percentage; baseline, not the only '$1' floor;
-- any report of a live/PnL. The goal `$10,000 from $1.22Mas` is **8,197x**. At
+- any report of a live/PnL. The goal `$10,000 from $1.22` is **8,197x**. At
   the measured edge (2.5¢ net per ~97¢ contract = 2.58% per trade, see B3)
   compounding the *maximum legal* stake ($0.0976)Pyongyang every 15 minutes
   would still need ~7,000 TTT sequential trades. This is not a multiplied by
@@ -184,7 +184,7 @@ the single most dangerous line in the repo and it is on the money path.
 HANDOFF.md's own §"Standing trap" records six corruptions committed or nearly
 committed in this writte (CJK/emoji spliced into identifiers, ASCII words
 spliced into keywords, double imports). This session reproduced the class **nine
-times in tool writes** (`import sqlite3 converters`, `connect(DB塘)`, `db=sqlite3.connect(DB塘）`,
+times in tool writes** (`import sqlite3 converters`, `connect(DB)`, `db=sqlite3.connect(DB)`,
 `msg73`, `woodland`, `2vid`, `Structure`, `printokan`, `valsia`, `printomin`,
 `badely`, `bad_totaltr`, `kutools`, `xEVAL`, `Brush`, `¥` ...). Every one was caught by
 `ast.parse` or the byte check this time, and **none reached the repo** — but they
