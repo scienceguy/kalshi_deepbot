@@ -25,12 +25,15 @@ log = logging.getLogger("backtest_engine")
 class StratParams:
     MIN_SKEW_CENTS: int = 3
     MIN_TREND_CENTS: int = 8
-    ENTRY_WINDOW_START_MIN: float = 6.0
-    ENTRY_WINDOW_END_MIN: float = 11.0
-    ENTRY_BAND_MIN: int = 15
-    ENTRY_BAND_MAX: int = 55
-    MAX_NO_ENTRY_CENTS: int = 55
-    AGGRESSIVE_FILL: bool = False
+    # Strategy mode: "early_maker" (6-11min, 15-55c, maker) or "final_taker"
+    # (14-15min, 75-99c, taker — pays ask, holds to BRTI settlement).
+    STRATEGY_MODE: str = "final_taker"
+    ENTRY_WINDOW_START_MIN: float = 14.0
+    ENTRY_WINDOW_END_MIN: float = 15.0
+    ENTRY_BAND_MIN: int = 75
+    ENTRY_BAND_MAX: int = 99
+    MAX_NO_ENTRY_CENTS: int = 99
+    AGGRESSIVE_FILL: bool = True
     PER_TRADE_PCT: float = 0.08
     MAX_TRADE_DOLLARS: float = 3.00
     MAX_OPEN_POSITIONS: int = 4
@@ -89,21 +92,41 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
     yb, ya, nb, na, yq, nq = _parse_market_prices(market)
 
     quotes = market.get("minute_quotes")
-    if quotes:
-        # Real per-minute book (HF history): enter at the quote available when
-        # the entry window opens. Without this the window parameter has no
-        # effect on the sweep and every combo scores identically.
-        minute = min(quotes, key=lambda m: abs(m - params.ENTRY_WINDOW_START_MIN))
-        yb, ya = quotes[minute]
+    entry_price_proxy = None
+    side_bullish = True
 
-    # Entry price proxy: use bid/ask mid when available; otherwise use a fixed
-    # synthetic entry price of 45c for YES (models always entering YES at 45c).
-    if yb and ya:
-        mid_proxy = (yb + ya) // 2
-        entry_source = "book"
+    if params.STRATEGY_MODE == "final_taker":
+        # Final-minute taker: enter at the ASK price at the start of the
+        # entry window (14-15 min). Taker pays the ask, holds to BRTI settle.
+        if quotes:
+            entry_minute_key = min(quotes, key=lambda m: abs(m - params.ENTRY_WINDOW_START_MIN))
+            bid_at_entry, ask_at_entry = quotes[entry_minute_key]
+            # Determine which side is the favorite (ask >= 75c)
+            if ask_at_entry and params.ENTRY_BAND_MIN <= ask_at_entry <= params.ENTRY_BAND_MAX:
+                ep = ask_at_entry
+                side_bullish = True
+            elif bid_at_entry and params.ENTRY_BAND_MIN <= (100 - bid_at_entry) <= params.ENTRY_BAND_MAX:
+                # NO side is favorite: YES bid low means NO ask high
+                ep = 100 - bid_at_entry
+                side_bullish = False
+            else:
+                ep = ask_at_entry if ask_at_entry else ya
+                side_bullish = ep <= 50 if ep else True
+        else:
+            ep = ya if ya else 0
+            side_bullish = ep <= 50 if ep else True
+        entry_price_proxy = ep
     else:
-        mid_proxy = 45  # Fixed synthetic entry price for YES when no orderbook
-        entry_source = "synthetic"
+        # Early maker: enter at mid near the entry window
+        if quotes:
+            minute = min(quotes, key=lambda m: abs(m - params.ENTRY_WINDOW_START_MIN))
+            yb, ya = quotes[minute]
+        if yb and ya:
+            mid_proxy = (yb + ya) // 2
+            entry_price_proxy = mid_proxy
+        else:
+            mid_proxy = 45  # Fixed synthetic entry price for YES when no orderbook
+            entry_price_proxy = mid_proxy
 
     if settlement_yes_won is None:
         yes_won = _default_settlement_yes_won(market)
@@ -112,27 +135,22 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
     if yes_won is None:
         return None
 
-    if params.ENTRY_BAND_MIN <= mid_proxy <= params.ENTRY_BAND_MAX:
-        # YES is the favorite in range — buy YES at mid_proxy (maker entry)
-        ep = mid_proxy
-        side_bullish = True
-    else:
-        # Price outside favorite band — do not enter. We do NOT bet the
-        # underdog (100 - mid_proxy) because that contradicts the
-        # favourite-maker strategy: we only buy the favorite side.
+    ep = entry_price_proxy
+    if ep is None or ep <= 0:
         return None
 
     ep = max(1, min(99, int(ep)))
+
+    # Band check: entry price must be within the configured band
+    if not (params.ENTRY_BAND_MIN <= ep <= params.ENTRY_BAND_MAX):
+        return None
 
     if not side_bullish and ep > params.MAX_NO_ENTRY_CENTS:
         return None
 
     max_dollars = min(params.MAX_TRADE_DOLLARS, balance * params.BALANCE_PCT_PER_TRADE)
     cost = ep / 100.0
-    # Fractional contracts. Whole-contract rounding makes a $10 bankroll fall
-    # off a cliff: 12% of $10 is $1.20, which buys 2 x 50c contracts (24%) or,
-    # at 55c, only 1 (5.5%). Fractional sizing keeps the sweep measuring the
-    # sizing rule instead of the granularity of a cent.
+    # Fractional contracts.
     n = max_dollars / cost if cost > 0 else 0.0
     if n < 0.01:
         return None
@@ -146,25 +164,31 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
         0.0 if yes_won else 1.0
     )
 
-    buy_cost = buy_cash_out(n, entry_price_dollars, taker=False)   # maker: no fee
+    if params.STRATEGY_MODE == "final_taker":
+        # Final-minute taker: pay taker fee on entry and hold to settlement.
+        # No early exit — the 60-second BRTI average settles the position.
+        taker_fee = True
+        stopped = False
+    else:
+        # Early maker: no fee on entry (maker), early stop loss possible.
+        taker_fee = False
+        stopped = False
+        if quotes and params.EXIT_STOP_LOSS_CENTS > 0:
+            limit = ep - params.EXIT_STOP_LOSS_CENTS
+            entry_minute_key = min(quotes, key=lambda m: abs(m - params.ENTRY_WINDOW_START_MIN))
+            for minute in sorted(quotes):
+                if minute <= entry_minute_key:
+                    continue  # only the entry minute and later
+                bid, _ask = quotes[minute]
+                if bid and bid <= limit:
+                    exit_price_dollars = bid / 100.0
+                    stopped = True
+                    break
 
-    # Early stop: if the book trades at or below entry minus the stop, we sell
-    # into that bid instead of riding the position to zero at settlement.
-    stopped = False
-    if quotes and params.EXIT_STOP_LOSS_CENTS > 0:
-        limit = ep - params.EXIT_STOP_LOSS_CENTS
-        entry_minute_key = min(quotes, key=lambda m: abs(m - params.ENTRY_WINDOW_START_MIN))
-        for minute in sorted(quotes):
-            if minute <= entry_minute_key:
-                continue  # only the entry minute and later
-            bid, _ask = quotes[minute]
-            if bid and bid <= limit:
-                exit_price_dollars = bid / 100.0
-                stopped = True
-                break
+    buy_cost = buy_cash_out(n, entry_price_dollars, taker=taker_fee)
 
-    # The early exit is a maker limit order at the bid, so only the maker fee
-    # applies — zero on these markets. Settlement is not a trade either.
+    # Early exit is a maker limit order at the bid — only maker fee applies
+    # (zero on these markets). Settlement is not a trade either.
     sell_revenue = sell_cash_in(n, exit_price_dollars, taker=False)
     pnl = sell_revenue - buy_cost
     won = pnl > 0
@@ -182,7 +206,7 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
         "won": won,
         "pnl": pnl,
         "minutes_in": minutes_in,
-        "mid": mid_proxy,
+        "mid": entry_price_proxy,
     }
 
 
@@ -282,14 +306,12 @@ def parameter_grid(quick=False):
     """Generate parameter combinations to test."""
     if quick:
         grids = {
-            # Only knobs simulate_trade actually reads are swept. MIN_SKEW,
-            # MIN_TREND, ENTRY_WINDOW_END and MAX_NO_ENTRY were swept before but
-            # never read, so every value scored identically and the "best" rows
-            # were tie-breaks. The live trend/skew gates stay untested here.
-            "ENTRY_WINDOW_START_MIN": [6.0, 8.0],
-            "ENTRY_BAND_MIN": [15, 30, 50],
-            "ENTRY_BAND_MAX": [55, 70, 85],
-            "AGGRESSIVE_FILL": [False],
+            "STRATEGY_MODE": ["final_taker"],
+            "ENTRY_WINDOW_START_MIN": [14.0],
+            "ENTRY_WINDOW_END_MIN": [15.0],
+            "ENTRY_BAND_MIN": [75, 80, 85],
+            "ENTRY_BAND_MAX": [89, 94, 99],
+            "AGGRESSIVE_FILL": [True],
             "EXIT_STOP_LOSS_CENTS": [0, 8],
             "PER_TRADE_PCT": [0.05, 0.08, 0.12],
             "MAX_TRADE_DOLLARS": [2.0, 3.0, 5.0],
@@ -297,9 +319,11 @@ def parameter_grid(quick=False):
         }
     else:
         grids = {
-            "ENTRY_WINDOW_START_MIN": [4.0, 6.0, 8.0, 10.0],
-            "ENTRY_BAND_MIN": [15, 30, 50, 70, 82, 86],
-            "ENTRY_BAND_MAX": [55, 70, 85, 88, 91, 95],
+            "STRATEGY_MODE": ["final_taker", "early_maker"],
+            "ENTRY_WINDOW_START_MIN": [6.0, 8.0, 10.0, 14.0],
+            "ENTRY_WINDOW_END_MIN": [11.0, 15.0],
+            "ENTRY_BAND_MIN": [15, 30, 50, 70, 75, 80, 82, 85, 86],
+            "ENTRY_BAND_MAX": [55, 70, 85, 88, 89, 91, 94, 95, 99],
             "AGGRESSIVE_FILL": [False, True],
             "EXIT_STOP_LOSS_CENTS": [0, 5, 8, 12],
             "PER_TRADE_PCT": [0.04, 0.08, 0.12, 0.20],

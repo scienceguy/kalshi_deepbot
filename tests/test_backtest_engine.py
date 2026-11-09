@@ -42,7 +42,7 @@ class TestSimulateTrade:
 
     def test_yes_win_in_band(self):
         """YES in favorite band, YES wins → profitable trade."""
-        params = StratParams(ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93)
+        params = StratParams(STRATEGY_MODE="early_maker", ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93)
         market = _make_market(mid_cents=85, yes_won=True, last_price=85)
         result = simulate_trade(market, params, balance=10.0)
         assert result is not None
@@ -52,7 +52,7 @@ class TestSimulateTrade:
 
     def test_yes_loss_in_band(self):
         """YES in favorite band, YES loses → losing trade."""
-        params = StratParams(ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93)
+        params = StratParams(STRATEGY_MODE="early_maker", ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93)
         market = _make_market(mid_cents=85, yes_won=False, last_price=85)
         result = simulate_trade(market, params, balance=10.0)
         assert result is not None
@@ -61,14 +61,14 @@ class TestSimulateTrade:
 
     def test_outside_band_no_signal(self):
         """Price outside entry band → no signal."""
-        params = StratParams(ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93)
+        params = StratParams(STRATEGY_MODE="early_maker", ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93)
         market = _make_market(mid_cents=50, yes_won=True, last_price=50)
         result = simulate_trade(market, params, balance=10.0)
         assert result is None
 
     def test_insufficient_balance_no_signal(self):
         """Balance too low for even 1 contract → no signal."""
-        params = StratParams(ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93,
+        params = StratParams(STRATEGY_MODE="early_maker", ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93,
                              MAX_TRADE_DOLLARS=100.0, PER_TRADE_PCT=0.01)
         market = _make_market(mid_cents=85, yes_won=True, last_price=85)
         result = simulate_trade(market, params, balance=0.01)
@@ -76,7 +76,7 @@ class TestSimulateTrade:
 
     def test_insufficient_valid_times_no_signal(self):
         """Missing close/open times → no signal."""
-        params = StratParams()
+        params = StratParams(STRATEGY_MODE="early_maker")
         market = {"ticker": "TEST", "close_time": "", "open_time": ""}
         result = simulate_trade(market, params, balance=10.0)
         assert result is None
@@ -87,7 +87,7 @@ class TestRunBacktest:
 
     def test_chronological_order(self):
         """Markets are processed in chronological order (sorted by close_time)."""
-        params = StratParams(ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93,
+        params = StratParams(STRATEGY_MODE="early_maker", ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93,
                              PER_TRADE_PCT=0.20, MAX_TRADE_DOLLARS=10.0)
         markets = []
         for i in range(5):
@@ -153,7 +153,8 @@ class TestMinuteQuotes:
         # minute 6 is 30c, minute 12 is 90c — window start 6 must pick 30c
         m = self._market({1: (20, 21), 6: (30, 31), 12: (90, 91)})
         r = simulate_trade(
-            m, StratParams(ENTRY_WINDOW_START_MIN=6.0, ENTRY_BAND_MIN=15, ENTRY_BAND_MAX=55),
+            m, StratParams(STRATEGY_MODE="early_maker", ENTRY_WINDOW_START_MIN=6.0,
+                           ENTRY_BAND_MIN=15, ENTRY_BAND_MAX=55),
             balance=100.0, settlement_yes_won=lambda mk: mk["result"] == "yes",
         )
         assert r is not None
@@ -162,10 +163,10 @@ class TestMinuteQuotes:
     def test_window_change_changes_entry_price(self):
         m = self._market({1: (20, 21), 6: (30, 31), 12: (50, 51)})
         settle = lambda mk: mk["result"] == "yes"
-        early = simulate_trade(m, StratParams(ENTRY_WINDOW_START_MIN=6.0,
+        early = simulate_trade(m, StratParams(STRATEGY_MODE="early_maker", ENTRY_WINDOW_START_MIN=6.0,
                                               ENTRY_BAND_MIN=15, ENTRY_BAND_MAX=55),
                                balance=100.0, settlement_yes_won=settle)
-        late = simulate_trade(m, StratParams(ENTRY_WINDOW_START_MIN=12.0,
+        late = simulate_trade(m, StratParams(STRATEGY_MODE="early_maker", ENTRY_WINDOW_START_MIN=12.0,
                                              ENTRY_BAND_MIN=15, ENTRY_BAND_MAX=55),
                               balance=100.0, settlement_yes_won=settle)
         assert early["entry_price"] == 30
@@ -194,7 +195,9 @@ class TestParameterGrid:
         # Only knobs simulate_trade reads. Sweeping unread knobs made every
         # value score identically and produced bogus "optimal parameters".
         expected_keys = {
-            "ENTRY_WINDOW_START_MIN", "ENTRY_BAND_MIN", "ENTRY_BAND_MAX",
+            "STRATEGY_MODE",
+            "ENTRY_WINDOW_START_MIN", "ENTRY_WINDOW_END_MIN",
+            "ENTRY_BAND_MIN", "ENTRY_BAND_MAX",
             "AGGRESSIVE_FILL", "EXIT_STOP_LOSS_CENTS", "PER_TRADE_PCT",
             "MAX_TRADE_DOLLARS", "BALANCE_PCT_PER_TRADE",
         }
@@ -218,7 +221,7 @@ class TestStopLoss:
         return mk["result"] == "yes"
 
     def _params(self, stop):
-        return StratParams(ENTRY_WINDOW_START_MIN=6.0, ENTRY_BAND_MIN=15,
+        return StratParams(STRATEGY_MODE="early_maker", ENTRY_WINDOW_START_MIN=6.0, ENTRY_BAND_MIN=15,
                            ENTRY_BAND_MAX=55, EXIT_STOP_LOSS_CENTS=stop,
                            MAX_TRADE_DOLLARS=1.0, BALANCE_PCT_PER_TRADE=1.0,
                            PER_TRADE_PCT=1.0)
