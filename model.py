@@ -146,12 +146,10 @@ def taker_fee_cents_at(ask_cents: int, contracts: float = 1.0,
                        fee_rate: float = 0.07) -> float:
     """
     Taker fee in cents for one contract at ask_cents price.
-    Matches fees.taker_fee_cents but standalone.
+    Delegates to fees.taker_fee_cents to avoid duplicating fee math.
     """
-    import math
-    price_dollars = ask_cents / 100.0
-    raw = fee_rate * contracts * price_dollars * (1.0 - price_dollars)
-    return math.ceil(raw * 100 - 1e-9)
+    from fees import taker_fee_cents
+    return taker_fee_cents(contracts, ask_cents / 100.0)
 
 
 def model_probability_from_market(market, model_type: str = "gbm",

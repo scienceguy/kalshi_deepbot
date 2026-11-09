@@ -20,8 +20,9 @@ from typing import Literal, Optional
 
 import config
 import fees
+import gates
 from market_finder import MarketInfo
-from model import model_probability_from_market, taker_fee_cents_at, edge_cents
+from model import model_probability_from_market, edge_cents
 
 log = logging.getLogger(__name__)
 Direction = Literal["YES", "NO", "PASS"]
@@ -426,10 +427,6 @@ def _evaluate_common(
 # HEDGE_NO (from kalshi_15m_bot)
 # ═════════════════════════════════════════════════════════════════════
 
-# ═════════════════════════════════════════════════════════════════════
-# ═════════════════════════════════════════════════════════════════════
-# HEDGE_NO (from kalshi_15m_bot)
-# ═════════════════════════════════════════════════════════════════════
 
 # TWO-SIDED FAVOURITE MAKER (Approach D — from kalshi_live_bot)
 # ═════════════════════════════════════════════════════════════════════
@@ -457,11 +454,9 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
         return results
 
     no_ask = market.no_ask
-    # If NO price is missing, derive from YES bid (complement).
-    # Kalshi v2 returns NO prices directly on crypto series (quadratic fee_type),
-    # but the orderbook can have missing levels on thin markets.
-    if not no_ask and market.yes_bid:
-        no_ask = 100 - market.yes_bid
+    # Kalshi returns NO prices directly on crypto series (quadratic fee_type).
+    # NO_PRICE_IS_COMPLEMENT=False confirms we must NOT derive NO from YES bid;
+    # a missing NO ask means no quote, not a synthetic price.
     if not no_ask:
         _pass("No NO ask")
         return results
@@ -540,11 +535,9 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
     # Get both YES and NO asks (taker pays the ask)
     yes_ask = market.yes_ask
     no_ask = market.no_ask
-
-    # If NO ask is missing, derive from YES bid (complement)
-    # Kalshi returns NO prices directly on crypto series (quadratic fee_type)
-    if not no_ask and market.yes_bid:
-        no_ask = 100 - market.yes_bid
+    # Kalshi returns NO prices directly on crypto series (quadratic fee_type).
+    # NO_PRICE_IS_COMPLEMENT=False confirms we must NOT derive NO from YES bid:
+    # a missing NO ask means no quote, not a synthetic price.
     if not yes_ask and market.no_bid:
         yes_ask = 100 - market.no_bid
 
@@ -586,13 +579,26 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
         # Blind taker favorite buying is net-negative EV (fee ~0.79c at 87c
         # exceeds raw edge ~0.67c). Only trade when model-implied true
         # probability exceeds ask price + fee + minimum edge.
-        fee_cents = taker_fee_cents_at(entry_c)
+        fee_cents = fees.taker_fee_cents(1.0, entry_c / 100.0)
         momentum = _compute_momentum(market.ticker, time.time(), lookback_min=2.0)
+        # Spot price from Binance/Coinbase composite feed for GBM model.
+        # Asset from ticker: KXBTC15M-26NOV090115-15 -> BTCUSDT
+        series = market.ticker.split("-")[0] if "-" in market.ticker else market.ticker
+        asset = series[2:] if series.startswith("KX") else series
+        if asset.endswith("15M"):
+            asset = asset[:-3]
+        spot_price = gates.spot_for(asset + "USDT")
+        strike = float(market.strike) if market.strike else None
         model_prob = model_probability_from_market(
             market, model_type=config.MODEL_TYPE,
+            spot_price=spot_price, strike=strike,
             minutes_left=market.minutes_left,
             volatility=config.MODEL_VOLATILITY,
             momentum_cents_per_min=momentum,
+            # How far into the final (settlement) minute: 0 at start, 60 at close.
+            # Locked-share model uses this to collapse uncertainty as BRTI average locks in.
+            seconds_into_final_minute=max(0, min(60, int((15.0 - market.minutes_left) * 60)))
+            if market.minutes_left <= 1.0 else 0,
         )
         edge = edge_cents(model_prob, entry_c, fee_cents)
         if edge < config.MODEL_MIN_EDGE_CENTS:
@@ -641,11 +647,6 @@ def evaluate(market: MarketInfo, cash: float = 10.0,
         # Final-minute taker strategy (replaces two-sided favourite maker)
         result = _evaluate_taker_favourite(market, max_dollars,
                                            max_contracts_for_cash(effective_cash))
-
-    # Panic-fade disabled for final-minute strategy (config.PANIC_FADE_ENABLED=false)
-    # if market.bracket_role != "HEDGE_NO":
-    #     result.extend(_evaluate_panic_fade(market, max_dollars,
-    #                                        max_contracts_for_cash(effective_cash)))
 
     # Deduplicate by (ticker, side)
     seen = set()

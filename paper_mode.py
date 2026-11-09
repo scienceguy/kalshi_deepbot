@@ -18,6 +18,7 @@ than assumed away. Exits still fill at the quoted price.
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 import config
@@ -32,6 +33,9 @@ STATE_FILE = Path(os.environ.get(
 _state = None
 
 LOCAL_DB_KEY = "paper_pnl_dollars"
+
+# Under pytest, skip local_db recovery so tests don't depend on external state.
+_IS_TEST = "pytest" in sys.modules
 
 
 def _local_db():
@@ -67,7 +71,8 @@ def _load() -> dict:
         }
     except FileNotFoundError:
         # Try recovering paper pnl from local_db backup before reseeding.
-        ldb = _local_db()
+        # Skipped under pytest so tests don't depend on external state.
+        ldb = None if _IS_TEST else _local_db()
         saved_pnl = None
         if ldb is not None:
             try:

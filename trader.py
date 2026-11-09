@@ -82,7 +82,6 @@ def _load_ml_model(path: str):
     if _ml_model is not None:
         return _ml_model
     try:
-        import ml_model
         _ml_model = ml_model.MLFairValue.load(path)
         log.info("ML fair-value model loaded from %s", path)
     except Exception as e:
@@ -950,7 +949,6 @@ def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
     if ml_model is None:
         return list(signals)
 
-    import ladder_strategy as ls
     spot_cache: dict = {}
     ml_filtered = []
     for sig in signals:

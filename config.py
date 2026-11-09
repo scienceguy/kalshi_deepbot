@@ -249,16 +249,6 @@ MAX_HEDGE_PER_SERIES = _env_int("MAX_HEDGE_PER_SERIES", 0)
 HEDGE_MIN_NO_ENTRY_CENTS = _env_int("HEDGE_MIN_NO_ENTRY_CENTS", 82)
 HEDGE_MAX_NO_ENTRY_CENTS = _env_int("HEDGE_MAX_NO_ENTRY_CENTS", 88)
 
-# Panic fade (mean reversion) strategy. Bet opposite side when price moves
-# sharply in short window — TurbineFi research found this was the ONLY
-# consistently profitable strategy group (93/96 variants, mean +4.90% ROI).
-PANIC_FADE_ENABLED = _env_bool("PANIC_FADE_ENABLED", False)
-PANIC_FADE_MOVE_CENTS = _env_int("PANIC_FADE_MOVE_CENTS", 15)  # min cents move to trigger
-PANIC_FADE_WINDOW_SECONDS = _env_int("PANIC_FADE_WINDOW_SECONDS", 120)  # lookback window
-# Uses ENTRY_BAND_MIN/MAX (75-99c) for fade entries
-PANIC_FADE_NO_BAND_MIN = _env_int("PANIC_FADE_NO_BAND_MIN", 75)
-PANIC_FADE_NO_BAND_MAX = _env_int("PANIC_FADE_NO_BAND_MAX", 99)
-
 # ═════════════════════════════════════════════════════════════════════
 # EARLY EXIT (sell before settlement so capital compounds intra-window)
 # DISABLED for final-minute taker strategy: hold to BRTI settlement.

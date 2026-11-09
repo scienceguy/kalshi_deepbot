@@ -206,7 +206,6 @@ def check_for_tasks() -> list[dict]:
         "--status", "open",
         "--json",
         "--limit", "10",
-        "--order", "desc",
     )
     if r.returncode != 0 or not r.stdout:
         return []
@@ -216,6 +215,20 @@ def check_for_tasks() -> list[dict]:
         log.warning("check_for_tasks: could not parse logstream JSON output")
         return []
     return data.get("events", [])
+
+
+def ack_event(event_id: str) -> bool:
+    """Ack a MemPalace event via logstream ack (type=event.ack).
+    Returns True if the ack was accepted."""
+    if not _mp_available():
+        log.debug("ack_event: mempalace CLI unavailable — skipping ack")
+        return False
+    r = _mp("logstream", "ack", "--event-id", event_id)
+    if r.returncode == 0:
+        log.debug("Acked MemPalace event %s", event_id)
+        return True
+    log.warning("ack_event failed for %s: %s", event_id, r.stderr[:120])
+    return False
 
 
 def get_self_narrative() -> str:
@@ -368,5 +381,5 @@ __all__ = [
     "get_self_narrative", "get_recent_thoughts", "get_recent_urls",
     "get_cycles_completed", "update_interests", "get_interests",
     "record_webfind", "get_peer_awareness", "heartbeat", "check_for_tasks",
-    "CHECKPOINT_ENTITY",
+    "ack_event", "CHECKPOINT_ENTITY",
 ]
