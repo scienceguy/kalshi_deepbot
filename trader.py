@@ -1482,15 +1482,16 @@ def cycle(client: KalshiClient):
         for sig in signals:
             minutes_in = 15.0 - sig.market.minutes_left
             if config.ENTRY_WINDOW_START_MIN <= minutes_in <= config.ENTRY_WINDOW_END_MIN:
+                total_value = (cash if cash is not None else 0.0) + mark_to_market_exposure
                 signal_info = {
                     "ticker": sig.market.ticker,
                     "direction": sig.direction,
                     "entry_price": sig.entry_price,
                     "contracts": sig.contracts,
                     "dollar_risk": sig.dollar_risk,
-                    "cash": cash,
-                    "exposure": 0.0,  # exposure not yet computed at this stage
-                    "total_value": cash if cash is not None else 0.0,
+                    "cash": cash if cash is not None else 0.0,
+                    "exposure": mark_to_market_exposure,
+                    "total_value": total_value,
                     "mid": sig.market.mid_yes,
                     "skew": sig.market.skew,
                     "trend": sig.market.mid_yes - 50.0,
