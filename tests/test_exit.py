@@ -171,10 +171,13 @@ class TestBookExit:
         trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 52, 2, "take profit")
         assert trader.state.session_pnl == 0.0
 
-    def test_ledger_error_still_books_the_pnl(self, monkeypatch):
+    def test_ledger_error_does_not_book_the_pnl(self, monkeypatch):
+        # When the local ledger write fails, PnL must NOT be credited —
+        # crediting without recording the idempotency key would double-count
+        # on replay/restart (audit finding #1.1).
         self._wire(monkeypatch, raises=True)
         trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 52, 2, "take profit")
-        assert trader.state.session_pnl == pytest.approx(0.40)
+        assert trader.state.session_pnl == 0.0
 
     def test_stop_loss_is_recorded_as_a_losing_trade(self, monkeypatch):
         _, _, risk = self._wire(monkeypatch)

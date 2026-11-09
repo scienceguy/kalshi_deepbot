@@ -21,6 +21,7 @@ from typing import Literal, Optional
 import config
 import fees
 from market_finder import MarketInfo
+from model import model_probability_from_market, taker_fee_cents_at, edge_cents
 
 log = logging.getLogger(__name__)
 Direction = Literal["YES", "NO", "PASS"]
@@ -269,6 +270,31 @@ def _load_bid_hist_for_read():
         _bid_hist = {}
 
 
+
+
+def _compute_momentum(ticker: str, now: float, lookback_min: float = 2.0) -> float:
+    """
+    Compute price momentum in cents per minute from bid history.
+
+    Returns positive if YES bid has been rising, negative if falling.
+    Uses linear regression over the lookback window for robustness.
+    """
+    h = _bid_hist.get(ticker, [])
+    if len(h) < 2:
+        return 0.0
+    cutoff = now - lookback_min * 60
+    pts = [(t, b) for t, b in h if t >= cutoff]
+    if len(pts) < 2:
+        return 0.0
+    # Simple slope: (last - first) / elapsed_minutes
+    t0, b0 = pts[0]
+    t1, b1 = pts[-1]
+    elapsed_min = (t1 - t0) / 60.0
+    if elapsed_min <= 0:
+        return 0.0
+    return (b1 - b0) / elapsed_min
+
+
 def _stability_ok(ticker: str, now: float):
     """
     Only quote when the underlying has stayed clearly away from the strike
@@ -328,7 +354,6 @@ def _evaluate_common(
     minutes_in: float,
     source: str,
     strength: float,
-    skip_stability: bool = False,
 ):
     """
     Shared evaluation logic. Returns TradeSignal or None.
@@ -402,114 +427,6 @@ def _evaluate_common(
 # ═════════════════════════════════════════════════════════════════════
 
 # ═════════════════════════════════════════════════════════════════════
-
-# ════════════════════════════════════════════════════════════════════════════
-# PANIC FADE (mean reversion — TurbineFi research: 93/96 variants profitable)
-# ════════════════════════════════════════════════════════════════════════════
-
-def _evaluate_panic_fade(market: MarketInfo, max_dollars: float, max_contracts: int = 0):
-    """
-    Panic fade strategy: bet opposite side when price moves sharply in short window.
-    
-    When YES price crashes sharply (e.g., 90c→40c in <2min), fade by buying YES
-    at maker prices in 75-95c band, expecting mean reversion up.
-    When YES spiked sharply, fade by buying NO at 5-25c.
-    """
-    results = []
-
-    if not config.PANIC_FADE_ENABLED:
-        return results
-
-    def _pass(r):
-        results.append(TradeSignal("PASS", "", 0, 0, 0.0, r, market))
-
-    now = time.time()
-    ticker = market.ticker
-
-    # ── Liquidity gate ──────────────────────────────────────────────────
-    # Skip illiquid markets before spending work on entry price / sizing.
-    yes_liq = market.yes_liquidity
-    no_liq = market.no_liquidity
-    if not yes_liq and not no_liq:
-        _pass("No liquidity")
-        return results
-
-    h = _bid_hist.get(ticker, []) if _bid_hist else []
-    if len(h) < 3:
-        _pass("history < 3")
-        return results
-
-    cutoff = now - config.PANIC_FADE_WINDOW_SECONDS
-    window = [(t, b) for t, b in h if t >= cutoff]
-    if len(window) < 2:
-        _pass("price move < threshold")
-        return results
-
-    max_price = max(b for _, b in window)
-    min_price = min(b for _, b in window)
-    price_move = max_price - min_price
-
-    if price_move < config.PANIC_FADE_MOVE_CENTS:
-        _pass("price move < threshold")
-        return results
-
-    first_price = window[0][1]
-    last_price = window[-1][1]
-    price_change = last_price - first_price
-
-    if price_change < -config.PANIC_FADE_MOVE_CENTS:
-        # YES dropped sharply — fade by buying YES at maker prices in favourite-maker band
-        yes_ask = market.yes_ask
-        if not yes_ask:
-            _pass("no yes_ask")
-            return results
-
-        ep = yes_ask - 1
-        ep = max(config.ENTRY_BAND_MIN, min(config.ENTRY_BAND_MAX, ep))
-
-        n = _size(ep, max_dollars, max_contracts)
-        avail = market.yes_liquidity
-        if avail and n > avail:
-            n = min(n, float(avail))
-        if n <= 0:
-            _pass("no contracts")
-            return results
-
-        dollar_risk = n * ep / 100.0
-        results.append(TradeSignal(
-            "YES", "yes", ep, n, dollar_risk,
-            f"Panic fade YES: price dropped {abs(price_change)}c in {config.PANIC_FADE_WINDOW_SECONDS}s",
-            market, abs(price_change), confidence=min(1.0, abs(price_change) / float(config.PANIC_FADE_MOVE_CENTS))
-        ))
-
-    elif price_change > config.PANIC_FADE_MOVE_CENTS:
-        # YES spiked sharply — fade by buying NO at favourite-maker band
-        no_ask = market.no_ask
-        if not no_ask:
-            _pass("no no_ask")
-            return results
-
-        ep = no_ask - 1
-        ep = max(config.ENTRY_BAND_MIN, min(config.ENTRY_BAND_MAX, ep))
-
-        n = _size(ep, max_dollars, max_contracts)
-        avail = market.no_liquidity
-        if avail and n > avail:
-            n = min(n, float(avail))
-        if n <= 0:
-            _pass("no contracts")
-            return results
-
-        dollar_risk = n * ep / 100.0
-        results.append(TradeSignal(
-            "NO", "no", ep, n, dollar_risk,
-            f"Panic fade NO: YES spiked {price_change}c in {config.PANIC_FADE_WINDOW_SECONDS}s",
-            market, abs(price_change), confidence=min(1.0, abs(price_change) / float(config.PANIC_FADE_MOVE_CENTS))
-        ))
-
-    return results
-
-
 # ═════════════════════════════════════════════════════════════════════
 # HEDGE_NO (from kalshi_15m_bot)
 # ═════════════════════════════════════════════════════════════════════
@@ -517,8 +434,6 @@ def _evaluate_panic_fade(market: MarketInfo, max_dollars: float, max_contracts: 
 # TWO-SIDED FAVOURITE MAKER (Approach D — from kalshi_live_bot)
 # ═════════════════════════════════════════════════════════════════════
 
-# HEDGE_NO (from kalshi_15m_bot)
-# ═════════════════════════════════════════════════════════════════════
 
 def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int = 0):
     """
@@ -666,11 +581,33 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
         bullish = (direction == "YES")
         # For taker strategy, strength = how far the favourite is from 50c
         strength = abs(entry_c - 50)
+
+        # ── Model filter: only trade when there is positive edge after fees ──
+        # Blind taker favorite buying is net-negative EV (fee ~0.79c at 87c
+        # exceeds raw edge ~0.67c). Only trade when model-implied true
+        # probability exceeds ask price + fee + minimum edge.
+        fee_cents = taker_fee_cents_at(entry_c)
+        momentum = _compute_momentum(market.ticker, time.time(), lookback_min=2.0)
+        model_prob = model_probability_from_market(
+            market, model_type=config.MODEL_TYPE,
+            minutes_left=market.minutes_left,
+            volatility=config.MODEL_VOLATILITY,
+            momentum_cents_per_min=momentum,
+        )
+        edge = edge_cents(model_prob, entry_c, fee_cents)
+        if edge < config.MODEL_MIN_EDGE_CENTS:
+            results.append(TradeSignal(
+                "PASS", "", 0, 0, 0.0,
+                f"Edge {edge:+.1f}c below min {config.MODEL_MIN_EDGE_CENTS}c "
+                f"(prob={model_prob*100:.0f}% ask={entry_c}c fee={fee_cents:.1f}c)",
+                market,
+            ))
+            continue
+
         sig = _evaluate_common(
             market, max_dollars, max_contracts, bullish,
             entry_min, entry_max, minutes_in,
             "TAKER_FAVOURITE", strength,
-            skip_stability=True,
         )
         if sig and sig.is_trade:
             results.append(sig)

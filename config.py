@@ -109,6 +109,11 @@ def _env_bool(name, default):
     return val in ("1", "true", "yes", "on")
 
 
+def _env_str(name, default):
+    """Read a string env var, returning default if unset or empty."""
+    return os.environ.get(name, default) or default
+
+
 # ═════════════════════════════════════════════════════════════════════
 # CREDENTIALS
 # ═════════════════════════════════════════════════════════════════════
@@ -217,6 +222,21 @@ ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 # KalshiClient.no_price_to_api_price always sends the YES-leg complement
 # (buy NO at 85c -> ask YES at 15c) for both buys and sells.
 NO_PRICE_IS_COMPLEMENT = _env_bool("NO_PRICE_IS_COMPLEMENT", False)
+
+# ════════════════════════════════════════════════════════════════════════════
+# PREDICTIVE MODEL FILTER (research-backed: blind taker favorite buying is
+# net-negative EV because taker fee ~0.79c at 87c exceeds raw edge ~0.67c.
+# Only trade when model-implied true probability > ask price + fee + min edge.)
+# ════════════════════════════════════════════════════════════════════════════
+# Model type: "gbm" (Geometric Brownian Motion from spot vs strike),
+# "momentum" (recent price direction), "locked_share" (BRTI average lock-in),
+# "raw_mid" (no filter — market mid as fair value, negative EV expected).
+MODEL_TYPE = _env_str("MODEL_TYPE", "gbm")
+# Minimum edge in cents per contract after fees required to take a trade.
+# At 87c ask, fee ≈ 0.79c; set min edge ≥ 1.0c to require model_prob > ask+fee+1c.
+MODEL_MIN_EDGE_CENTS = _env_float("MODEL_MIN_EDGE_CENTS", 1.0)
+# Annualized volatility for GBM model (crypto ≈ 0.80 = 80%).
+MODEL_VOLATILITY = _env_float("MODEL_VOLATILITY", 0.80)
 
 # ═════════════════════════════════════════════════════════════════════
 # HEDGE SETTINGS

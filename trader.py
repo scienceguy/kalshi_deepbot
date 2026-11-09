@@ -737,21 +737,37 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
         paper_mode.add_pnl(realized_pnl)
 
     key = f"exit:{ticker}:{order_id}:{filled}:{exit_cents}"
+    pnl_to_add = 0.0
+    applied = None
     try:
         applied = get_local_db().apply_settlement_pnl(
             key, ticker, realized_pnl, fee_dollars=fees_dollars, source="local")
-        pnl_to_add = 0.0 if applied is False else realized_pnl
+        # applied: True=new (credit PnL), False=duplicate (skip), None/error→None (don't credit)
+        if applied is True:
+            pnl_to_add = realized_pnl
+        elif applied is False:
+            log.info("Exit P&L already recorded for %s — skipping duplicate", order_id)
+        else:
+            log.warning("Failed to record exit P&L to local ledger for %s — P&L NOT credited", ticker)
     except Exception:
-        log.warning("Failed to record exit P&L for %s — using fallback", ticker)
-        pnl_to_add = realized_pnl
+        log.warning("Failed to record exit P&L to local ledger for %s — P&L NOT credited", ticker)
 
-    new_session_pnl = state.session_pnl + pnl_to_add
-    try:
-        if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
-            state.session_pnl = new_session_pnl
-    except Exception:
-        log.warning("Supabase session_pnl write failed — keeping local state only")
+    # applied=True → new, credit PnL. applied=False → duplicate, skip.
+    # applied=None → ledger write failed, PnL NOT credited, retry later.
+    if applied:
+        new_session_pnl = state.session_pnl + pnl_to_add
         state.session_pnl = new_session_pnl
+        # Persist to BOTH Supabase and local DB bot_state so startup
+        # reconciliation always finds the latest value.
+        try:
+            get_local_db().set_bot_state("session_pnl", str(new_session_pnl))
+        except Exception:
+            log.warning("Local DB session_pnl write failed for %s — Supabase will sync later", ticker)
+        try:
+            if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
+                log.debug("Exit session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
+        except Exception:
+            log.warning("Supabase session_pnl write failed — local state credited, will sync later", ticker)
 
     log.info(
         "EXIT %s (%s) %.0fx @%dc -> @%dc, P&L $%+.2f, won=%s",
@@ -1254,7 +1270,6 @@ def cycle(client: KalshiClient):
             # to avoid cross-strike collisions within the same event.
             event_ticker = market.get("event_ticker", t)
             settle_key = f"settle:{event_ticker}:{order_id}"
-            applied = True  # default: treat as not-yet-applied; DB failure falls through to credit PnL
             pnl_to_add = 0.0
             try:
                 applied = get_local_db().apply_settlement_pnl(
@@ -1262,36 +1277,40 @@ def cycle(client: KalshiClient):
                     fee_dollars=fees_dollars,
                     source="local",
                 )
-                if applied is False:
-                    log.info("Settlement P&L already recorded for %s — skipping duplicate", t)
-                    # Still queue webhook for n8n but don't credit local session_pnl again
-                    pnl_to_add = 0.0
-                else:
+                # applied: True=new (credit PnL), False=duplicate (skip), None/error→None (don't credit, retry later)
+                if applied is True:
                     pnl_to_add = realized_pnl
+                elif applied is False:
+                    log.info("Settlement P&L already recorded for %s — skipping duplicate", t)
+                else:
+                    # ledger write failed — PnL NOT credited; next cycle will retry via queue replay
+                    log.warning("Failed to record settlement P&L to local ledger for %s — PnL NOT credited, will retry", t)
             except Exception:
-                log.warning("Failed to record settlement P&L to local ledger for %s — using fallback", t)
-                applied = False
-                pnl_to_add = 0.0
+                log.warning("Failed to record settlement P&L to local ledger for %s — PnL NOT credited, will retry", t)
+                applied = None
 
             # Write PnL to Supabase, then update local state.
             # Credit session_pnl even if Supabase fails — the local ledger
             # already has the idempotency key, so replays won't double-count.
             # Supabase failure just means the value isn't synced yet; it will
             # be reconciled on the next cycle or restart.
+            # applied=True → new, credit PnL. applied=False → duplicate, skip.
+            # applied=None → ledger write failed, PnL NOT credited, retry later.
             if applied:
                 new_session_pnl = state.session_pnl + pnl_to_add
                 state.session_pnl = new_session_pnl
+                # Persist to BOTH Supabase and local DB bot_state so startup
+                # reconciliation always finds the latest value. Writing to local
+                # DB first means a Supabase outage can't lose the credit.
+                try:
+                    get_local_db().set_bot_state("session_pnl", str(new_session_pnl))
+                except Exception:
+                    log.warning("Local DB session_pnl write failed for %s — Supabase will sync later", t)
                 try:
                     if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
                         log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
                 except Exception:
                     log.warning("Supabase session_pnl write failed — local state credited, will sync later", t)
-                    # Idempotency key stays in local ledger; next cycle will
-                    # see applied=False and skip re-crediting. Position will
-                    # still be popped below since settlement data exists.
-            else:
-                # applied is False (already recorded) or error path — no PnL to add
-                pass
 
             # Invalidate market cache after settlement — the market is no longer open.
             series = t.split("-")[0] if "-" in t else t
@@ -1828,6 +1847,12 @@ def main():
             # Entry price from the position's cost basis (market_exposure_dollars),
             # falling back to the legacy average-price fields.
             exposure = _pos_cost_basis(p)
+            # Guard: an adopted position with contracts but zero/negative cost
+            # basis can't produce a valid entry price and would corrupt PnL math.
+            if contracts > 0 and exposure <= 0:
+                log.warning("Skipping position %s: %d contracts but $%.2f cost basis (invalid entry price)",
+                            ticker, contracts, exposure)
+                continue
             entry_price = int(round(exposure * 100 / contracts)) if contracts else 0
             order_id = p.get("order_id", ticker)
             state.positions[ticker] = {
@@ -1859,7 +1884,20 @@ def main():
                 state.session_pnl = float(saved_pnl)
                 log.info("Reconciled session_pnl from Supabase: $%.2f", state.session_pnl)
     except Exception:
-        log.warning("Could not reconcile session_pnl — starting at $0.00")
+        log.warning("Could not reconcile session_pnl from LOCAL DB or Supabase — trying pnl_ledger fallback")
+
+    # Final fallback: compute session_pnl from the local pnl_ledger total.
+    # The ledger is the source of truth (every settled trade has an entry),
+    # so this restores session_pnl even if both local DB bot_state and
+    # Supabase are stale from a crash between ledger-write and state-sync.
+    try:
+        local_db = get_local_db()
+        ledger_total = local_db.get_total_realized_pnl()
+        if ledger_total != 0:
+            state.session_pnl = float(ledger_total)
+            log.info("Reconciled session_pnl from pnl_ledger total: $%.2f", state.session_pnl)
+    except Exception:
+        log.debug("pnl_ledger total unavailable for session_pnl reconciliation")
 
     # Also reconcile from n8n by checking recent executions for settlement webhooks
     # Replay any pending settlements from the queue file

@@ -221,7 +221,7 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
                 log.warning("Fetch failed %s: %s", series, e)
 
     if not markets:
-        return [], []
+        return [], [], 0
 
     log.debug("Series %s: %d markets returned", series, len(markets))
 
@@ -262,12 +262,27 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
         elif 1 <= ya <= HMAX:
             hedges.append((mkt, ct, ml, ya))
 
-    return mains, hedges
+    return mains, hedges, len(markets)
+
+
+class _MarketResult(list):
+    """list of tradeable MarketInfo with the availability counts attached.
+
+    A plain list subclass keeps every existing caller working unchanged
+    (``if not markets``, ``len(markets)``, iteration, ``== []``) while also
+    exposing ``.total_available`` and ``.tradable_count``.
+    """
+
+    def __init__(self, iterable=(), total_available=0, tradable_count=0):
+        super().__init__(iterable)
+        self.total_available = total_available
+        self.tradable_count = tradable_count
 
 
 def find_active_markets(client: KalshiClient):
     now = datetime.now(timezone.utc)
     result = []
+    total_available = 0
     MIN_P = config.MIN_YES_PRICE_CENTS
     MAX_P = config.MAX_YES_PRICE_CENTS
     HMAX  = config.HEDGE_YES_ASK_MAX
@@ -279,9 +294,9 @@ def find_active_markets(client: KalshiClient):
     seen_lock = threading.Lock()
 
     def _fetch_one(series: str):
-        mains, hedges = _fetch_series_markets(client, series, now,
-                                              MIN_P, MAX_P, HMAX, seen, seen_lock)
-        return mains, hedges
+        mains, hedges, n = _fetch_series_markets(client, series, now,
+                                                  MIN_P, MAX_P, HMAX, seen, seen_lock)
+        return mains, hedges, n
 
     # Fetch markets for all series concurrently (bounded pool), then
     # fetch orderbooks concurrently below. This avoids spending several
@@ -289,7 +304,8 @@ def find_active_markets(client: KalshiClient):
     with ThreadPoolExecutor(max_workers=min(len(config.TARGET_SERIES), 4)) as ex:
         futs = {ex.submit(_fetch_one, s): s for s in config.TARGET_SERIES}
         for fut in as_completed(futs):
-            mains, hedges = fut.result()
+            mains, hedges, n = fut.result()
+            total_available += n
             all_mains.extend(mains)
             all_hedges.extend(hedges)
 
@@ -359,5 +375,8 @@ def find_active_markets(client: KalshiClient):
         else:
             log.debug("Hedge filtered hedge_ya=%dc: %s", hedge_ya, mkt["ticker"])
 
-    log.info("Found %d tradeable brackets", len(result))
-    return result
+    tradable_count = len(result)
+    log.info("Found %d tradeable brackets out of %d total available markets",
+             tradable_count, total_available)
+    return _MarketResult(result, total_available=total_available,
+                         tradable_count=tradable_count)
