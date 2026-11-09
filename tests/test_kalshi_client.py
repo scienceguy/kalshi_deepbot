@@ -302,3 +302,56 @@ class TestGetBalance:
                 assert client.get_balance() == 0.99
                 assert "seems mislabeled" not in caplog.text
 
+
+
+class TestGetShardBalance:
+    """get_shard_balance() must return DOLLARS for the routed shard only.
+
+    Regression: the first version divided nothing, so a shard holding 98
+    cents returned 98.0 -- a live order would have been sized 10,000x too
+    large on a sub-dollar account.
+    """
+
+    def _client(self, monkeypatch, balance_resp):
+        monkeypatch.setattr(config, "KALSHI_KEY_ID", "test_key_id")
+        monkeypatch.setattr(config, "REQUEST_MIN_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(config, "REQUEST_TIMEOUT_SECONDS", 10)
+        with patch.object(KalshiClient, "_load_private_key") as mock_load, \
+             patch.object(KalshiClient, "_verify_key"):
+            mock_load.return_value = MagicMock()
+            mock_load.return_value.sign.return_value = b"fake_signature_bytes"
+            c = KalshiClient()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = balance_resp
+        mock_resp.status_code = 200
+        c.session.request = MagicMock(return_value=mock_resp)
+        return c
+
+    def test_returns_dollars_for_routed_shard_not_total(self, monkeypatch):
+        """Total is 122.49c, shard 2 holds 0.98c -> shard cash is $0.0098."""
+        # Shape captured from a live GET /portfolio/balance: breakdown values
+        # are dollar STRINGS, the legacy total is integer CENTS.
+        c = self._client(monkeypatch, {
+            "balance": 122,
+            "balance_dollars": "1.2249",
+            "balance_breakdown": [
+                {"exchange_index": 0, "balance": "1.2151"},
+                {"exchange_index": 1, "balance": "0.0000"},
+                {"exchange_index": 2, "balance": "0.0098"},
+                {"exchange_index": 3, "balance": "0.0000"},
+            ],
+        })
+        assert c.get_shard_balance(0) == pytest.approx(1.2151)
+        assert c.get_shard_balance(2) == pytest.approx(0.0098)
+
+    def test_empty_or_absent_shard_is_zero(self, monkeypatch):
+        """A shard not in the breakdown holds nothing; sizing must see 0."""
+        c = self._client(monkeypatch, {"balance": 12151,
+                                       "balance_breakdown": [
+                                           {"exchange_index": 0, "balance": "121.51"}]})
+        assert c.get_shard_balance(2) == 0.0
+
+    def test_falls_back_to_total_without_breakdown(self, monkeypatch):
+        """Subaccount-restricted keys omit balance_breakdown: keep old behaviour."""
+        c = self._client(monkeypatch, {"balance": 12249})
+        assert c.get_shard_balance(2) == pytest.approx(122.49)

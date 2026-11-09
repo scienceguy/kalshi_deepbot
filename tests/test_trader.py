@@ -13,7 +13,7 @@ sys.argv = ["trader.py"]
 
 import config
 import trader
-from trader import BotState
+from trader import BotState, CRYPTO_EXCHANGE_INDEX
 from fees import buy_cash_out, sell_cash_in
 from signals import TradeSignal
 
@@ -877,3 +877,28 @@ def test_cycle_llm_pre_entry_filter_blocks_low_prob(monkeypatch):
 
     # Signal was blocked by LLM, so no orders placed
     assert trader.state.trades_placed == 0
+
+
+class TestShardAwareCash:
+    """Live sizing must use the routed shard, dry-run the paper bankroll.
+
+    Regression: cash came from get_balance() (total across all shards), so a
+    crypto order was sized against funds sitting on a shard the exchange
+    cannot collateralise it from.
+    """
+
+    def test_live_sizes_against_routed_shard(self, monkeypatch):
+        monkeypatch.setattr(config, "DRY_RUN", False)
+        client = MagicMock()
+        client.get_balance.return_value = 1.22
+        client.get_shard_balance.return_value = 0.01
+        assert trader._sizing_cash(client) == 0.01
+        client.get_shard_balance.assert_called_once_with(CRYPTO_EXCHANGE_INDEX)
+        client.get_balance.assert_not_called()
+
+    def test_dry_run_sizes_against_paper_bankroll(self, monkeypatch):
+        monkeypatch.setattr(config, "DRY_RUN", True)
+        client = MagicMock()
+        client.get_balance.return_value = 1.22
+        assert trader._sizing_cash(client) == 1.22
+        client.get_shard_balance.assert_not_called()

@@ -311,6 +311,28 @@ class KalshiClient:
             )
         return dollars
 
+    def get_shard_balance(self, exchange_index: int) -> float:
+        """Return the cash actually available on one exchange shard, in dollars.
+
+        get_balance() sums every shard (balance_breakdown), but an order
+        routed to exchange_index=N is collateralised only from shard N. Sizing
+        a crypto order against the total therefore approves stakes the venue
+        cannot fund: funds sitting on shard 0 are unreachable from shard 2.
+        Falls back to the total when the response omits balance_breakdown
+        (e.g. subaccount-restricted keys), which is the old behaviour.
+        """
+        data = self._request("GET", "/portfolio/balance")
+        breakdown = data.get("balance_breakdown")
+        if not breakdown:
+            return self.get_balance()
+        # breakdown[].balance is DOLLARS as a string ("1.2151"), unlike the
+        # legacy top-level "balance" which is cents (122). Verified against a
+        # live response: exchange_index 0 -> "1.2151", 2 -> "0.0098".
+        for entry in breakdown:
+            if int(entry.get("exchange_index", -1)) == int(exchange_index):
+                return float(entry.get("balance", "0") or 0)
+        return 0.0
+
     def get_positions(self) -> list:
         """Return list of open market positions."""
         data = self._request("GET", "/portfolio/positions")

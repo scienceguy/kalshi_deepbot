@@ -59,7 +59,7 @@ from supabase_client import get_supabase  # noqa: E402
 import ml_model  # noqa: E402
 from local_db import get_local_db_api, get_local_db  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
-from kalshi_client import KalshiClient  # noqa: E402
+from kalshi_client import KalshiClient, CRYPTO_EXCHANGE_INDEX  # noqa: E402
 from market_finder import find_active_markets, _parse_api_time, _dollars_to_cents, _parse_market_prices, _settle_yes_cents  # noqa: E402
 from risk import RiskManager  # noqa: E402
 from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
@@ -1028,6 +1028,23 @@ def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
     return ml_filtered
 
 
+def _sizing_cash(client) -> float:
+    """Cash to SIZE an order against, which is not the account total.
+
+    get_balance() sums every shard, but Kalshi collateralises an order only
+    from the shard it routes to: funds on shard 0 cannot back a crypto order on
+    shard 2. Sizing against the total therefore approves stakes the venue
+    cannot fund. Live sizes against the routed shard only.
+
+    A dry run holds no shard cash of its own, so it sizes against its paper
+    bankroll. Sizing it against the real shard 2 balance instead would block
+    every paper trade on whatever cents happen to sit there.
+    """
+    if config.DRY_RUN:
+        return client.get_balance()
+    return client.get_shard_balance(CRYPTO_EXCHANGE_INDEX)
+
+
 def cycle(client: KalshiClient):
     state.cycles += 1
     log.info("── Cycle %d ──────────────────────", state.cycles)
@@ -1051,7 +1068,7 @@ def cycle(client: KalshiClient):
 
     # Fetch balance
     try:
-        cash = client.get_balance()
+        cash = _sizing_cash(client)
     except Exception as e:
         log.warning("Balance fetch failed: %s — treating cash as unknown", e)
         cash = None
