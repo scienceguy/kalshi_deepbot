@@ -233,15 +233,20 @@ class RiskManager:
         """Reset drawdown tracking for a new trading day.
 
         Resets the per-day counters (order count, consecutive losses,
-        per-market losses). The drawdown peak and any active halt are carried
-        over — a halt lasts until the drawdown actually recovers.
+        per-market REALIZED losses). The drawdown peak and any active halt
+        are carried over — a halt lasts until the drawdown actually recovers.
+        Unrealized losses (open positions) are KEPT across the day boundary
+        so an overnight position's loss accumulates over its holding period,
+        not just the calendar day.
         """
         # Carry the peak and the halt across the day boundary: clearing them at
         # midnight un-halted a bot that was still deep in drawdown and threw
         # away the peak-based protection. Only per-day counters reset here.
         self.state.session_high = max(self.state.session_high, self.state.start_balance)
         self.state.consecutive_losses = 0
-        # Clear both realized and unrealized per-market losses
-        self.state.market_daily_losses.clear()
+        # Clear ONLY realized per-market losses; unrealized (":unrealized" keys) persist
+        realized_keys = [k for k in self.state.market_daily_losses if not k.endswith(":unrealized")]
+        for k in realized_keys:
+            del self.state.market_daily_losses[k]
         log.info("✅ Risk daily reset — peak kept at $%.2f, halt=%s, consecutive_losses cleared, market losses cleared",
                  self.state.session_high, self.state.halted)

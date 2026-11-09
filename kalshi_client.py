@@ -212,7 +212,11 @@ class KalshiClient:
     # ── Rate-limited Request ──────────────────────────────────────────────────
 
     def _request(self, method: str, path: str, timeout: int = None, **kwargs) -> dict:
-        """Execute a rate-limited, signed request. Returns parsed JSON."""
+        """Execute a rate-limited, signed request. Returns parsed JSON.
+
+        Rate limit: ~10 req/s. We enforce a min gap between requests and
+        back off on 429 with exponential retry.
+        """
         # Verify key on first use (fails fast with clear error if key is wrong)
         self._ensure_verified()
 
@@ -225,12 +229,12 @@ class KalshiClient:
             timeout = config.REQUEST_TIMEOUT_SECONDS
         kwargs.setdefault("timeout", timeout)
 
+        # Choose which rate-limit timer to use
+        is_balance = path == "/portfolio/balance"
+
+        # Retry loop for 429 (rate limit)
         for _attempt in range(5):
-            # Rate limiting (thread-safe) — re-checked before every attempt
-            # including 429 retries so backoff isn't bypassed.
-            # Balance endpoint hits stricter write bucket — use separate timer
-            is_balance = path == "/portfolio/balance"
-            # Compute required sleep while holding lock, then release before sleeping
+            # Enforce min gap between requests
             with self._lock:
                 if is_balance:
                     gap = time.time() - self._last_balance_req
@@ -242,12 +246,9 @@ class KalshiClient:
                     sleep_for = min_gap - gap
                 else:
                     sleep_for = 0.0
-                # Update timestamp NOW so other threads see the updated time
-                if is_balance:
-                    self._last_balance_req = time.time()
-                else:
-                    self._last_req = time.time()
-            # Sleep OUTSIDE the lock so other threads can proceed
+                # Note: do NOT update timestamp here. We update it ONLY after
+                # a successful 2xx response. If we updated before and got 429,
+                # the next retry would see a tiny gap and spin/sleep incorrectly.
             if sleep_for > 0:
                 time.sleep(sleep_for)
 
@@ -256,27 +257,33 @@ class KalshiClient:
             except requests.RequestException as e:
                 log.warning("HTTP error %s %s: %s", method, path, e)
                 raise
-            if resp.status_code != 429:
-                break
-            try:
-                wait = float(resp.headers.get("Retry-After") or 0)
-            except (TypeError, ValueError):
-                wait = 0.0
-            wait = wait or 0.7 * (2 ** _attempt)
-            log.warning("429 %s %s — backing off %.1fs (attempt %d/5)", method, path, wait, _attempt + 1)
-            time.sleep(wait)
+            if resp.status_code == 200:
+                # Success — update timestamp for rate limiting
+                with self._lock:
+                    if is_balance:
+                        self._last_balance_req = time.time()
+                    else:
+                        self._last_req = time.time()
+                return resp.json()
+            elif resp.status_code == 429:
+                try:
+                    wait = float(resp.headers.get("Retry-After") or 0)
+                except (TypeError, ValueError):
+                    wait = 0.0
+                wait = wait or 0.7 * (2 ** _attempt)
+                log.warning("429 %s %s — backing off %.1fs (attempt %d/5)", method, path, wait, _attempt + 1)
+                time.sleep(wait)
+                continue
+            elif resp.status_code == 404:
+                log.warning("404 %s %s — resource not found", method, path)
+                raise KalshiAPIError(f"404 {method} {path}: resource not found")
+            elif resp.status_code == 409:
+                log.warning("409 conflict %s %s: %s", method, path, resp.text[:200])
+                raise KalshiAPIError(f"409 {method} {path}: {resp.text[:200]}")
+            else:
+                log.error("HTTP %s %s %s — %s", resp.status_code, method, path, resp.text[:300])
+                resp.raise_for_status()
 
-        if resp.status_code == 200:
-            return resp.json()
-        elif resp.status_code == 404:
-            log.warning("404 %s %s — resource not found", method, path)
-            raise KalshiAPIError(f"404 {method} {path}: resource not found")
-        elif resp.status_code == 409:
-            log.warning("409 conflict %s %s: %s", method, path, resp.text[:200])
-            raise KalshiAPIError(f"409 {method} {path}: {resp.text[:200]}")
-        else:
-            log.error("HTTP %s %s %s — %s", resp.status_code, method, path, resp.text[:300])
-            resp.raise_for_status()
 
     # ── Account ───────────────────────────────────────────────────────────────
 

@@ -255,7 +255,7 @@ class SupabaseClient:
                     _supabase_record_failure()
                     time.sleep(1.0 * (attempt + 1))
                     continue
-                # Non-retryable errors (4xx except 429) — log but DON'T increment circuit breaker
+                # Non-retryable errors (4xx except 429) — log and disable client on persistent client/schema errors
                 global _schema_warned
                 if resp.status_code in (401, 403):
                     # Auth failure — disable client permanently for this process
@@ -279,7 +279,17 @@ class SupabaseClient:
                     else:
                         log.debug("Supabase %s %s: table not created yet", method, path)
                     return None
-                # Persistent 4xx (other than auth) — log but DON'T record failure for circuit breaker
+                # Persistent client/schema 4xx (400=bad request, 409=conflict, 422=unprocessable)
+                # These indicate a bug in our request or schema mismatch — disable to stop spam
+                if resp.status_code in (400, 409, 422):
+                    log.error(
+                        "Supabase %s %s: HTTP %s — client/schema error, disabling Supabase writes. "
+                        "Fix request payload or schema, then restart.",
+                        method, path, resp.status_code,
+                    )
+                    self.enabled = False
+                    return None
+                # Other 4xx — log but don't disable (could be transient)
                 log.warning("Supabase %s %s: HTTP %s — non-retryable error, not recording failure",
                             method, path, resp.status_code)
                 return None
