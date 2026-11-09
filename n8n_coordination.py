@@ -3,7 +3,7 @@
 n8n_coordination.py — Inter-agent coordination webhook handler for n8n.
 
 Receives messages from OpenCode agents via n8n webhook and:
-1. Writes them to MemPalace logstream (project/kalshi_superbot, room=delegation)
+1. Writes them to MemPalace logstream (project/kalshi_deepbot, room=delegation)
 2. Routes responses between peer agents
 3. Maintains a rolling task list for the kalshi_superbot project
 
@@ -54,10 +54,10 @@ def main():
     cmd = [
         "python3", "-m", "mempalace", "logstream", "append",
         "--type", msg_type,
-        "--stream", "project/kalshi_superbot",
+        "--stream", "project/kalshi_deepbot",
         "--room", "delegation",
         "--topic", topic,
-        "--from-agent", "termux:opencode:kalshi_superbot",
+        "--from-agent", "termux:opencode:kalshi_deepbot",
         "--to-agent", to_agent,
         "--body", msg_body,
     ]

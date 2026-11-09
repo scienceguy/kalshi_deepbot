@@ -9,7 +9,7 @@ Places favourite-maker limit orders (two-sided YES/NO at 82–93c), evaluates si
 ## Quick Start
 
 ```bash
-cd kalshi_superbot
+cd kalshi_deepbot
 cp .env.example .env  # Fill in your credentials
 python trader.py --once --dry  # Test run
 python trader.py --once --live --dry  # One live cycle (needs KALSHI_CONFIRM_LIVE=true)

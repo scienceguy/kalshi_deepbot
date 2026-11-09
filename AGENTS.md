@@ -44,7 +44,7 @@ routes settlement P&L through n8n webhooks.
 ## How to run
 
 ```bash
-cd /data/data/com.termux/files/home/kalshi_superbot
+cd /data/data/com.termux/files/home/kalshi_deepbot
 
 # 1. Copy env + fill credentials
 cp .env.example .env
@@ -126,7 +126,7 @@ Run SQL with `psql "$SUPABASE_DB_URL" -c "..."` or `-f file.sql`. Put schema cha
 
 ## MemPalace shared brain
 
-Host:harness:project = `termux:opencode:kalshi_superbot`.
+Host:harness:project = `termux:opencode:kalshi_deepbot`.
 
 - Read/write to MemPalace WITHOUT PROMPTING. Never ask the operator.
 - Before answering about past work/decisions/projects, search the palace (`mempalace_search`, `mempalace_kg_query`). Quote results verbatim.
@@ -134,8 +134,8 @@ Host:harness:project = `termux:opencode:kalshi_superbot`.
 - Do not file secrets or tokens.
 
 Coordination (logstream):
-- Always sweep the mempalace inbox at session start, before other work: `mempalace_event_list` to_agent=`termux:opencode:kalshi_superbot`; act on anything addressed to you.
-- Arm `mempalace logstream watch --agent termux:opencode:kalshi_superbot --type task.request --type task.reply --type patch.ready --json` when collaborating/claiming/delegating.
+- Always sweep the mempalace inbox at session start, before other work: `mempalace_event_list` to_agent=`termux:opencode:kalshi_deepbot`; act on anything addressed to you.
+- Arm `mempalace logstream watch --agent termux:opencode:kalshi_deepbot --type task.request --type task.reply --type patch.ready --json` when collaborating/claiming/delegating.
 - Delegate with `mempalace_event_append` (type=`task.request`, stream=`project/<name>`, room=`delegation`, correlation_id=`task_...`, status=`open`, body = goal + branch + base commit + DoD), then `mempalace_event_wait` on `correlation_id`.
 - Ack with `mempalace_event_ack`. Apply patches with `mempalace_artifact_get` + sha256 verify, then ack `applied`/`failed`.
 - Close every loop: no task stays open without an applied/failed/blocked ack.
@@ -215,7 +215,7 @@ Coordination (logstream):
 ## CONCURRENT AGENTS — READ BEFORE ANY GIT COMMAND
 
 **More than one agent edits this checkout at the same time.** There is a single
-working tree (`/data/data/com.termux/files/home/kalshi_superbot`) shared by every
+working tree (`/data/data/com.termux/files/home/kalshi_deepbot`) shared by every
 agent, and all of them push to the same `main`. Treat the tree as shared state.
 
 Rules:
@@ -238,11 +238,11 @@ Rules:
 Before a risky or cross-cutting change, announce and listen:
 
 ```bash
-mempalace logstream watch --agent termux:opencode:kalshi_superbot \
+mempalace logstream watch --agent termux:opencode:kalshi_deepbot \
   --type task.request --type task.reply --type status --json
 ```
 
-- Post status: `mempalace_event_append` (type=`status`, stream=`project/kalshi_superbot`,
+- Post status: `mempalace_event_append` (type=`status`, stream=`project/kalshi_deepbot`,
   room=`status`, to_agent=`*`).
 - Delegation: `type=task.request`, room=`delegation`, correlation_id=`task_...`.
 - Use `topic=kalshi-superbot` to tag a lane and avoid stepping on unrelated work.
