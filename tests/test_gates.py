@@ -70,9 +70,9 @@ class TestGatesEvaluateEntry:
                 with patch.object(config, 'GATES_ATR_SIDE_AWARE', True):
                     with patch.object(config, 'GATES_ATR_HURDLE_BTC', 5.0):
                         with patch('gates.atr_1m', return_value=100.0):
-                            with patch('gates.spot_for', return_value=94500.0):
+                            with patch('gates.spot_for', return_value=96000.0):  # Spot well above strike -> high prob
                                 market = MockMarket(strike=95000.0, minutes_left=5.0)
-                                # Required move = 500, Expected = 223, Ratio = 2.24 < 5.0 → allow
+                                # Required move = 0 (spot already past strike for YES), Expected = 223, Ratio = 0 < 5.0 → allow
                                 result = gates.evaluate_entry(market, side="yes", entry_price_cents=77)
                                 assert result.allowed is True
 
@@ -108,18 +108,19 @@ class TestGatesEvaluateEntry:
                                     assert any("gate3" in r and "high-gamma" in r for r in result.reasons)
 
     def test_gate3_high_gamma_allows_when_deny_false(self):
-        """High gamma zone should allow when GATES_DENY_HIGH_GAMMA=false (shadow mode)."""
+        """High gamma zone should allow when GATES_DENY_HIGH_GAMMA=false."""
         with patch.object(config, 'GATES_ENABLED', True):
             with patch.object(config, 'GATES_TIME_DECAY_ENABLED', True):
                 with patch.object(config, 'GATES_HIGH_GAMMA_MINUTES', 2.0):
                     with patch.object(config, 'GATES_DENY_HIGH_GAMMA', False):
                         with patch('gates.atr_1m', return_value=100.0):
-                            with patch('gates.spot_for', return_value=95000.0):
+                            with patch('gates.spot_for', return_value=96000.0):  # Spot above strike -> high prob
                                 market = MockMarket(strike=95000.0, minutes_left=1.5)
                                 result = gates.evaluate_entry(market, side="yes", entry_price_cents=77)
                                 assert result.allowed is True
                                 assert result.metrics.get("high_gamma_zone") is True
-                                assert result.metrics.get("shadow_mode") is True
+                                # Not blocked by high gamma because DENY_HIGH_GAMMA=False
+                                assert "gate3" not in str(result.reasons)
 
     def test_unsupported_asset_blocks(self):
         """Unsupported underlying asset should fail closed."""

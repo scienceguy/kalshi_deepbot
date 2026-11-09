@@ -16,10 +16,14 @@ import os
 
 # Kalshi taker fee rate (0.07 = 7% of contracts * price * (1-price)).
 # Configurable via KALSHI_FEE_RATE env var in case the fee schedule changes.
+# Validated at startup via validate_fee_rate(), not at import time.
 FEE_RATE = float(os.environ.get("KALSHI_FEE_RATE", "0.07"))
 
-if not 0 <= FEE_RATE <= 1:
-    raise ValueError(f"KALSHI_FEE_RATE={FEE_RATE} must be in [0, 1]")
+
+def validate_fee_rate():
+    """Validate FEE_RATE at startup. Call from trader.main() before trading."""
+    if not 0 <= FEE_RATE <= 1:
+        raise ValueError(f"KALSHI_FEE_RATE={FEE_RATE} must be in [0, 1]")
 
 
 def taker_fee_dollars(contracts: float, price_dollars: float, multiplier: float = 1.0) -> float:

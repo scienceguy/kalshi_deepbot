@@ -295,7 +295,10 @@ class BotState:
         # Record the ACTUAL filled contracts (int), not the intended size — a
         # partial fill would otherwise mis-book PnL at settlement and over-reserve
         # capital at risk.
-        filled = floor_contracts(fill_count) if fill_count else floor_contracts(sig.contracts)
+        filled = floor_contracts(fill_count)
+        if filled <= 0:
+            log.warning("Attempted to record filled order with zero contracts for %s — skipping", ticker)
+            return
         filled_risk = filled * sig.entry_price / 100.0
         self.positions[ticker] = {
             "side": sig.side,
@@ -1295,11 +1298,48 @@ def cycle(client: KalshiClient):
                 elif applied is False:
                     log.info("Settlement P&L already recorded for %s — skipping duplicate", t)
                 else:
-                    # ledger write failed — PnL NOT credited; next cycle will retry via queue replay
-                    log.warning("Failed to record settlement P&L to local ledger for %s — PnL NOT credited, will retry", t)
+                    # ledger write failed — PnL NOT credited; re-queue for retry
+                    log.warning("Failed to record settlement P&L to local ledger for %s — PnL NOT credited, re-queueing for retry", t)
+                    queue = _load_settlement_queue()
+                    event_ticker = market.get("event_ticker", t) if market else t
+                    queue.append({
+                        "order_id": order_id,
+                        "payload": {
+                            "action": "settlement",
+                            "order_id": order_id,
+                            "status": "settled",
+                            "fill_price_cents": int(exit_price * 100),
+                            "outcome_won": won,
+                            "pnl_dollars": realized_pnl,
+                            "ticker": t,
+                            "side": side,
+                            "contracts": contracts,
+                        },
+                    })
+                    _save_settlement_queue(queue)
+                    # Don't pop position - will be retried on next cycle
+                    continue
             except Exception:
-                log.warning("Failed to record settlement P&L to local ledger for %s — PnL NOT credited, will retry", t)
-                applied = None
+                log.warning("Failed to record settlement P&L to local ledger for %s — PnL NOT credited, re-queueing for retry", t)
+                queue = _load_settlement_queue()
+                event_ticker = market.get("event_ticker", t) if market else t
+                queue.append({
+                    "order_id": order_id,
+                    "payload": {
+                        "action": "settlement",
+                        "order_id": order_id,
+                        "status": "settled",
+                        "fill_price_cents": int(exit_price * 100),
+                        "outcome_won": won,
+                        "pnl_dollars": realized_pnl,
+                        "ticker": t,
+                        "side": side,
+                        "contracts": contracts,
+                    },
+                })
+                _save_settlement_queue(queue)
+                # Don't pop position - will be retried on next cycle
+                continue
 
             # Write PnL to Supabase, then update local state.
             # Credit session_pnl even if Supabase fails — the local ledger
@@ -1711,24 +1751,30 @@ def cycle(client: KalshiClient):
                 client.invalidate_markets(series_ticker=sig.market.series)
                 current_exposure += sig.dollar_risk
             else:
-                fees_dollars = 0.0  # maker limit order — no taker fee
-                state._record_filled_order(
-                    client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
-                )
-                state.resting_value.pop(oid, None)
-                state.resting_tickers.discard(sig.market.ticker)
-                # Invalidate market cache so subsequent find_active_markets() calls
-                # in this cycle see updated liquidity/quotes for the filled market.
-                client.invalidate_markets(series_ticker=sig.market.series)
-                # Only a FILLED position counts as exposure. A resting (unfilled)
-                # order's committed capital is already tracked in resting_value,
-                # which max_trade_dollars subtracts from cash — adding it to
-                # exposure too would double-count and over-restrict later trades.
-                current_exposure += sig.dollar_risk
-            state.last_order_time = time.time()
-            state.orders_today += 1
-            log.info("✓ %s order_id=%s (fill_count=%.0f)", sig.market.ticker, oid, fill_count)
-            placed += 1
+                # Live mode: maker orders rest until filled.
+                # Only record as filled when fill_count > 0.
+                if fill_count > 0:
+                    fees_dollars = 0.0  # maker limit order — no taker fee
+                    state._record_filled_order(
+                        client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
+                    )
+                    state.resting_value.pop(oid, None)
+                    state.resting_tickers.discard(sig.market.ticker)
+                    # Invalidate market cache so subsequent find_active_markets() calls
+                    # in this cycle see updated liquidity/quotes for the filled market.
+                    client.invalidate_markets(series_ticker=sig.market.series)
+                    # Only a FILLED position counts as exposure. A resting (unfilled)
+                    # order's committed capital is already tracked in resting_value,
+                    # which max_trade_dollars subtracts from cash — adding it to
+                    # exposure too would double-count and over-restrict later trades.
+                    current_exposure += fill_count * sig.entry_price / 100.0
+                    log.info("✓ %s order_id=%s (fill_count=%.0f)", sig.market.ticker, oid, fill_count)
+                else:
+                    # Order is resting — keep in resting_value for future reconciliation.
+                    # The committed capital is already tracked in resting_value.
+                    log.info("↳ %s order_id=%s resting (fill_count=%.0f)", sig.market.ticker, oid, fill_count)
+                state.last_order_time = time.time()
+                state.orders_today += 1
 
     if placed:
         log.info("Placed %d order(s) this cycle.", placed)
@@ -1770,7 +1816,7 @@ def main():
     except Exception as e:
         log.warning("MemPalace session start failed: %s — continuing without continuity", e)
 
-    # Validate credentials, dry-run mode, and bands before connecting to Kalshi.
+    # Validate credentials, dry-run mode, bands, and fee rate before connecting to Kalshi.
     # The local .env sets DRY_RUN=false, which overrides the safe default of True.
     try:
         config.validate_credentials()
@@ -1784,6 +1830,12 @@ def main():
         config.validate_bands()
     except ValueError as e:
         log.error("Band validation failed: %s — refusing to start", e)
+        return
+    try:
+        import fees
+        fees.validate_fee_rate()
+    except ValueError as e:
+        log.error("Fee rate validation failed: %s — refusing to start", e)
         return
 
     client = KalshiClient()
