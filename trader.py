@@ -132,6 +132,20 @@ def get_raw_supabase_client():
 WINDOW_EPSILON = 0.01
 
 SETTLEMENT_QUEUE_FILE = Path(__file__).resolve().parent / "settlement_queue.json"
+SETTLED_SINCE_FILE = Path(__file__).resolve().parent / "settled_since.json"
+
+
+def _load_settled_since() -> dict:
+    try:
+        return json.loads(SETTLED_SINCE_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_settled_since(data: dict):
+    tmp = SETTLED_SINCE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, SETTLED_SINCE_FILE)
 
 
 class BotState:
@@ -160,7 +174,6 @@ class BotState:
         self.dry_book: dict = {}
         self.active_risk: float = 0.0
         self.position_risk: dict = {}
-        self.llm_hold_to_expiry: set = set()
         self.llm_trade_insights: dict = {}
         self.paper_resting: dict = {}  # oid -> {"sig": sig, "placed_at": ts}
         self.live_resting_orders: list = []  # raw resting orders seen this cycle
@@ -242,8 +255,9 @@ class BotState:
                         "layer": eval_result.get("layer", ""),
                         "timestamp": time.time(),
                     }
-                    # Persist the insight so the LLM's verdict is auditable next
-                    # to the order, instead of living only in memory.
+                    # Persist the LLM insight separately from trade signals.
+                    # Use source="llm_insight" so it's distinguishable from actual signals
+                    # (which have executed=True/False and blocked_reason set).
                     try:
                         get_supabase_client().insert_signal({
                             "ts": datetime.now(timezone.utc).isoformat(),
@@ -254,7 +268,7 @@ class BotState:
                             "reason": (f"LLM pass via {eval_result.get('layer', '?')}: "
                                        f"{eval_result.get('reasoning', '')}")[:500],
                             "executed": False,
-                            "blocked_reason": None,
+                            "blocked_reason": "llm_insight",
                         })
                     except Exception as e:
                         log.warning("Supabase insert_signal (LLM insight) failed for %s: %s", ticker, e)
@@ -404,6 +418,7 @@ class BotState:
 
 # Global state
 state = BotState()
+state.settled_since = _load_settled_since()
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1198,6 +1213,7 @@ def cycle(client: KalshiClient):
         # Track when we first detected this position as settled
         if t not in state.settled_since:
             state.settled_since[t] = now_ts
+            _save_settled_since(state.settled_since)
             log.info("Position %s detected as settled — waiting for settlement data", t)
 
         # Fetch actual settlement price from Kalshi market data.
@@ -1212,6 +1228,37 @@ def cycle(client: KalshiClient):
                     exit_price = float(100 - settled_yes) / 100.0
         except Exception:
             log.warning("Could not fetch settlement for %s — will retry", t)
+
+        # If we've waited too long for settlement data, queue for replay
+        # and clear local state to avoid blocking new entries indefinitely.
+        waited = now_ts - state.settled_since[t]
+        if waited > SETTLED_TIMEOUT_SECONDS:
+            log.warning(
+                "Position %s stuck awaiting settlement for %.0fs (>%.0fs timeout) — "
+                "queuing for replay and clearing local state", t, waited, SETTLED_TIMEOUT_SECONDS
+            )
+            queue = _load_settlement_queue()
+            queue.append({
+                "order_id": order_id,
+                "payload": {
+                    "action": "settlement",
+                    "order_id": order_id,
+                    "status": "pending",
+                    "fill_price_cents": None,
+                    "outcome_won": None,
+                    "pnl_dollars": None,
+                    "ticker": t,
+                    "side": side,
+                    "contracts": contracts,
+                    "entry_price": entry_price,
+                },
+            })
+            _save_settlement_queue(queue)
+            state.positions.pop(t, None)
+            state.position_risk.pop(t, None)
+            state.settled_since.pop(t, None)
+            _save_settled_since(state.settled_since)
+            continue
 
         # If settlement data available, book PnL and clear position.
         if exit_price is not None:
@@ -1355,6 +1402,8 @@ def cycle(client: KalshiClient):
             # on restart (via the settlement queue replay path).
             state.positions.pop(t, {})
             state.position_risk.pop(t, 0.0)
+            state.settled_since.pop(t, None)
+            _save_settled_since(state.settled_since)
         else:
             # No settlement data available — queue for retry without booking PnL.
             # Position stays in state.positions so it can be re-processed on retry.

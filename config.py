@@ -10,9 +10,27 @@ backtests, with environment-variable overrides for live tuning.
 
 import logging
 import os
+import socket
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def get_local_ip() -> str:
+    """Get the bot's local IP address without relying on netlink sockets.
+
+    On Android 11+, AF_NETLINK sockets (used by `ip`, `ss`) are blocked for
+    regular apps. This fallback opens a UDP socket to an external host and
+    reads the source address — it works without special permissions.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("1.1.1.1", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 _MODE = os.environ.get("KALSHI_MODE", "live")
 _load_done = False
@@ -145,6 +163,12 @@ GATES_ATR_HURDLE = _env_float("GATES_ATR_HURDLE", 1.0)
 GATES_ATR_HURDLE_BTC = _env_float("GATES_ATR_HURDLE_BTC", GATES_ATR_HURDLE)
 GATES_ATR_HURDLE_ETH = _env_float("GATES_ATR_HURDLE_ETH", GATES_ATR_HURDLE)
 GATES_ATR_HURDLE_SOL = _env_float("GATES_ATR_HURDLE_SOL", GATES_ATR_HURDLE)
+GATES_ATR_HURDLE_XRP = _env_float("GATES_ATR_HURDLE_XRP", GATES_ATR_HURDLE)
+GATES_ATR_HURDLE_DOGE = _env_float("GATES_ATR_HURDLE_DOGE", GATES_ATR_HURDLE)
+GATES_ATR_HURDLE_BNB = _env_float("GATES_ATR_HURDLE_BNB", GATES_ATR_HURDLE)
+GATES_ATR_HURDLE_HYPE = _env_float("GATES_ATR_HURDLE_HYPE", GATES_ATR_HURDLE)
+GATES_ATR_HURDLE_ZEC = _env_float("GATES_ATR_HURDLE_ZEC", GATES_ATR_HURDLE)
+GATES_ATR_HURDLE_NEAR = _env_float("GATES_ATR_HURDLE_NEAR", GATES_ATR_HURDLE)
 # True: Gate 1 measures the move needed *against* the position (0 for a
 # favourite already past the strike). False: the spec-literal |strike-spot|,
 # which flags nearly every in-the-money favourite.
@@ -497,7 +521,13 @@ def validate_bands():
     # candidate fail closed (or makes ATR undefined), which looks like a dead bot.
     for asset, hurdle in (("BTC", GATES_ATR_HURDLE_BTC),
                           ("ETH", GATES_ATR_HURDLE_ETH),
-                          ("SOL", GATES_ATR_HURDLE_SOL)):
+                          ("SOL", GATES_ATR_HURDLE_SOL),
+                          ("XRP", GATES_ATR_HURDLE_XRP),
+                          ("DOGE", GATES_ATR_HURDLE_DOGE),
+                          ("BNB", GATES_ATR_HURDLE_BNB),
+                          ("HYPE", GATES_ATR_HURDLE_HYPE),
+                          ("ZEC", GATES_ATR_HURDLE_ZEC),
+                          ("NEAR", GATES_ATR_HURDLE_NEAR)):
         if hurdle <= 0:
             errors.append(
                 f"GATES_ATR_HURDLE_{asset} ({hurdle}) must be > 0."

@@ -25,9 +25,13 @@ import config
 log = logging.getLogger(__name__)
 
 # Kalshi rate limit: ~10 req/s sustained; we stay well under it.
-_MIN_REQUEST_GAP = config.REQUEST_MIN_GAP_SECONDS   # seconds between requests
-# Balance endpoint hits stricter write bucket (100 tokens/s at Basic) — needs more gap
-_MIN_BALANCE_GAP = config.REQUEST_MIN_GAP_SECONDS * 2  # 2x for balance endpoint
+# Read from config at call time so runtime config changes take effect.
+def _min_request_gap() -> float:
+    return float(config.REQUEST_MIN_GAP_SECONDS)
+
+
+def _min_balance_gap() -> float:
+    return float(config.REQUEST_MIN_GAP_SECONDS) * 2.0  # 2x for balance endpoint
 
 # Engine mapping — crypto 15M series moved to engine 2 in Aug 2026.
 # https://www.reddit.com/r/Kalshi/comments/1vy26z9/
@@ -229,10 +233,10 @@ class KalshiClient:
             with self._lock:
                 if is_balance:
                     gap = time.time() - self._last_balance_req
-                    min_gap = _MIN_BALANCE_GAP
+                    min_gap = _min_balance_gap()
                 else:
                     gap = time.time() - self._last_req
-                    min_gap = _MIN_REQUEST_GAP
+                    min_gap = _min_request_gap()
                 if gap < min_gap:
                     time.sleep(min_gap - gap)
                 if is_balance:
