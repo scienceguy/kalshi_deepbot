@@ -610,14 +610,17 @@ class TestMLFairValueFilter:
     def test_ml_filter_blocks_below_entry_bar(self, monkeypatch):
         """ML filter drops signal when ML fair is below entry bar (not tradeable)."""
         import trader
+        import ladder_strategy as ls
 
         mock_ml = MagicMock()
         trader._ml_model = mock_ml
+        # Ensure the lazy-loaded module is initialized so monkeypatch works
+        trader._ladder_strategy = ls
 
         mock_plan = MagicMock()
         mock_plan.tradeable = False
 
-        monkeypatch.setattr(trader.ls, "plan_orders", MagicMock(return_value=[mock_plan]))
+        monkeypatch.setattr(ls, "plan_orders", MagicMock(return_value=[mock_plan]))
         monkeypatch.setattr(trader.gates, "spot_for", MagicMock(return_value=78000.0))
 
         m = self._make_market()
@@ -631,15 +634,17 @@ class TestMLFairValueFilter:
     def test_ml_filter_blocks_disagreement_on_direction(self, monkeypatch):
         """ML filter drops signal when ML side disagrees with venue side."""
         import trader
+        import ladder_strategy as ls
 
         mock_ml = MagicMock()
         trader._ml_model = mock_ml
+        trader._ladder_strategy = ls
 
         mock_plan = MagicMock()
         mock_plan.tradeable = True
         mock_plan.side = "NO"  # Opposite of signal side ("yes")
 
-        monkeypatch.setattr(trader.ls, "plan_orders", MagicMock(return_value=[mock_plan]))
+        monkeypatch.setattr(ls, "plan_orders", MagicMock(return_value=[mock_plan]))
         monkeypatch.setattr(trader.gates, "spot_for", MagicMock(return_value=78000.0))
 
         m = self._make_market()
@@ -653,15 +658,17 @@ class TestMLFairValueFilter:
     def test_ml_filter_allows_agreeing_signal(self, monkeypatch):
         """ML filter keeps signal when ML agrees with venue and clears entry bar."""
         import trader
+        import ladder_strategy as ls
 
         mock_ml = MagicMock()
         trader._ml_model = mock_ml
+        trader._ladder_strategy = ls
 
         mock_plan = MagicMock()
         mock_plan.tradeable = True
         mock_plan.side = "yes"  # Same side as signal
 
-        monkeypatch.setattr(trader.ls, "plan_orders", MagicMock(return_value=[mock_plan]))
+        monkeypatch.setattr(ls, "plan_orders", MagicMock(return_value=[mock_plan]))
         monkeypatch.setattr(trader.gates, "spot_for", MagicMock(return_value=78000.0))
 
         m = self._make_market()

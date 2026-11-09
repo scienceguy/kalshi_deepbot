@@ -281,7 +281,7 @@ def compare(kalshi: Ladder, poly: Ladder):
     for strike, kalshi_mid in k:
         if not (lo <= strike <= hi):
             continue  # extrapolating a CDF is inventing a number
-        poly_mid = float(np.interp(strike, p[:, 0], p[:, 1]))
+        poly_mid = _interp(strike, [pt[0] for pt in p], [pt[1] for pt in p])
         out.append(Deviation(strike, float(kalshi_mid), poly_mid))
     return out
 
@@ -361,7 +361,7 @@ def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
     for strike, kalshi_mid in k:
         if not (lo <= strike <= hi):
             continue
-        poly_mid = float(np.interp(strike, p[:, 0], p[:, 1]))
+        poly_mid = _interp(strike, [pt[0] for pt in p], [pt[1] for pt in p])
         fair = prob_above(spot, strike, sigma_min, minutes_left)
         if fair != fair:  # NaN
             continue

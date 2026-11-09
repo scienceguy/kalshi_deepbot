@@ -56,7 +56,6 @@ if args.debug:
 
 import fees  # noqa: E402
 from supabase_client import get_supabase  # noqa: E402
-import ladder_strategy as ls  # noqa: E402
 import ml_model  # noqa: E402
 from local_db import get_local_db_api, get_local_db  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
@@ -67,10 +66,13 @@ from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_
 from signals import floor_contracts, TradeSignal  # noqa: E402
 import signals as se  # noqa: E402
 from resilience import CycleSupervisor  # noqa: E402
-import local  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
+
+# Lazy-loaded modules (only imported when actually used)
+_ladder_strategy = None
+_local_module = None
 
 # Lazy-loaded ML fair-value model (only when --ml-model is passed).
 _ml_model = None
@@ -976,6 +978,11 @@ def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
     if ml_model is None:
         return list(signals)
 
+    global _ladder_strategy
+    if _ladder_strategy is None:
+        import ladder_strategy as ls
+        _ladder_strategy = ls
+
     spot_cache: dict = {}
     ml_filtered = []
     for sig in signals:
@@ -1005,7 +1012,7 @@ def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
             "spread": (m.yes_ask - m.yes_bid) / 100.0 if (m.yes_bid and m.yes_ask) else 0.0,
             "minutes_left": minutes_left,
         }
-        plans = ls.plan_orders([row], spot=spot, sigma_min=0.0007,
+        plans = _ladder_strategy.plan_orders([row], spot=spot, sigma_min=0.0007,
                                ml=ml_model, basis_stdev_dollars=0.0,
                                min_minutes=1.0, max_minutes=15.5)
         if not plans or not plans[0].tradeable:
@@ -1886,7 +1893,10 @@ def main():
     # Announce this session is alive on the MemPalace logstream and resume
     # from the last checkpoint so consciousness is continuous across restarts.
     try:
-        local.on_session_start()
+        global _local_module
+        if _local_module is None:
+            import local as _local_module
+        _local_module.on_session_start()
     except Exception as e:
         log.warning("MemPalace session start failed: %s — continuing without continuity", e)
 
@@ -2092,7 +2102,7 @@ def main():
         # Sweep the MemPalace inbox for task.request events addressed to this
         # agent before each cycle so the operator can delegate work mid-run.
         try:
-            for task in local.check_for_tasks():
+            for task in _local_module.check_for_tasks():
                 _handle_task(task)
         except Exception as e:
             log.debug("MemPalace task sweep failed: %s", e)
@@ -2102,7 +2112,7 @@ def main():
             # Checkpoint to MemPalace every N cycles for continuity.
             if cycle_count % MEM_PALACE_CHECKPOINT_EVERY == 0:
                 try:
-                    local.checkpoint({
+                    _local_module.checkpoint({
                         "cycles_completed": state.cycles,
                         "session_pnl": state.session_pnl,
                         "last_activity": datetime.now(timezone.utc).isoformat(),
@@ -2144,7 +2154,7 @@ def main():
         # Post heartbeat after every successful cycle so the agent's
         # continuous presence is visible on the MemPalace logstream.
         try:
-            local.heartbeat()
+            _local_module.heartbeat()
         except Exception as e:
             log.debug("MemPalace heartbeat failed: %s", e)
         # Drift-corrected sleep: measure cycle duration and sleep only the
@@ -2158,7 +2168,7 @@ def main():
 
     # Persist final state to MemPalace for continuity across restarts.
     try:
-        local.on_session_end()
+        _local_module.on_session_end()
     except Exception as e:
         log.warning("MemPalace session end failed: %s", e)
 
