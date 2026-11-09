@@ -644,17 +644,37 @@ def _replay_settlement_queue(client=None):
                 settle_key = f"settle:{event_ticker}:{order_id}"
                 applied = get_local_db().apply_settlement_pnl(
                     settle_key, ticker, pnl, fee_dollars=0.0, source="local")
-                pnl_to_add = 0.0 if applied is False else pnl
-                new_session_pnl = state.session_pnl + pnl_to_add
+                # applied is True=new, False=duplicate, None=DB error.
+                # Never credit PnL when the ledger write failed (None).
+                if applied is True:
+                    pnl_to_add = pnl
+                    new_session_pnl = state.session_pnl + pnl_to_add
 
-                # Step 2: Write to Supabase
-                if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
-                    state.session_pnl = new_session_pnl
-                log.debug("Replayed settlement PnL $%.2f persisted to Supabase", new_session_pnl)
+                    # Step 2: Write to Supabase
+                    try:
+                        if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
+                            state.session_pnl = new_session_pnl
+                            log.debug("Replayed settlement PnL $%.2f persisted to Supabase", new_session_pnl)
+                    except Exception:
+                        log.warning("Supabase session_pnl write failed — local state credited, will sync later", ticker)
+                        state.session_pnl = new_session_pnl
+                elif applied is False:
+                    log.info("Settlement P&L already recorded for %s — skipping duplicate", order_id)
+                    pnl_to_add = 0.0
+                else:
+                    # applied is None — DB write failed, do NOT credit PnL
+                    log.warning("Ledger write failed for %s — PnL NOT credited, will retry", order_id)
+                    pnl_to_add = 0.0
+                    remaining.append(entry)
+                    continue
 
-            # Step 3: Fire n8n webhook
+            # Step 3: Fire n8n webhook with idempotency key so downstream workflows can dedupe
             n8n_client = get_n8n_client()
-            n8n_client.execute_webhook("superbot-trade", payload, max_retries=1)
+            n8n_client.execute_webhook("superbot-trade", {
+                **payload,
+                "settle_key": settle_key,
+                "already_recorded": applied is False,
+            }, max_retries=1)
 
             # Step 4: Remove from queue ONLY after 1-3 succeed
             _save_settlement_queue(remaining + queue[i + 1:])
@@ -715,7 +735,7 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     if is_paper:
         paper_mode.add_pnl(realized_pnl)
 
-    key = f"exit:{ticker}:{order_id}"
+    key = f"exit:{ticker}:{order_id}:{filled}:{exit_cents}"
     try:
         applied = get_local_db().apply_settlement_pnl(
             key, ticker, realized_pnl, fee_dollars=fees_dollars, source="local")
@@ -1252,20 +1272,22 @@ def cycle(client: KalshiClient):
                 applied = False
                 pnl_to_add = 0.0
 
-            # Write PnL to Supabase FIRST, then update local state.
-            # This ensures: if process crashes after Supabase write, local state is
-            # reconciled on restart. Only credit local session_pnl if DB write succeeds.
+            # Write PnL to Supabase, then update local state.
+            # Credit session_pnl even if Supabase fails — the local ledger
+            # already has the idempotency key, so replays won't double-count.
+            # Supabase failure just means the value isn't synced yet; it will
+            # be reconciled on the next cycle or restart.
             if applied:
                 new_session_pnl = state.session_pnl + pnl_to_add
+                state.session_pnl = new_session_pnl
                 try:
                     if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
-                        state.session_pnl = new_session_pnl
-                    log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
+                        log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
                 except Exception:
-                    log.warning("Supabase session_pnl write failed — removing local idempotency key to allow retry", t)
-                    # Supabase write failed but local ledger already has the idempotency key.
-                    # Delete it so we can retry on the next cycle instead of permanently losing PnL.
-                    get_local_db().delete_pnl_ledger_entry(settle_key)
+                    log.warning("Supabase session_pnl write failed — local state credited, will sync later", t)
+                    # Idempotency key stays in local ledger; next cycle will
+                    # see applied=False and skip re-crediting. Position will
+                    # still be popped below since settlement data exists.
             else:
                 # applied is False (already recorded) or error path — no PnL to add
                 pass
@@ -1623,9 +1645,11 @@ def cycle(client: KalshiClient):
         if oid:
             # Track reserved cash for this resting order so intra-cycle cash
             # tracking doesn't overspend on orders already placed this cycle.
+            # NOTE: Do NOT decrement local `cash` here — max_trade_dollars()
+            # already subtracts resting_orders_value (line 1611). Decrementing
+            # cash here double-counts the reservation and shrinks max_trade.
             state.resting_value[oid] = {"dollars": sig.dollar_risk, "ticker": sig.market.ticker}
             state.resting_tickers.add(sig.market.ticker)
-            cash -= sig.dollar_risk  # Decrement available cash for subsequent orders
 
             # Only record as a filled position when the API reports a fill.
             # A resting (unfilled) limit order stays in resting_value and is
@@ -1695,26 +1719,32 @@ def main():
     try:
         config.validate_credentials()
     except ValueError as e:
-        log.error("Credential validation failed: %s — continuing without validation", e)
+        log.error("Credential validation failed: %s — refusing to start", e)
+        return
     if not config.validate_dry_run(live_explicit=args.live):
         log.error("Dry-run validation failed — refusing to start")
         return
     try:
         config.validate_bands()
     except ValueError as e:
-        log.error("Band validation failed: %s — continuing without band checks", e)
+        log.error("Band validation failed: %s — refusing to start", e)
+        return
 
     client = KalshiClient()
     try:
         bal = client.get_balance()
         # Validate balance units: Kalshi returns cents, we divide by 100.
         # Sanity check: balance should be in reasonable dollar range (0.01 to 1M).
+        # If the raw API returned dollars instead of cents (or vice versa),
+        # halting here prevents 100x over/under-sizing of every trade.
         if bal < 0.01 or bal > 1_000_000:
-            log.warning(
+            log.error(
                 "Balance $%.2f outside expected range (0.01–1M) — "
-                "verify Kalshi API returns cents, not dollars. Raw value: %s",
-                bal, bal * 100
+                "possible cents/dollars unit mismatch. Raw value: %s. "
+                "Halt startup to prevent catastrophic sizing errors.",
+                bal, bal * 100,
             )
+            return
         log.info("Connected ✓ Balance: $%.2f", bal)
         state.risk.initialize(bal)
     except Exception as e:
@@ -1824,17 +1854,6 @@ def main():
         log.warning("Could not reconcile session_pnl — starting at $0.00")
 
     # Also reconcile from n8n by checking recent executions for settlement webhooks
-    # that may have recorded PnL not yet synced to Supabase.
-    try:
-        n8n_client = get_n8n_client()
-        executions = n8n_client.list_executions(limit=50)
-        for ex in executions.get("data", []):
-            if ex.get("status") == "success" and "superbot-trade" in str(ex.get("workflowId", "")):
-                # Check if this execution has settlement data
-                pass  # n8n execution history doesn't easily expose settlement data
-    except Exception:
-        log.debug("Could not reconcile session_pnl from n8n executions")
-
     # Replay any pending settlements from the queue file
     _replay_settlement_queue(client)
 

@@ -162,7 +162,7 @@ class TestBookExit:
         assert risk.record_trade_outcome.call_args[0][0] is True
         assert risk.record_trade_outcome.call_args[0][1] == pytest.approx(0.40)
         assert trader.state.session_pnl == pytest.approx(0.40)
-        assert ldb.apply_settlement_pnl.call_args[0][0] == "exit:KXBTC15M-1:ord-1"
+        assert ldb.apply_settlement_pnl.call_args[0][0] == "exit:KXBTC15M-1:ord-1:2:52"
         assert n8n.execute_webhook.call_args[0][0] == "superbot-trade"
         assert n8n.execute_webhook.call_args[0][1]["action"] == "exit"
 

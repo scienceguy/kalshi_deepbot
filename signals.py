@@ -326,7 +326,6 @@ def _evaluate_common(
     entry_min: int,
     entry_max: int,
     minutes_in: float,
-    implied_prob: int,
     source: str,
     strength: float,
     skip_stability: bool = False,
@@ -669,7 +668,7 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
         strength = abs(entry_c - 50)
         sig = _evaluate_common(
             market, max_dollars, max_contracts, bullish,
-            entry_min, entry_max, minutes_in, entry_c,
+            entry_min, entry_max, minutes_in,
             "TAKER_FAVOURITE", strength,
             skip_stability=True,
         )
