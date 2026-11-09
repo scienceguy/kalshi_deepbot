@@ -726,13 +726,19 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     is_paper = bool(pos.get("paper"))
 
     exit_price = exit_cents / 100.0
-    buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=False)   # maker entry
-    sell_revenue = fees.sell_cash_in(filled, exit_price, taker=True)         # taker exit
+    # Dry-run taker entry: charge taker fee on entry, no fee on settlement
+    # (Kalshi charges no settlement fee). Live maker entry: no fee on entry,
+    # taker fee on exit (crossing the spread).
+    if is_paper:
+        buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=True)
+        sell_revenue = fees.sell_cash_in(filled, exit_price, taker=False)
+        fees_dollars = fees.taker_fee_dollars(filled, entry_price / 100.0)
+    else:
+        buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=False)
+        sell_revenue = fees.sell_cash_in(filled, exit_price, taker=True)
+        fees_dollars = fees.taker_fee_dollars(filled, exit_price)
     realized_pnl = sell_revenue - buy_cost
     won = sell_revenue > buy_cost
-    # Fee deducted inside sell_cash_in uses taker_fee_dollars (6-decimal);
-    # match it exactly instead of recomputing via taker_fee_cents (cent-ceiled).
-    fees_dollars = fees.taker_fee_dollars(filled, exit_price)
 
     state.risk.record_trade_outcome(won, realized_pnl)
     if not won:
@@ -1261,16 +1267,6 @@ def cycle(client: KalshiClient):
                 except Exception:
                     log.warning("Failed to write markout log for %s", t)
 
-            # Credit the paper ledger only when the idempotent settle ledger
-            # records this P&L as new. If the ledger write fails (applied=None),
-            # paper P&L is NOT credited here — it will be retried via queue replay
-            # on the next cycle, keeping paper_state.json and pnl_ledger in sync.
-            # applied=True → new (credit both paper and session). applied=False → duplicate (skip).
-            # applied=None → ledger write failed, PnL NOT credited, retry later.
-            if applied is True:
-                if is_paper:
-                    paper_mode.add_pnl(realized_pnl)
-
             # Record settlement P&L idempotently — use idempotency key so replays
             # after a crash can't double-count. Key is "settle:<event_ticker>:<order_id>".
             # Use event_ticker from market data (groups all strikes of one event)
@@ -1287,6 +1283,12 @@ def cycle(client: KalshiClient):
                 # applied: True=new (credit PnL), False=duplicate (skip), None/error→None (don't credit, retry later)
                 if applied is True:
                     pnl_to_add = realized_pnl
+
+                    # Credit the paper ledger only when the idempotent settle ledger
+                    # records this P&L as new. This keeps paper_state.json and
+                    # pnl_ledger in sync — both credit PnL at the same point.
+                    if is_paper:
+                        paper_mode.add_pnl(realized_pnl)
                 elif applied is False:
                     log.info("Settlement P&L already recorded for %s — skipping duplicate", t)
                 else:
@@ -1686,11 +1688,25 @@ def cycle(client: KalshiClient):
             # fill_count_fp is the NEW field; filledCount is the legacy alias.
             fill_count = _order_fill_count(resp)
             if config.DRY_RUN:
-                # A maker bid does not fill because we posted it. Park it and let
-                # _manage_paper_fills() fill it only once the book crosses.
-                state.paper_resting[oid] = {"sig": sig, "placed_at": time.time()}
-                fill_count = 0.0
-            if fill_count > 0:
+                # Final-minute taker strategy: simulate immediate taker fill
+                # at entry price. The order pays the ask and holds to BRTI
+                # settlement — no resting maker order. Dry-run maker fills
+                # almost never occur (book rarely crosses our bid before
+                # the window closes), so the dry-run curve would otherwise
+                # never compound.
+                fill_count = float(sig.contracts)
+                fees_dollars = fees.taker_fee_dollars(
+                    fill_count, sig.entry_price / 100.0
+                )
+                state._record_filled_order(
+                    client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
+                )
+                state.resting_value.pop(oid, None)
+                state.resting_tickers.discard(sig.market.ticker)
+                # Invalidate market cache so subsequent find_active_markets() calls
+                # in this cycle see updated liquidity/quotes for the filled market.
+                client.invalidate_markets(series_ticker=sig.market.series)
+            else:
                 fees_dollars = 0.0  # maker limit order — no taker fee
                 state._record_filled_order(
                     client, sig, oid, fill_count, "executed", fees_dollars, state.cycles

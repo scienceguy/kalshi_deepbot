@@ -15,7 +15,7 @@ from kalshi_client import KalshiClient
 def _pos(entry, side="yes", contracts=2):
     return {
         "side": side, "entry_price": entry, "contracts": contracts,
-        "order_id": "ord-1", "paper": True,
+        "order_id": "ord-1", "paper": False,
     }
 
 
