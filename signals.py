@@ -601,12 +601,6 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
             if market.minutes_left <= 1.0 else 0,
         )
         edge = edge_cents(model_prob, entry_c, fee_cents)
-        log.info(
-            "DEBUG edge ticker=%s side=%s entry_c=%d model_prob=%.4f fee=%.2fc "
-            "edge=%.2fc spot=%s strike=%s min_left=%.2f momentum=%.2f",
-            market.ticker, side, entry_c, model_prob, fee_cents, edge,
-            spot_price, strike, market.minutes_left, momentum,
-        )
         if edge < config.MODEL_MIN_EDGE_CENTS:
             results.append(TradeSignal(
                 "PASS", "", 0, 0, 0.0,

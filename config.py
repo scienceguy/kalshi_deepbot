@@ -233,8 +233,10 @@ NO_PRICE_IS_COMPLEMENT = _env_bool("NO_PRICE_IS_COMPLEMENT", False)
 # "raw_mid" (no filter — market mid as fair value, negative EV expected).
 MODEL_TYPE = _env_str("MODEL_TYPE", "gbm")
 # Minimum edge in cents per contract after fees required to take a trade.
-# At 87c ask, fee ≈ 0.79c; set min edge ≥ 1.0c to require model_prob > ask+fee+1c.
-MODEL_MIN_EDGE_CENTS = _env_float("MODEL_MIN_EDGE_CENTS", 1.0)
+# At 87c ask, fee ≈ 0.79c; set min edge ≥ 0.5c to require model_prob > ask+fee+0.5c.
+# Started lenient so positive-edge trades can flow and compound; the model filter
+# still blocks any negative-edge trade.
+MODEL_MIN_EDGE_CENTS = _env_float("MODEL_MIN_EDGE_CENTS", 0.5)
 # Annualized volatility for GBM model (crypto ≈ 0.80 = 80%).
 MODEL_VOLATILITY = _env_float("MODEL_VOLATILITY", 0.80)
 
