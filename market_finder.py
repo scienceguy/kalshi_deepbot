@@ -250,6 +250,10 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
 
         if mid is not None and MIN_P <= mid <= MAX_P:
             mains.append((mkt, ct, ml, mid))
+        elif yb is not None and yb <= 100 - MIN_P:
+            # NO side may be the favourite (YES bid low -> NO ask high).
+            # YES mid isn't in band but NO ask = 100 - YES bid could be >= 75c.
+            mains.append((mkt, ct, ml, mid))
         
         # Hedge check is independent of main check
         # Skip if yes_ask is 0 or missing (no liquidity to hedge against)
@@ -321,16 +325,25 @@ def find_active_markets(client: KalshiClient):
                     ob_map[m["ticker"]] = ({}, ya)
 
     # Process ALL mains passing the REAL entry band (using fresh orderbook prices).
+    # A market is tradeable if YES ask is in band OR NO ask is in band
+    # (final-minute taker pays the ask on the favourite side).
     for mkt, ct, ml, mid in all_mains:
         ob = ob_map.get(mkt["ticker"], ({}, None))[0]
         series = mkt.get("series_ticker", "")
         info = _build(mkt, series, ct, ml, ob, "MAIN")
-        if MIN_P <= info.mid_yes <= MAX_P:
+        yes_ask = info.yes_ask
+        no_ask = info.no_ask
+        yes_tradeable = yes_ask and MIN_P <= yes_ask <= MAX_P
+        no_tradeable = no_ask and MIN_P <= no_ask <= MAX_P
+        if yes_tradeable or no_tradeable:
             result.append(info)
-            log.info("✓ MAIN  %s %.1fmin mid=%.0fc bid=%dc ask=%dc skew=%+dc",
-                     info.ticker, ml, info.mid_yes, info.yes_bid, info.yes_ask, info.skew)
+            side = "YES" if yes_tradeable else "NO"
+            price = yes_ask if yes_tradeable else no_ask
+            log.info("✓ MAIN  %s %.1fmin %s ask=%dc mid=%.0fc bid=%dc skew=%+dc",
+                     info.ticker, ml, side, price, info.mid_yes or 0, info.yes_bid, info.skew)
         else:
-            log.debug("MAIN failed real-price check mid=%.0fc: %s", info.mid_yes, mkt["ticker"])
+            log.debug("MAIN failed real-price check yes_ask=%dc no_ask=%dc: %s",
+                      yes_ask or 0, no_ask or 0, mkt["ticker"])
 
     # Process HEDGE_NO
     for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
