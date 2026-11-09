@@ -146,10 +146,13 @@ MIN_SKEW_CENTS = _env_int("MIN_SKEW_CENTS", 3)
 MIN_TREND_CENTS = _env_int("MIN_TREND_CENTS", 8)
 SKEW_ENTRY_MIN = _env_int("SKEW_ENTRY_MIN", 3)
 SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
-# Final-minute entry window: 14.0 to 15.0 minutes into the 15-min window
-# Research shows edge only exists in the final 60 seconds.
-ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 14.0)
-ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 15.0)
+# Entry window: cover markets from when they're discovered (~4 min elapsed)
+# through near-final minute (14 min elapsed). The GBM model filter then
+# selects only those with positive edge after fees. Research shows GBM spot-vs-
+# strike edge exists whenever spot is meaningfully ITM vs strike, not just in
+# the final 60 seconds.
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 4.0)
+ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.0)
 # Final-minute taker price bands: pay the ask on the favourite (75-99c)
 MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 75)
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
@@ -214,11 +217,15 @@ GATES_LOG_FILE = Path(
 AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", True)
 AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
 ORDER_TIME_IN_FORCE = "immediate_or_cancel"
-# Final-minute favourite taker band: 75-99c (pay the ask on the favourite)
-ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 85)
-ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 89)
-MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 89)
-MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 85)
+# Final-minute favourite taker band: 75-99c (pay the ask on the favourite).
+# Defaults match the documented band and market_finder's [MIN_YES_PRICE_CENTS,
+# MAX_YES_PRICE_CENTS] so a tradeable bracket found by discovery is not rejected
+# again by a narrower signal band (which previously blocked every ask in
+# [75, 85) or (89, 99], e.g. an 84c favourite with positive GBM edge).
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 75)
+ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 99)
+MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
+MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 75)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 
 # NO *market data* format only: Kalshi returns NO prices directly (not

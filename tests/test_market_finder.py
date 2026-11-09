@@ -200,8 +200,8 @@ class TestEvaluateHedge:
         m = MagicMock()
         m.ticker = "TEST"
         m.series = "KXBTC15M"
-        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=0.5)
-        m.minutes_left = 0.5
+        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=2.0)
+        m.minutes_left = 2.0
         m.no_ask = 90  # Outside hedge band (82-88)
         m.no_bid = 10
         m.yes_bid = 10
@@ -222,8 +222,8 @@ class TestEvaluateHedge:
         m = MagicMock()
         m.ticker = "TEST"
         m.series = "KXBTC15M"
-        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=0.5)
-        m.minutes_left = 0.5
+        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=2.0)
+        m.minutes_left = 2.0
         m.no_ask = 85  # Inside hedge band (82-88)
         m.no_bid = 15
         m.yes_bid = 15

@@ -1513,6 +1513,8 @@ def cycle(client: KalshiClient):
         for sig in se.evaluate(m, cash, max_trade_override=max_trade):
             if sig.is_trade:
                 signals.append(sig)
+            elif sig.reason:
+                log.debug("Signal PASS %s — %s", ticker, sig.reason)
 
     # LLM evaluation as pre-entry filter (runs before gates so it can veto early).
     # Runs for all signals in the entry window, not just at order placement.
