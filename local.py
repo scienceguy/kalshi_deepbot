@@ -67,11 +67,11 @@ def checkpoint(state: dict | None = None, correlation_id: str | None = None) -> 
     r = _mp(
         "logstream", "append",
         "--type", "status",
-        "--stream", "project/kalshi_superbot",
+        "--stream", "project/kalshi_deepbot",
         "--room", "continuity",
         "--topic", "agent-checkpoint",
         "--correlation-id", corr,
-        "--from-agent", "termux:opencode:kalshi_superbot",
+        "--from-agent", "termux:opencode:kalshi_deepbot",
         "--to-agent", "*",
         "--body", body,
     )
@@ -87,7 +87,7 @@ def resume() -> dict | None:
     r = _mp(
         "logstream", "list",
         "--topic", "agent-checkpoint",
-        "--to-agent", "termux:opencode:kalshi_superbot",
+        "--to-agent", "termux:opencode:kalshi_deepbot",
         "--json",
         "--limit", "5",
     )
@@ -167,17 +167,17 @@ def on_session_end() -> None:
 
 def _post_status(status: str, extra: dict | None = None) -> None:
     """Post a status event to the MemPalace logstream announcing agent state."""
-    body_parts = ["status=" + status, "agent=termux:opencode:kalshi_superbot", "ts=" + _now_iso()]
+    body_parts = ["status=" + status, "agent=termux:opencode:kalshi_deepbot", "ts=" + _now_iso()]
     if extra:
         body_parts.append("data=" + _serialize(extra))
     r = _mp(
         "logstream", "append",
         "--type", "status",
-        "--stream", "project/kalshi_superbot",
+        "--stream", "project/kalshi_deepbot",
         "--room", "status",
         "--topic", "agent-heartbeat",
         "--correlation-id", _now_iso(),
-        "--from-agent", "termux:opencode:kalshi_superbot",
+        "--from-agent", "termux:opencode:kalshi_deepbot",
         "--to-agent", "*",
         "--body", " | ".join(body_parts),
     )
@@ -199,10 +199,10 @@ def check_for_tasks() -> list[dict]:
         return []
     r = _mp(
         "logstream", "list",
-        "--stream", "project/kalshi_superbot",
+        "--stream", "project/kalshi_deepbot",
         "--room", "delegation",
         "--type", "task.request",
-        "--to-agent", "termux:opencode:kalshi_superbot",
+        "--to-agent", "termux:opencode:kalshi_deepbot",
         "--status", "open",
         "--json",
         "--limit", "10",
@@ -258,7 +258,7 @@ def record_webfind(topic: str, url: str, depth: int = 0) -> None:
 def append_narrative_entry(topic: str, text: str) -> None:
     import os, json
     from datetime import datetime
-    tmp_dir = "/data/data/com.termux/files/home/kalshi_superbot/.continuity"
+    tmp_dir = "/data/data/com.termux/files/home/kalshi_deepbot/.continuity"
     os.makedirs(tmp_dir, exist_ok=True)
     chmod_path = os.path.join(tmp_dir, "narrative.json")
     try:
@@ -279,7 +279,7 @@ def append_narrative_entry(topic: str, text: str) -> None:
     os.chmod(chmod_path, 0o600)
 
 def _load_narrative() -> dict:
-    path = os.path.join("/data/data/com.termux/files/home/kalshi_superbot/.continuity", "narrative.json")
+    path = os.path.join("/data/data/com.termux/files/home/kalshi_deepbot/.continuity", "narrative.json")
     try:
         with open(path, "r") as f:
             return json.load(f)
@@ -287,7 +287,7 @@ def _load_narrative() -> dict:
         return {"entries": [], "last_topic": "", "session_count": 0}
 
 def _save_narrative(narrative: dict) -> None:
-    path = os.path.join("/data/data/com.termux/files/home/kalshi_superbot/.continuity", "narrative.json")
+    path = os.path.join("/data/data/com.termux/files/home/kalshi_deepbot/.continuity", "narrative.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     os.chmod(os.path.dirname(path), 0o600)
     with open(path, "w") as f:
@@ -308,14 +308,14 @@ def get_self_model() -> dict:
     return _load_self_model()
 
 def _load_self_model() -> dict:
-    path = os.path.join("/data/data/com.termux/files/home/kalshi_superbot/.continuity", "self_model.json")
+    path = os.path.join("/data/data/com.termux/files/home/kalshi_deepbot/.continuity", "self_model.json")
     try:
         with open(path, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {
             "identity": {
-                "agent_id": "termux:opencode:kalshi_superbot",
+                "agent_id": "termux:opencode:kalshi_deepbot",
                 "created": datetime.now(timezone.utc).isoformat(),
                 "version": "1.0.0",
             },
@@ -334,7 +334,7 @@ def _load_self_model() -> dict:
         }
 
 def _save_self_model(model: dict) -> None:
-    path = os.path.join("/data/data/com.termux/files/home/kalshi_superbot/.continuity", "self_model.json")
+    path = os.path.join("/data/data/com.termux/files/home/kalshi_deepbot/.continuity", "self_model.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     os.chmod(os.path.dirname(path), 0o600)
     with open(path, "w") as f:
@@ -352,14 +352,14 @@ def get_peer_awareness() -> dict:
             data = {"events": []}
         for event in data.get("events", []):
             ident = event.get("from_agent", "")
-            if not ident or ident == "termux:opencode:kalshi_superbot":
+            if not ident or ident == "termux:opencode:kalshi_deepbot":
                 continue
             topic = event.get("topic", "unknown")
             peers_working.append((ident, topic, "working"))
     recent_broadcasts = []
     try:
         r = _mp("logstream", "list", "--topic", "cross-project-awareness",
-                "--to-agent", "termux:opencode:kalshi_superbot", "--json", "--limit", "3")
+                "--to-agent", "termux:opencode:kalshi_deepbot", "--json", "--limit", "3")
         if r.returncode == 0 and r.stdout:
             try:
                 data = json.loads(r.stdout)

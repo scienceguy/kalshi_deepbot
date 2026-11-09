@@ -41,13 +41,23 @@ import unicodedata
 
 SKIP_DIRS = {".git", "__pycache__", "legacy", "venv", ".venv", "node_modules"}
 
+# Emoji presentation selectors: invisible, glide after a symbol (U+26A0 + VS16
+# renders an emoji), and are Mn in every real emoji log string. They are Mn,
+# so the combining-mark rule below would flag every "warning emoji" line and keep
+# the gate red for a non-finding. Excluded by name, not by blanket category drop,
+# so a genuine combining-mark splice (e.g. U+0301, category Mn) still fires.
+_IGNORED_MARKS = {"VARIATION SELECTOR-15", "VARIATION SELECTOR-16"}
+
 
 def _is_letter(ch):
     """True for a non-ASCII character that is a letter (a splice candidate)."""
     if ord(ch) <= 127:
         return False
     cat = unicodedata.category(ch)
+    if cat.startswith("M") and unicodedata.name(ch, "") in _IGNORED_MARKS:
+        return False
     return cat.startswith("L") or cat.startswith("M")
+
 
 
 def _comment_only_lines(text):
