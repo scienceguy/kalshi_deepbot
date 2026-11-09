@@ -1550,15 +1550,11 @@ def cycle(client: KalshiClient):
     # Warm the feed caches concurrently first: a 9-series cycle would otherwise
     # serialise one spot + one klines fetch per candidate.
     gates.prefetch({gates.asset_for(sig.market) for sig in signals})
-    gated = []
-    for sig in signals:
-        result = gates.evaluate_entry(
-            sig.market, None, None,
-            side=sig.side, entry_price_cents=sig.entry_price,
-        )
-        if result.allowed:
-            gated.append(sig)
-    signals = gated
+    signals = [sig for sig in signals
+               if gates.evaluate_entry(
+                   sig.market, None, None,
+                   side=sig.side, entry_price_cents=sig.entry_price,
+               ).allowed]
 
     # ML fair-value override: re-score signals through the ML model.
     # If ML fair value disagrees with venue-implied fair on direction, or if
