@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, "/data/data/com.termux/files/home/kalshi_superbot")
 
 from market_finder import MarketInfo, find_active_markets
-from signals import _evaluate_two_sided, _evaluate_hedge, rank_signals
+from signals import _evaluate_taker_favourite, _evaluate_hedge, rank_signals
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -79,8 +79,8 @@ class TestFindActiveMarkets:
     @patch("market_finder.KalshiClient")
     def test_filters_by_series_and_status(self, mock_client_class):
         mock_client = MagicMock()
-        # Use a close_time in the future (10 minutes from now)
-        future_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat().replace('+00:00', 'Z')
+        # Use a close_time in the future (~0.5 min from now = ~14.5 min into 15-min window)
+        future_time = (datetime.now(timezone.utc) + timedelta(minutes=0.5)).isoformat().replace('+00:00', 'Z')
         mock_client.get_markets.return_value = [
             {
                 "ticker": "KXBTC15M-24OCT1230-30",
@@ -91,13 +91,13 @@ class TestFindActiveMarkets:
                 "strike_type": "",
                 "close_time": future_time,
                 "open_time": "2024-10-12T12:30:00Z",
-                "yes_bid_dollars": "0.50",
-                "yes_ask_dollars": "0.52",
-                "no_bid_dollars": "0.48",
-                "no_ask_dollars": "0.50",
+                "yes_bid_dollars": "0.80",
+                "yes_ask_dollars": "0.85",
+                "no_bid_dollars": "0.15",
+                "no_ask_dollars": "0.20",
             }
         ]
-        mock_client.get_orderbook.return_value = {"yes": [[48, 100]], "no": [[52, 100]]}
+        mock_client.get_orderbook.return_value = {"yes": [[84, 100], [85, 100]], "no": [[15, 100], [16, 100]]}
         mock_client_class.return_value = mock_client
 
         result = find_active_markets(mock_client)
@@ -192,56 +192,6 @@ class TestRankSignals:
         assert ranked[0].direction == "YES"
 
 
-class TestEvaluateTwoSided:
-    """Tests for two-sided favourite maker evaluation."""
-
-    def test_both_sides_in_range_keeps_more_extreme(self):
-        """When both YES and NO in range, keep the one further from 50c.
-
-        Uses entry band 19-80 so both sides can be in range (YES at 80, NO at 19).
-        Entry window is 6-11 minutes (4-9 minutes left).
-        """
-        m = MarketInfo(
-            ticker="TEST", series="KXBTC15M",
-            close_time=datetime.now(timezone.utc) + timedelta(minutes=6.0),
-            strike=50000, strike_type="",
-            yes_bid=80, yes_ask=81, no_bid=19, no_ask=20,
-            yes_liquidity=100, no_liquidity=100,
-            minutes_left=6.0, bracket_role="MAIN", raw={}
-        )
-
-        # Use entry band 19-80 so both YES (80) and NO (19) are in range
-        with patch('signals.config.ENTRY_BAND_MIN', 19), \
-             patch('signals.config.ENTRY_BAND_MAX', 80), \
-             patch('signals.config.MIN_NO_ENTRY_CENTS', 19), \
-             patch('signals.config.MAX_NO_ENTRY_CENTS', 80), \
-             patch('signals.config.ALLOW_YES_BUYS', True), \
-             patch('signals.config.NO_PRICE_IS_COMPLEMENT', False), \
-             patch('signals.config.STABILITY_ENABLED', False):
-
-            result = _evaluate_two_sided(m, 10.0, 3)
-
-        trades = [s for s in result if s.is_trade]
-        assert len(trades) == 1
-        # NO at 20c (30 from 50) vs YES at 80c (30 from 50) - equal distance
-        # With >= comparison, NO wins (further or equal)
-        assert trades[0].direction == "NO"
-
-    def test_respects_entry_window(self):
-        """Outside entry window => PASS."""
-        m = MarketInfo(
-            ticker="TEST", series="KXBTC15M",
-            close_time=datetime.now(timezone.utc) + timedelta(minutes=14.0),  # 1min left -> outside 6-11
-            strike=50000, strike_type="",
-            yes_bid=80, yes_ask=81, no_bid=19, no_ask=20,
-            yes_liquidity=100, no_liquidity=100,
-            minutes_left=1.0, bracket_role="MAIN", raw={}
-        )
-        with patch('signals.config.STABILITY_ENABLED', False):
-            result = _evaluate_two_sided(m, 10.0, 3)
-        assert len([s for s in result if s.is_trade]) == 0
-
-
 class TestEvaluateHedge:
     """Tests for HEDGE_NO evaluation."""
 
@@ -250,8 +200,8 @@ class TestEvaluateHedge:
         m = MagicMock()
         m.ticker = "TEST"
         m.series = "KXBTC15M"
-        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=10)
-        m.minutes_left = 5.0
+        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=0.5)
+        m.minutes_left = 0.5
         m.no_ask = 90  # Outside hedge band (82-88)
         m.no_bid = 10
         m.yes_bid = 10
@@ -272,8 +222,8 @@ class TestEvaluateHedge:
         m = MagicMock()
         m.ticker = "TEST"
         m.series = "KXBTC15M"
-        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=10)
-        m.minutes_left = 5.0
+        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=0.5)
+        m.minutes_left = 0.5
         m.no_ask = 85  # Inside hedge band (82-88)
         m.no_bid = 15
         m.yes_bid = 15
@@ -298,7 +248,7 @@ class TestMarketFinderIntegration:
     def test_bracket_selection_main_and_hedge(self, mock_client_class):
         """MAIN + HEDGE_NO brackets are both returned when conditions met."""
         mock_client = MagicMock()
-        future_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat().replace('+00:00', 'Z')
+        future_time = (datetime.now(timezone.utc) + timedelta(minutes=0.5)).isoformat().replace('+00:00', 'Z')
         mock_client.get_markets.return_value = [
             {
                 "ticker": "KXBTC15M-24OCT1230-30",
@@ -309,10 +259,10 @@ class TestMarketFinderIntegration:
                 "strike_type": "",
                 "close_time": future_time,
                 "open_time": "2024-10-12T12:30:00Z",
-                "yes_bid_dollars": "0.50",
-                "yes_ask_dollars": "0.52",
-                "no_bid_dollars": "0.48",
-                "no_ask_dollars": "0.50",
+                "yes_bid_dollars": "0.80",
+                "yes_ask_dollars": "0.85",
+                "no_bid_dollars": "0.15",
+                "no_ask_dollars": "0.20",
             },
             {
                 "ticker": "KXBTC15M-24OCT1230-35",
@@ -330,8 +280,8 @@ class TestMarketFinderIntegration:
             },
         ]
         mock_client.get_orderbook.side_effect = [
-            {"yes": [[48, 100]], "no": [[52, 100]]},
-            {"yes": [[8, 50]], "no": [[92, 50]]},
+            {"yes": [[84, 100], [85, 100]], "no": [[15, 100], [16, 100]]},
+            {"yes": [[11, 100], [12, 100]], "no": [[88, 100], [89, 100]]},
         ]
         mock_client_class.return_value = mock_client
 

@@ -141,9 +141,12 @@ MIN_SKEW_CENTS = _env_int("MIN_SKEW_CENTS", 3)
 MIN_TREND_CENTS = _env_int("MIN_TREND_CENTS", 8)
 SKEW_ENTRY_MIN = _env_int("SKEW_ENTRY_MIN", 3)
 SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
-ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 6.0)
-ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 11.0)
-MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 1)
+# Final-minute entry window: 14.0 to 15.0 minutes into the 15-min window
+# Research shows edge only exists in the final 60 seconds.
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 14.0)
+ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 15.0)
+# Final-minute taker price bands: pay the ask on the favourite (75-99c)
+MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 75)
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
 MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 50)
 MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
@@ -195,17 +198,18 @@ GATES_LOG_FILE = Path(
 )
 
 # ═════════════════════════════════════════════════════════════════════
-# ORDER BEHAVIOR (favourite maker - optimized from backtests)
-# Backtest optimal: 15-55c entry band (wider = more trades, earlier window)
+# ORDER BEHAVIOR (final-minute taker — research-optimized)
+# Research (Turbine, Bot for Kalshi, PredictionMarketsPicks) shows edge only
+# in the final 60 seconds. Pay the ask on the favourite, hold to BRTI settle.
 # ═════════════════════════════════════════════════════════════════════
-AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", False)
+AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", True)
 AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
-ORDER_TIME_IN_FORCE = "good_till_canceled"
-# Entry band: favourite maker enters at 15-55c range (backtest optimal)
-ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 15)
-ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 55)
-MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 55)
-MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 15)
+ORDER_TIME_IN_FORCE = "immediate_or_cancel"
+# Final-minute favourite taker band: 75-99c (pay the ask on the favourite)
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 75)
+ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 99)
+MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
+MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 75)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 
 # NO *market data* format only: Kalshi returns NO prices directly (not
@@ -228,20 +232,19 @@ HEDGE_MAX_NO_ENTRY_CENTS = _env_int("HEDGE_MAX_NO_ENTRY_CENTS", 88)
 # Panic fade (mean reversion) strategy. Bet opposite side when price moves
 # sharply in short window — TurbineFi research found this was the ONLY
 # consistently profitable strategy group (93/96 variants, mean +4.90% ROI).
-PANIC_FADE_ENABLED = _env_bool("PANIC_FADE_ENABLED", True)
+PANIC_FADE_ENABLED = _env_bool("PANIC_FADE_ENABLED", False)
 PANIC_FADE_MOVE_CENTS = _env_int("PANIC_FADE_MOVE_CENTS", 15)  # min cents move to trigger
 PANIC_FADE_WINDOW_SECONDS = _env_int("PANIC_FADE_WINDOW_SECONDS", 120)  # lookback window
-# Uses ENTRY_BAND_MIN/MAX (15-55c) for fade entries
-PANIC_FADE_NO_BAND_MIN = _env_int("PANIC_FADE_NO_BAND_MIN", 15)
-PANIC_FADE_NO_BAND_MAX = _env_int("PANIC_FADE_NO_BAND_MAX", 55)
+# Uses ENTRY_BAND_MIN/MAX (75-99c) for fade entries
+PANIC_FADE_NO_BAND_MIN = _env_int("PANIC_FADE_NO_BAND_MIN", 75)
+PANIC_FADE_NO_BAND_MAX = _env_int("PANIC_FADE_NO_BAND_MAX", 99)
 
 # ═════════════════════════════════════════════════════════════════════
 # EARLY EXIT (sell before settlement so capital compounds intra-window)
-# Without this every position is held to expiry and cash is locked for the
-# rest of the 15m window. Exit at the current bid (taker) when either the
-# profit target or the stop is hit.
+# DISABLED for final-minute taker strategy: hold to BRTI settlement.
+# The 60-second BRTI average is the alpha source; exiting early loses it.
 # ═════════════════════════════════════════════════════════════════════
-EXIT_ENABLED = _env_bool("EXIT_ENABLED", True)
+EXIT_ENABLED = _env_bool("EXIT_ENABLED", False)
 EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 20)  # bid moved +20c vs entry
 EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 8)      # bid moved -8c vs entry
 EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 1.0)  # don't dump into a dead book

@@ -67,4 +67,4 @@ def test_env_bool_unset_uses_default(monkeypatch):
     assert cfg.DRY_RUN is True
 
     cfg = _reload_with(monkeypatch, AGGRESSIVE_FILL="")
-    assert cfg.AGGRESSIVE_FILL is False
+    assert cfg.AGGRESSIVE_FILL is True  # final-minute taker default

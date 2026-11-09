@@ -233,7 +233,7 @@ def test_hedge_contracts_are_two_decimal_fractions():
     m = MarketInfo(
         ticker="T", series="S", close_time=None, strike=0, strike_type="",
         yes_bid=14, yes_ask=15, no_bid=84, no_ask=85,
-        yes_liquidity=100, no_liquidity=100, minutes_left=9.0,  # within 6-11min window (minutes_in=6)
+        yes_liquidity=100, no_liquidity=100, minutes_left=0.5,  # within 14-15min window (minutes_in=14.5)
     )
     # Patch config to use hedge band that matches test data (HEDGE band 82-88)
     with patch('signals.config.HEDGE_MIN_NO_ENTRY_CENTS', 82), \

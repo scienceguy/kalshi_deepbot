@@ -592,14 +592,16 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
     return results
 
 
-def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: int = 0):
+def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contracts: int = 0):
     """
-    Two-sided favourite maker strategy (Approach D).
+    Final-minute taker strategy: pay the ask on the favourite in the final 60 seconds,
+    hold to BRTI settlement.
 
-    Emit the favourite side (YES or NO) when it is in range (ENTRY_BAND_MIN-ENTRY_BAND_MAX),
-    posting 1c under its ask so the order is always a maker.
-    Returns a list of TradeSignal (0 or 1 per market — when both sides are
-    in range, only the more extreme favourite is kept).
+    Research (Turbine, Bot for Kalshi, PredictionMarketsPicks) shows edge ONLY in the
+    final minute: pay the ask on the market favourite (75-99c), hold to BRTI settle.
+    The 60-second BRTI average reduces uncertainty by ~71% at 30s left vs last-tick.
+
+    Returns a list of TradeSignal (0 or 1 per market — the more extreme favourite).
     """
     results = []
 
@@ -614,51 +616,61 @@ def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: i
         _pass(f"Late ({minutes_in:.1f}min)")
         return results
 
+    # Stability gate: skip for final minute (no history needed at 14:00+)
+    # If enabled, it would block on fresh series anyway. Fail-open is default.
     ok_stable, why = _stability_ok(market.ticker, time.time())
     if config.STABILITY_ENABLED and not ok_stable:
         _pass(why)
         return results
 
-    no_ask = market.no_ask
-    # If NO price is complemented (legacy), derive from YES bid
-    if not no_ask and market.yes_bid and config.NO_PRICE_IS_COMPLEMENT:
-        no_ask = 100 - market.yes_bid
+    # Get both YES and NO asks (taker pays the ask)
     yes_ask = market.yes_ask
-    if yes_ask == 0 and market.no_bid and config.NO_PRICE_IS_COMPLEMENT:
+    no_ask = market.no_ask
+
+    # If NO ask is missing, derive from YES bid (complement)
+    # Kalshi returns NO prices directly on crypto series (quadratic fee_type)
+    if not no_ask and market.yes_bid:
+        no_ask = 100 - market.yes_bid
+    if not yes_ask and market.no_bid:
         yes_ask = 100 - market.no_bid
-    if no_ask <= 0 and yes_ask <= 0:
+
+    if not yes_ask and not no_ask:
         _pass("No quotes")
         return results
 
-    no_pay = _maker_price(market, bullish=False) if no_ask > 0 else 0
-    yes_pay = _maker_price(market, bullish=True) if yes_ask > 0 else 0
-
+    # Determine the favourite: the side with ask >= 75c (favourite zone)
+    # We pay the ask, so the price we pay IS the ask
     cands = []
     entry_min = getattr(config, "ENTRY_BAND_MIN", config.MIN_NO_ENTRY_CENTS)
     entry_max = getattr(config, "ENTRY_BAND_MAX", config.MAX_NO_ENTRY_CENTS)
-    if entry_min <= no_pay <= entry_max:
-        cands.append(("NO", "no", no_pay, no_ask))
-    if config.ALLOW_YES_BUYS and entry_min <= yes_pay <= entry_max:
-        cands.append(("YES", "yes", yes_pay, yes_ask))
 
-    # If both sides are in range, keep only the more extreme favourite
-    # (further from 50c) to avoid betting both sides of the same market.
-    if len(cands) == 2:
-        if abs(no_pay - 50) >= abs(yes_pay - 50):
-            cands = [c for c in cands if c[0] == "NO"]
-        else:
-            cands = [c for c in cands if c[0] == "YES"]
+    if no_ask and entry_min <= no_ask <= entry_max:
+        # NO is the favourite (NO ask >= 75c means YES is <= 25c)
+        cands.append(("NO", "no", no_ask))
+    if config.ALLOW_YES_BUYS and yes_ask and entry_min <= yes_ask <= entry_max:
+        # YES is the favourite (YES ask >= 75c)
+        cands.append(("YES", "yes", yes_ask))
 
     if not cands:
-        _pass(f"No favourite in {entry_min}-{entry_max}c (no={no_pay}c yes={yes_pay}c)")
+        _pass(f"No favourite in {entry_min}-{entry_max}c (no_ask={no_ask} yes_ask={yes_ask})")
         return results
 
-    for direction, side, entry_c, implied in cands:
+    # If both sides in range (rare at 75-99c), keep the more extreme favourite
+    if len(cands) == 2:
+        # More extreme = further from 50c
+        if abs(cands[0][2] - 50) >= abs(cands[1][2] - 50):
+            cands = [cands[0]]
+        else:
+            cands = [cands[1]]
+
+    for direction, side, entry_c in cands:
         bullish = (direction == "YES")
+        # For taker strategy, strength = how far the favourite is from 50c
+        strength = abs(entry_c - 50)
         sig = _evaluate_common(
             market, max_dollars, max_contracts, bullish,
-            entry_min, entry_max, minutes_in, implied,
-            "FAVOURITE", float(implied),
+            entry_min, entry_max, minutes_in, entry_c,
+            "TAKER_FAVOURITE", strength,
             skip_stability=True,
         )
         if sig and sig.is_trade:
@@ -668,7 +680,7 @@ def _evaluate_two_sided(market: MarketInfo, max_dollars: float, max_contracts: i
     return results
 
 
-# ═════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # MAIN ENTRY POINT
 # ═════════════════════════════════════════════════════════════════════
 
@@ -690,17 +702,16 @@ def evaluate(market: MarketInfo, cash: float = 10.0,
     if market.bracket_role == "HEDGE_NO":
         result = _evaluate_hedge(market, max_dollars)
     else:
-        # Two-sided favourite maker strategy (Approach D)
-        result = _evaluate_two_sided(market, max_dollars,
-                                     max_contracts_for_cash(effective_cash))
+        # Final-minute taker strategy (replaces two-sided favourite maker)
+        result = _evaluate_taker_favourite(market, max_dollars,
+                                           max_contracts_for_cash(effective_cash))
 
-    # Panic-fade: mean-reversion when price moves sharply in short window
-    if market.bracket_role != "HEDGE_NO":
-        result.extend(_evaluate_panic_fade(market, max_dollars,
-                                           max_contracts_for_cash(effective_cash)))
+    # Panic-fade disabled for final-minute strategy (config.PANIC_FADE_ENABLED=false)
+    # if market.bracket_role != "HEDGE_NO":
+    #     result.extend(_evaluate_panic_fade(market, max_dollars,
+    #                                        max_contracts_for_cash(effective_cash)))
 
-    # Deduplicate by (ticker, side) — panic fade can produce an opposite
-    # signal on the same market that the main strategy already emitted.
+    # Deduplicate by (ticker, side)
     seen = set()
     deduped = []
     for sig in result:
