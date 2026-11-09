@@ -36,6 +36,8 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
+import config
+
 # Try to import supabase client for sync
 try:
     from supabase_client import get_supabase, is_enabled as supabase_is_enabled
@@ -52,7 +54,7 @@ DB_DIR.mkdir(exist_ok=True)
 DB_PATH = DB_DIR / "superbot_local.db"
 
 # Sync interval (seconds) — configurable via env
-SYNC_INTERVAL = float(os.environ.get("LOCAL_DB_SYNC_INTERVAL", "300"))
+SYNC_INTERVAL = float(config.LOCAL_DB_SYNC_INTERVAL)
 
 
 class LocalDB:
