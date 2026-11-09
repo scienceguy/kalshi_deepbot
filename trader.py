@@ -1755,13 +1755,16 @@ def cycle(client: KalshiClient):
             log.debug("Already resting on %s — skipping duplicate entry", sig.market.ticker)
             continue
 
-        # Enforce minimum gap between orders
+        # Enforce minimum gap between orders. Capped at one cycle: the order
+        # loop runs once per cycle, so a longer gap would never let it open.
         now_t = time.time()
         gap = now_t - state.last_order_time
-        if gap < config.MIN_ORDER_GAP_SECONDS:
+        min_gap = min(config.MIN_ORDER_GAP_SECONDS,
+                      max(0.0, config.LOOP_INTERVAL_SECONDS - 1.0))
+        if gap < min_gap:
             log.info(
                 "ORDER GAP — %.1fs since last order, need %.1fs — skipping %s",
-                gap, config.MIN_ORDER_GAP_SECONDS, sig.market.ticker,
+                gap, min_gap, sig.market.ticker,
             )
             continue
 

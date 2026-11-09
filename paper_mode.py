@@ -58,6 +58,16 @@ def _seed() -> float:
     return round(float(config.DRY_STARTING_BALANCE or 10.0), 4)
 
 
+def _parse_float(value, default=0.0) -> float:
+    """Best-effort float from persisted state (may be JSON-encoded or junk)."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def _load() -> dict:
     """Load the ledger, seeding start_balance once."""
     global _state
@@ -79,7 +89,9 @@ def _load() -> dict:
         saved_pnl = None
         if ldb is not None:
             try:
-                saved_pnl = ldb.get_bot_state(LOCAL_DB_KEY)
+                # The backup is stored as a string; a junk value must fall back
+                # to a fresh seed rather than crash the recovery path.
+                saved_pnl = _parse_float(ldb.get_bot_state(LOCAL_DB_KEY), None)
             except Exception:
                 pass
         if saved_pnl is not None:
@@ -105,6 +117,15 @@ def _save():
         os.replace(tmp, STATE_FILE)  # atomic on same filesystem
     except Exception as e:
         log.warning("Could not write %s: %s", STATE_FILE, e)
+    # Redundant backup in local_db, kept in step with the file on every save so
+    # recovery can never resurrect a stale P&L. Under pytest it is skipped:
+    # tests must not depend on (or write to) external state.
+    ldb = None if _IS_TEST else _local_db()
+    if ldb is not None:
+        try:
+            ldb.set_bot_state(LOCAL_DB_KEY, str(_state["pnl"]))
+        except Exception as e:
+            log.warning("Could not back up paper pnl to local_db: %s", e)
 
 
 def start_balance() -> float:
@@ -152,14 +173,6 @@ def add_pnl(realized: float, pnl_type: str = "settlement", reason: str = "") -> 
         "reason": reason,
     })
     _save()
-    # Redundant backup: also persist paper pnl to local_db so a lost or
-    # corrupt paper_state.json can be recovered on restart.
-    ldb = _local_db()
-    if ldb is not None:
-        try:
-            ldb.set_bot_state(LOCAL_DB_KEY, str(data["pnl"]))
-        except Exception as e:
-            log.warning("Could not back up paper pnl to local_db: %s", e)
 
 
 def cash(open_risk: float, mark_to_market_exposure: float = None) -> float:

@@ -9,8 +9,8 @@ Each candidate contract is scored before an order is placed:
    with a high-gamma flag in the final minutes.
 
 Gates only allow or deny and always emit diagnostics. With
-``GATES_SHADOW_MODE`` (default True) a deny is logged as ``would_block`` and
-the order proceeds unchanged.
+``GATES_SHADOW_MODE`` (default False) a deny is logged as ``would_block`` and
+the order proceeds unchanged; with it False the deny blocks the entry.
 
 Read-only: this module places nothing and touches no auth code.
 """
