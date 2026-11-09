@@ -265,6 +265,16 @@ def _maybe_save_bid_hist(now: float):
 def _load_bid_hist_for_read():
     """Load bid history with shared lock for concurrent reads (alias for _load_bid_hist)."""
     return _load_bid_hist(force=True)
+
+
+def _force_save_bid_hist():
+    """Force save bid history to disk immediately (used on shutdown)."""
+    try:
+        _save_bid_hist()
+    except Exception as e:
+        log.warning("Failed to force-save bid history on shutdown: %s", e)
+
+
 def _compute_momentum(ticker: str, now: float, lookback_min: float = 2.0) -> float:
     """
     Compute price momentum in cents per minute from bid history.
