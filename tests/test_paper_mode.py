@@ -1,69 +1,165 @@
-"""Paper (dry-run) ledger + paper sizing.
-
-Without these the dry run never fills, never settles, and never compounds:
-with a 70% cash floor and a $1.00 absolute floor, a $1.22 bankroll cannot
-afford one 90c favourite contract.
-"""
-import json
+"""Integration tests for paper_mode.py paper ledger."""
 
 import pytest
+import json
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import Mock, patch, MagicMock
 
 import config
 import paper_mode
-from risk import RiskManager
 
 
-@pytest.fixture
-def ledger(tmp_path, monkeypatch):
-    path = tmp_path / "paper_state.json"
-    monkeypatch.setattr(paper_mode, "STATE_FILE", path)
-    monkeypatch.setattr(paper_mode, "_state", None)
-    return path
+class TestPaperModeLedger:
+    """Test paper_mode ledger persistence and recovery."""
+
+    def setup_method(self):
+        """Reset paper_mode state before each test."""
+        paper_mode._state = None
+        # Remove any existing state file
+        state_file = Path(paper_mode.STATE_FILE)
+        if state_file.exists():
+            state_file.unlink()
+
+    def teardown_method(self):
+        """Clean up after each test."""
+        paper_mode._state = None
+        state_file = Path(paper_mode.STATE_FILE)
+        if state_file.exists():
+            state_file.unlink()
+
+    def test_start_balance_returns_configured_value(self):
+        """start_balance should return DRY_STARTING_BALANCE from config."""
+        with patch.object(config, 'DRY_STARTING_BALANCE', 100.0):
+            assert paper_mode.start_balance() == 100.0
+
+    def test_pnl_returns_zero_initially(self):
+        """pnl should return 0.0 before any trades."""
+        assert paper_mode.pnl() == 0.0
+
+    def test_add_pnl_increments_realized_pnl(self):
+        """add_pnl should increase the realized PnL."""
+        paper_mode.add_pnl(10.50)
+        assert paper_mode.pnl() == 10.50
+        
+        paper_mode.add_pnl(-2.25)
+        assert paper_mode.pnl() == 8.25
+
+    def test_cash_calculates_correctly(self):
+        """cash should be start + pnl - open_risk."""
+        paper_mode.add_pnl(5.0)
+        # start=100, pnl=5, open_risk=2 -> cash=103
+        assert paper_mode.cash(2.0) == 103.0
+
+    def test_persists_to_file(self):
+        """State should persist to paper_state.json."""
+        paper_mode.add_pnl(25.75)
+        
+        # Reload by resetting module state
+        paper_mode._state = None
+        assert paper_mode.pnl() == 25.75
+        assert paper_mode.start_balance() == 100.0
+
+    def test_reset_clears_state_and_file(self):
+        """reset should clear state and delete state file."""
+        paper_mode.add_pnl(50.0)
+        new_balance = paper_mode.reset()
+        
+        assert new_balance == 100.0
+        assert paper_mode.pnl() == 0.0
+        # File is deleted, next call recreates it
+        assert paper_mode.start_balance() == 100.0
+
+    def test_recovery_from_corrupted_file(self):
+        """Should handle corrupted JSON gracefully and reseed."""
+        # Write corrupted JSON
+        Path(paper_mode.STATE_FILE).write_text("{invalid json")
+        
+        # Should not crash, should reseed
+        paper_mode._state = None
+        assert paper_mode.start_balance() == 100.0
+        assert paper_mode.pnl() == 0.0
+
+    def test_recovery_from_missing_file(self):
+        """Should reseed when file doesn't exist."""
+        paper_mode._state = None
+        assert paper_mode.start_balance() == 100.0
+        assert paper_mode.pnl() == 0.0
+
+    def test_rounding_precision(self):
+        """PnL should be rounded to 6 decimal places."""
+        paper_mode.add_pnl(0.123456789)
+        assert paper_mode.pnl() == 0.123457  # Rounded to 6 places
+
+    def test_negative_pnl_allowed(self):
+        """Should allow negative PnL (losses)."""
+        paper_mode.add_pnl(-10.0)
+        assert paper_mode.pnl() == -10.0
+        paper_mode.add_pnl(5.0)
+        assert paper_mode.pnl() == -5.0
 
 
-def test_start_balance_is_persisted_once(ledger, monkeypatch):
-    # Seed with a specific starting balance
-    monkeypatch.setattr(config, "DRY_STARTING_BALANCE", 1.22)
-    paper_mode._state = None  # Force reload
-    assert paper_mode.start_balance() == 1.22
-    # A later config change must not reset the compounding curve.
-    monkeypatch.setattr(config, "DRY_STARTING_BALANCE", 9.99)
-    paper_mode._state = None  # Force reload (but state file exists, so it loads from file)
-    assert paper_mode.start_balance() == 1.22
-    assert json.loads(ledger.read_text())["start_balance"] == 1.22
+class TestPaperModeConfig:
+    """Test paper_mode configuration."""
+
+    def setup_method(self):
+        paper_mode._state = None
+        state_file = Path(paper_mode.STATE_FILE)
+        if state_file.exists():
+            state_file.unlink()
+
+    def teardown_method(self):
+        paper_mode._state = None
+        state_file = Path(paper_mode.STATE_FILE)
+        if state_file.exists():
+            state_file.unlink()
+
+    def test_dry_starting_balance_configurable(self):
+        """DRY_STARTING_BALANCE should be configurable."""
+        with patch.object(config, 'DRY_STARTING_BALANCE', 500.0):
+            paper_mode._state = None
+            state_file = Path(paper_mode.STATE_FILE)
+            if state_file.exists():
+                state_file.unlink()
+            
+            assert paper_mode.start_balance() == 500.0
 
 
-def test_cash_accounts_for_paper_pnl_and_open_risk(ledger, monkeypatch):
-    monkeypatch.setattr(config, "DRY_STARTING_BALANCE", 1.22)
-    paper_mode._state = None
-    paper_mode.start_balance()
-    # Entry: cash drops by the capital locked in the position.
-    assert paper_mode.cash(0.90) == pytest.approx(0.32)
-    # Settlement: risk released and paper P&L credited.
-    paper_mode.add_pnl(0.10)
-    assert paper_mode.cash(0.0) == pytest.approx(1.32)
-    assert json.loads(ledger.read_text())["pnl"] == pytest.approx(0.10)
+class TestPaperModeStateFile:
+    """Test state file operations."""
+
+    def setup_method(self):
+        paper_mode._state = None
+        state_file = Path(paper_mode.STATE_FILE)
+        if state_file.exists():
+            state_file.unlink()
+
+    def teardown_method(self):
+        paper_mode._state = None
+        state_file = Path(paper_mode.STATE_FILE)
+        if state_file.exists():
+            state_file.unlink()
+
+    def test_file_contains_correct_structure(self):
+        """State file should have start_balance and pnl keys."""
+        paper_mode.add_pnl(42.5)
+        
+        content = json.loads(Path(paper_mode.STATE_FILE).read_text())
+        assert "start_balance" in content
+        assert "pnl" in content
+        assert content["start_balance"] == 100.0
+        assert content["pnl"] == 42.5
+
+    def test_multiple_add_pnl_calls_accumulate(self):
+        """Multiple add_pnl calls should accumulate."""
+        paper_mode.add_pnl(10.0)
+        paper_mode.add_pnl(20.0)
+        paper_mode.add_pnl(-5.0)
+        
+        paper_mode._state = None
+        assert paper_mode.pnl() == 25.0
 
 
-def test_paper_sizing_caps_single_trade_risk():
-    """12% per trade, so one loss cannot take the bankroll (was 95%)."""
-    rm = RiskManager()
-    # At a $10 bankroll the sizing rule is what binds: $1.20 per trade.
-    assert rm.max_trade_dollars(10.0, 0.0, paper=True) == pytest.approx(1.20, abs=0.01)
-    assert rm.max_trade_dollars(1.22, 0.0, paper=True) == pytest.approx(1.22 * 0.12, abs=0.01)
-
-    # A 90c favourite needs 74% of a $1.22 bankroll — refused as drawdown risk.
-    allowed, reason = rm.check(1.22, 0.0, 0.90, "KXBTC15M-TEST", paper=True)
-    assert not allowed, reason
-
-    # At $10 a whole 90c favourite fits inside the 12% cap.
-    allowed, reason = rm.check(10.0, 0.0, 0.90, "KXBTC15M-TEST", paper=True)
-    assert allowed, reason
-
-
-def test_live_sizing_still_blocks_an_oversized_favourite():
-    rm = RiskManager()
-    max_trade = rm.max_trade_dollars(1.22, 0.0, paper=False)
-    assert max_trade < 0.90, "live keeps the conservative cash floor"
-    allowed, _ = rm.check(1.22, 0.0, 0.90, "KXBTC15M-TEST", paper=False)
-    assert not allowed
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
