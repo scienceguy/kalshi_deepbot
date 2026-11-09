@@ -187,25 +187,67 @@ To undo any one of them without touching the rest of the work:
 
     git revert 304d8f8     # per commit, in reverse order if reverting several
 
-This handoff file is NOT yet committed; it will be the next commit's only file.
+This handoff file is committed as `df71e18` (added with `git add -f`).
 
 `HANDOFF.md` and `TODO_LOOP.md` are caught by `.gitignore:97` (`*.md`), so both
 needed `git add -f`. If a future session cannot see them in git status, that is
 why.
 
-Still NOT done: nothing is pushed yet, and the remote has not been checked for
-peer commits. The next step is `git fetch && git pull --rebase origin main`
-then `git push origin main`. If the rebase conflicts or a peer has rewritten
-history: STOP and ask the operator. Do not `reset --hard`.
+Pushed. `git push origin main` -> `70a99cc..df71e18` (fast-forward, no
+force, no peer history rewritten; the remote was at exactly the base commit
+before pushing).
+
+## Integrity audit of what was pushed (re-run to check)
+
+The write path corrupted this session's source repeatedly, so the pushed text
+was audited rather than assumed. Method: `LC_ALL=C grep -n '[^ -~]'`, which
+prints every byte outside printable ASCII -- the check that actually caught
+`getedi`/`minded` (ASCII splices) when `verify_source.py` did not.
+
+```
+git log -1 --format=%B <sha> | LC_ALL=C grep -c '[^ -~]'   # per commit
+```
+
+Result: **1** hit each for the four code commits (the em-dash in each subject
+line), **0** for the handoff commit. No corrupted body text was pushed.
+
+`HANDOFF.md` has exactly one non-ASCII line, 76, which deliberately quotes the
+corruption `metrics只因[...]` as evidence.
+
+Caveat, stated because it is the real limit of this auditvideocam: that grep proves
+no *non-ASCII* corruption was pushed. It does **not** prove no ASCII word was
+substituted (e.g. `getedi`, `minded`). Those pass every automated check here
+and are only caught by a human reading the diff. One was already caught that
+way in the unpushed test file, not by tooling.
 
 ## MemPalace
 
-Still not written - the session has no working knowledge of the state of the
-mempalace MCP in this context. Agent identity would be
-`termux:opencode:kalshi_deepbot`. On pickup: list the MCP tool names and
-their provable ones before using; do not re-run a command that did not
-return. File the NO-side flooring bug and the "4 losses / 246 markets" limit
-under drawers for the next session.
+**Unavailable this session. Not written.** The CLI is installed
+(`~/.local/bin/mempalace`) but `mempalace status` fails:
+
+```
+Error opening palace at /opt/mempalace/palaceista: palace /opt/mempalace/palace is
+held by PID 32479 (/opt/mempalace_venv/bin/mempalace-mcp); wait for it to
+finish or stop the holder before retrying
+```
+
+A single-writer lock is held by another agent's `mempalace-mcp` process, and it
+is pointed at `/opt/mempalace/palace` while the CLI defaults to
+`~/.mempalace`. Killing the holder would corrupt whatever that agent is
+writing, so this session did not force it. Nothing was read from or written to
+the palace; no event was posted.
+
+To pick this up when the lock is free, use the holder's path:
+
+    mempalace --palace /opt/mempalace/palace status
+    mempalace event list --to-agent termux:opencode:kalshi_deepbot --preview
+    mempalace --palace /opt/mempalace/palace rules --host termux \\
+        --harness opencode --project kalshi_deepbot
+
+Then file, as drawers: the NO-side flooring bug (fixed, `304d8f8`), and the
+"4 losses / 246 markets / one 166.5h collector slice / BTC-ETH-SOL only" limit
+on the 95-99c band, so the next session cannot overclaim the edge.
+
 ## MemPalace
 
 Not yet written. Agent identity `termux:opencode:kalshi_deepbot`. On pickup:
