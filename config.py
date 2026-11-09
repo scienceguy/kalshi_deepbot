@@ -206,10 +206,10 @@ AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", True)
 AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
 ORDER_TIME_IN_FORCE = "immediate_or_cancel"
 # Final-minute favourite taker band: 75-99c (pay the ask on the favourite)
-ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 90)
-ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 95)
-MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 95)
-MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 90)
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 85)
+ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 89)
+MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 89)
+MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 85)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 
 # NO *market data* format only: Kalshi returns NO prices directly (not
