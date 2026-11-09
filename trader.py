@@ -1146,6 +1146,8 @@ def cycle(client: KalshiClient):
                 "queuing for replay and clearing local state", t, waited, SETTLED_TIMEOUT_SECONDS
             )
             queue = _load_settlement_queue()
+            # Extract event_ticker from market data for idempotency key grouping
+            event_ticker = market.get("event_ticker", t) if market else t
             queue.append({
                 "order_id": order_id,
                 "payload": {
@@ -1156,6 +1158,7 @@ def cycle(client: KalshiClient):
                     "outcome_won": None,
                     "pnl_dollars": None,
                     "ticker": t,
+                    "event_ticker": event_ticker,
                     "side": side,
                     "contracts": contracts,
                     "entry_price": entry_price,
@@ -1316,6 +1319,7 @@ def cycle(client: KalshiClient):
             # No settlement data available — queue for retry without booking PnL.
             # Position stays in state.positions so it can be re-processed on retry.
             queue = _load_settlement_queue()
+            event_ticker = market.get("event_ticker", t) if market else t
             queue.append({
                 "order_id": order_id,
                 "payload": {
@@ -1326,6 +1330,7 @@ def cycle(client: KalshiClient):
                     "outcome_won": None,
                     "pnl_dollars": None,
                     "ticker": t,
+                    "event_ticker": event_ticker,
                     "side": side,
                     "contracts": contracts,
                     "entry_price": entry_price,
