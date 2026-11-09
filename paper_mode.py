@@ -31,6 +31,17 @@ STATE_FILE = Path(os.environ.get(
 
 _state = None
 
+LOCAL_DB_KEY = "paper_pnl_dollars"
+
+
+def _local_db():
+    """Lazy local_db client for redundant paper P&L backup."""
+    try:
+        from local_db import get_local_db
+        return get_local_db()
+    except Exception:
+        return None
+
 
 def _seed() -> float:
     """Starting paper bankroll: config.DRY_STARTING_BALANCE, else a default.
@@ -55,8 +66,20 @@ def _load() -> dict:
             "pnl": float(data.get("pnl", 0.0)),
         }
     except FileNotFoundError:
-        _state = {"start_balance": _seed(), "pnl": 0.0}
-        log.info("Paper ledger seeded at $%.2f", _state["start_balance"])
+        # Try recovering paper pnl from local_db backup before reseeding.
+        ldb = _local_db()
+        saved_pnl = None
+        if ldb is not None:
+            try:
+                saved_pnl = ldb.get_bot_state(LOCAL_DB_KEY)
+            except Exception:
+                pass
+        if saved_pnl is not None:
+            _state = {"start_balance": _seed(), "pnl": float(saved_pnl)}
+            log.info("Recovered paper pnl $%.2f from local_db backup", _state["pnl"])
+        else:
+            _state = {"start_balance": _seed(), "pnl": 0.0}
+            log.info("Paper ledger seeded at $%.2f", _state["start_balance"])
     except Exception as e:
         log.warning("Could not read %s (%s) — reseeding", STATE_FILE, e)
         _state = {"start_balance": _seed(), "pnl": 0.0}
@@ -86,6 +109,14 @@ def add_pnl(realized: float) -> None:
     data = _load()
     data["pnl"] = round(data["pnl"] + realized, 6)
     _save()
+    # Redundant backup: also persist paper pnl to local_db so a lost or
+    # corrupt paper_state.json can be recovered on restart.
+    ldb = _local_db()
+    if ldb is not None:
+        try:
+            ldb.set_bot_state(LOCAL_DB_KEY, str(data["pnl"]))
+        except Exception as e:
+            log.warning("Could not back up paper pnl to local_db: %s", e)
 
 
 def cash(open_risk: float) -> float:
