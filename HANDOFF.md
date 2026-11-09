@@ -6,8 +6,7 @@ from a file or a command this turn, with the command named beside it.
 
 Repo:  https://github.com/scienceguy/kalshi_deepbot   (private, main)
 Dir :  /data/data/com.termux/files/home/kalshi_deepbot
-HEAD:  4db7c05 "Should fix: HANDOFF.md - rewrite from verified state; correct the
-        stale balance claim"
+HEAD:  dedc68a "Nice-to-have: verify_source.py - --docs-only and --prose for markdown"
 
 ## CORRECTION to earlier handoffs (read this)
 
@@ -28,21 +27,22 @@ not prose.
 
 ## Verified state
 
-    git rev-list --count HEAD      -> 221
+    git rev-list --count HEAD      -> 230
     git status -sb                 -> ## main...origin/main   (clean, in sync)
     git remote get-url origin      -> https://github.com/scienceguy/kalshi_deepbot.git
-    python -m pytest tests/ -q     -> 254 passed
-    scripts/verify_source.py       -> all clean
+    python -m pytest tests/ -q     -> 263 passed
+    scripts/verify_source.py       -> all clean (rc 0; --all is CODE only)
+    scripts/verify_source.py --docs-only --prose -> advisory, rc 0
 
-Last seven commits:
+Last eight commits:
 
+    dedc68a Nice-to-have: verify_source.py - --docs-only and --prose for markdown
+    22401ca Must fix: ASSESSMENT.md - remove engine splices from money-path arithmetic
+    dd8904b Should fix: track the planning/audit docs; let the gate see markdown
+    00d1798 Should fix: verify_source.py - stop failing on emoji variation selectors
+    438135f Must fix: identity - agent is termux:opencode:kalshi_deepbot, not kalshi_superbot
     5773849 Should fix: HANDOFF.md - correct the stale pushed claims; record the integrity audit and the MemPalace lock
     df71e18 Nice to have: HANDOFF.md - torch for the next session at a verified green checkpoint
-    304d8f8 Must fix: gates.py - floor q on the YES-equivalent price; NO was credited a YES win rate
-    3cc30f2 Must fix: config.py - remove dead duplicate ENTRY_BAND_MIN; band is an override, not a law
-    aa14fbf Should fix: scripts/measure_edge.py - reproducible favourite edge measurement
-    4b21bc6 Nice to have: scripts/verify_source.py - fail on non-ASCII letters outside comments
-    70a99cc (peer) Should fix: ATR->sigma unit conversion ...
 
 Each is one `git revert <sha>` away from undone. The repo move is recorded at
 `~/tmp/opencode/origin_backup.txt` (temp dir: copy it somewhere permanent).
