@@ -220,13 +220,17 @@ def _track_bid(ticker: str, yes_bid_cents: int, now: float):
 def _maybe_save_bid_hist(now: float):
     global _bid_hist_dirty, _last_bid_hist_save
     # TTL-based cleanup: remove entries older than lookback + 1 hour
-    # Run periodically on save to avoid O(N) on every _track_bid call
-    ttl_cutoff = now - (config.STABILITY_LOOKBACK_MIN + 60) * 60
-    for ticker_key in list(_bid_hist.keys()):
-        h = _bid_hist[ticker_key]
-        h[:] = [(t, b) for t, b in h if t >= ttl_cutoff]
-        if not h:
-            _bid_hist.pop(ticker_key, None)
+    # Run periodically (every 50 calls) to avoid O(N) on every cycle
+    _maybe_save_bid_hist._cleanup_counter = getattr(_maybe_save_bid_hist, "_cleanup_counter", 0) + 1
+    total_entries = sum(len(h) for h in _bid_hist.values())
+    run_ttl_cleanup = (_maybe_save_bid_hist._cleanup_counter % 50 == 0) or (total_entries > 50000)
+    if run_ttl_cleanup:
+        ttl_cutoff = now - (config.STABILITY_LOOKBACK_MIN + 60) * 60
+        for ticker_key in list(_bid_hist.keys()):
+            h = _bid_hist[ticker_key]
+            h[:] = [(t, b) for t, b in h if t >= ttl_cutoff]
+            if not h:
+                _bid_hist.pop(ticker_key, None)
     if _bid_hist_dirty and (now - _last_bid_hist_save) >= _BID_HIST_SAVE_INTERVAL:
         try:
             _save_bid_hist()
