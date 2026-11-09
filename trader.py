@@ -1549,7 +1549,7 @@ def cycle(client: KalshiClient):
     # Shadow mode (default) logs would-block decisions without blocking.
     # Warm the feed caches concurrently first: a 9-series cycle would otherwise
     # serialise one spot + one klines fetch per candidate.
-    gates.prefetch(gates.asset_for(sig.market) for sig in signals)
+    gates.prefetch({gates.asset_for(sig.market) for sig in signals})
     gated = []
     for sig in signals:
         result = gates.evaluate_entry(
