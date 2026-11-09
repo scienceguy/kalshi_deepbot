@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import config
@@ -68,6 +69,9 @@ def _load() -> dict:
         _state = {
             "start_balance": float(data["start_balance"]),
             "pnl": float(data.get("pnl", 0.0)),
+            "settlement_pnl": float(data.get("settlement_pnl", 0.0)),
+            "exit_pnl": float(data.get("exit_pnl", 0.0)),
+            "ledger": data.get("ledger", []),  # list of {type, pnl, ts, reason}
         }
     except FileNotFoundError:
         # Try recovering paper pnl from local_db backup before reseeding.
@@ -80,14 +84,17 @@ def _load() -> dict:
             except Exception:
                 pass
         if saved_pnl is not None:
-            _state = {"start_balance": _seed(), "pnl": float(saved_pnl)}
+            _state = {"start_balance": _seed(), "pnl": float(saved_pnl),
+                      "settlement_pnl": 0.0, "exit_pnl": 0.0, "ledger": []}
             log.info("Recovered paper pnl $%.2f from local_db backup", _state["pnl"])
         else:
-            _state = {"start_balance": _seed(), "pnl": 0.0}
+            _state = {"start_balance": _seed(), "pnl": 0.0,
+                      "settlement_pnl": 0.0, "exit_pnl": 0.0, "ledger": []}
             log.info("Paper ledger seeded at $%.2f", _state["start_balance"])
     except Exception as e:
         log.warning("Could not read %s (%s) — reseeding", STATE_FILE, e)
-        _state = {"start_balance": _seed(), "pnl": 0.0}
+        _state = {"start_balance": _seed(), "pnl": 0.0,
+                  "settlement_pnl": 0.0, "exit_pnl": 0.0, "ledger": []}
     _save()
     return _state
 
@@ -109,10 +116,42 @@ def pnl() -> float:
     return _load()["pnl"]
 
 
-def add_pnl(realized: float) -> None:
-    """Credit realized paper P&L when a paper position settles."""
+def settlement_pnl() -> float:
+    """Total P&L from settlements only."""
+    return _load().get("settlement_pnl", 0.0)
+
+
+def exit_pnl() -> float:
+    """Total P&L from early exits only."""
+    return _load().get("exit_pnl", 0.0)
+
+
+def get_ledger() -> list:
+    """Return the full paper ledger (list of entries)."""
+    return _load().get("ledger", [])
+
+
+def add_pnl(realized: float, pnl_type: str = "settlement", reason: str = "") -> None:
+    """Credit realized paper P&L when a paper position settles or exits.
+
+    Args:
+        realized: P&L amount in dollars
+        pnl_type: "settlement" or "exit"
+        reason: Optional reason for the P&L (e.g., "take profit +20c")
+    """
     data = _load()
     data["pnl"] = round(data["pnl"] + realized, 6)
+    if pnl_type == "settlement":
+        data["settlement_pnl"] = round(data.get("settlement_pnl", 0.0) + realized, 6)
+    elif pnl_type == "exit":
+        data["exit_pnl"] = round(data.get("exit_pnl", 0.0) + realized, 6)
+    # Append to ledger for audit trail
+    data.setdefault("ledger", []).append({
+        "type": pnl_type,
+        "pnl": realized,
+        "ts": time.time(),
+        "reason": reason,
+    })
     _save()
     # Redundant backup: also persist paper pnl to local_db so a lost or
     # corrupt paper_state.json can be recovered on restart.
@@ -124,10 +163,15 @@ def add_pnl(realized: float) -> None:
             log.warning("Could not back up paper pnl to local_db: %s", e)
 
 
-def cash(open_risk: float) -> float:
-    """Paper cash: start + realized paper P&L - capital in open positions."""
+def cash(open_risk: float, mark_to_market_exposure: float = None) -> float:
+    """Paper cash: start + realized paper P&L - capital in open positions.
+
+    If `mark_to_market_exposure` is provided, it's used instead of `open_risk`
+    (cost-basis) for more accurate cash calculation during drawdown periods.
+    """
     data = _load()
-    return data["start_balance"] + data["pnl"] - open_risk
+    effective_risk = mark_to_market_exposure if mark_to_market_exposure is not None else open_risk
+    return data["start_balance"] + data["pnl"] - effective_risk
 
 
 def reset() -> float:

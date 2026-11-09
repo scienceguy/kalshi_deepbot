@@ -506,6 +506,12 @@ def validate_bands():
     Intended to be called by trader.py at startup alongside validate_credentials().
     """
     errors = []
+    if MIN_YES_PRICE_CENTS > MAX_YES_PRICE_CENTS:
+        errors.append(
+            f"MIN_YES_PRICE_CENTS ({MIN_YES_PRICE_CENTS}) > MAX_YES_PRICE_CENTS ({MAX_YES_PRICE_CENTS}). "
+            f"All prices will be rejected by the YES price band check. "
+            f"Set MIN_YES_PRICE_CENTS <= MAX_YES_PRICE_CENTS."
+        )
     if ENTRY_BAND_MIN > ENTRY_BAND_MAX:
         errors.append(
             f"ENTRY_BAND_MIN ({ENTRY_BAND_MIN}) > ENTRY_BAND_MAX ({ENTRY_BAND_MAX}). "
@@ -518,12 +524,10 @@ def validate_bands():
             f"MAX_NO_ENTRY_CENTS ({MAX_NO_ENTRY_CENTS}). "
             f"Set MIN_NO_ENTRY_CENTS <= MAX_NO_ENTRY_CENTS."
         )
-    if MIN_SKEW_CENTS > MIN_TREND_CENTS:
-        errors.append(
-            f"MIN_SKEW_CENTS ({MIN_SKEW_CENTS}) > MIN_TREND_CENTS ({MIN_TREND_CENTS}). "
-            f"Contradictory signal requirements — no price can satisfy both. "
-            f"Set MIN_SKEW_CENTS <= MIN_TREND_CENTS."
-        )
+    # Note: MIN_SKEW_CENTS and MIN_TREND_CENTS can be independently set.
+    # Skew = yes_bid - no_bid (spread between sides)
+    # Trend = yes_bid - 50 (distance from midpoint)
+    # Both can be satisfied simultaneously (e.g., yes_bid=88, no_bid=12 gives skew=76, trend=38)
     if ENTRY_WINDOW_START_MIN >= ENTRY_WINDOW_END_MIN:
         errors.append(
             f"ENTRY_WINDOW_START_MIN ({ENTRY_WINDOW_START_MIN}) >= "

@@ -66,6 +66,19 @@ class MarketInfo:
             return float(yb)
         return None
 
+    @property
+    def mid_no(self):
+        # Treat 0 as "no quote" (valid prices are 1-99)
+        nb = self.no_bid if self.no_bid else None
+        na = self.no_ask if self.no_ask else None
+        if nb is not None and na is not None:
+            return (nb + na) / 2
+        if na is not None:
+            return float(na)
+        if nb is not None:
+            return float(nb)
+        return None
+
     @staticmethod
     def compute_mid(yes_bid: int, yes_ask: int):
         """Shared mid-price helper: matches MarketInfo.mid_yes exactly."""

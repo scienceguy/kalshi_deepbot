@@ -129,6 +129,18 @@ def prefetch(assets) -> None:
     inside a 30s cycle. Failures land in the cache as None, so a dead feed
     still fails closed rather than costing another timeout per candidate.
     """
+    # Clean up old _last_decision entries (keep only tickers seen in this cycle)
+    try:
+        seen_tickers = set(assets)
+        if seen_tickers:
+            global _last_decision
+            _last_decision = {
+                k: v for k, v in _last_decision.items()
+                if k[0] in seen_tickers
+            }
+    except Exception:
+        pass
+
     unique = [a for a in dict.fromkeys(assets) if a]
     if len(unique) < 2:
         for asset in unique:

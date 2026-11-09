@@ -518,11 +518,10 @@ def _mark_to_market_exposure(positions, markets):
         no_pos = _pos_no(p)
         mkt_info = mkt_by_ticker.get(ticker)
         if mkt_info and (yes_pos or no_pos):
-            mid = mkt_info.mid_yes
             if yes_pos:
-                exposure += yes_pos * mid / 100.0
+                exposure += yes_pos * mkt_info.mid_yes / 100.0
             if no_pos:
-                exposure += no_pos * (100 - mid) / 100.0
+                exposure += no_pos * mkt_info.mid_no / 100.0
         else:
             exposure += _pos_cost_basis(p)
     return exposure
@@ -623,31 +622,83 @@ def _replay_settlement_queue(client=None):
     if not queue:
         return
     log.info("Replaying %d pending settlement(s) from queue", len(queue))
-    remaining = []
-    for i, entry in enumerate(queue):
+    
+    # Separate pending entries (need market fetch) from resolved ones
+    pending_entries = []
+    resolved_entries = []
+    remaining = []  # Initialize early for pending resolution loop
+    for entry in queue:
         payload = entry.get("payload", {})
+        if payload.get("pnl_dollars") is None:
+            pending_entries.append((entry, payload))
+        else:
+            resolved_entries.append((entry, payload))
+    
+    # Batch-fetch markets for pending entries concurrently
+    pending_results = {}
+    if client is not None and pending_entries:
+        tickers = [p.get("ticker", "") for _, p in pending_entries if p.get("ticker")]
+        if tickers:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            def fetch_market(t):
+                try:
+                    return t, client.get_market(t)
+                except Exception:
+                    return t, None
+            with ThreadPoolExecutor(max_workers=min(5, len(tickers))) as pool:
+                for future in as_completed([pool.submit(fetch_market, t) for t in tickers]):
+                    t, market = future.result()
+                    if market:
+                        pending_results[t] = market
+    
+    # Resolve pending entries using batched market data
+    resolved_pending = []
+    for entry, payload in pending_entries:
+        ticker = payload.get("ticker", "")
+        market = pending_results.get(ticker)
+        if market is None:
+            # Market not available — keep queued for next replay
+            remaining.append(entry)
+            continue
+        # Use the same resolution logic as _resolve_pending_settlement
+        side = payload.get("side", "")
+        contracts = payload.get("contracts", 0)
+        entry_price = payload.get("entry_price", 0)
+        if not ticker or side not in ("yes", "no") or not contracts:
+            remaining.append(entry)
+            continue
+        settled_yes = _settle_yes_cents(market)
+        if settled_yes is None:
+            remaining.append(entry)
+            continue
+        exit_price = (float(settled_yes) / 100.0 if side == "yes"
+                      else float(100 - settled_yes) / 100.0)
+        buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0, taker=False)
+        sell_revenue = fees.sell_cash_in(contracts, exit_price, taker=False)
+        resolved_payload = {
+            **payload,
+            "status": "settled",
+            "fill_price_cents": int(exit_price * 100),
+            "outcome_won": sell_revenue > buy_cost,
+            "pnl_dollars": sell_revenue - buy_cost,
+        }
+        resolved_pending.append((entry, resolved_payload))
+    
+    # Process all resolved entries (both originally resolved and newly resolved)
+    all_resolved = resolved_entries + resolved_pending
+    
+    for entry, payload in all_resolved:
         try:
-            # A pending entry has no PnL yet — resolve it from the exchange.
-            if payload.get("pnl_dollars") is None:
-                if client is None:
-                    remaining.append(entry)
-                    continue
-                resolved = _resolve_pending_settlement(client, payload)
-                if resolved is None:
-                    remaining.append(entry)
-                    continue
-                payload = resolved
-                entry["payload"] = payload
-
             pnl = payload.get("pnl_dollars")
             order_id = payload.get("order_id", "")
             ticker = payload.get("ticker", "")
+            
+            # Compute settle_key for all entries (needed for webhook even if duplicate)
+            event_id = ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
+            settle_key = f"settle:{event_id}:{order_id}"
 
             # Step 1: Apply to local pnl_ledger FIRST (idempotency key prevents double-count)
             if pnl is not None:
-                # Use event_ticker for idempotency key to group all strikes of one event
-                event_ticker = payload.get("event_ticker", ticker)
-                settle_key = f"settle:{event_ticker}:{order_id}"
                 applied = get_local_db().apply_settlement_pnl(
                     settle_key, ticker, pnl, fee_dollars=0.0, source="local")
                 # applied is True=new, False=duplicate, None=DB error.
@@ -660,7 +711,7 @@ def _replay_settlement_queue(client=None):
                     # settlement path at trader.py:1279-1281). Keeps paper_state.json
                     # and pnl_ledger in sync even when settlements are replayed.
                     if config.DRY_RUN:
-                        paper_mode.add_pnl(pnl_to_add)
+                        paper_mode.add_pnl(pnl_to_add, pnl_type="settlement", reason="settlement replay")
 
                     # Step 2: Write to Supabase
                     try:
@@ -685,7 +736,7 @@ def _replay_settlement_queue(client=None):
             n8n_client.execute_webhook("superbot-trade", {
                 **payload,
                 "settle_key": settle_key,
-                "already_recorded": applied is False,
+                "already_recorded": applied is False if pnl is not None else True,
             }, max_retries=1)
 
             # Step 4: Remove from queue ONLY after 1-3 succeed
@@ -1025,18 +1076,23 @@ def cycle(client: KalshiClient):
     except Exception:
         pass
 
+    # Cleanup LLM trade insights older than 24h to prevent memory leak
+    try:
+        now = time.time()
+        cutoff = now - 86400  # 24 hours
+        state.llm_trade_insights = {
+            k: v for k, v in state.llm_trade_insights.items()
+            if v.get("timestamp", 0) > cutoff
+        }
+    except Exception:
+        pass
+
     # Fetch balance
     try:
         cash = client.get_balance()
     except Exception as e:
         log.warning("Balance fetch failed: %s — treating cash as unknown", e)
         cash = None
-
-    # Dry runs place no real orders, so the exchange balance never moves. Swap
-    # in a paper balance derived from recorded settlement P&L so the dry run
-    # actually compounds and its sizing tracks the curve.
-    if config.DRY_RUN and cash is not None:
-        cash = paper_mode.cash(sum(state.position_risk.values()))
 
     # Fetch positions
     try:
@@ -1051,6 +1107,31 @@ def cycle(client: KalshiClient):
     if not markets:
         log.info("No tradeable markets.")
         return
+
+    # For dry-run: compute paper mark-to-market exposure from local paper positions
+    # and current market mids, so cash sizing reflects unrealized gains/losses.
+    paper_mtm_exposure = 0.0
+    if config.DRY_RUN and cash is not None:
+        mkt_by_ticker = {m.ticker: m for m in markets}
+        for ticker, pos in state.positions.items():
+            if not pos.get("paper"):
+                continue
+            side = pos.get("side", "")
+            contracts = pos.get("contracts", 0)
+            if contracts <= 0:
+                continue
+            mkt_info = mkt_by_ticker.get(ticker)
+            if mkt_info:
+                if side == "yes" and mkt_info.mid_yes is not None:
+                    paper_mtm_exposure += contracts * mkt_info.mid_yes / 100.0
+                elif side == "no" and mkt_info.mid_no is not None:
+                    paper_mtm_exposure += contracts * mkt_info.mid_no / 100.0
+                else:
+                    paper_mtm_exposure += pos.get("entry_price", 0) * contracts / 100.0
+            else:
+                paper_mtm_exposure += pos.get("entry_price", 0) * contracts / 100.0
+        # Use mark-to-market exposure for paper cash calculation
+        cash = paper_mode.cash(sum(state.position_risk.values()), paper_mtm_exposure)
 
     # Extended outage guard: if balance fetch failed, we can still process
     # settlements and evaluate signals, just skip order placement.
@@ -1122,9 +1203,24 @@ def cycle(client: KalshiClient):
     # Record any position that appeared on the exchange but is not in local
     # state — e.g. a resting limit order that filled since the last cycle.
     # Without this, filled maker orders are never settled and their PnL is lost.
+    # Load settlement queue to check for existing entries (prevents double-count
+    # on restart if crash occurred between fill and local recording).
+    settlement_queue = _load_settlement_queue()
+    queued_tickers = set()
+    for qentry in settlement_queue:
+        qpayload = qentry.get("payload", {})
+        qticker = qpayload.get("ticker", "")
+        if qticker:
+            queued_tickers.add(qticker)
+
     for p in positions:
         tk = p.get("ticker", "")
         if "15M" not in tk.upper() or tk in state.positions:
+            continue
+        # If there's a settlement queue entry for this ticker, skip adoption.
+        # The replay will handle the P&L using the queue entry's order_id.
+        if tk in queued_tickers:
+            log.info("Skipping adoption of %s — settlement queue entry exists", tk)
             continue
         yes_pos = _pos_yes(p)
         no_pos = _pos_no(p)
@@ -1205,7 +1301,8 @@ def cycle(client: KalshiClient):
                 "queuing for replay and clearing local state", t, waited, SETTLED_TIMEOUT_SECONDS
             )
             queue = _load_settlement_queue()
-            # Use event_ticker already extracted above (or t as fallback)
+            # Use canonical event_id derived from ticker for consistent idempotency key
+            event_id = t.rsplit("-", 1)[0] if "-" in t else t
             queue.append({
                 "order_id": order_id,
                 "payload": {
@@ -1216,7 +1313,7 @@ def cycle(client: KalshiClient):
                     "outcome_won": None,
                     "pnl_dollars": None,
                     "ticker": t,
-                    "event_ticker": event_ticker,
+                    "event_ticker": event_id,
                     "side": side,
                     "contracts": contracts,
                     "entry_price": entry_price,
@@ -1280,11 +1377,12 @@ def cycle(client: KalshiClient):
                     log.warning("Failed to write markout log for %s", t)
 
             # Record settlement P&L idempotently — use idempotency key so replays
-            # after a crash can't double-count. Key is "settle:<event_ticker>:<order_id>".
-            # Use event_ticker from market data (groups all strikes of one event)
-            # to avoid cross-strike collisions within the same event.
-            event_ticker = market.get("event_ticker", t)
-            settle_key = f"settle:{event_ticker}:{order_id}"
+            # after a crash can't double-count. Key is "settle:<event_id>:<order_id>".
+            # Derive canonical event_id from ticker (strip strike suffix) so all
+            # strikes of the same event share the same idempotency namespace.
+            # Kalshi tickers: KXBTC15M-26NOV090645-45 -> event_id = KXBTC15M-26NOV090645
+            event_id = t.rsplit("-", 1)[0] if "-" in t else t
+            settle_key = f"settle:{event_id}:{order_id}"
             pnl_to_add = 0.0
             try:
                 applied = get_local_db().apply_settlement_pnl(
@@ -1711,6 +1809,7 @@ def cycle(client: KalshiClient):
             cash, current_exposure,
             resting_orders_value=sum(state.resting_value.values()),
             paper=config.DRY_RUN,
+            mark_to_market_exposure=mark_to_market_exposure,
         )
 
         total_value = cash + current_exposure
@@ -1724,6 +1823,7 @@ def cycle(client: KalshiClient):
 
         oid = (resp.get("order") or {}).get("order_id") or resp.get("order_id", "")
         if oid:
+            placed += 1
             # Track reserved cash for this resting order so intra-cycle cash
             # tracking doesn't overspend on orders already placed this cycle.
             # NOTE: Do NOT decrement local `cash` here — max_trade_dollars()

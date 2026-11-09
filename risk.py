@@ -136,7 +136,8 @@ class RiskManager:
 
     def max_trade_dollars(self, cash: float, exposure: float,
                           resting_orders_value: float = 0.0,
-                          paper: bool = False) -> float:
+                          paper: bool = False,
+                          mark_to_market_exposure: float = None) -> float:
         """
         Maximum we can spend on one trade right now.
         Returns 0.0 if no trades should be placed.
@@ -144,6 +145,10 @@ class RiskManager:
         paper=True uses the dry-run knobs (see config.PAPER_*): a paper run
         must be able to buy one 75-95c favourite contract or it never trades
         and never compounds.
+
+        If mark_to_market_exposure is provided, it's used for the exposure
+        ceiling check (more accurate than cost-basis). The cost-basis exposure
+        is still used for per-trade cap calculations which are cash-based.
         """
         if self.state.halted:
             return 0.0
@@ -162,15 +167,16 @@ class RiskManager:
                        else config.EXPOSURE_CEILING_PCT)
         per_trade_pct = config.PAPER_PER_TRADE_PCT if paper else config.PER_TRADE_PCT
 
-        # Exposure room under ceiling
-        exposure_room = max(0.0, portfolio * ceiling_pct - exposure)
+        # Exposure room under ceiling — use mark-to-market if available for accuracy
+        effective_exposure = mark_to_market_exposure if mark_to_market_exposure is not None else exposure
+        exposure_room = max(0.0, portfolio * ceiling_pct - effective_exposure)
 
         # Cash room while keeping floor — subtract resting orders so we don't
         # double-spend cash already committed to open limit orders.
         floor_needed = max(min_cash, portfolio * floor_pct)
         cash_room = max(0.0, cash - resting_orders_value - floor_needed)
 
-        # Per-trade cap
+        # Per-trade cap (based on cash, not exposure)
         per_trade_cap = cash * per_trade_pct
 
         return min(exposure_room, cash_room, per_trade_cap, config.MAX_TRADE_DOLLARS)

@@ -475,18 +475,29 @@ class SupabaseClient:
         """Test Supabase connectivity and auth.
 
         Returns True if Supabase is reachable and the service key is valid,
-        even if the signals table doesn't exist yet (schema may need setup).
-        Returns False only on auth failure (401/403) or connection error.
+        AND the required tables exist. Returns False on auth failure (401/403),
+        table missing (PGRST205), or connection error.
         """
         url = f"{self.url}/rest/v1/signals?select=*&limit=1"
         try:
             resp = self.session.get(url, headers=self._headers(), timeout=(5, 10))
-            if resp.status_code in (200, 404):
-                # 200 = table exists; 404 = table missing but auth is valid
+            if resp.status_code == 200:
                 return True
             if resp.status_code in (401, 403):
                 log.warning("Supabase health check: HTTP %s — service key invalid or revoked", resp.status_code)
                 return False
+            if resp.status_code == 404:
+                # Check if it's PGRST205 (table doesn't exist) vs other 404
+                try:
+                    error_data = resp.json()
+                    if error_data.get("code") == "PGRST205":
+                        log.warning("Supabase health check: table 'signals' does not exist (PGRST205)")
+                        return False
+                except Exception:
+                    pass
+                # Other 404 might be a different issue, treat as reachable
+                log.warning("Supabase health check: HTTP 404 — unexpected 404")
+                return True
             log.warning("Supabase health check: HTTP %s — unexpected response", resp.status_code)
             return True  # reachable, assume auth OK
         except Exception as e:

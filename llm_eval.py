@@ -154,7 +154,9 @@ LAYERS = [
 
 # ── Circuit breaker for failing LLM layers ──
 CIRCUIT_BREAKER_THRESHOLD = 3   # consecutive failures before skipping a layer
-CIRCUIT_BREAKER_COOLDOWN = 60.0  # seconds to skip a layer after threshold
+# Cooldown should be <= LLM_EVAL_DEADLINE_SECONDS so a skipped layer can
+# retry on the next cycle. Default 25s.
+CIRCUIT_BREAKER_COOLDOWN = 25.0
 _layer_failures: dict[str, int] = {}
 _layer_skip_until: dict[str, float] = {}
 
@@ -308,10 +310,17 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
             if deadline and time.time() >= deadline:
                 log.debug("Layer %s deadline reached during retries", layer["name"])
                 return None
+            # Use remaining deadline as request timeout to prevent a single slow
+            # request from blowing the overall deadline
+            req_timeout = REQUEST_TIMEOUT
+            if deadline:
+                remaining = deadline - time.time()
+                if remaining < req_timeout:
+                    req_timeout = max(1, int(remaining))
             try:
                 resp = requests.post(
                     chat_url, headers=headers, json=payload,
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=req_timeout,
                 )
                 if resp.status_code == 429:
                     wait = float(resp.headers.get("Retry-After", "1"))

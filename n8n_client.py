@@ -12,7 +12,9 @@ All endpoints live under http://127.0.0.1:5678/api/v1/
 
 import logging
 import os
+import queue
 import stat
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -30,6 +32,39 @@ DEFAULT_BASE_URL = "http://127.0.0.1:5678"
 # Webhook timeout must be less than CYCLE_TIMEOUT_SECONDS so a webhook
 # can't block a full cycle. Default: cycle timeout minus 5s margin.
 DEFAULT_WEBHOOK_TIMEOUT = max(1, config.CYCLE_TIMEOUT_SECONDS - 5)
+
+# Non-blocking webhook queue — fire-and-forget to avoid stalling the cycle
+_webhook_queue: "queue.Queue[tuple]" = queue.Queue()
+_webhook_worker_started = False
+_webhook_worker_lock = threading.Lock()
+
+
+def _webhook_worker():
+    """Background worker that processes webhook queue."""
+    while True:
+        try:
+            item = _webhook_queue.get(timeout=1.0)
+            if item is None:  # Shutdown signal
+                break
+            client, webhook_path, data, method, timeout, max_retries = item
+            try:
+                client._execute_webhook_sync(webhook_path, data, method, timeout, max_retries)
+            except Exception as e:
+                log.warning("Background webhook %s failed: %s", webhook_path, e)
+        except queue.Empty:
+            continue
+        except Exception as e:
+            log.error("Webhook worker error: %s", e)
+
+
+def _start_webhook_worker():
+    """Start the background webhook worker thread."""
+    global _webhook_worker_started
+    with _webhook_worker_lock:
+        if not _webhook_worker_started:
+            thread = threading.Thread(target=_webhook_worker, daemon=True, name="n8n-webhook-worker")
+            thread.start()
+            _webhook_worker_started = True
 
 
 def load_api_key() -> Optional[str]:
@@ -193,10 +228,10 @@ class N8nClient:
 
     # ── Webhooks ───────────────────────────────────────────────────────────
 
-    def execute_webhook(self, webhook_path: str, data: Dict[str, Any],
-                        method: str = "POST", timeout: int = DEFAULT_WEBHOOK_TIMEOUT,
-                        max_retries: int = 3) -> Dict[str, Any]:
-        """Execute a webhook by path. Returns the webhook response.
+    def _execute_webhook_sync(self, webhook_path: str, data: Dict[str, Any],
+                              method: str = "POST", timeout: int = DEFAULT_WEBHOOK_TIMEOUT,
+                              max_retries: int = 3) -> Dict[str, Any]:
+        """Execute a webhook by path synchronously. Returns the webhook response.
 
         Retries on 5xx (server-side, transient) errors with 2-second backoff.
         Also retries on connection errors and timeouts.
@@ -248,6 +283,23 @@ class N8nClient:
                 log.error("Webhook %s %s failed: %s", method, webhook_path, e)
                 raise
         raise last_err
+
+    def execute_webhook(self, webhook_path: str, data: Dict[str, Any],
+                        method: str = "POST", timeout: int = DEFAULT_WEBHOOK_TIMEOUT,
+                        max_retries: int = 3, fire_and_forget: bool = True) -> Dict[str, Any]:
+        """Execute a webhook by path.
+
+        By default (fire_and_forget=True), queues the webhook for background
+        execution and returns immediately with an empty dict — the cycle does
+        not block waiting for n8n. Set fire_and_forget=False for synchronous
+        execution (e.g., health checks where we need the response).
+        """
+        if fire_and_forget:
+            _start_webhook_worker()
+            _webhook_queue.put((self, webhook_path, data, method, timeout, max_retries))
+            return {}
+        else:
+            return self._execute_webhook_sync(webhook_path, data, method, timeout, max_retries)
 
     # ── SuperBot convenience methods ───────────────────────────────────────
 

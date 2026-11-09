@@ -327,6 +327,15 @@ class KalshiClient:
         if cached and now - cached[0] < 30:
             return cached[1]
 
+        # Periodic cleanup: remove expired entries (older than 60s)
+        # This prevents unbounded growth if different keys are queried over time
+        try:
+            expired = [k for k, v in self._markets_cache.items() if now - v[0] > 60]
+            for k in expired:
+                del self._markets_cache[k]
+        except Exception:
+            pass
+
         params = {"status": status, "limit": limit}
         if series_ticker:
             params["series_ticker"] = series_ticker

@@ -48,7 +48,7 @@ class TestExecuteWebhook:
     """Tests for execute_webhook method."""
 
     def test_execute_webhook_success(self, monkeypatch):
-        """execute_webhook returns parsed JSON response."""
+        """execute_webhook returns parsed JSON response (sync mode)."""
         client = N8nClient(api_key="test_key")
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"status": "ok"}
@@ -56,11 +56,11 @@ class TestExecuteWebhook:
         mock_resp.content = b'{"status": "ok"}'
 
         with patch.object(client.session, "request", return_value=mock_resp):
-            result = client.execute_webhook("superbot-trade", {"action": "settlement"})
+            result = client.execute_webhook("superbot-trade", {"action": "settlement"}, fire_and_forget=False)
             assert result == {"status": "ok"}
 
     def test_execute_webhook_raises_on_error(self, monkeypatch):
-        """execute_webhook raises exception on non-2xx response."""
+        """execute_webhook raises exception on non-2xx response (sync mode)."""
         client = N8nClient(api_key="test_key")
         mock_resp = MagicMock()
         mock_resp.status_code = 500
@@ -68,21 +68,21 @@ class TestExecuteWebhook:
 
         with patch.object(client.session, "request", return_value=mock_resp):
             with pytest.raises(Exception):
-                client.execute_webhook("superbot-trade", {"action": "settlement"})
+                client.execute_webhook("superbot-trade", {"action": "settlement"}, fire_and_forget=False)
 
     def test_execute_webhook_empty_response(self, monkeypatch):
-        """execute_webhook returns empty dict when response has no content."""
+        """execute_webhook returns empty dict when response has no content (sync mode)."""
         client = N8nClient(api_key="test_key")
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.content = b""
 
         with patch.object(client.session, "request", return_value=mock_resp):
-            result = client.execute_webhook("superbot-trade", {"action": "settlement"})
+            result = client.execute_webhook("superbot-trade", {"action": "settlement"}, fire_and_forget=False)
             assert result == {}
 
     def test_execute_webhook_retries_on_5xx(self, monkeypatch):
-        """execute_webhook retries on 5xx and returns the successful response."""
+        """execute_webhook retries on 5xx and returns the successful response (sync mode)."""
         import requests
         client = N8nClient(api_key="test_key")
         fail_resp = MagicMock()
@@ -96,12 +96,12 @@ class TestExecuteWebhook:
         ok_resp.content = b'{"status": "ok"}'
 
         with patch.object(client.session, "request", side_effect=[fail_resp, ok_resp]) as mock_req:
-            result = client.execute_webhook("superbot-trade", {"action": "settlement"})
+            result = client.execute_webhook("superbot-trade", {"action": "settlement"}, fire_and_forget=False)
             assert result == {"status": "ok"}
             assert mock_req.call_count == 2
 
     def test_execute_webhook_no_retry_on_4xx(self, monkeypatch):
-        """execute_webhook does not retry on 4xx client errors."""
+        """execute_webhook does not retry on 4xx client errors (sync mode)."""
         import requests
         client = N8nClient(api_key="test_key")
         bad_resp = MagicMock()
@@ -112,8 +112,25 @@ class TestExecuteWebhook:
 
         with patch.object(client.session, "request", return_value=bad_resp) as mock_req:
             with pytest.raises(Exception):
-                client.execute_webhook("superbot-trade", {"action": "settlement"})
+                client.execute_webhook("superbot-trade", {"action": "settlement"}, fire_and_forget=False)
             assert mock_req.call_count == 1
+
+    def test_execute_webhook_fire_and_forget_returns_immediately(self, monkeypatch):
+        """execute_webhook with fire_and_forget=True returns immediately without waiting."""
+        import queue
+        from n8n_client import _webhook_queue
+        client = N8nClient(api_key="test_key")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = b'{"status": "ok"}'
+
+        with patch.object(client.session, "request", return_value=mock_resp):
+            result = client.execute_webhook("superbot-trade", {"action": "settlement"}, fire_and_forget=True)
+            assert result == {}
+            # The webhook should be queued
+            assert not _webhook_queue.empty()
+            # Drain the queue to avoid affecting other tests
+            _webhook_queue.get_nowait()
 
 
 class TestRunBacktest:
