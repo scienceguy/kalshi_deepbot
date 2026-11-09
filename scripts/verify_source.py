@@ -94,7 +94,12 @@ def main():
     if args.all:
         out = subprocess.run(["git", "ls-files", "*.py"], capture_output=True,
                              text=True, check=True).stdout
-        paths = [f for f in out.split()
+        # Tracked docs are checked too: a plan or handoff is where a stale or
+        # spliced claim does the most damage, because it is trusted instead of
+        # re-read. Docs were the one file class this gate could not see.
+        docs = subprocess.run(["git", "ls-files", "*.md"], capture_output=True,
+                              text=True, check=True).stdout
+        paths = [f for f in (out + docs).split()
                  if not any(p in SKIP_DIRS for p in pathlib.Path(f).parts)]
     else:
         paths = args.files

@@ -97,6 +97,22 @@ data/crossvenue/
 *.md
 !README.md
 !AGENTS.md
+# Planning/audit docs: tracked deliberately. They were invisible to git AND to
+# the corruption scan, and kept being lost to worktree cleanups.
+!COMPREHENSIVE_TODO.md
+!COMPOUNDING_TODO.md
+!ASSESSMENT.md
+!RESEARCH_PREDICTIVE_MODELS.md
+!STRATEGY_RESEARCH.md
+!KALSHI_API_RESEARCH.md
+!POSITION_RECONCILIATION_RESEARCH.md
+!TROUBLESHOOTING_RESEARCH.md
+!MEMPALACE_GUIDE.md
+!TOOL_AWARENESS_GUIDE.md
+!PONYTAIL_AUDIT.md
+!HANDOFF.md
+# A blanket `!*.md` would sweep unrelated new notes onto the private remote.
+# Add each doc's name here when it earns tracking.
 SUMMARY_README
 settled_since.json
 .continuity/
