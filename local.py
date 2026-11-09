@@ -11,11 +11,13 @@ _STORE = {}
 CHECKPOINT_ENTITY = "agent_continuity_checkpoint"
 
 _MP = "/data/data/com.termux/files/home/.local/bin/mempalace"
+_MP_TMP = "/data/data/com.termux/files/usr/tmp/opencode"
 
 def _mp(*args):
     import shlex
     quoted = [shlex.quote(a) for a in args]
-    cmd = "cd /tmp && " + _MP + " " + " ".join(quoted)
+    # /tmp is NOT writable on this Termux/proot setup — use the approved temp dir.
+    cmd = "cd " + _MP_TMP + " && " + _MP + " " + " ".join(quoted)
     return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=30)
 
 def _serialize(val):
@@ -76,12 +78,22 @@ def resume() -> dict | None:
         "logstream", "list",
         "--topic", "agent-checkpoint",
         "--to-agent", "termux:opencode:kalshi_superbot",
+        "--json",
+        "--limit", "5",
     )
     if r.returncode != 0 or not r.stdout:
         return None
-    for line in r.stdout.strip().split("\n"):
-        if "CHECKPOINT_ENTITY:" in line:
-            payload = line.split("CHECKPOINT_ENTITY:", 1)[1]
+    try:
+        data = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        log.warning("resume: could not parse logstream JSON output")
+        return None
+    events = data.get("events", [])
+    # Events are returned oldest-first by default; take the last (newest) valid checkpoint
+    for event in reversed(events):
+        body = event.get("body", "")
+        if "CHECKPOINT_ENTITY:" in body:
+            payload = body.split("CHECKPOINT_ENTITY:", 1)[1]
             state = _deserialize_payload(payload)
             for k, v in state.items():
                 _STORE_set("_" + k, v)
@@ -249,29 +261,33 @@ def _save_self_model(model: dict) -> None:
 def get_peer_awareness() -> dict:
     checkpoint_exists = resume() is not None
     peers_working = []
-    import re
-    r = _mp("logstream", "list", "--room", "continuity")
+    r = _mp("logstream", "list", "--room", "continuity", "--json", "--limit", "20")
     if r.returncode == 0 and r.stdout:
-        for line in r.stdout.strip().split("\n"):
-            if not line.strip():
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            data = {"events": []}
+        for event in data.get("events", []):
+            ident = event.get("from_agent", "")
+            if not ident or ident == "termux:opencode:kalshi_superbot":
                 continue
-            identities = re.findall(r"termux:opencode:[^\s>]+", r.stdout)
-            for ident in identities:
-                if ident == "termux:opencode:kalshi_superbot":
-                    continue
-                tm = re.search(r"topic=([^\s]+)", r.stdout)
-                topic = tm.group(1) if tm else "unknown"
-                peers_working.append((ident, topic, "working"))
+            topic = event.get("topic", "unknown")
+            peers_working.append((ident, topic, "working"))
     recent_broadcasts = []
     try:
-        r = _mp("logstream", "list", "--topic", "cross-project-awareness", "--to-agent", "termux:opencode:kalshi_superbot")
+        r = _mp("logstream", "list", "--topic", "cross-project-awareness",
+                "--to-agent", "termux:opencode:kalshi_superbot", "--json", "--limit", "3")
         if r.returncode == 0 and r.stdout:
-            for line in r.stdout.strip().split("\n")[:3]:
-                recent_broadcasts.append(line.strip())
+            try:
+                data = json.loads(r.stdout)
+            except json.JSONDecodeError:
+                data = {"events": []}
+            for event in data.get("events", [])[:3]:
+                recent_broadcasts.append(event.get("body", "").strip())
     except Exception:
         pass
     return {
-        "self_status": "working" if resume() else "between_sessions",
+        "self_status": "working" if checkpoint_exists else "between_sessions",
         "peers_working": peers_working,
         "recent_broadcasts": recent_broadcasts,
         "continuity_active": checkpoint_exists,
