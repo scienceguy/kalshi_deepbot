@@ -17,13 +17,13 @@ Read-only. No orders are placed anywhere.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import requests
 
 log = logging.getLogger("crossvenue")
@@ -231,30 +231,52 @@ def _strike_from_pm(market: dict) -> Optional[float]:
     return float(m.group(1)) if m else None
 
 
-def to_cdf(ladder: Ladder) -> Optional[np.ndarray]:
+def to_cdf(ladder: Ladder):
     """Monotone interpolation of P(price > strike) over the ladder's strike range.
 
-    Returns (n,2) array of [strike, probability], or None if too thin. Quotes are
-    cleaned to be non-increasing: a stale rung must not claim a higher chance of
-    clearing a higher strike.
+    Returns list of (strike, probability) tuples, or None if too thin.
+    Quotes are cleaned to be non-increasing: a stale rung must not claim a
+    higher chance of clearing a higher strike.
     """
     rungs = ladder.sorted_rungs()
     if len(rungs) < 3:
         return None
-    strikes = np.array([r.strike for r in rungs], dtype=float)
-    probs = np.array([r.mid for r in rungs], dtype=float)
-    probs = np.minimum.accumulate(probs)  # P(above X) is non-increasing in X
-    probs = np.clip(probs, 1e-4, 1 - 1e-4)
-    return np.column_stack([strikes, probs])
+    strikes = [r.strike for r in rungs]
+    probs = [r.mid for r in rungs]
+    # Make non-increasing (P(above X) decreases as X increases)
+    for i in range(1, len(probs)):
+        if probs[i] > probs[i - 1]:
+            probs[i] = probs[i - 1]
+    # Clip to valid probability range
+    eps = 1e-4
+    probs = [max(eps, min(1 - eps, p)) for p in probs]
+    return list(zip(strikes, probs))
 
 
-def compare(kalshi: Ladder, poly: Ladder) -> List[Deviation]:
+def _interp(x, xp, fp):
+    """Linear interpolation of fp at x given sorted xp. Pure stdlib."""
+    import bisect
+    i = bisect.bisect_left(xp, x)
+    if i == 0:
+        return fp[0]
+    if i == len(xp):
+        return fp[-1]
+    x0, x1 = xp[i - 1], xp[i]
+    f0, f1 = fp[i - 1], fp[i]
+    if x1 == x0:
+        return f0
+    return f0 + (f1 - f0) * (x - x0) / (x1 - x0)
+
+
+def compare(kalshi: Ladder, poly: Ladder):
     """Deviation at every Kalshi strike, by interpolating the Polymarket CDF."""
     k = to_cdf(kalshi)
     p = to_cdf(poly)
     if k is None or p is None:
         return []
-    lo, hi = p[0, 0], p[-1, 0]
+    poly_strikes = [pt[0] for pt in p]
+    poly_probs = [pt[1] for pt in p]
+    lo, hi = poly_strikes[0], poly_strikes[-1]
     out = []
     for strike, kalshi_mid in k:
         if not (lo <= strike <= hi):

@@ -47,7 +47,14 @@ import numpy as np
 import crossvenue as cv
 import binance_feed
 
-TAKER_FEE_RATE = 0.07  # matches fees.FEE_RATE
+# Kalshi charges the taker `FEE_RATE * p * (1-p)` per contract. A taker who crosses
+# the spread pays this on both legs. Import canonical rate from fees.py.
+try:
+    from fees import FEE_RATE
+except Exception:
+    FEE_RATE = 0.07  # fallback if fees not available
+
+TAKER_FEE_RATE = FEE_RATE  # alias for internal use
 
 # How much of the taker-fee barrier to demand as discount. 1.0 means "only trade
 # where being filled implies the taker had no edge beyond their own fee".
