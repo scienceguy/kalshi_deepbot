@@ -11,9 +11,8 @@ restarting the bot does not reset the curve. Paper P&L is tracked here rather
 than reusing `session_pnl` so live settlements from an earlier session can
 never leak into the paper curve.
 
-Paper fills are modelled in trader._manage_paper_fills(): a parked bid fills
-only when that side's ask crosses it, so adverse selection is reflected rather
-than assumed away. Exits still fill at the quoted price.
+Paper fills are modelled in trader.cycle(): a dry run assumes an immediate
+taker fill, so it does not model adverse selection.
 """
 import json
 import logging
@@ -168,10 +167,13 @@ def cash(open_risk: float, mark_to_market_exposure: float = None) -> float:
 
     If `mark_to_market_exposure` is provided, it's used instead of `open_risk`
     (cost-basis) for more accurate cash calculation during drawdown periods.
+    Never negative: a fee/rounding slip below zero would otherwise let a dry
+    run trade on phantom cash, inflating the compounding curve.
     """
     data = _load()
     effective_risk = mark_to_market_exposure if mark_to_market_exposure is not None else open_risk
-    return data["start_balance"] + data["pnl"] - effective_risk
+    value = data["start_balance"] + data["pnl"] - effective_risk
+    return value if value > 0 else 0.0
 
 
 def reset() -> float:

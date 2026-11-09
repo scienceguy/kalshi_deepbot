@@ -170,12 +170,8 @@ class BotState:
             "reserved_cash": 0.0,
             "entered": set(),
         }
-        self.dry_cash: float | None = None
-        self.dry_book: dict = {}
-        self.active_risk: float = 0.0
         self.position_risk: dict = {}
         self.llm_trade_insights: dict = {}
-        self.paper_resting: dict = {}  # oid -> {"sig": sig, "placed_at": ts}
         self.live_resting_orders: list = []  # raw resting orders seen this cycle
         self.last_order_time: float = 0.0
         self.orders_today: int = 0
@@ -860,42 +856,6 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
         log.warning("Failed to record exit for %s via n8n webhook (not queued — exits are not settlements)", ticker)
 
 
-def _manage_paper_fills(markets, client):
-    """Fill paper maker orders only when the book actually crosses them.
-
-    A posted bid does not fill because we posted it. It fills when someone
-    sells into it, which shows up as that side's ask coming down to our price.
-    Filling at placement overstated the dry run's trade count and compounding
-    speed, which is the number we tune against.
-    """
-    by_ticker = {m.ticker: m for m in markets}
-    now = time.time()
-    for oid, rec in list(state.paper_resting.items()):
-        sig = rec["sig"]
-        ticker = sig.market.ticker
-        m = by_ticker.get(ticker)
-        if m is None:
-            # Window closed (or market no longer returned) — the order died with it.
-            state.paper_resting.pop(oid, None)
-            state.resting_value.pop(oid, None)
-            state.resting_tickers.discard(ticker)
-            continue
-        ask = m.yes_ask if sig.side == "yes" else m.no_ask
-        if ask and ask <= sig.entry_price:
-            state._record_filled_order(
-                client, sig, oid, sig.contracts, "executed", 0.0, state.cycles
-            )
-            state.paper_resting.pop(oid, None)
-            state.resting_tickers.discard(ticker)
-            client.invalidate_markets(series_ticker=sig.market.series)
-        elif now - rec["placed_at"] > config.STALE_ORDER_MINS * 60:
-            state.paper_resting.pop(oid, None)
-            state.resting_value.pop(oid, None)
-            state.resting_tickers.discard(ticker)
-            log.info("Paper order %s unfilled after %.0fmin — cancelled",
-                     ticker, config.STALE_ORDER_MINS)
-
-
 def _already_ordered(ticker: str) -> bool:
     """True when an entry order on this ticker is already resting.
 
@@ -923,11 +883,6 @@ def clear_resting_orders(client, ticker: str):
                 log.debug("Could not cancel resting order %s: %s", oid, e)
         state.resting_value.pop(oid, None)
         state.live_resting_orders.remove(o)
-    # A parked paper entry on this ticker must go too, or it would fill after exit.
-    for oid, rec in list(state.paper_resting.items()):
-        if rec["sig"].market.ticker == ticker:
-            state.paper_resting.pop(oid, None)
-            state.resting_value.pop(oid, None)
     state.resting_tickers.discard(ticker)
 
 
@@ -1153,10 +1108,9 @@ def cycle(client: KalshiClient):
     state.live_resting_orders = resting_orders or []
     try:
         now = time.time()
-        # In a dry run the exchange has no orders, so the live set would be
-        # empty and the prune below would erase every paper reservation each
-        # cycle — letting the bot park more bids than it has cash for.
-        live_ids = set(state.paper_resting) if config.DRY_RUN else set()
+        # A dry run simulates an immediate taker fill, so no order ever rests:
+        # every reservation is released in the same cycle it is made.
+        live_ids = set()
         for o in resting_orders:
             oid = o.get("order_id") or o.get("id")
             if not oid:
@@ -1169,7 +1123,14 @@ def cycle(client: KalshiClient):
                 continue
             # New schema quotes the order's yes/no price in dollars directly.
             ticker = o.get("ticker", "")
-            state.resting_value[oid] = {"dollars": count * price_dollars, "ticker": ticker}
+            # Reserve only the unfilled remainder. A partially-filled maker
+            # order also shows up in get_positions(), so reserving its full
+            # size would double-count the filled contracts against cash.
+            remaining = max(0.0, count - _order_fill_count(o))
+            if remaining <= 0.0:
+                state.resting_value.pop(oid, None)
+                continue
+            state.resting_value[oid] = {"dollars": remaining * price_dollars, "ticker": ticker}
             if ticker:
                 state.resting_tickers.add(ticker)
 
@@ -1197,8 +1158,6 @@ def cycle(client: KalshiClient):
     except Exception as e:
         log.warning("Could not reconcile resting orders: %s", e)
 
-    if config.DRY_RUN:
-        _manage_paper_fills(markets, client)
 
     # Record any position that appeared on the exchange but is not in local
     # state — e.g. a resting limit order that filled since the last cycle.
@@ -1371,8 +1330,13 @@ def cycle(client: KalshiClient):
                 }
                 try:
                     mf_path = Path(__file__).resolve().parent / "markout_log.jsonl"
+                    # Locked append so concurrent bot processes can't interleave
+                    # mid-line and corrupt the JSONL stream.
                     with open(mf_path, "a") as mf:
+                        import fcntl
+                        fcntl.flock(mf.fileno(), fcntl.LOCK_EX)
                         mf.write(json.dumps(markout_rec) + "\n")
+                        mf.flush()
                 except Exception:
                     log.warning("Failed to write markout log for %s", t)
 
@@ -1653,7 +1617,7 @@ def cycle(client: KalshiClient):
 
     max_trade = state.risk.max_trade_dollars(
         cash if cash_available else 0.0, mark_to_market_exposure,
-        resting_orders_value=sum(state.resting_value.values()),
+        resting_orders_value=sum(v["dollars"] for v in state.resting_value.values()),
         paper=config.DRY_RUN,
     )
     if cash_available and max_trade < 0.01:
@@ -1807,7 +1771,7 @@ def cycle(client: KalshiClient):
 
         max_trade = state.risk.max_trade_dollars(
             cash, current_exposure,
-            resting_orders_value=sum(state.resting_value.values()),
+            resting_orders_value=sum(v["dollars"] for v in state.resting_value.values()),
             paper=config.DRY_RUN,
             mark_to_market_exposure=mark_to_market_exposure,
         )

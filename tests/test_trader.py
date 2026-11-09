@@ -162,6 +162,24 @@ def test_resting_value_cleared_on_fill(fresh_state, mock_client):
     assert "test_oid" not in fresh_state.resting_value
 
 
+def test_resting_value_dict_shape_sums(fresh_state):
+    """resting_value holds dicts in live paths — summing them must not TypeError.
+
+    A cycle with a resting order used to raise
+    ``unsupported operand type(s) for +: 'int' and 'dict'`` when a call site
+    did ``sum(state.resting_value.values())`` on the dict shape, killing the
+    cycle before max_trade was computed.
+    """
+    fresh_state.resting_value.update({
+        "oid-a": {"dollars": 1.5, "ticker": "KXBTC15M-A"},
+        "oid-b": {"dollars": 2.5, "ticker": "KXBTC15M-B"},
+    })
+    # Dict shape (live path): direct sum raises, dict extraction doesn't.
+    with pytest.raises(TypeError):
+        sum(fresh_state.resting_value.values())
+    assert sum(v["dollars"] for v in fresh_state.resting_value.values()) == 4.0
+
+
 def test_resting_value_kept_for_resting_order(fresh_state, mock_client):
     """resting_value entry is kept for resting (unfilled) orders."""
     sig = MagicMock()

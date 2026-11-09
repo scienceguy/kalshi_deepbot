@@ -52,6 +52,12 @@ class TestPaperModeLedger:
         # start=100, pnl=5, open_risk=2 -> cash=103
         assert paper_mode.cash(2.0) == 103.0
 
+    def test_cash_never_negative(self):
+        """cash clamps at zero rather than going negative."""
+        paper_mode.add_pnl(-50.0)  # pnl=-50, start=100
+        assert paper_mode.cash(80.0) == 0.0
+        assert paper_mode.cash(0.0) > 0.0
+
     def test_persists_to_file(self):
         """State should persist to paper_state.json."""
         paper_mode.add_pnl(25.75)
