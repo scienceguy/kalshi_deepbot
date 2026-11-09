@@ -566,8 +566,9 @@ class LocalDB:
         
         results = {}
         # Sync tables with compatible schemas
-        # bot_state uses per-row upsert; signals/orders/pnl_ledger use batch inserts
-        for table in ["signals", "orders", "pnl_ledger", "bot_state", "backtest_runs"]:
+        # bot_state uses per-row upsert and is critical for PnL — sync it FIRST
+        # so session_pnl isn't stalled behind large tables.
+        for table in ["bot_state", "signals", "orders", "pnl_ledger", "backtest_runs"]:
             count = self._sync_table(table, supabase_client)
             results[table] = count
             if count > 0:

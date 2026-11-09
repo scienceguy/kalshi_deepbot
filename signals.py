@@ -140,9 +140,11 @@ def _maker_price(market: MarketInfo, bullish: bool) -> int:
 # STABILITY CHECK (bid history tracking — doubles EV per kalshi_live_bot)
 # ═════════════════════════════════════════════════════════════════════
 
+# In-memory cache with TTL so concurrent processes see each other's writes
+# without a heavy DB migration. Load on first use, refresh every 60 s.
 _bid_hist: dict[str, list[tuple[float, int]]] = {}
-_bid_hist_dirty = False
-_last_bid_hist_save = 0.0
+_bid_hist_loaded_at: float = 0.0
+_BID_HIST_TTL_SECONDS = 60.0
 _BID_HIST_SAVE_INTERVAL = 5.0
 
 # Track tickers that have already warned about fresh start / insufficient coverage
@@ -161,8 +163,11 @@ def _bid_hist_file() -> Path:
 # file with file locking).
 
 
-def _load_bid_hist():
-    global _bid_hist
+def _load_bid_hist(force: bool = False):
+    global _bid_hist, _bid_hist_loaded_at
+    now = time.time()
+    if not force and _bid_hist_loaded_at and (now - _bid_hist_loaded_at) < _BID_HIST_TTL_SECONDS:
+        return _bid_hist
     try:
         hist_file = _bid_hist_file()
         if hist_file.exists():
@@ -171,18 +176,28 @@ def _load_bid_hist():
                 fcntl.flock(f.fileno(), fcntl.LOCK_SH)
                 data = json.load(f)
             _bid_hist = {k: [(float(t), int(b)) for t, b in v] for k, v in data.items()}
+        else:
+            _bid_hist = {}
+        _bid_hist_loaded_at = now
     except FileNotFoundError:
         _bid_hist = {}
+        _bid_hist_loaded_at = now
     except json.JSONDecodeError as e:
         log.error("Bid history file corrupted: %s — starting fresh", e)
         _bid_hist = {}
+        _bid_hist_loaded_at = now
     except Exception as e:
         log.error("Failed to load bid history: %s — starting fresh", e)
         _bid_hist = {}
+        _bid_hist_loaded_at = now
+    return _bid_hist
 
 
-# Load bid history at module import so it's available immediately on startup.
-_load_bid_hist()
+def _ensure_bid_hist_loaded():
+    """Ensure bid history is loaded (lazy init on first use)."""
+    if _bid_hist_loaded_at == 0.0:
+        _load_bid_hist(force=True)
+    return _bid_hist
 
 
 def _save_bid_hist():
@@ -202,9 +217,7 @@ def _save_bid_hist():
 
 
 def _track_bid(ticker: str, yes_bid_cents: int, now: float):
-    global _bid_hist_dirty
-    if not _bid_hist:
-        _load_bid_hist_for_read()
+    _ensure_bid_hist_loaded()
     h = _bid_hist.setdefault(ticker, [])
     h.append((now, max(0, min(100, int(yes_bid_cents or 0)))))
     cutoff = now - (config.STABILITY_LOOKBACK_MIN + 1.5) * 60
@@ -215,15 +228,15 @@ def _track_bid(ticker: str, yes_bid_cents: int, now: float):
     if len(_bid_hist) > 200:
         for k in list(_bid_hist)[:-120]:
             _bid_hist.pop(k, None)
-    _bid_hist_dirty = True
     return h
 
 
 def _maybe_save_bid_hist(now: float):
-    global _bid_hist_dirty, _last_bid_hist_save
+    global _bid_hist_loaded_at
     # TTL-based cleanup: remove entries older than lookback + 1 hour
     # Run periodically (every 50 calls) to avoid O(N) on every cycle
     _maybe_save_bid_hist._cleanup_counter = getattr(_maybe_save_bid_hist, "_cleanup_counter", 0) + 1
+    _ensure_bid_hist_loaded()
     total_entries = sum(len(h) for h in _bid_hist.values())
     run_ttl_cleanup = (_maybe_save_bid_hist._cleanup_counter % 50 == 0) or (total_entries > 50000)
     if run_ttl_cleanup:
@@ -233,46 +246,25 @@ def _maybe_save_bid_hist(now: float):
             h[:] = [(t, b) for t, b in h if t >= ttl_cutoff]
             if not h:
                 _bid_hist.pop(ticker_key, None)
-    if _bid_hist_dirty and (now - _last_bid_hist_save) >= _BID_HIST_SAVE_INTERVAL:
+    # Save every 10s if dirty (tracked by file mtime vs loaded_at)
+    hist_file = _bid_hist_file()
+    if hist_file.exists():
+        mtime = hist_file.stat().st_mtime
+        if mtime > _bid_hist_loaded_at:
+            # Another process updated the file — reload
+            _load_bid_hist(force=True)
+    # Periodic save
+    if (now - _bid_hist_loaded_at) >= _BID_HIST_SAVE_INTERVAL:
         try:
             _save_bid_hist()
-            _bid_hist_dirty = False
         except Exception as e:
             log.warning("Failed to save bid history: %s — retrying next cycle", e)
-        _last_bid_hist_save = now
-
-
-def _force_save_bid_hist():
-    global _bid_hist_dirty, _last_bid_hist_save
-    if _bid_hist_dirty:
-        _save_bid_hist()
-        _bid_hist_dirty = False
-        _last_bid_hist_save = time.time()
+        _bid_hist_loaded_at = now
 
 
 def _load_bid_hist_for_read():
-    """Load bid history with shared lock for concurrent reads."""
-    global _bid_hist
-    try:
-        hist_file = _bid_hist_file()
-        if hist_file.exists():
-            with open(hist_file) as f:
-                import fcntl
-                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-                data = json.load(f)
-            _bid_hist = {k: [(float(t), int(b)) for t, b in v] for k, v in data.items()}
-    except FileNotFoundError:
-        _bid_hist = {}
-    except json.JSONDecodeError as e:
-        log.error("Bid history file corrupted: %s — starting fresh", e)
-        _bid_hist = {}
-    except Exception as e:
-        log.error("Failed to load bid history: %s — starting fresh", e)
-        _bid_hist = {}
-
-
-
-
+    """Load bid history with shared lock for concurrent reads (alias for _load_bid_hist)."""
+    return _load_bid_hist(force=True)
 def _compute_momentum(ticker: str, now: float, lookback_min: float = 2.0) -> float:
     """
     Compute price momentum in cents per minute from bid history.
@@ -304,8 +296,7 @@ def _stability_ok(ticker: str, now: float):
     """
     if not getattr(config, "STABILITY_ENABLED", True):
         return True, ""
-    if not _bid_hist:
-        _load_bid_hist_for_read()
+    _ensure_bid_hist_loaded()
     h = _bid_hist.get(ticker) or []
     cutoff = now - config.STABILITY_LOOKBACK_MIN * 60
     window = [(t, b) for t, b in h if t >= cutoff]
