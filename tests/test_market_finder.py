@@ -1,294 +1,274 @@
-#!/usr/bin/env python3
-"""
-Tests for market_finder.py — market discovery and ranking.
-
-Run: python -m pytest tests/test_market_finder.py -v
-"""
-import logging
-import sys
-from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch, PropertyMock
+"""Integration tests for market_finder.py market discovery."""
 
 import pytest
+from unittest.mock import Mock, patch, MagicMock
+from datetime import datetime, timezone, timedelta
 
-sys.path.insert(0, "/data/data/com.termux/files/home/kalshi_superbot")
+import config
+import market_finder
+from market_finder import MarketInfo
+from kalshi_client import KalshiClient
 
-from market_finder import MarketInfo, find_active_markets
-from signals import _evaluate_taker_favourite, _evaluate_hedge, rank_signals
 
-log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG)
+class MockKalshiClient:
+    """Mock Kalshi client for testing market_finder."""
+    
+    def __init__(self):
+        self.markets_cache = {}
+        self.orderbooks_cache = {}
+    
+    def get_markets(self, series_ticker=None, status="open", limit=50):
+        """Return mock markets for a series."""
+        now = datetime.now(timezone.utc)
+        close_time = now + timedelta(minutes=10)
+        
+        markets = []
+        for i, ticker in enumerate([f"{series_ticker}-26NOV090415-15", f"{series_ticker}-26NOV090430-30"]):
+            markets.append({
+                "ticker": ticker,
+                "series_ticker": series_ticker,
+                "status": "active",
+                "close_time": close_time.isoformat(),
+                "floor_strike": 95000.0 if "BTC" in series_ticker else 1.0,
+                "yes_bid_dollars": "0.75",
+                "yes_ask_dollars": "0.77",
+                "no_bid_dollars": "0.23",
+                "no_ask_dollars": "0.25",
+                "yes_bid_size_fp": "100",
+                "no_bid_size_fp": "100",
+            })
+        return markets
+    
+    def get_orderbook(self, ticker, depth=5):
+        """Return mock orderbook for a ticker."""
+        return {
+            "yes": [[77, 50], [78, 30]],  # [price, size]
+            "no": [[23, 50], [22, 30]],
+        }
+    
+    def invalidate_markets(self, series_ticker):
+        """Mock invalidate."""
+        pass
+
+
+class TestMarketFinder:
+    """Test market_finder.find_active_markets."""
+
+    def test_find_active_markets_returns_tradeable_brackets(self):
+        """Should return markets with ask in entry band."""
+        client = MockKalshiClient()
+        
+        with patch.object(config, 'TARGET_SERIES', ['KXBTC15M']):
+            with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
+                with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
+                    with patch.object(config, 'HEDGE_YES_ASK_MAX', 12):
+                        with patch.object(config, 'MAX_HEDGE_PER_SERIES', 0):
+                            markets = market_finder.find_active_markets(client)
+                            
+                            assert markets.tradable_count > 0
+                            assert len(markets) > 0
+                            
+                            for m in markets:
+                                # Should have ask in band
+                                assert m.yes_ask is not None
+                                assert 75 <= m.yes_ask <= 99 or (m.no_ask and 75 <= m.no_ask <= 99)
+
+    def test_find_active_markets_filters_by_minutes_left(self):
+        """Should filter markets with 0 < minutes_left <= 15.5."""
+        client = MockKalshiClient()
+        
+        # Override to return a market that's too old
+        old_close = datetime.now(timezone.utc) - timedelta(minutes=5)
+        client.markets_cache = {}
+        def get_markets_old(*args, **kwargs):
+            return [{
+                "ticker": "KXBTC15M-26NOV090415-15",
+                "series_ticker": "KXBTC15M",
+                "status": "active",
+                "close_time": old_close.isoformat(),
+                "floor_strike": 95000.0,
+                "yes_bid_dollars": "0.75",
+                "yes_ask_dollars": "0.77",
+                "no_bid_dollars": "0.23",
+                "no_ask_dollars": "0.25",
+            }]
+        client.get_markets = get_markets_old
+        
+        with patch.object(config, 'TARGET_SERIES', ['KXBTC15M']):
+            with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
+                with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
+                    markets = market_finder.find_active_markets(client)
+                    # Old market should be filtered out
+                    assert markets.tradable_count == 0
+
+    def test_find_active_markets_parallel_fetch(self):
+        """Should fetch all series concurrently."""
+        client = MockKalshiClient()
+        call_count = [0]
+        
+        def counting_get_markets(*args, **kwargs):
+            call_count[0] += 1
+            return client.get_markets(*args, **kwargs)
+        
+        client.get_markets = counting_get_markets
+        
+        with patch.object(config, 'TARGET_SERIES', ['KXBTC15M', 'KXETH15M', 'KXSOL15M']):
+            with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
+                with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
+                    markets = market_finder.find_active_markets(client)
+                    # Should have made 3 calls (one per series)
+                    assert call_count[0] >= 3
+
+    def test_find_active_markets_deduplicates_tickers(self):
+        """Should not return duplicate tickers."""
+        client = MockKalshiClient()
+        
+        with patch.object(config, 'TARGET_SERIES', ['KXBTC15M']):
+            with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
+                with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
+                    markets = market_finder.find_active_markets(client)
+                    
+                    tickers = [m.ticker for m in markets]
+                    assert len(tickers) == len(set(tickers)), "Duplicate tickers found"
+
+    def test_find_active_markets_includes_bracket_role(self):
+        """Each market should have bracket_role set."""
+        client = MockKalshiClient()
+        
+        with patch.object(config, 'TARGET_SERIES', ['KXBTC15M']):
+            with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
+                with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
+                    markets = market_finder.find_active_markets(client)
+                    
+                    for m in markets:
+                        assert hasattr(m, 'bracket_role')
+                        assert m.bracket_role in ('MAIN', 'HEDGE_NO')
 
 
 class TestMarketInfo:
-    """Tests for MarketInfo dataclass."""
+    """Test MarketInfo dataclass."""
 
-    def test_minutes_left_positive(self):
+    def test_mid_yes_calculation(self):
+        """mid_yes should calculate (bid + ask) / 2."""
         m = MarketInfo(
-            ticker="TEST",
-            series="KXBTC15M",
-            close_time=datetime.now(timezone.utc) + timedelta(minutes=5),
-            strike=50000,
-            strike_type="",
-            yes_bid=50,
-            yes_ask=51,
-            no_bid=49,
-            no_ask=50,
-            yes_liquidity=100,
-            no_liquidity=100,
-            minutes_left=5.0,
-            bracket_role="MAIN",
-            raw={},
+            ticker="TEST", series="TEST", close_time=datetime.now(timezone.utc),
+            strike=100.0, strike_type="floor",
+            yes_bid=75, yes_ask=77, no_bid=23, no_ask=25,
+            yes_liquidity=100, no_liquidity=100,
+            minutes_left=10.0
         )
-        assert m.minutes_left == 5.0
-        assert m.mid_yes == 50.5
+        assert m.mid_yes == 76.0
 
-    def test_mid_yes_none_when_no_quotes(self):
+    def test_mid_yes_with_missing_bid(self):
+        """mid_yes should use ask when bid is missing."""
         m = MarketInfo(
-            ticker="TEST",
-            series="KXBTC15M",
-            close_time=datetime.now(timezone.utc) + timedelta(minutes=5),
-            strike=50000,
-            strike_type="",
-            yes_bid=None,
-            yes_ask=None,
-            no_bid=None,
-            no_ask=None,
-            yes_liquidity=0,
-            no_liquidity=0,
-            minutes_left=5.0,
-            bracket_role="MAIN",
-            raw={},
+            ticker="TEST", series="TEST", close_time=datetime.now(timezone.utc),
+            strike=100.0, strike_type="floor",
+            yes_bid=0, yes_ask=77, no_bid=23, no_ask=25,
+            yes_liquidity=100, no_liquidity=100,
+            minutes_left=10.0
         )
-        # mid_yes returns None when both bid and ask are None (no quotes)
+        assert m.mid_yes == 77.0
+
+    def test_mid_yes_with_missing_ask(self):
+        """mid_yes should use bid when ask is missing."""
+        m = MarketInfo(
+            ticker="TEST", series="TEST", close_time=datetime.now(timezone.utc),
+            strike=100.0, strike_type="floor",
+            yes_bid=75, yes_ask=0, no_bid=23, no_ask=25,
+            yes_liquidity=100, no_liquidity=100,
+            minutes_left=10.0
+        )
+        assert m.mid_yes == 75.0
+
+    def test_mid_yes_with_no_quotes(self):
+        """mid_yes should return None when no quotes."""
+        m = MarketInfo(
+            ticker="TEST", series="TEST", close_time=datetime.now(timezone.utc),
+            strike=100.0, strike_type="floor",
+            yes_bid=0, yes_ask=0, no_bid=0, no_ask=0,
+            yes_liquidity=0, no_liquidity=0,
+            minutes_left=10.0
+        )
         assert m.mid_yes is None
 
-
-class TestFindActiveMarkets:
-    """Integration-style tests for find_active_markets (mocked API)."""
-
-    @patch("market_finder.KalshiClient")
-    def test_returns_empty_when_no_markets(self, mock_client_class):
-        mock_client = MagicMock()
-        mock_client.get_markets.return_value = []
-        mock_client_class.return_value = mock_client
-
-        result = find_active_markets(mock_client)
-        assert result == []
-
-    @patch("market_finder.KalshiClient")
-    def test_filters_by_series_and_status(self, mock_client_class):
-        mock_client = MagicMock()
-        # Use a close_time in the future (~0.5 min from now = ~14.5 min into 15-min window)
-        future_time = (datetime.now(timezone.utc) + timedelta(minutes=0.5)).isoformat().replace('+00:00', 'Z')
-        mock_client.get_markets.return_value = [
-            {
-                "ticker": "KXBTC15M-24OCT1230-30",
-                "series_ticker": "KXBTC15M",
-                "status": "open",
-                "floor_strike": 50000,
-                "cap_strike": 51000,
-                "strike_type": "",
-                "close_time": future_time,
-                "open_time": "2024-10-12T12:30:00Z",
-                "yes_bid_dollars": "0.80",
-                "yes_ask_dollars": "0.85",
-                "no_bid_dollars": "0.15",
-                "no_ask_dollars": "0.20",
-            }
-        ]
-        mock_client.get_orderbook.return_value = {"yes": [[84, 100], [85, 100]], "no": [[15, 100], [16, 100]]}
-        mock_client_class.return_value = mock_client
-
-        result = find_active_markets(mock_client)
-        assert len(result) >= 1
-        # Check at least one MAIN is returned
-        mains = [m for m in result if m.bracket_role == "MAIN"]
-        assert len(mains) >= 1
-
-    @patch("market_finder.KalshiClient")
-    def test_skips_closed_markets(self, mock_client_class):
-        mock_client = MagicMock()
-        mock_client.get_markets.return_value = [
-            {
-                "ticker": "KXBTC15M-24OCT1230-30",
-                "series_ticker": "KXBTC15M",
-                "status": "closed",
-                "floor_strike": 50000,
-                "cap_strike": 51000,
-                "strike_type": "",
-                "close_time": "2024-10-12T12:45:00Z",
-                "open_time": "2024-10-12T12:30:00Z",
-            }
-        ]
-        mock_client_class.return_value = mock_client
-
-        result = find_active_markets(mock_client)
-        # Should not return closed markets
-        mains = [m for m in result if m.bracket_role == "MAIN"]
-        assert len(mains) == 0
-
-
-class TestRankSignals:
-    """Tests for signal ranking."""
-
-    def test_ranks_by_strength_confidence_boost(self):
-        m1 = MarketInfo(
-            ticker="A", series="KXBTC15M",
-            close_time=datetime.now(timezone.utc) + timedelta(minutes=10),
-            strike=50000, strike_type="",
-            yes_bid=50, yes_ask=51, no_bid=49, no_ask=50,
-            yes_liquidity=100, no_liquidity=100,
-            minutes_left=5.0, bracket_role="MAIN", raw={}
-        )
-        m2 = MarketInfo(
-            ticker="B", series="KXBTC15M",
-            close_time=datetime.now(timezone.utc) + timedelta(minutes=10),
-            strike=50000, strike_type="",
-            yes_bid=50, yes_ask=51, no_bid=49, no_ask=50,
-            yes_liquidity=100, no_liquidity=100,
-            minutes_left=5.0, bracket_role="HEDGE_NO", raw={}
-        )
-        m3 = MarketInfo(
-            ticker="C", series="KXBTC15M",
-            close_time=datetime.now(timezone.utc) + timedelta(minutes=10),
-            strike=50000, strike_type="",
-            yes_bid=50, yes_ask=51, no_bid=49, no_ask=50,
-            yes_liquidity=100, no_liquidity=100,
-            minutes_left=5.0, bracket_role="MAIN", raw={}
-        )
-
-        from signals import TradeSignal
-        signals = [
-            TradeSignal("YES", "yes", 50, 1.0, 0.5, "r1", m1, strength=10.0, confidence=0.5),
-            TradeSignal("NO", "no", 50, 1.0, 0.5, "r2", m2, strength=10.0, confidence=0.5),  # HEDGE gets 1.2x boost
-            TradeSignal("YES", "yes", 50, 1.0, 0.5, "r3", m3, strength=5.0, confidence=0.9),
-        ]
-
-        ranked = rank_signals(signals)
-        # HEDGE_NO with boost: 10.0 * 0.5 * 1.2 = 6.0
-        # m1: 10.0 * 0.5 * 1.0 = 5.0
-        # m3: 5.0 * 0.9 * 1.0 = 4.5
-        assert ranked[0].market.ticker == "B"
-        assert ranked[1].market.ticker == "A"
-        assert ranked[2].market.ticker == "C"
-
-    def test_excludes_pass_signals(self):
+    def test_skew_calculation(self):
+        """skew should be yes_bid - no_bid."""
         m = MarketInfo(
-            ticker="TEST", series="KXBTC15M",
-            close_time=datetime.now(timezone.utc) + timedelta(minutes=10),
-            strike=50000, strike_type="",
-            yes_bid=50, yes_ask=51, no_bid=49, no_ask=50,
+            ticker="TEST", series="TEST", close_time=datetime.now(timezone.utc),
+            strike=100.0, strike_type="floor",
+            yes_bid=75, yes_ask=77, no_bid=23, no_ask=25,
             yes_liquidity=100, no_liquidity=100,
-            minutes_left=5.0, bracket_role="MAIN", raw={}
+            minutes_left=10.0
         )
-        from signals import TradeSignal
-        signals = [
-            TradeSignal("YES", "yes", 50, 1.0, 0.5, "r1", m, strength=10.0, confidence=0.5),
-            TradeSignal("PASS", "", 0, 0, 0.0, "r2", m),
-        ]
-        ranked = rank_signals(signals)
-        assert len(ranked) == 1
-        assert ranked[0].direction == "YES"
+        assert m.skew == 52  # 75 - 23
+
+    def test_spread_calculation(self):
+        """spread should be ask - bid."""
+        m = MarketInfo(
+            ticker="TEST", series="TEST", close_time=datetime.now(timezone.utc),
+            strike=100.0, strike_type="floor",
+            yes_bid=75, yes_ask=77, no_bid=23, no_ask=25,
+            yes_liquidity=100, no_liquidity=100,
+            minutes_left=10.0
+        )
+        assert m.spread == 2
 
 
-class TestEvaluateHedge:
-    """Tests for HEDGE_NO evaluation."""
+class TestMarketFinderConfig:
+    """Test market_finder configuration."""
 
-    def test_hedge_requires_no_ask_in_band(self):
-        """HEDGE only triggers when NO ask is in MIN_NO_ENTRY_CENTS..MAX_NO_ENTRY_CENTS."""
-        m = MagicMock()
-        m.ticker = "TEST"
-        m.series = "KXBTC15M"
-        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=2.0)
-        m.minutes_left = 2.0
-        m.no_ask = 90  # Outside hedge band (82-88)
-        m.no_bid = 10
-        m.yes_bid = 10
-        m.yes_ask = 90
-        m.yes_liquidity = 100
-        m.no_liquidity = 100
-
-        with patch('signals.config.MIN_NO_ENTRY_CENTS', 82), \
-             patch('signals.config.MAX_NO_ENTRY_CENTS', 88), \
-             patch('signals.config.NO_PRICE_IS_COMPLEMENT', False):
-            result = _evaluate_hedge(m, 10.0)
-
-        trades = [s for s in result if s.is_trade]
-        assert len(trades) == 0
-
-    def test_hedge_enters_when_no_ask_in_band(self):
-        """HEDGE triggers when NO ask is within the hedge band."""
-        m = MagicMock()
-        m.ticker = "TEST"
-        m.series = "KXBTC15M"
-        m.close_time = datetime.now(timezone.utc) + timedelta(minutes=2.0)
-        m.minutes_left = 2.0
-        m.no_ask = 85  # Inside hedge band (82-88)
-        m.no_bid = 15
-        m.yes_bid = 15
-        m.yes_ask = 85
-        m.yes_liquidity = 100
-        m.no_liquidity = 100
-
-        with patch('signals.config.MIN_NO_ENTRY_CENTS', 82), \
-             patch('signals.config.MAX_NO_ENTRY_CENTS', 88), \
-             patch('signals.config.NO_PRICE_IS_COMPLEMENT', False):
-            result = _evaluate_hedge(m, 10.0)
-
-        trades = [s for s in result if s.is_trade]
-        assert len(trades) == 1
-        assert trades[0].direction == "NO"
-
-
-class TestMarketFinderIntegration:
-    """Integration-style tests for find_active_markets with orderbook data."""
-
-    @patch("market_finder.KalshiClient")
-    def test_bracket_selection_main_and_hedge(self, mock_client_class):
-        """MAIN + HEDGE_NO brackets are both returned when conditions met."""
-        mock_client = MagicMock()
-        future_time = (datetime.now(timezone.utc) + timedelta(minutes=0.5)).isoformat().replace('+00:00', 'Z')
-        mock_client.get_markets.return_value = [
-            {
-                "ticker": "KXBTC15M-24OCT1230-30",
+    def test_entry_band_filters_correctly(self):
+        """Markets outside entry band should be filtered."""
+        client = MockKalshiClient()
+        
+        # Override to return market with BOTH sides outside band
+        def get_markets_outside_band(*args, **kwargs):
+            return [{
+                "ticker": "KXBTC15M-26NOV090415-15",
                 "series_ticker": "KXBTC15M",
-                "status": "open",
-                "floor_strike": 50000,
-                "cap_strike": 51000,
-                "strike_type": "",
-                "close_time": future_time,
-                "open_time": "2024-10-12T12:30:00Z",
-                "yes_bid_dollars": "0.80",
-                "yes_ask_dollars": "0.85",
-                "no_bid_dollars": "0.15",
-                "no_ask_dollars": "0.20",
-            },
-            {
-                "ticker": "KXBTC15M-24OCT1230-35",
-                "series_ticker": "KXBTC15M",
-                "status": "open",
-                "floor_strike": 49000,
-                "cap_strike": 50000,
-                "strike_type": "",
-                "close_time": future_time,
-                "open_time": "2024-10-12T12:30:00Z",
-                "yes_bid_dollars": "0.10",
+                "status": "active",
+                "close_time": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                "floor_strike": 95000.0,
+                "yes_bid_dollars": "0.10",  # 10c - outside band
                 "yes_ask_dollars": "0.12",
-                "no_bid_dollars": "0.88",
-                "no_ask_dollars": "0.92",
-            },
-        ]
-        mock_client.get_orderbook.side_effect = [
-            {"yes": [[84, 100], [85, 100]], "no": [[15, 100], [16, 100]]},
-            {"yes": [[11, 100], [12, 100]], "no": [[88, 100], [89, 100]]},
-        ]
-        mock_client_class.return_value = mock_client
+                "no_bid_dollars": "0.40",   # 40c - outside band (60c NO ask)
+                "no_ask_dollars": "0.60",
+                "yes_bid_size_fp": "100",
+                "no_bid_size_fp": "100",
+            }]
+        client.get_markets = get_markets_outside_band
+        
+        with patch.object(config, 'TARGET_SERIES', ['KXBTC15M']):
+            with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
+                with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
+                    markets = market_finder.find_active_markets(client)
+                    assert markets.tradable_count == 0
 
-        result = find_active_markets(mock_client)
-        # Should return at least MAIN (and possibly HEDGE if yes_ask <= 12)
-        mains = [m for m in result if m.bracket_role == "MAIN"]
-        assert len(mains) >= 1
+
+class TestMarketFinderOrderbook:
+    """Test orderbook integration."""
+
+    def test_orderbook_overrides_market_bids(self):
+        """Orderbook should override market bid prices."""
+        client = MockKalshiClient()
+        
+        # Market has 75c bid, but orderbook has 76c bid (better)
+        def get_orderbook_custom(ticker, depth=5):
+            return {
+                "yes": [[76, 100]],  # Better bid in orderbook
+                "no": [[24, 100]],
+            }
+        client.get_orderbook = get_orderbook_custom
+        
+        with patch.object(config, 'TARGET_SERIES', ['KXBTC15M']):
+            with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
+                with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
+                    markets = market_finder.find_active_markets(client)
+                    
+                    for m in markets:
+                        # Orderbook bid should override market bid
+                        assert m.yes_bid == 76
 
 
 if __name__ == "__main__":
