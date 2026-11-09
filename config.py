@@ -188,6 +188,25 @@ GATES_ATR_SIDE_AWARE = _env_bool("GATES_ATR_SIDE_AWARE", True)
 # Gate 2 — fee-adjusted EV (dollars per contract)
 GATES_EV_ENABLED = _env_bool("GATES_EV_ENABLED", True)
 GATES_MIN_EDGE = _env_float("GATES_MIN_EDGE", 0.005)
+# Realized win rate of the favourite in the measured tail band, from 1,992
+# settled markets minutes 6-11 (kalshi_1230/data/candles.sqlite):
+#   entry 95-99c, avg price 0.9696, won 0.9928 of the QUOTE rows (n=557, 95%
+#   lower bound 0.9858 > breakeven 0.9717 -> the per-quote edge clears).
+# Clustered by market (the honest unit: 557 quotes are only 246 markets, and a
+# settlement is shared by every quote in its market) it is n=246, win 0.9878,
+# price 0.9682, lo95 0.9741 vs breakeven 0.9710 -- it still clears, but by 0.3c
+# rather than the 1.4c the per-quote interval flatters it into. Re-derive with
+# scripts/measure_edge.py --cluster market; do not type these numbers by hand.
+# The Brownian cushion_z model has no drift term, so inside the band it returns
+# q ~= p and gate 2 can never clear its own hurdle; that is why 293 of 941
+# logged candidates were "allow" only in shadow mode and none filled.
+# This constant is that measurement, not a tuning knob. It is used as a FLOOR
+# on q and only when the entry price is inside the band below; outside the band
+# the model value is used untouched, so a 55c longshot is still scored at its own
+# (negative) EV. Re-derive it if GATES_MEASURED_BAND_* moves.
+GATES_MEASURED_Q = _env_float("GATES_MEASURED_Q", 0.9928)
+GATES_MEASURED_BAND_MIN_CENTS = _env_int("GATES_MEASURED_BAND_MIN_CENTS", 95)
+GATES_MEASURED_BAND_MAX_CENTS = _env_int("GATES_MEASURED_BAND_MAX_CENTS", 99)
 # Taker fee by default (conservative: an exit may cross the book).
 # Set false when every fill and exit is a maker order.
 GATES_FEE_TAKER = _env_bool("GATES_FEE_TAKER", True)
@@ -217,17 +236,37 @@ GATES_LOG_FILE = Path(
 AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", True)
 AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
 ORDER_TIME_IN_FORCE = "immediate_or_cancel"
-# Final-minute favourite taker band: 75-99c (pay the ask on the favourite).
-# Defaults match the documented band and market_finder's [MIN_YES_PRICE_CENTS,
-# MAX_YES_PRICE_CENTS] so a tradeable bracket found by discovery is not rejected
-# again by a narrower signal band (which previously blocked every ask in
-# [75, 85) or (89, 99], e.g. an 84c favourite with positive GBM edge).
-ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 75)
-# Backtest optimum is a 15-55c band (AGENTS.md "Optimal Parameters", 52.8% win).
-# Above ~60c breakeven_q sits within fee noise of the venue price, so gates.py
-# gate 2 rejects every candidate and the bot never fills.
-ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 55)
+# Final-minute favourite taker band, YES side only.
+#
+# THIS IS AN OVERRIDE, NOT A MARKET LAW. Measured on 1,992 settled markets /
+# 27,459 quotes (kalshi_1230/data/candles.sqlite), minutes 6-11, fee
+# 0.07*p*(1-p), 95% lower bound on the win rate:
+#   15- 55c: 3685  0.3354  0.3437  -0.0240  no
+#   70- 90c: 1946  0.8083  0.8018  -0.0046  no
+#   90- 95c:  557  0.9354  0.9257  +0.0049  no   (positive, not significant)
+#   95- 99c:  557  0.9928  0.9696  +0.0212  YES
+#
+# Read "YES" narrowly. That band is 557 QUOTE rows from only 246 DISTINCT
+# markets, over one collector's 7-day slice (166.5h), BTC/ETH/SOL only, with
+# 4 losses doing all the work. The aggregated prediction-market literature is
+# mixed and mostly opposite: favourites in the 90-100c bucket commonly resolve
+# YES around 88-89% against an implied 95% (SimpleFunctions, Polymarket), and
+# one Kalshi study (Whelan/Deng, UCD) reports the mirror -- high-price contracts
+# winning MORE than price, small positive return. So the sign of this band is
+# not settled by the literature; it is settled here only by 4 events, and the
+# bias is documented as shifting/decaying over time in every source.
+#
+# Therefore: do not hardcode a favourable band on the strength of a prior, and
+# do not widen this one to "look better" without re-running scripts/measure_edge.py
+# and reporting per-DISTINCT-MARKET numbers. The 15-55c AGENTS.md "Optimal
+# Parameters" band is significantly NEGATIVE on this larger sample.
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 95)
+ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 99)
 MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
+# NO is NOT floored by GATES_MEASURED_Q. A NO fill at 97c settles YES only ~3%
+# of the time, so the measured YES win rate must never be applied to it; the
+# band above is meaningful only on the YES leg the measurement was taken from.
+# min 75 is a wide guard, not a claim -- see tests/test_gates.py::measured_band_sides.
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 75)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 
