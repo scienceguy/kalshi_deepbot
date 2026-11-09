@@ -398,7 +398,7 @@ def _evaluate_common(
     risk_ = fees.buy_cash_out(n, ep / 100.0, taker=config.AGGRESSIVE_FILL)
 
     # Confidence scoring (from kalshi_live_bot)
-    if source in ("SKEW", "TREND"):
+    if source in ("SKEW", "TREND", "TAKER_FAVOURITE"):
         mid = market.mid_yes
         mid_distance = max(0.0, 1.0 - abs(mid - config.MID_TARGET_CENTS) / max(1.0, config.MID_TOLERANCE_CENTS))
         strength_score = min(1.0, strength / config.CONFIDENCE_STRENGTH_SCALE)
@@ -409,7 +409,7 @@ def _evaluate_common(
         )
         if confidence < config.MIN_CONFIDENCE:
             return _pass(f"Confidence {confidence:.2f} below {config.MIN_CONFIDENCE:.2f}")
-        # ALLOW_YES_BUYS gate for SKEW/TREND sources
+        # ALLOW_YES_BUYS gate for SKEW/TREND/TAKER_FAVOURITE sources
         if bullish and not config.ALLOW_YES_BUYS:
             return _pass(f"ALLOW_YES_BUYS=false blocks YES {source} signal")
     else:
@@ -600,12 +600,14 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
             seconds_into_final_minute=max(0, min(60, int((15.0 - market.minutes_left) * 60)))
             if market.minutes_left <= 1.0 else 0,
         )
-        edge = edge_cents(model_prob, entry_c, fee_cents)
+        # model_prob is P(YES wins); for NO side we need P(NO wins)
+        trade_prob = model_prob if direction == "YES" else (1.0 - model_prob)
+        edge = edge_cents(trade_prob, entry_c, fee_cents)
         if edge < config.MODEL_MIN_EDGE_CENTS:
             results.append(TradeSignal(
                 "PASS", "", 0, 0, 0.0,
                 f"Edge {edge:+.1f}c below min {config.MODEL_MIN_EDGE_CENTS}c "
-                f"(prob={model_prob*100:.0f}% ask={entry_c}c fee={fee_cents:.1f}c)",
+                f"(prob={trade_prob*100:.0f}% ask={entry_c}c fee={fee_cents:.1f}c)",
                 market,
             ))
             continue
