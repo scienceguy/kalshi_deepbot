@@ -200,13 +200,17 @@ GATES_MIN_EDGE = _env_float("GATES_MIN_EDGE", 0.005)
 # The Brownian cushion_z model has no drift term, so inside the band it returns
 # q ~= p and gate 2 can never clear its own hurdle; that is why 293 of 941
 # logged candidates were "allow" only in shadow mode and none filled.
-# This constant is that measurement, not a tuning knob. It is used as a FLOOR
-# on q and only when the entry price is inside the band below; outside the band
-# the model value is used untouched, so a 55c longshot is still scored at its own
-# (negative) EV. Re-derive it if GATES_MEASURED_BAND_* moves.
+# The floor replaces the model probability instead of checking it, and the
+# replacement always beats breakeven by construction: q_model 0.96 became
+# 0.9928 and passed a YES @96c whatever the model said. That is not a gate, it
+# is a rubber stamp, and it is the only reason the 95-99c band is reachable at
+# all. So the floor is opt-in: with it OFF gate 2 scores the model q and the
+# band is blocked like everything else. Turn it on only once the model itself
+# clears breakeven in that band.
 GATES_MEASURED_Q = _env_float("GATES_MEASURED_Q", 0.9928)
 GATES_MEASURED_BAND_MIN_CENTS = _env_int("GATES_MEASURED_BAND_MIN_CENTS", 95)
 GATES_MEASURED_BAND_MAX_CENTS = _env_int("GATES_MEASURED_BAND_MAX_CENTS", 99)
+GATES_MEASURED_FLOOR_ENABLED = _env_bool("GATES_MEASURED_FLOOR_ENABLED", False)
 # Taker fee by default (conservative: an exit may cross the book).
 # Set false when every fill and exit is a maker order.
 GATES_FEE_TAKER = _env_bool("GATES_FEE_TAKER", True)

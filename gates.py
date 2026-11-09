@@ -397,7 +397,8 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
                     yes_equiv = (entry_price_cents if side == "yes"
                                  else 100 - entry_price_cents)
                     metrics["yes_equiv_price_cents"] = yes_equiv
-                    if (config.GATES_MEASURED_BAND_MIN_CENTS
+                    if (config.GATES_MEASURED_FLOOR_ENABLED
+                            and config.GATES_MEASURED_BAND_MIN_CENTS
                             <= yes_equiv <= config.GATES_MEASURED_BAND_MAX_CENTS):
                         q = max(q, config.GATES_MEASURED_Q)
                         metrics["q_measured_floor"] = True

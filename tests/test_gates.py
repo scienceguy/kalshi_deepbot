@@ -275,11 +275,31 @@ class TestMeasuredFloorSide:
                 market, spot_state={}, orderbook=book,
                 side=side, entry_price_cents=cents)
 
-    def test_yes_in_band_records_floor_flag(self):
-        """YES at 97c is the price the 0.9928 was actually measured at."""
+    def test_yes_in_band_not_floored_by_default(self):
+        """97c in the band must NOT be raised to 0.9928 unless opted in.
+
+        Raising q to the measured win rate is what made gate 2 pass every
+        in-band candidate regardless of the model, so the default must be
+        the model's own value.
+        """
         config.GATES_MEASURED_Q = 0.9928
         res = self._run("yes", 97, 0.50)
         assert res.metrics.get("yes_equiv_price_cents") == 97
+        assert not res.metrics.get("q_measured_floor")
+        assert res.metrics.get("q") < config.GATES_MEASURED_Q
+
+    def test_yes_in_band_floor_is_opt_in(self):
+        """GATES_MEASURED_FLOOR_ENABLED=True restores the old floor behaviour."""
+        config.GATES_MEASURED_Q = 0.9928
+        market = MockMarket()
+        book = Mock()
+        with patch.object(gates, "normal_cdf", return_value=0.50), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_EV_ENABLED", False), \
+             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True):
+            res = gates.evaluate_entry(
+                market, spot_state={}, orderbook=book,
+                side="yes", entry_price_cents=97)
         assert res.metrics.get("q_measured_floor") is True
         assert res.metrics.get("q") >= 0.9928
 
