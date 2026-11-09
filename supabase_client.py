@@ -255,7 +255,7 @@ class SupabaseClient:
                     _supabase_record_failure()
                     time.sleep(1.0 * (attempt + 1))
                     continue
-                # Non-retryable errors (4xx except 429) — log but don't increment circuit breaker
+                # Non-retryable errors (4xx except 429) — log but DON'T increment circuit breaker
                 global _schema_warned
                 if resp.status_code in (401, 403):
                     # Auth failure — disable client permanently for this process
@@ -279,10 +279,9 @@ class SupabaseClient:
                     else:
                         log.debug("Supabase %s %s: table not created yet", method, path)
                     return None
-                # Persistent 4xx (other than auth) — record failure for circuit breaker
-                log.warning("Supabase %s %s: HTTP %s — recording failure",
+                # Persistent 4xx (other than auth) — log but DON'T record failure for circuit breaker
+                log.warning("Supabase %s %s: HTTP %s — non-retryable error, not recording failure",
                             method, path, resp.status_code)
-                _supabase_record_failure()
                 return None
             except requests.RequestException as e:
                 last_err = e

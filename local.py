@@ -8,6 +8,8 @@ log = logging.getLogger(__name__)
 
 _STORE = {}
 
+CHECKPOINT_ENTITY = "agent_continuity_checkpoint"
+
 _MP = "/data/data/com.termux/files/home/.local/bin/mempalace"
 
 def _mp(*args):
@@ -103,7 +105,15 @@ def on_session_start() -> dict | None:
         _STORE_set("_recent_urls", [])
         _STORE_set("_session_total", 0)
     else:
-        lapse = max(0, (datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(state.get("last_activity", "1970-01-01T00:00:00+00:00"))).seconds // 60)
+        # Compute lapse since last activity, handling both string ISO timestamps and float Unix timestamps
+        last_activity = state.get("last_activity", "1970-01-01T00:00:00+00:00")
+        if isinstance(last_activity, (int, float)):
+            lapse = max(0, (datetime.now(timezone.utc).timestamp() - last_activity).seconds // 60)
+        else:
+            try:
+                lapse = max(0, (datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(last_activity)).seconds // 60)
+            except (ValueError, TypeError):
+                lapse = 0
         log.info("Resumed continuous consciousness from checkpoint %s (activity ~%d min ago; session_total=%d)", state.get("resume_key", "unknown"), lapse, state.get("session_total", 0))
     for k, v in state.items():
         _STORE_set("_" + k, v)

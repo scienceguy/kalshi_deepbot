@@ -182,96 +182,8 @@ class BotState:
         self.today: str = ""
 
     def _pre_trade_check(self, sig, market, cash, exposure, total_value, client) -> bool:
-        """Pre-trade risk checks including LLM evaluation FIRST."""
+        """Pre-trade risk checks (LLM evaluation moved to cycle() as pre-entry filter)."""
         ticker = market.ticker
-
-        # LLM evaluation FIRST - NVIDIA via integrate.api.nvidia.com
-        # Requires both an API key and explicit LLM_EVALUATION_ENABLED=true.
-        # Only evaluate if we're within the entry window.
-        minutes_in = 15.0 - market.minutes_left
-        # Any of the 7 layers may serve the verdict, so do not require the
-        # NVIDIA key specifically — a missing one skipped the whole gate.
-        if config.LLM_EVALUATION_ENABLED:
-            if config.ENTRY_WINDOW_START_MIN <= minutes_in <= config.ENTRY_WINDOW_END_MIN:
-                signal_info = {
-                    "ticker": ticker,
-                    "direction": sig.direction,
-                    "entry_price": sig.entry_price,
-                    "contracts": sig.contracts,
-                    "dollar_risk": sig.dollar_risk,
-                    "cash": cash,
-                    "exposure": exposure,
-                    "total_value": total_value,
-                    "mid": market.mid_yes,
-                    "skew": market.skew,
-                    "trend": market.mid_yes - 50.0,
-                    "minutes_left": market.minutes_left,
-                    "source": getattr(sig, 'source', 'unknown'),
-                    "strength": sig.strength,
-                }
-                should_block, eval_result = should_block_trade(
-                    signal_info, min_probability=config.LLM_EVAL_MIN_PROBABILITY
-                )
-                if should_block and not config.LLM_EVAL_ENFORCE:
-                    log.info(
-                        "LLM DISAGREE %s (prob=%s) — advisory only, not enforced",
-                        ticker,
-                        eval_result["probability_of_net_profit"] if eval_result else "N/A",
-                    )
-                    should_block = False
-                if should_block:
-                    prob = eval_result["probability_of_net_profit"] if eval_result else "N/A"
-                    layer = eval_result["layer"] if eval_result else "unavailable"
-                    log.info(
-                        "LLM BLOCK %s — prob=%s < %.2f (%s)",
-                        ticker,
-                        prob,
-                        config.LLM_EVAL_MIN_PROBABILITY,
-                        layer,
-                    )
-                    # Record blocked signal to Supabase
-                    try:
-                        get_supabase_client().insert_signal({
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "ticker": ticker,
-                            "side": sig.side,
-                            "price_cents": sig.entry_price,
-                            "contracts": sig.contracts,
-                            "reason": f"LLM blocked: {eval_result.get('reasoning', '')}" if eval_result else "LLM eval failed",
-                            "executed": False,
-                            "blocked_reason": f"LLM prob {eval_result['probability_of_net_profit']:.2f}" if eval_result else "LLM eval failed",
-                        })
-                    except Exception as e:
-                        log.warning("Supabase insert_signal failed for %s: %s", ticker, e)
-                    return False
-
-                # Record LLM insight. eval_result is None when the eval failed
-                # open — indexing it crashed every cycle and, with fail-open on,
-                # stopped the bot from placing any order at all.
-                if eval_result:
-                    self.llm_trade_insights[ticker.upper()] = {
-                        "probability": eval_result["probability_of_net_profit"],
-                        "hold_confidence": eval_result["confidence_hold_to_expiry"],
-                        "layer": eval_result.get("layer", ""),
-                        "timestamp": time.time(),
-                    }
-                    # Persist the LLM insight separately from trade signals.
-                    # Use source="llm_insight" so it's distinguishable from actual signals
-                    # (which have executed=True/False and blocked_reason set).
-                    try:
-                        get_supabase_client().insert_signal({
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "ticker": ticker,
-                            "side": sig.side,
-                            "price_cents": sig.entry_price,
-                            "contracts": sig.contracts,
-                            "reason": (f"LLM pass via {eval_result.get('layer', '?')}: "
-                                       f"{eval_result.get('reasoning', '')}")[:500],
-                            "executed": False,
-                            "blocked_reason": "llm_insight",
-                        })
-                    except Exception as e:
-                        log.warning("Supabase insert_signal (LLM insight) failed for %s: %s", ticker, e)
 
         # Per-window budget gate
         remaining_window = max(0.0, self.window["budget"] - self.window["used"])
@@ -1077,12 +989,8 @@ def cycle(client: KalshiClient):
         log.warning("Positions fetch failed: %s", e)
         positions = []
 
-    # Invalidate cached market data so subsequent fetches return fresh data
-    # reflecting any market state changes (e.g., markets that settled since
-    # last fetch).
-    client.invalidate_markets()
-
-    # Fetch active markets for mark-to-market exposure computation
+# Fetch active markets for mark-to-market exposure computation.
+    # find_active_markets fetches fresh data, so invalidation is not needed here.
     markets = find_active_markets(client)
     if not markets:
         log.info("No tradeable markets.")
@@ -1561,6 +1469,75 @@ def cycle(client: KalshiClient):
         for sig in se.evaluate(m, cash, max_trade_override=max_trade):
             if sig.is_trade:
                 signals.append(sig)
+
+    # LLM evaluation as pre-entry filter (runs before gates so it can veto early).
+    # Runs for all signals in the entry window, not just at order placement.
+    if config.LLM_EVALUATION_ENABLED:
+        llm_filtered = []
+        for sig in signals:
+            minutes_in = 15.0 - sig.market.minutes_left
+            if config.ENTRY_WINDOW_START_MIN <= minutes_in <= config.ENTRY_WINDOW_END_MIN:
+                signal_info = {
+                    "ticker": sig.market.ticker,
+                    "direction": sig.direction,
+                    "entry_price": sig.entry_price,
+                    "contracts": sig.contracts,
+                    "dollar_risk": sig.dollar_risk,
+                    "cash": cash,
+                    "exposure": 0.0,  # exposure not yet computed at this stage
+                    "total_value": cash if cash is not None else 0.0,
+                    "mid": sig.market.mid_yes,
+                    "skew": sig.market.skew,
+                    "trend": sig.market.mid_yes - 50.0,
+                    "minutes_left": sig.market.minutes_left,
+                    "source": getattr(sig, 'source', 'unknown'),
+                    "strength": sig.strength,
+                }
+                should_block, eval_result = should_block_trade(
+                    signal_info, min_probability=config.LLM_EVAL_MIN_PROBABILITY
+                )
+                if should_block and not config.LLM_EVAL_ENFORCE:
+                    log.info(
+                        "LLM DISAGREE %s (prob=%s) — advisory only, not enforced",
+                        sig.market.ticker,
+                        eval_result["probability_of_net_profit"] if eval_result else "N/A",
+                    )
+                    should_block = False
+                if should_block:
+                    prob = eval_result["probability_of_net_profit"] if eval_result else "N/A"
+                    layer = eval_result["layer"] if eval_result else "unavailable"
+                    log.info(
+                        "LLM BLOCK %s — prob=%s < %.2f (%s)",
+                        sig.market.ticker,
+                        prob,
+                        config.LLM_EVAL_MIN_PROBABILITY,
+                        layer,
+                    )
+                    # Record blocked signal to Supabase
+                    try:
+                        get_supabase_client().insert_signal({
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "ticker": sig.market.ticker,
+                            "side": sig.side,
+                            "price_cents": sig.entry_price,
+                            "contracts": sig.contracts,
+                            "reason": f"LLM blocked: {eval_result.get('reasoning', '')}" if eval_result else "LLM eval failed",
+                            "executed": False,
+                            "blocked_reason": f"LLM prob {eval_result['probability_of_net_profit']:.2f}" if eval_result else "LLM eval failed",
+                        })
+                    except Exception as e:
+                        log.warning("Supabase insert_signal failed for %s: %s", sig.market.ticker, e)
+                    continue  # skip this signal
+                # Record LLM insight for audit trail
+                if eval_result:
+                    state.llm_trade_insights[sig.market.ticker.upper()] = {
+                        "probability": eval_result["probability_of_net_profit"],
+                        "hold_confidence": eval_result["confidence_hold_to_expiry"],
+                        "layer": eval_result.get("layer", ""),
+                        "timestamp": time.time(),
+                    }
+            llm_filtered.append(sig)
+        signals = llm_filtered
 
     # Pre-entry gates: ATR hurdle, fee-adjusted EV, time-decay cushion.
     # Shadow mode (default) logs would-block decisions without blocking.

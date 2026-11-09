@@ -199,25 +199,6 @@ def _save_bid_hist():
         raise
 
 
-def _maybe_save_bid_hist(now: float):
-    global _bid_hist_dirty, _last_bid_hist_save
-    if _bid_hist_dirty and (now - _last_bid_hist_save) >= _BID_HIST_SAVE_INTERVAL:
-        try:
-            _save_bid_hist()
-            _bid_hist_dirty = False
-        except Exception as e:
-            log.warning("Failed to save bid history: %s — retrying next cycle", e)
-        _last_bid_hist_save = now
-
-
-def _force_save_bid_hist():
-    global _bid_hist_dirty, _last_bid_hist_save
-    if _bid_hist_dirty:
-        _save_bid_hist()
-        _bid_hist_dirty = False
-        _last_bid_hist_save = time.time()
-
-
 def _track_bid(ticker: str, yes_bid_cents: int, now: float):
     global _bid_hist_dirty
     if not _bid_hist:
@@ -232,22 +213,27 @@ def _track_bid(ticker: str, yes_bid_cents: int, now: float):
     if len(_bid_hist) > 200:
         for k in list(_bid_hist)[:-120]:
             _bid_hist.pop(k, None)
-    # TTL-based cleanup: remove entries older than lookback + 1 hour
-    # Run periodically (every 50 calls) to avoid O(N) on every call
-    global _track_bid_call_count
-    _track_bid_call_count = getattr(_track_bid, "_call_count", 0) + 1
-    _track_bid._call_count = _track_bid_call_count
-    # Also run cleanup if total entries exceed threshold (size-based trigger)
-    total_entries = sum(len(h) for h in _bid_hist.values())
-    if _track_bid_call_count % 50 == 0 or total_entries > 50000:
-        ttl_cutoff = now - (config.STABILITY_LOOKBACK_MIN + 60) * 60
-        for ticker_key in list(_bid_hist.keys()):
-            h = _bid_hist[ticker_key]
-            h[:] = [(t, b) for t, b in h if t >= ttl_cutoff]
-            if not h:
-                _bid_hist.pop(ticker_key, None)
     _bid_hist_dirty = True
     return h
+
+
+def _maybe_save_bid_hist(now: float):
+    global _bid_hist_dirty, _last_bid_hist_save
+    # TTL-based cleanup: remove entries older than lookback + 1 hour
+    # Run periodically on save to avoid O(N) on every _track_bid call
+    ttl_cutoff = now - (config.STABILITY_LOOKBACK_MIN + 60) * 60
+    for ticker_key in list(_bid_hist.keys()):
+        h = _bid_hist[ticker_key]
+        h[:] = [(t, b) for t, b in h if t >= ttl_cutoff]
+        if not h:
+            _bid_hist.pop(ticker_key, None)
+    if _bid_hist_dirty and (now - _last_bid_hist_save) >= _BID_HIST_SAVE_INTERVAL:
+        try:
+            _save_bid_hist()
+            _bid_hist_dirty = False
+        except Exception as e:
+            log.warning("Failed to save bid history: %s — retrying next cycle", e)
+        _last_bid_hist_save = now
 
 
 def _load_bid_hist_for_read():
@@ -545,8 +531,10 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
         return results
 
     no_ask = market.no_ask
-    # If NO price is complemented (legacy), derive from YES bid
-    if not no_ask and market.yes_bid and config.NO_PRICE_IS_COMPLEMENT:
+    # If NO price is missing, derive from YES bid (complement).
+    # Kalshi v2 returns NO prices directly on crypto series (quadratic fee_type),
+    # but the orderbook can have missing levels on thin markets.
+    if not no_ask and market.yes_bid:
         no_ask = 100 - market.yes_bid
     if not no_ask:
         _pass("No NO ask")

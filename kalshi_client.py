@@ -230,6 +230,7 @@ class KalshiClient:
             # including 429 retries so backoff isn't bypassed.
             # Balance endpoint hits stricter write bucket — use separate timer
             is_balance = path == "/portfolio/balance"
+            # Compute required sleep while holding lock, then release before sleeping
             with self._lock:
                 if is_balance:
                     gap = time.time() - self._last_balance_req
@@ -238,11 +239,17 @@ class KalshiClient:
                     gap = time.time() - self._last_req
                     min_gap = _min_request_gap()
                 if gap < min_gap:
-                    time.sleep(min_gap - gap)
+                    sleep_for = min_gap - gap
+                else:
+                    sleep_for = 0.0
+                # Update timestamp NOW so other threads see the updated time
                 if is_balance:
                     self._last_balance_req = time.time()
                 else:
                     self._last_req = time.time()
+            # Sleep OUTSIDE the lock so other threads can proceed
+            if sleep_for > 0:
+                time.sleep(sleep_for)
 
             try:
                 resp = self.session.request(method, url, headers=headers, **kwargs)
