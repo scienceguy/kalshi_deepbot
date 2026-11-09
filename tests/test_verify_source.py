@@ -30,3 +30,31 @@ def test_clean_file_passes_and_spliced_file_fails(tmp_path):
     found = verify_source.check_file(spliced)
     assert len(found) == 1
     assert found[0][0] == 1
+
+
+def test_market_types_is_ascii_clean():
+    """market_types.py is new; catch a corrupted write at commit time, not in prod."""
+    import pathlib
+    p = pathlib.Path(__file__).resolve().parents[1] / "market_types.py"
+    text = p.read_text(encoding="utf-8")
+    bad = [(i, c) for i, c in enumerate(text) if ord(c) > 127]
+    assert not bad, "non-ASCII in market_types.py: %r" % bad[:5]
+
+
+def test_market_counts_separates_available_from_tradable():
+    import market_types
+    c = market_types.MarketCounts()
+    c.add_series("KXBTCD", fetched=20, tradable=0)
+    c.add_series("KXETHD", fetched=60, tradable=3)
+    assert (c.available, c.tradable, c.fetch_errors) == (80, 3, 0)
+    assert c.by_series["KXBTCD"] == (20, 0)
+    assert not c.empty_book
+
+    empty = market_types.MarketCounts()
+    empty.add_series("KXBTCD", fetched=0, tradable=0)
+    assert empty.empty_book
+
+    broken = market_types.MarketCounts()
+    broken.fail_series("KXBTCD")
+    assert broken.fetch_errors == 1
+    assert not broken.empty_book  # fetch failure is not an empty book
