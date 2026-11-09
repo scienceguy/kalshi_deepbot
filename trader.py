@@ -650,6 +650,12 @@ def _replay_settlement_queue(client=None):
                     pnl_to_add = pnl
                     new_session_pnl = state.session_pnl + pnl_to_add
 
+                    # Credit paper ledger for dry-run compounding (matches the
+                    # settlement path at trader.py:1279-1281). Keeps paper_state.json
+                    # and pnl_ledger in sync even when settlements are replayed.
+                    if config.DRY_RUN:
+                        paper_mode.add_pnl(pnl_to_add)
+
                     # Step 2: Write to Supabase
                     try:
                         if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
@@ -1255,11 +1261,15 @@ def cycle(client: KalshiClient):
                 except Exception:
                     log.warning("Failed to write markout log for %s", t)
 
-            # Credit the paper ledger so the dry-run curve compounds. The local
-            # settle_key ledger below is shared with live runs, so paper P&L is
-            # kept separate to keep the two curves from contaminating.
-            if is_paper:
-                paper_mode.add_pnl(realized_pnl)
+            # Credit the paper ledger only when the idempotent settle ledger
+            # records this P&L as new. If the ledger write fails (applied=None),
+            # paper P&L is NOT credited here — it will be retried via queue replay
+            # on the next cycle, keeping paper_state.json and pnl_ledger in sync.
+            # applied=True → new (credit both paper and session). applied=False → duplicate (skip).
+            # applied=None → ledger write failed, PnL NOT credited, retry later.
+            if applied is True:
+                if is_paper:
+                    paper_mode.add_pnl(realized_pnl)
 
             # Record settlement P&L idempotently — use idempotency key so replays
             # after a crash can't double-count. Key is "settle:<event_ticker>:<order_id>".
