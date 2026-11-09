@@ -2,12 +2,12 @@
 
 Written at a verified green checkpoint. New session: read this first, then
 `git log --oneline -7`. Nothing here is from memory; every number was read
-from a file or a command this turn62, with the command named beside it.
+from a file or a command this turn, with the command named beside it.
 
-Repo:  https://github.com/scienceguy/kalshi_deepbot   (private staff, main)
+Repo:  https://github.com/scienceguy/kalshi_deepbot   (private, main)
 Dir :  /data/data/com.termux/files/home/kalshi_deepbot
-HEAD:  5773849 "Should fix: HANDOFF.md - correct the stale pushed claims; record the
-        integrity audit and the MemPalace lock"
+HEAD:  4db7c05 "Should fix: HANDOFF.md - rewrite from verified state; correct the
+        stale balance claim"
 
 ## CORRECTION to earlier handoffs (read this)
 
@@ -30,11 +30,11 @@ not prose.
 
     git rev-list --count HEAD      -> 221
     git status -sb                 -> ## main...origin/main   (clean, in sync)
-    git remote get-url origin      -> https://github.com/scienceguy/kalshi_deepbot.git awal
+    git remote get-url origin      -> https://github.com/scienceguy/kalshi_deepbot.git
     python -m pytest tests/ -q     -> 254 passed
     scripts/verify_source.py       -> all clean
 
-Last six commits:
+Last seven commits:
 
     5773849 Should fix: HANDOFF.md - correct the stale pushed claims; record the integrity audit and the MemPalace lock
     df71e18 Nice to have: HANDOFF.md - torch for the next session at a verified green checkpoint
@@ -79,9 +79,9 @@ The fix gates on the YES-equivalent price: `100 - p` for NO. Measured on this
 device's own candles, the two sides are mirror images:
 
     95-99c quotes : n=557  settle YES 553  -> 0.9928
-     1-5c  quotes : n=560  settle YES   6  -> 0.0111
+     1-5c  quotes : n=560  settle YES   6  -> 0.0107 (6/560)
 
-A NO @ 97c is the second row. The old code was wrong by ~92 points on it.
+A NO @ 97c is the second row. The old code was wrong by ~98 points on it (0.9928 vs 0.0107).
 **Still awaiting a human reviewer;** 3 tests
 (`tests/test_gates.py::TestMeasuredFloorSide`) pin the behaviour, but my tests
 are not a review.
@@ -98,7 +98,7 @@ documented as an OVERRIDE of a prior whose sign is unsettled, not a law.
     scripts/measure_edge.py --cluster market   (honest unit)
 
     95-99c : n=246 markets  win 0.9878  price 0.9682  netEV +0.0175  lo95 0.9741
-             breakeven 0.9710 -> clears by ~0.3c, not the 1.4c the per-quote
+             breakeven 0.9704 -> clears by ~0.4c, not the 1.3c the per-quote
              interval (n=557) flatters it into
     15-55c : n=3685 quotes  0.3354  -0.0240   clearly NEGATIVE
     90-95c : +0.0049, lower bound below breakeven -> not significant
