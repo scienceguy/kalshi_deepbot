@@ -158,7 +158,7 @@ class TestLLMEvalConfig:
                     assert should_block is True
 
     def test_min_confidence_config(self):
-        """LLM_EVAL_MIN_CONFIDENCE should be configurable."""
+        """LLM_EVAL_MIN_CONFIDENCE should be configurable and passed by caller."""
         with patch.object(config, 'LLM_EVAL_MIN_PROBABILITY', 0.65):
             with patch.object(config, 'LLM_EVAL_MIN_CONFIDENCE', 0.60):
                 signal_info = {"ticker": "TEST"}
@@ -170,7 +170,10 @@ class TestLLMEvalConfig:
                 }
                 with patch('llm_eval.evaluate_trade', return_value=eval_result):
                     with patch.object(config, 'LLM_EVAL_FAIL_OPEN', True):
-                        should_block, result = llm_eval.should_block_trade(signal_info)
+                        # Caller should pass min_confidence explicitly (as trader.py does)
+                        should_block, result = llm_eval.should_block_trade(
+                            signal_info, min_confidence=config.LLM_EVAL_MIN_CONFIDENCE
+                        )
                         assert should_block is True
 
 

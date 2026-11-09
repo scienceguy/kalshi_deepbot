@@ -1602,7 +1602,8 @@ def cycle(client: KalshiClient):
                     "strength": sig.strength,
                 }
                 should_block, eval_result = should_block_trade(
-                    signal_info, min_probability=config.LLM_EVAL_MIN_PROBABILITY
+                    signal_info, min_probability=config.LLM_EVAL_MIN_PROBABILITY,
+                    min_confidence=config.LLM_EVAL_MIN_CONFIDENCE
                 )
                 if should_block and not config.LLM_EVAL_ENFORCE:
                     log.info(

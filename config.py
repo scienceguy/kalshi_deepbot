@@ -165,7 +165,7 @@ MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
 GATES_ENABLED = _env_bool("GATES_ENABLED", True)
 # Shadow mode logs would-block decisions and never blocks an order. Set
 # GATES_SHADOW_MODE=false to let the gates actually deny entries.
-GATES_SHADOW_MODE = _env_bool("GATES_SHADOW_MODE", True)
+GATES_SHADOW_MODE = _env_bool("GATES_SHADOW_MODE", False)
 
 # Gate 1 — ATR hurdle
 GATES_ATR_ENABLED = _env_bool("GATES_ATR_ENABLED", True)

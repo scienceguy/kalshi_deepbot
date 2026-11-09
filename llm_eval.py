@@ -429,14 +429,13 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
     return None
 
 
-def should_block_trade(signal_info: dict, min_probability: float = 0.65) -> tuple:
+def should_block_trade(signal_info: dict, min_probability: float = 0.65, min_confidence: float = 0.45) -> tuple:
     """
     Determine if a trade should be blocked based on LLM evaluation.
     
     Returns (should_block: bool, eval_result: dict or None).
-    Blocks if probability < 0.65 OR confidence < 0.45.
+    Blocks if probability < min_probability OR confidence < min_confidence.
     """
-    import config
     
     result = evaluate_trade(signal_info)
     if not result:
@@ -448,9 +447,9 @@ def should_block_trade(signal_info: dict, min_probability: float = 0.65) -> tupl
     prob = result["probability_of_net_profit"]
     conf = result.get("confidence_hold_to_expiry", 0.0)
 
-    # Use the caller's threshold. Reading config here made the min_probability
-    # argument a no-op, so a caller that tightened it silently changed nothing.
-    should_block = prob < min_probability or conf < config.LLM_EVAL_MIN_CONFIDENCE
+    # Use the caller's thresholds. Reading config here made the arguments
+    # no-ops, so a caller that tightened them silently changed nothing.
+    should_block = prob < min_probability or conf < min_confidence
     if should_block:
         log.info(
             "LLM BLOCK %s — prob=%.2f conf=%.2f (min_prob=%.2f min_conf=%.2f)",
