@@ -677,7 +677,6 @@ def _replay_settlement_queue(client=None):
             }, max_retries=1)
 
             # Step 4: Remove from queue ONLY after 1-3 succeed
-            _save_settlement_queue(remaining + queue[i + 1:])
             log.info("Replayed settlement for %s", order_id)
 
         except Exception as e:
