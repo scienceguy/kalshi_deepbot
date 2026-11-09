@@ -240,6 +240,14 @@ def _maybe_save_bid_hist(now: float):
         _last_bid_hist_save = now
 
 
+def _force_save_bid_hist():
+    global _bid_hist_dirty, _last_bid_hist_save
+    if _bid_hist_dirty:
+        _save_bid_hist()
+        _bid_hist_dirty = False
+        _last_bid_hist_save = time.time()
+
+
 def _load_bid_hist_for_read():
     """Load bid history with shared lock for concurrent reads."""
     global _bid_hist
