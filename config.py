@@ -223,7 +223,10 @@ ORDER_TIME_IN_FORCE = "immediate_or_cancel"
 # again by a narrower signal band (which previously blocked every ask in
 # [75, 85) or (89, 99], e.g. an 84c favourite with positive GBM edge).
 ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 75)
-ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 99)
+# Backtest optimum is a 15-55c band (AGENTS.md "Optimal Parameters", 52.8% win).
+# Above ~60c breakeven_q sits within fee noise of the venue price, so gates.py
+# gate 2 rejects every candidate and the bot never fills.
+ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 55)
 MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 75)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)

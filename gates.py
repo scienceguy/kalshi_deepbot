@@ -311,7 +311,8 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
     # ── resolve spot / volatility ────────────────────────────────────────
     spot_state = spot_state or {}
     spot = spot_state.get("spot")
-    sigma = spot_state.get("sigma_per_min")
+    sigma = spot_state.get("sigma_per_sqrt_min",
+                           spot_state.get("sigma_per_min"))
     atr = spot_state.get("atr_1m")
     if asset is None:
         block_reasons.append("gate0: unsupported underlying")
@@ -358,7 +359,14 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
         if minutes <= 0:
             block_reasons.append("gate3: no time remaining")
         elif sigma is None:
-            sigma = atr if atr is not None else (spot * 0.0007 if spot else None)
+            # atr_1m is an average *true range* (E|X| over one candle, ~0.798*sigma),
+            # not a standard deviation, so scale by sqrt(pi/2)=1.2533 to make it one.
+            # NOTE: this widens the cone, and a wider sigma LOWERS q, so the gate
+            # rejects MORE. Measured: ETH q 0.8502 -> 0.7961 (EV -0.066 -> -0.120);
+            # all three logged favourites still blocked. The band, not this factor,
+            # is what decides whether a trade is admissible.
+            sigma = (atr * math.sqrt(math.pi / 2) if atr is not None
+                     else (spot * 0.0007 if spot else None))
         if minutes <= config.GATES_HIGH_GAMMA_MINUTES:
             metrics["high_gamma_zone"] = True
             if config.GATES_DENY_HIGH_GAMMA:

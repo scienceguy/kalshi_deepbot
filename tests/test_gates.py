@@ -1,6 +1,7 @@
 """Integration tests for gates.py pre-entry evaluation."""
 
 import pytest
+import math
 import time
 from unittest.mock import Mock, patch, MagicMock
 from dataclasses import dataclass
@@ -221,6 +222,30 @@ class TestGatesMath:
         z_yes = gates.cushion_z(96000, 95000, 100, 4, "yes")
         z_no = gates.cushion_z(96000, 95000, 100, 4, "no")
         assert z_no == -z_yes
+
+    def test_cushion_z_scales_with_sqrt_minutes(self):
+        """Quadrupling the time left halves z: denom is sigma*sqrt(t)."""
+        z1 = gates.cushion_z(96000, 95000, 100, 1, "yes")
+        z4 = gates.cushion_z(96000, 95000, 100, 4, "yes")
+        assert abs(z4 - z1 / 2.0) < 1e-9
+
+    def test_cushion_z_undefined_inputs(self):
+        """Fail closed on zero/negative inputs instead of dividing by zero."""
+        assert gates.cushion_z(0, 95000, 100, 4, "yes") is None
+        assert gates.cushion_z(96000, 0, 100, 4, "yes") is None
+        assert gates.cushion_z(96000, 95000, 0, 4, "yes") is None
+        assert gates.cushion_z(96000, 95000, -1, 4, "yes") is None
+        assert gates.cushion_z(96000, 95000, 100, 0, "yes") is None
+
+    def test_atr_to_sigma_conversion(self):
+        """atr_1m is E|X|, not sigma: sigma = atr * sqrt(pi/2) = 1.2533*atr.
+
+        A 1-dollar average true range is ~40% wider in sigma terms, since
+        sqrt(pi/2) = 1.2533 and (1.2533)^2 ~= 1.57.
+        """
+        atr = 100.0
+        sigma = atr * math.sqrt(math.pi / 2)
+        assert abs(sigma - 125.33) < 0.01
 
     def test_normal_cdf(self):
         """normal_cdf should match standard normal CDF."""
