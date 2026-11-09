@@ -801,7 +801,7 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     if not won:
         state.risk.record_market_loss(ticker, abs(realized_pnl))
     if is_paper:
-        paper_mode.add_pnl(realized_pnl)
+        paper_mode.add_pnl(realized_pnl, pnl_type="exit", reason=reason)
 
     # Use exit_order_id in key to distinguish partial exits (different exit orders)
     # If no exit_order_id provided, fall back to entry order_id for backward compat
@@ -1398,7 +1398,7 @@ def cycle(client: KalshiClient):
                     # records this P&L as new. This keeps paper_state.json and
                     # pnl_ledger in sync — both credit PnL at the same point.
                     if is_paper:
-                        paper_mode.add_pnl(realized_pnl)
+                        paper_mode.add_pnl(realized_pnl, pnl_type="settlement", reason="settlement")
                 elif applied is False:
                     log.info("Settlement P&L already recorded for %s — skipping duplicate", t)
                 else:
