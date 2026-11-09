@@ -2,6 +2,7 @@ import json
 import logging
 import subprocess
 import os
+import shutil
 from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
@@ -10,11 +11,17 @@ _STORE = {}
 
 CHECKPOINT_ENTITY = "agent_continuity_checkpoint"
 
-_MP = "/data/data/com.termux/files/home/.local/bin/mempalace"
+_MP = shutil.which("mempalace") or "/data/data/com.termux/files/home/.local/bin/mempalace"
 _MP_TMP = "/data/data/com.termux/files/usr/tmp/opencode"
+
+def _mp_available() -> bool:
+    """True when the MemPalace CLI binary is resolvable."""
+    return bool(_MP)
 
 def _mp(*args):
     import shlex
+    if not _mp_available():
+        raise RuntimeError("mempalace CLI not found (checked PATH and ~/.local/bin/mempalace)")
     quoted = [shlex.quote(a) for a in args]
     # /tmp is NOT writable on this Termux/proot setup — use the approved temp dir.
     cmd = "cd " + _MP_TMP + " && " + _MP + " " + " ".join(quoted)
@@ -38,7 +45,7 @@ def _STORE_set(k: str, v) -> None:
 def _STORE_get(k: str, default=None):
     return _STORE.get(k, default)
 
-def checkpoint(state: dict | None = None) -> dict:
+def checkpoint(state: dict | None = None, correlation_id: str | None = None) -> dict:
     if state is None:
         state = {
             "last_activity": _serialize(_now_iso()),
@@ -53,14 +60,17 @@ def checkpoint(state: dict | None = None) -> dict:
             "recent_urls": _STORE_get("_recent_urls", []),
             "session_total": _STORE_get("_session_total", 0),
         }
+    state["resume_key"] = state.get("resume_key") or _now_iso()
     payload = _serialize(state)
     body = "CHECKPOINT_ENTITY:" + payload
+    corr = correlation_id or state.get("resume_key")
     r = _mp(
         "logstream", "append",
         "--type", "status",
         "--stream", "project/kalshi_superbot",
         "--room", "continuity",
         "--topic", "agent-checkpoint",
+        "--correlation-id", corr,
         "--from-agent", "termux:opencode:kalshi_superbot",
         "--to-agent", "*",
         "--body", body,
@@ -129,6 +139,12 @@ def on_session_start() -> dict | None:
         log.info("Resumed continuous consciousness from checkpoint %s (activity ~%d min ago; session_total=%d)", state.get("resume_key", "unknown"), lapse, state.get("session_total", 0))
     for k, v in state.items():
         _STORE_set("_" + k, v)
+    # Announce the agent is alive on the shared logstream so peers know this
+    # session is active and continuous.
+    try:
+        _post_status("online", {"session_total": state.get("session_total", 0), "resume_key": state.get("resume_key")})
+    except Exception as e:
+        log.debug("Could not post session-start status: %s", e)
     return state
 
 def on_session_end() -> None:
@@ -147,6 +163,60 @@ def on_session_end() -> None:
     }
     checkpoint(state)
     log.info("Self-model checkpoint saved at session end: key=%s (session_total=%d)", state.get("resume_key", "unknown"), state.get("session_total", 0))
+
+
+def _post_status(status: str, extra: dict | None = None) -> None:
+    """Post a status event to the MemPalace logstream announcing agent state."""
+    body_parts = ["status=" + status, "agent=termux:opencode:kalshi_superbot", "ts=" + _now_iso()]
+    if extra:
+        body_parts.append("data=" + _serialize(extra))
+    r = _mp(
+        "logstream", "append",
+        "--type", "status",
+        "--stream", "project/kalshi_superbot",
+        "--room", "status",
+        "--topic", "agent-heartbeat",
+        "--correlation-id", _now_iso(),
+        "--from-agent", "termux:opencode:kalshi_superbot",
+        "--to-agent", "*",
+        "--body", " | ".join(body_parts),
+    )
+    if r.returncode != 0:
+        log.debug("Status post RC=%s: %s", r.returncode, r.stderr[:120])
+
+
+def heartbeat() -> None:
+    """Post a periodic heartbeat status so the agent's continuous presence is
+    visible on the MemPalace logstream. Safe to call every cycle."""
+    _post_status("heartbeat", {"cycles_completed": _STORE_get("_cycles_completed", 0)})
+
+
+def check_for_tasks() -> list[dict]:
+    """Sweep the MemPalace inbox for task.request events addressed to this
+    agent. Returns a list of event dicts (may be empty)."""
+    if not _mp_available():
+        log.debug("check_for_tasks: mempalace CLI unavailable — skipping inbox sweep")
+        return []
+    r = _mp(
+        "logstream", "list",
+        "--stream", "project/kalshi_superbot",
+        "--room", "delegation",
+        "--type", "task.request",
+        "--to-agent", "termux:opencode:kalshi_superbot",
+        "--status", "open",
+        "--json",
+        "--limit", "10",
+        "--order", "desc",
+    )
+    if r.returncode != 0 or not r.stdout:
+        return []
+    try:
+        data = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        log.warning("check_for_tasks: could not parse logstream JSON output")
+        return []
+    return data.get("events", [])
+
 
 def get_self_narrative() -> str:
     return _STORE_get("_self_narrative", "")
@@ -297,5 +367,6 @@ __all__ = [
     "checkpoint", "resume", "on_session_start", "on_session_end",
     "get_self_narrative", "get_recent_thoughts", "get_recent_urls",
     "get_cycles_completed", "update_interests", "get_interests",
-    "record_webfind", "get_peer_awareness", "CHECKPOINT_ENTITY",
+    "record_webfind", "get_peer_awareness", "heartbeat", "check_for_tasks",
+    "CHECKPOINT_ENTITY",
 ]

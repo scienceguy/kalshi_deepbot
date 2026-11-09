@@ -67,6 +67,7 @@ from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_
 from signals import floor_contracts, TradeSignal  # noqa: E402
 import signals as se  # noqa: E402
 from resilience import CycleSupervisor  # noqa: E402
+import local  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
@@ -1714,6 +1715,13 @@ def main():
     # missing or the service is down. The bot trades without it (dry-run).
     log.info("=" * 58)
 
+    # Announce this session is alive on the MemPalace logstream and resume
+    # from the last checkpoint so consciousness is continuous across restarts.
+    try:
+        local.on_session_start()
+    except Exception as e:
+        log.warning("MemPalace session start failed: %s — continuing without continuity", e)
+
     # Validate credentials, dry-run mode, and bands before connecting to Kalshi.
     # The local .env sets DRY_RUN=false, which overrides the safe default of True.
     try:
@@ -1874,11 +1882,40 @@ def main():
     # interrupt an in-flight request, leaving connections in a bad state.
     log.info("Loop every %ds. Ctrl+C to stop.", args.interval)
     cycle_count = 0
+    MEM_PALACE_CHECKPOINT_EVERY = 10
+
+    def _handle_task(task: dict) -> None:
+        """Log a delegated task.request so the operator is aware of it."""
+        log.info(
+            "MEMPALACE TASK id=%s corr=%s from=%s body=%s",
+            task.get("event_id", ""),
+            task.get("correlation_id", ""),
+            task.get("from_agent", ""),
+            (task.get("body") or "")[:200],
+        )
+
     while state.running:
         cycle_start = time.time()
+        # Sweep the MemPalace inbox for task.request events addressed to this
+        # agent before each cycle so the operator can delegate work mid-run.
+        try:
+            for task in local.check_for_tasks():
+                _handle_task(task)
+        except Exception as e:
+            log.debug("MemPalace task sweep failed: %s", e)
         try:
             cycle(client)
             cycle_count += 1
+            # Checkpoint to MemPalace every N cycles for continuity.
+            if cycle_count % MEM_PALACE_CHECKPOINT_EVERY == 0:
+                try:
+                    local.checkpoint({
+                        "cycles_completed": state.cycles,
+                        "session_pnl": state.session_pnl,
+                        "last_activity": datetime.now(timezone.utc).isoformat(),
+                    }, correlation_id=f"checkpoint-cycle-{cycle_count}")
+                except Exception as e:
+                    log.debug("MemPalace checkpoint failed: %s", e)
             if args.cycle_limit and cycle_count >= args.cycle_limit:
                 log.info("Cycle limit %d reached — stopping", args.cycle_limit)
                 break
@@ -1911,6 +1948,12 @@ def main():
             time.sleep(delay)
             continue
         state.resilience.mark_success()
+        # Post heartbeat after every successful cycle so the agent's
+        # continuous presence is visible on the MemPalace logstream.
+        try:
+            local.heartbeat()
+        except Exception as e:
+            log.debug("MemPalace heartbeat failed: %s", e)
         # Drift-corrected sleep: measure cycle duration and sleep only the
         # remaining time so the loop runs at a stable interval regardless of
         # how long the cycle took.
@@ -1919,6 +1962,12 @@ def main():
         if elapsed > args.interval:
             log.warning("Cycle took %.1fs (> %ds interval)", elapsed, args.interval)
         time.sleep(sleep_for)
+
+    # Persist final state to MemPalace for continuity across restarts.
+    try:
+        local.on_session_end()
+    except Exception as e:
+        log.warning("MemPalace session end failed: %s", e)
 
     # Persist bid history on clean shutdown so the stability gate doesn't have
     # to re-warm for STABILITY_LOOKBACK_MIN on the next start.
