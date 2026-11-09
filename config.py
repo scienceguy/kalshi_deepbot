@@ -287,7 +287,9 @@ HEDGE_STABILITY_ENABLED = _env_bool("HEDGE_STABILITY_ENABLED", True)
 # CONFIDENCE SCORING (from kalshi_live_bot)
 # ═════════════════════════════════════════════════════════════════════
 MIN_CONFIDENCE = _env_float("MIN_CONFIDENCE", 0.4)
-CONFIDENCE_STRENGTH_SCALE = _env_float("CONFIDENCE_STRENGTH_SCALE", 100.0)
+# Strength is in cents (typically 1-50 for skew/trend). Scale should match
+# the actual range so strength_score reaches 1.0 at typical max strength.
+CONFIDENCE_STRENGTH_SCALE = _env_float("CONFIDENCE_STRENGTH_SCALE", 50.0)
 CONFIDENCE_MID_WEIGHT = _env_float("CONFIDENCE_MID_WEIGHT", 0.4)
 CONFIDENCE_STRENGTH_WEIGHT = _env_float("CONFIDENCE_STRENGTH_WEIGHT", 0.6)
 

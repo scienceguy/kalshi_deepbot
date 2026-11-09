@@ -289,18 +289,25 @@ def find_active_markets(client: KalshiClient):
             all_mains.extend(mains)
             all_hedges.extend(hedges)
 
-    # Fetch orderbooks concurrently for all rungs passing the band filter,
+    # Fetch orderbooks for ALL mains from the /markets fetch (not just those
+    # passing the stale band filter). Stale prices from /markets can mis-filter:
+    # a market that passes on stale data gets an orderbook fetch; one that fails
+    # on stale data is dropped before the orderbook can correct it.
+    # Use a permissive initial band (1-99) for orderbook fetching, then apply
+    # the real entry band after fresh prices are available.
+    FETCH_BAND_MIN = 1
+    FETCH_BAND_MAX = 99
     fetch_list = []  # (mkt, ct, ml, role, ya)
     for mkt, ct, ml, mid in all_mains:
-        fetch_list.append((mkt, ct, ml, "MAIN", None))
+        if mid is not None and FETCH_BAND_MIN <= mid <= FETCH_BAND_MAX:
+            fetch_list.append((mkt, ct, ml, "MAIN", None))
 
     all_hedges.sort(key=lambda x: x[3])
     for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
         fetch_list.append((mkt, ct, ml, "HEDGE_NO", ya))
 
-    # Fetch orderbooks for all rungs passing the band filter,
-    # Cap workers so we don't burst past Kalshi's ~10 req/s rate limit and
-    # trigger 429s when many markets are candidates.
+    # Fetch orderbooks for all rungs passing the permissive fetch band.
+    # Cap workers so we don't burst past Kalshi's ~10 req/s rate limit.
     ob_map = {}
     if fetch_list:
         with ThreadPoolExecutor(max_workers=min(len(fetch_list), 4)) as ex:
@@ -313,9 +320,7 @@ def find_active_markets(client: KalshiClient):
                 except Exception:
                     ob_map[m["ticker"]] = ({}, ya)
 
-    # Process ALL mains passing the entry band (multi-market mode).
-    # Earlier versions picked the single closest to 50c; now we keep all
-    # that pass the entry band to maximize opportunity.
+    # Process ALL mains passing the REAL entry band (using fresh orderbook prices).
     for mkt, ct, ml, mid in all_mains:
         ob = ob_map.get(mkt["ticker"], ({}, None))[0]
         series = mkt.get("series_ticker", "")

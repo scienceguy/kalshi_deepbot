@@ -141,7 +141,7 @@ def _maker_price(market: MarketInfo, bullish: bool) -> int:
 _bid_hist: dict[str, list[tuple[float, int]]] = {}
 _bid_hist_dirty = False
 _last_bid_hist_save = 0.0
-_BID_HIST_SAVE_INTERVAL = 30.0
+_BID_HIST_SAVE_INTERVAL = 5.0
 
 # Track tickers that have already warned about fresh start / insufficient coverage
 # to avoid spamming logs on every cycle.

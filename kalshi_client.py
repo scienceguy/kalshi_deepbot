@@ -29,6 +29,31 @@ _MIN_REQUEST_GAP = config.REQUEST_MIN_GAP_SECONDS   # seconds between requests
 # Balance endpoint hits stricter write bucket (100 tokens/s at Basic) — needs more gap
 _MIN_BALANCE_GAP = config.REQUEST_MIN_GAP_SECONDS * 2  # 2x for balance endpoint
 
+# Engine mapping — crypto 15M series moved to engine 2 in Aug 2026.
+# https://www.reddit.com/r/Kalshi/comments/1vy26z9/
+CRYPTO_15M_SERIES = {
+    "KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M",
+    "KXBNB15M", "KXHYPE15M", "KXZEC15M", "KXNEAR15M",
+}
+
+CRYPTO_EXCHANGE_INDEX = 2
+
+
+def _is_crypto_15m(ticker_or_series: str) -> bool:
+    """Check if a ticker or series belongs to the crypto 15M shard (engine 2)."""
+    # Match series prefix: KXBTC15M, KXETH15M, etc.
+    for series in CRYPTO_15M_SERIES:
+        if ticker_or_series.startswith(series):
+            return True
+    return False
+
+
+def _add_exchange_index(params_or_payload: dict, ticker_or_series: str) -> dict:
+    """Add exchange_index=2 for crypto 15M series."""
+    if _is_crypto_15m(ticker_or_series):
+        params_or_payload["exchange_index"] = CRYPTO_EXCHANGE_INDEX
+    return params_or_payload
+
 
 class KalshiAPIError(Exception):
     """Raised when the Kalshi API returns an error status code."""
@@ -294,6 +319,7 @@ class KalshiClient:
         params = {"status": status, "limit": limit}
         if series_ticker:
             params["series_ticker"] = series_ticker
+            _add_exchange_index(params, series_ticker)
         data = self._request("GET", "/markets", params=params)
         result = data.get("markets", [])
         self._markets_cache[key] = (now, result)
@@ -325,7 +351,9 @@ class KalshiClient:
 
     def get_market(self, ticker: str) -> dict:
         """Fetch a single market's details including expiration_value for settlement."""
-        data = self._request("GET", f"/markets/{ticker}")
+        params = {}
+        _add_exchange_index(params, ticker)
+        data = self._request("GET", f"/markets/{ticker}", params=params)
         if "market" not in data:
             log.warning("get_market(%s): API response missing 'market' key — "
                         "using whole response as fallback", ticker)
@@ -345,7 +373,7 @@ class KalshiClient:
             depth = 50
 
         data = self._request("GET", f"/markets/{ticker}/orderbook",
-                              params={"depth": depth})
+                              params=_add_exchange_index({"depth": depth}, ticker))
         if not isinstance(data, dict):
             log.warning("get_orderbook(%s): unexpected response type %s, returning empty book",
                         ticker, type(data).__name__)
@@ -486,6 +514,7 @@ class KalshiClient:
             # cross, so it opts out.
             "post_only":                   not config.AGGRESSIVE_FILL,
         }
+        _add_exchange_index(payload, ticker)
 
         if config.DRY_RUN:
             log.info("[DRY RUN] %s", payload)
@@ -537,6 +566,7 @@ class KalshiClient:
             # post_only only when it is genuinely resting; an exit crosses.
             "post_only":                   time_in_force != "immediate_or_cancel",
         }
+        _add_exchange_index(payload, ticker)
 
         if config.DRY_RUN:
             log.info("[DRY RUN] sell %s", payload)

@@ -188,9 +188,11 @@ class RiskManager:
             return False, "consecutive loss cooldown"
 
         # Per-market daily loss limit check. The config value is a fraction of
-        # cash, so it must be scaled here — trader.py does the same at its own
-        # gate, and passing the raw fraction made the two disagree by ~10x.
-        market_limit = cash * config.MARKET_DAILY_LOSS_PCT
+        # total portfolio value (cash + exposure), so it scales with the full
+        # account. Using cash alone makes the limit artificially tight when
+        # exposure is high (cash << total_value).
+        portfolio_value = cash + exposure
+        market_limit = portfolio_value * config.MARKET_DAILY_LOSS_PCT
         if self.market_loss_exceeded(ticker, market_limit):
             return False, f"market daily loss limit reached: {self.state.market_daily_losses.get(ticker, 0.0):.2f} >= {market_limit:.2f}"
 

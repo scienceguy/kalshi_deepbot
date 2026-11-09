@@ -139,7 +139,8 @@ class BotState:
 
     def __init__(self):
         self.positions: dict = {}          # ticker -> order_id or "dry"
-        self.resting_value: dict = {}      # order_id -> reserved dollars
+        self.resting_value: dict = {}      # order_id -> {"dollars": float, "ticker": str}
+        self.resting_tickers: set = set()  # tickers with resting orders this cycle
         self.last_cash_log: float = -1.0
         self.session_pnl: float = 0.0
         self.cycles: int = 0
@@ -287,6 +288,12 @@ class BotState:
             )
             return False
 
+        # If cash is unknown (balance fetch failed), skip order placement.
+        # We can't safely evaluate risk without knowing available capital.
+        if cash is None:
+            log.info("CASH UNKNOWN — skipping order for %s", ticker)
+            return False
+
         reserved_cash = self.window.get("reserved_cash", 0.0)
         if reserved_cash:
             remaining_after = cash - sig.dollar_risk
@@ -298,7 +305,7 @@ class BotState:
                 return False
 
         # Check resting orders
-        pending = sum(self.resting_value.values())
+        pending = sum(v["dollars"] for v in self.resting_value.values())
         if pending + sig.dollar_risk > cash + 1e-9:
             log.info(
                 "CASH BLOCK %s — new $%.2f + resting $%.2f > available cash $%.2f",
@@ -327,7 +334,7 @@ class BotState:
 
         allowed, reason = self.risk.check(
             cash, exposure, sig.dollar_risk, ticker, total_value,
-            resting_orders_value=sum(self.resting_value.values()),
+            resting_orders_value=sum(v["dollars"] for v in self.resting_value.values()),
             paper=config.DRY_RUN,
         )
         if not allowed:
@@ -369,7 +376,9 @@ class BotState:
             "paper": config.DRY_RUN,
         }
         self.window["entered"].add(ticker)
-        self.resting_value.pop(oid, None)
+        info = self.resting_value.pop(oid, None)
+        if isinstance(info, dict) and info.get("ticker"):
+            self.resting_tickers.discard(info["ticker"])
         log.info("✓ %s order_id=%s (fills=%.2f)", ticker, oid, fill_count)
         self.window["used"] += filled_risk
         self.trades_placed += 1
@@ -668,6 +677,14 @@ def _replay_settlement_queue(client=None):
     by re-fetching the market's settlement via `client`, computing PnL, then
     re-sent. Without `client`, pending entries are left queued rather than being
     dropped — dropping them would silently lose realized PnL.
+
+    Order of operations (matching _book_exit):
+      1. Apply to local pnl_ledger via idempotency key (prevents double-count on restart)
+      2. Write to Supabase
+      3. Fire n8n webhook
+      4. Remove from queue (only if steps 1-3 succeed)
+    This ensures a crash after step 1 leaves PnL recorded locally; the
+    idempotency key prevents double-counting on replay.
     """
     queue = _load_settlement_queue()
     if not queue:
@@ -680,28 +697,42 @@ def _replay_settlement_queue(client=None):
             # A pending entry has no PnL yet — resolve it from the exchange.
             if payload.get("pnl_dollars") is None:
                 if client is None:
-                    remaining.append(entry)  # can't resolve without a client
+                    remaining.append(entry)
                     continue
                 resolved = _resolve_pending_settlement(client, payload)
                 if resolved is None:
-                    remaining.append(entry)  # settlement still unavailable
+                    remaining.append(entry)
                     continue
                 payload = resolved
                 entry["payload"] = payload
-            n8n_client = get_n8n_client()
-            n8n_client.execute_webhook("superbot-trade", payload, max_retries=1)
-            # Persist the queue WITHOUT this entry before crediting PnL, so a
-            # crash between the webhook and the credit can't replay the same
-            # settlement and double-count on restart.
-            _save_settlement_queue(remaining + queue[i + 1:])
+
             pnl = payload.get("pnl_dollars")
+            order_id = payload.get("order_id", "")
+            ticker = payload.get("ticker", "")
+
+            # Step 1: Apply to local pnl_ledger FIRST (idempotency key prevents double-count)
             if pnl is not None:
-                new_session_pnl = state.session_pnl + pnl
-                # Write PnL to Supabase FIRST, then update local state
+                # Use event_ticker for idempotency key to group all strikes of one event
+                event_ticker = payload.get("event_ticker", ticker)
+                settle_key = f"settle:{event_ticker}:{order_id}"
+                applied = get_local_db().apply_settlement_pnl(
+                    settle_key, ticker, pnl, fee_dollars=0.0, source="local")
+                pnl_to_add = 0.0 if applied is False else pnl
+                new_session_pnl = state.session_pnl + pnl_to_add
+
+                # Step 2: Write to Supabase
                 if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
                     state.session_pnl = new_session_pnl
                 log.debug("Replayed settlement PnL $%.2f persisted to Supabase", new_session_pnl)
-            log.info("Replayed settlement for %s", payload.get("order_id"))
+
+            # Step 3: Fire n8n webhook
+            n8n_client = get_n8n_client()
+            n8n_client.execute_webhook("superbot-trade", payload, max_retries=1)
+
+            # Step 4: Remove from queue ONLY after 1-3 succeed
+            _save_settlement_queue(remaining + queue[i + 1:])
+            log.info("Replayed settlement for %s", order_id)
+
         except Exception as e:
             log.warning("Replay settlement failed for %s — re-queueing: %s",
                         payload.get("order_id"), e)
@@ -813,6 +844,7 @@ def _manage_paper_fills(markets, client):
             # Window closed (or market no longer returned) — the order died with it.
             state.paper_resting.pop(oid, None)
             state.resting_value.pop(oid, None)
+            state.resting_tickers.discard(ticker)
             continue
         ask = m.yes_ask if sig.side == "yes" else m.no_ask
         if ask and ask <= sig.entry_price:
@@ -820,10 +852,12 @@ def _manage_paper_fills(markets, client):
                 client, sig, oid, sig.contracts, "executed", 0.0, state.cycles
             )
             state.paper_resting.pop(oid, None)
+            state.resting_tickers.discard(ticker)
             client.invalidate_markets(series_ticker=sig.market.series)
         elif now - rec["placed_at"] > config.STALE_ORDER_MINS * 60:
             state.paper_resting.pop(oid, None)
             state.resting_value.pop(oid, None)
+            state.resting_tickers.discard(ticker)
             log.info("Paper order %s unfilled after %.0fmin — cancelled",
                      ticker, config.STALE_ORDER_MINS)
 
@@ -833,11 +867,11 @@ def _already_ordered(ticker: str) -> bool:
 
     _coid() mints a fresh uuid per call, so without this check every cycle
     re-posts the same bid: the exposure multiplies and each copy can fill.
+    Checks the per-cycle resting_tickers set which is updated immediately
+    when orders are placed/filled, avoiding the race where live_resting_orders
+    is only refreshed once per cycle.
     """
-    if config.DRY_RUN:
-        return any(r["sig"].market.ticker == ticker
-                   for r in state.paper_resting.values())
-    return any(o.get("ticker") == ticker for o in state.live_resting_orders)
+    return ticker in state.resting_tickers
 
 
 def clear_resting_orders(client, ticker: str):
@@ -860,6 +894,7 @@ def clear_resting_orders(client, ticker: str):
         if rec["sig"].market.ticker == ticker:
             state.paper_resting.pop(oid, None)
             state.resting_value.pop(oid, None)
+    state.resting_tickers.discard(ticker)
 
 
 def _manage_exits(client):
@@ -1073,7 +1108,10 @@ def cycle(client: KalshiClient):
             if not price_dollars or not count:
                 continue
             # New schema quotes the order's yes/no price in dollars directly.
-            state.resting_value[oid] = count * price_dollars
+            ticker = o.get("ticker", "")
+            state.resting_value[oid] = {"dollars": count * price_dollars, "ticker": ticker}
+            if ticker:
+                state.resting_tickers.add(ticker)
 
             # Cancel stale orders
             if created:
@@ -1082,6 +1120,8 @@ def cycle(client: KalshiClient):
                     if created_ts and (now - created_ts.timestamp()) > config.STALE_ORDER_MINS * 60:
                         client.cancel_order(oid)
                         state.resting_value.pop(oid, None)
+                        if ticker:
+                            state.resting_tickers.discard(ticker)
                         live_ids.discard(oid)
                         log.info("Cancelled stale order %s (older than %.0f min)", oid, config.STALE_ORDER_MINS)
                 except Exception as e:
@@ -1091,7 +1131,9 @@ def cycle(client: KalshiClient):
         # eventually stops trading while believing cash is reserved.
         for stale_oid in list(state.resting_value):
             if stale_oid not in live_ids:
-                state.resting_value.pop(stale_oid, None)
+                info = state.resting_value.pop(stale_oid, None)
+                if info and info.get("ticker"):
+                    state.resting_tickers.discard(info["ticker"])
     except Exception as e:
         log.warning("Could not reconcile resting orders: %s", e)
 
@@ -1129,6 +1171,11 @@ def cycle(client: KalshiClient):
     # Sync positions from Kalshi API — clear settled tickers from state
     api_tickers = {p.get("ticker", "") for p in positions if "15M" in p.get("ticker", "").upper()}
     settled = [t for t in list(state.positions.keys()) if t not in api_tickers]
+    now_ts = time.time()
+    # Track when positions were first detected as settled (for timeout)
+    if not hasattr(state, "settled_since"):
+        state.settled_since = {}
+    SETTLED_TIMEOUT_SECONDS = 3600  # 1 hour max wait for settlement data
     for t in settled:
         # A paper position never appears in the exchange position list, so it
         # looks "settled" the moment it is opened. Only clear it once the market
@@ -1148,32 +1195,25 @@ def cycle(client: KalshiClient):
         contracts = pos_info.get("contracts", 0)
         order_id = pos_info.get("order_id", "")
 
+        # Track when we first detected this position as settled
+        if t not in state.settled_since:
+            state.settled_since[t] = now_ts
+            log.info("Position %s detected as settled — waiting for settlement data", t)
+
         # Fetch actual settlement price from Kalshi market data.
-        # The NEW schema returns settlement_value_dollars ("1.0000"/"0.0000")
-        # or result ("yes"/"no"). The legacy expiration_value was the raw
-        # underlying (e.g. a BTC price), NOT a payout — reading it as 0/100 made
-        # every settlement look invalid and silently dropped realized PnL.
-        exit_price = None  # None means settlement data unavailable — don't book PnL
+        exit_price = None
         try:
             market = client.get_market(t)
             settled_yes = _settle_yes_cents(market)
-            if settled_yes is None:
-                log.warning(
-                    "No settlement data for %s (market=%s) — queuing for retry, "
-                    "not booking synthetic PnL", t, market.get("status"),
-                )
-            else:
+            if settled_yes is not None:
                 if side == "yes":
-                    exit_price = float(settled_yes) / 100.0  # 1.0 or 0.0
+                    exit_price = float(settled_yes) / 100.0
                 else:
-                    exit_price = float(100 - settled_yes) / 100.0  # 0.0 or 1.0
+                    exit_price = float(100 - settled_yes) / 100.0
         except Exception:
-            log.warning(
-                "Could not fetch settlement for %s — queuing for retry, not booking synthetic PnL",
-                t,
-            )
+            log.warning("Could not fetch settlement for %s — will retry", t)
 
-        # Only book PnL when we have real settlement data.
+        # If settlement data available, book PnL and clear position.
         if exit_price is not None:
             buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0, taker=False)
             sell_revenue = fees.sell_cash_in(contracts, exit_price, taker=False)
@@ -1555,7 +1595,8 @@ def cycle(client: KalshiClient):
         if oid:
             # Track reserved cash for this resting order so intra-cycle cash
             # tracking doesn't overspend on orders already placed this cycle.
-            state.resting_value[oid] = sig.dollar_risk
+            state.resting_value[oid] = {"dollars": sig.dollar_risk, "ticker": sig.market.ticker}
+            state.resting_tickers.add(sig.market.ticker)
             cash -= sig.dollar_risk  # Decrement available cash for subsequent orders
 
             # Only record as a filled position when the API reports a fill.
@@ -1574,6 +1615,7 @@ def cycle(client: KalshiClient):
                     client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
                 )
                 state.resting_value.pop(oid, None)
+                state.resting_tickers.discard(sig.market.ticker)
                 # Invalidate market cache so subsequent find_active_markets() calls
                 # in this cycle see updated liquidity/quotes for the filled market.
                 client.invalidate_markets(series_ticker=sig.market.series)
@@ -1692,10 +1734,14 @@ def main():
             price_dollars = _order_price_dollars(o)
             if price_dollars <= 0:
                 continue
-            state.resting_value[oid] = count * price_dollars
+            ticker = o.get("ticker", "")
+            state.resting_value[oid] = {"dollars": count * price_dollars, "ticker": ticker}
+            if ticker:
+                state.resting_tickers.add(ticker)
         if state.resting_value:
             log.info("Seeded %d resting orders worth $%.2f reserved cash",
-                     len(state.resting_value), sum(state.resting_value.values()))
+                     len(state.resting_value),
+                     sum(v["dollars"] for v in state.resting_value.values()))
     except Exception as e:
         log.warning("Could not seed resting orders from Kalshi: %s", e)
 
@@ -1884,6 +1930,16 @@ if __name__ == "__main__":
     # Write PID to lock file for debugging
     with os.fdopen(lock_fd, "w") as f:
         f.write(str(os.getpid()))
+
+    # Runtime guard: if .env has DRY_RUN=false but the user didn't pass --live,
+    # refuse to start. This prevents a silent env flip from enabling live trading.
+    if not config.DRY_RUN and not args.live:
+        log.error(
+            "DRY_RUN is false in .env but --live was not passed. "
+            "Set DRY_RUN=true in .env, or pass --live to confirm live trading."
+        )
+        sys.exit(1)
+
     try:
         main()
     finally:

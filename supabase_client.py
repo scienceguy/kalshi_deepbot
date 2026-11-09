@@ -69,9 +69,10 @@ def _supabase_record_failure() -> None:
 
 def _supabase_record_success() -> None:
     """Reset failure count on a successful call."""
-    global _SUPABASE_FAILURES, _SUPABASE_SKIP_UNTIL
+    global _SUPABASE_FAILURES, _SUPABASE_SKIP_UNTIL, _schema_warned
     _SUPABASE_FAILURES = 0
     _SUPABASE_SKIP_UNTIL = 0.0
+    _schema_warned = False  # re-enable schema-missing warning after success
 
 
 # ── Load credentials (lazy, at call time) ─────────────────────────────────────

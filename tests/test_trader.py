@@ -351,6 +351,10 @@ def test_replay_resolves_pending_and_credits(monkeypatch, tmp_path):
     monkeypatch.setattr(trader.state, "session_pnl", 0.0)
     client = MagicMock()
     client.get_market.return_value = {"expiration_value": 1.0}
+    # Mock local DB to return True (new settlement, not duplicate)
+    monkeypatch.setattr(trader, "get_local_db", lambda: MagicMock(apply_settlement_pnl=MagicMock(return_value=True)))
+    # Mock Supabase to succeed
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock(set_bot_state_batch=MagicMock(return_value=True)))
 
     trader._replay_settlement_queue(client)
 
@@ -719,11 +723,14 @@ def test_already_ordered_blocks_duplicate_entry(monkeypatch):
     monkeypatch.setattr(trader.config, "DRY_RUN", True)
 
     assert trader._already_ordered(market.ticker) is False
-    test_state.paper_resting["oid1"] = {"sig": sig, "placed_at": 0.0}
+    test_state.resting_tickers.add(market.ticker)
+    test_state.resting_value["oid1"] = {"dollars": 1.0, "ticker": market.ticker}
     assert trader._already_ordered(market.ticker) is True
     assert trader._already_ordered("KXETH15M-26NOV08-1200") is False
 
     monkeypatch.setattr(trader.config, "DRY_RUN", False)
+    test_state.resting_tickers.clear()
     assert trader._already_ordered(market.ticker) is False
-    test_state.live_resting_orders = [{"ticker": market.ticker, "order_id": "x"}]
+    test_state.resting_tickers.add(market.ticker)
+    test_state.resting_value["oid1"] = {"dollars": 1.0, "ticker": market.ticker}
     assert trader._already_ordered(market.ticker) is True
