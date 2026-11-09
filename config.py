@@ -333,7 +333,7 @@ LOOP_INTERVAL_SECONDS = max(5, _env_int("LOOP_INTERVAL_SECONDS", 15))
 # verify DRY_RUN before running from a directory whose .env you did not write.
 # ══════════════════════════════════════════════════════════════════════
 DRY_RUN = _env_bool("DRY_RUN", True)
-DRY_STARTING_BALANCE = _env_float("DRY_STARTING_BALANCE", 0.0)
+DRY_STARTING_BALANCE = _env_float("DRY_STARTING_BALANCE", 100.0)
 DRY_TARGET_PROFIT_CENTS = _env_int("DRY_TARGET_PROFIT_CENTS", 4)
 DRY_MAX_PROFIT_CENTS = _env_int("DRY_MAX_PROFIT_CENTS", 4)
 DRY_STRENGTH_SCALE_CENTS = _env_int("DRY_STRENGTH_SCALE_CENTS", 10)
