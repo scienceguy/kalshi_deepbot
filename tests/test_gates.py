@@ -255,5 +255,44 @@ class TestGatesMath:
         assert abs(gates.normal_cdf(1.96) - 0.975) < 0.01
 
 
+class TestMeasuredFloorSide:
+    """GATES_MEASURED_Q is a YES-side win rate; it must never be read as NO's.
+
+    A NO contract priced at 97c is the complement of a YES contract at 3c,
+    and settles NO only a few percent of the time. Flooring its model
+    probability at P(YES wins)=0.9928 would tell the bot a near-certain
+    loser is a near-certain winner, so the floor is keyed on the
+    YES-equivalent price rather than the raw side price.
+    """
+
+    def _run(self, side, cents, q_model):
+        market = MockMarket()
+        book = Mock()
+        with patch.object(gates, "normal_cdf", return_value=q_model), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_EV_ENABLED", False):
+            return gates.evaluate_entry(
+                market, spot_state={}, orderbook=book,
+                side=side, entry_price_cents=cents)
+
+    def test_yes_in_band_records_floor_flag(self):
+        """YES at 97c is the price the 0.9928 was actually measured at."""
+        config.GATES_MEASURED_Q = 0.9928
+        res = self._run("yes", 97, 0.50)
+        assert res.metrics.get("yes_equiv_price_cents") == 97
+        assert res.metrics.get("q_measured_floor") is True
+        assert res.metrics.get("q") >= 0.9928
+
+    def test_no_at_97c_is_not_floored(self):
+        """NO @ 97c == YES @ 3c: outside the band, must not get 99.28%."""
+        res = self._run("no", 97, 0.50)
+        assert res.metrics.get("yes_equiv_price_cents") == 3
+
+    def test_no_at_3c_maps_to_yes_97(self):
+        """The YES-equivalent of a NO@3c fill is 97c: inside the band."""
+        res = self._run("no", 3, 0.50)
+        assert res.metrics.get("yes_equiv_price_cents") == 97
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

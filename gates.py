@@ -381,6 +381,26 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
                 block_reasons.append("gate3: cushion undefined (fail closed)")
             else:
                 q = normal_cdf(z)
+                # The Brownian model has no drift, so at a tail price it
+                # reproduces the venue quote and EV lands on ~0 by construction.
+                # Inside the band we measured the realized win rate instead, and
+                # it is higher than the quote; floor q with it so a genuine tail
+                # edge is not modelled away. Outside the band q is untouched.
+                if entry_price_cents is not None:
+                    # GATES_MEASURED_Q is a YES-side win rate: it answers "P(YES
+                    # wins | YES priced in this band)". A NO fill's price is the
+                    # NO contract's own price, not a YES price, so comparing it
+                    # to the band directly would floor a NO @ 97c -- a contract
+                    # that settles NO only ~3% of the time -- with a 99.28%
+                    # YES win rate. Gate on the YES-equivalent price on both
+                    # sides: NO @ 97c == YES @ 3c, which is outside the band.
+                    yes_equiv = (entry_price_cents if side == "yes"
+                                 else 100 - entry_price_cents)
+                    metrics["yes_equiv_price_cents"] = yes_equiv
+                    if (config.GATES_MEASURED_BAND_MIN_CENTS
+                            <= yes_equiv <= config.GATES_MEASURED_BAND_MAX_CENTS):
+                        q = max(q, config.GATES_MEASURED_Q)
+                        metrics["q_measured_floor"] = True
                 metrics["q"] = q
 
     # ── Gate 2: fee-adjusted EV ─────────────────────────────────────────
