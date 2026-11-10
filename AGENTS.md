@@ -267,7 +267,7 @@ invalid**. If your local history predates the rewrite: `git fetch` then
 
 ## Verification checklist before claiming done
 
-- [x] `python -m pytest tests/ -q` → all pass (152 passed)
+- [x] `python -m pytest tests/ -q` → all pass (308 passed)
 - [x] All 4 n8n webhooks return HTTP 200 (superbot-backtest/collect/trade/monitor)
 - [x] `kalshi_client.get_balance()` returns a dollar amount (not cents) — `cents / 100.0`
 - [x] `git status` clean
