@@ -374,6 +374,15 @@ class KalshiClient:
         self._markets_cache[key] = (now, result)
         return result
 
+    def get_series(self, limit: int = 400) -> list:
+        """List series from the public catalogue (GET /series).
+
+        Discovery only: lets a caller enumerate what is actually live
+        instead of hardcoding a guess list. Uncached, read-only.
+        """
+        data = self._request("GET", "/series", params={"limit": limit})
+        return data.get("series", [])
+
     def invalidate_markets(self, series_ticker: str | None = None,
                            status: str | None = None) -> None:
         """Invalidate cached market data.
