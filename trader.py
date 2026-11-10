@@ -128,42 +128,6 @@ _local_db_api = None
 _raw_supabase = None
 
 
-_trend_engine = None
-
-
-def _trend_ml_fair(m):
-    """Fair P(YES) from the loaded torch model, or None when none is loaded."""
-    if _ml_model is None:
-        return None
-    asset = gates.asset_for(m)
-    spot = gates.spot_for(asset) if asset else None
-    if spot is None or not m.yes_bid or not m.yes_ask:
-        return None
-    mid = (m.yes_bid + m.yes_ask) / 200.0
-    row = {"strike": float(m.strike), "kalshi": mid, "fair": mid, "poly": mid,
-           "spread": (m.yes_ask - m.yes_bid) / 100.0, "minutes_left": m.minutes_left}
-    return _ml_model.predict_proba(row, spot, 0.0007, m.minutes_left)
-
-
-def _trend_maker_step(extra_markets, cash):
-    """Run the paper-only trend maker. Never raises into the trading cycle."""
-    global _trend_engine
-    try:
-        if _trend_engine is None:
-            import trend_maker
-            _trend_engine = trend_maker.TrendMakerEngine(ml_fair=_trend_ml_fair)
-            log.info("Trend maker: PAPER simulation only (no real orders) | models=%s",
-                     config.TREND_MAKER_MODELS)
-        out = _trend_engine.step(extra_markets, cash)
-        if out["opened"] or out["positions"] or out["entries"]:
-            log.info("TREND %s", out)
-        # Always emit band occupancy at debug: markets=0 (starved band) and
-        # markets=N opened=0 (rejected) must not look identical in the log.
-        log.debug("TREND beat markets=%d %s", len(extra_markets), out)
-    except Exception as e:
-        log.warning("Trend maker step failed (ignored): %s", e)
-
-
 def get_supabase_client():
     """Get the local database API (SupabaseClient-compatible interface).
     
@@ -1139,14 +1103,9 @@ def cycle(client: KalshiClient):
 
 # Fetch active markets for mark-to-market exposure computation.
     # find_active_markets fetches fresh data, so invalidation is not needed here.
-    if config.TREND_MAKER_ENABLED:
-        markets = find_active_markets(
-            client, extra_band=(config.TREND_MAKER_BAND_MIN, config.TREND_MAKER_BAND_MAX))
-        # Runs before the empty-list return below: the trend band is mid-range,
-        # so it is usually populated when the favourite band is not.
-        _trend_maker_step(getattr(markets, "extra", []), cash)
-    else:
-        markets = find_active_markets(client)
+    # Trend maker archived (operator decision 2026-11-10): engine kept on disk
+    # but unreachable from the loop; `git revert <archive-sha>` restores the call.
+    markets = find_active_markets(client)
     if not markets:
         log.info("No tradeable markets.")
         return

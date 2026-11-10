@@ -49,13 +49,19 @@ Four workflows injected into n8n via `inject_n8n_workflows.py`:
 - `superbot-trade` — Settlement processor (webhook → Supabase PATCH)
 - `superbot-monitor` — Position monitoring
 
-## Trend maker (paper only)
+## Trend maker (ARCHIVED — paper only, unreachable)
 
-`trend_maker.py` is an opt-in, model-gated maker round-trip engine. It is **paper only**:
-it never places or cancels a real order.
+`trend_maker.py` is kept on disk for reference but is **no longer wired into
+`trader.py`**: setting `TREND_MAKER_ENABLED=true` no longer runs it. It was
+model-gated and **paper only** — never placed or cancelled a real order — and
+was archived on 2026-11-10 because every measured cut lost money net of taker
+fees (negative bootstrap CI; the replay CI lower bound never cleared zero), so
+the objective's fallback applied. Reverse: `git revert <this-sha>`.
+
+The archived engine can still be run directly against a corpus by the analysis
+scripts:
 
 ```bash
-TREND_MAKER_ENABLED=true python trader.py --dry     # or --live: the engine stays paper
 python scripts/trend_report.py                      # CI on net P&L per round trip
 ```
 
