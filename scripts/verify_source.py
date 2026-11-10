@@ -16,10 +16,18 @@ file that compiles is more dangerous than one that does not, because it passes
 review and then misbehaves in a money path. So this checks the text directly
 rather than trusting the parser.
 
-Rule: a non-ASCII *letter* is only allowed in a comment. Non-ASCII punctuation
-(em dash, arrow, multiplication sign, ellipsis) is normal prose and is
-allowed anywhere -- this repo deliberately writes it in comments, docstrings}
-and in user-facing log strings.
+Rule: a non-ASCII *letter* is only allowed on a line that is a comment (or
+contains no code at all). Non-ASCII punctuation (em dash, arrow, multiplication
+sign, ellipsis) is normal prose and is allowed anywhere -- this
+repo writes it in comments, docstrings (config.py:488 ASCII arrow banner), and in
+user-facing log strings.
+
+Corollary, measured not assumed: a CJK *word* inside a string literal is
+reported, e.g. print("zhong wen") with the characters spelled out. The docstring
+above used to claim log strings were exempt; check_file does not exempt them,
+and the only non-ASCII it has ever had to pass in a shipped string is
+punctuation. If a CJK log string is wanted, permit it explicitly here rather
+than weakening the rule by accident.
 
 The distinction is made with unicodedata.category(), not a hand-maintained
 character list: typographic punctuation is in categories P* and S*, while every
