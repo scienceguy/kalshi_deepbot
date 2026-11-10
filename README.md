@@ -49,31 +49,6 @@ Four workflows injected into n8n via `inject_n8n_workflows.py`:
 - `superbot-trade` — Settlement processor (webhook → Supabase PATCH)
 - `superbot-monitor` — Position monitoring
 
-## Trend maker (ARCHIVED — paper only, unreachable)
-
-`trend_maker.py` is kept on disk for reference but is **no longer wired into
-`trader.py`**: setting `TREND_MAKER_ENABLED=true` no longer runs it. It was
-model-gated and **paper only** — never placed or cancelled a real order — and
-was archived on 2026-11-10 because every measured cut lost money net of taker
-fees (negative bootstrap CI; the replay CI lower bound never cleared zero), so
-the objective's fallback applied. Reverse: `git revert <this-sha>`.
-
-The archived engine can still be run directly against a corpus by the analysis
-scripts:
-
-```bash
-python scripts/trend_report.py                      # CI on net P&L per round trip
-```
-
-Each cycle it fits a slope to the YES mid, averages the enabled models
-(`TREND_MAKER_MODELS=gbm,momentum[,ml]`), and joins the bid on the side where fair
-value beats price by `TREND_MAKER_MIN_EDGE_CENTS` and the trend agrees. After a fill it
-rests a sell `TREND_MAKER_TP_CENTS` higher; a taker exit (with fee) happens only on the
-stop or the flatten clock. Every decision is appended to `trend_maker_log.jsonl`.
-Size is a capped fraction of equity, so it compounds only if paper equity grows.
-On a synthetic efficient market it loses money, as it should: it needs a real
-information edge (e.g. Kalshi lagging spot) to pay for stop-outs.
-
 ## Continuous ML training
 
 `scripts/train_ml.py` retrains the torch fair-value model from settled Kalshi

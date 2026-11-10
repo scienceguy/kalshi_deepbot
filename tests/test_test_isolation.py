@@ -29,10 +29,6 @@ def test_gates_log_redirected():
     _assert_redirected(config.GATES_LOG_FILE, "config.GATES_LOG_FILE")
 
 
-def test_trend_maker_log_redirected():
-    _assert_redirected(config.TREND_MAKER_LOG_FILE, "config.TREND_MAKER_LOG_FILE")
-
-
 def test_paper_state_redirected():
     _assert_redirected(paper_mode.STATE_FILE, "paper_mode.STATE_FILE")
 
