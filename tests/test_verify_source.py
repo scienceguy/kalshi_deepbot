@@ -32,6 +32,22 @@ def test_clean_file_passes_and_spliced_file_fails(tmp_path):
     assert found[0][0] == 1
 
 
+def test_deleted_path_is_not_a_finding(tmp_path, monkeypatch):
+    """A file-deleting commit stages paths that no longer exist; that must not
+    fail the corruption gate (it blocked every engine-deletion commit)."""
+    monkeypatch.setattr(sys, "argv",
+                        ["verify_source.py", str(tmp_path / "gone.py")])
+    assert verify_source.main() == 0
+
+
+def test_spliced_file_still_fails_the_gate(tmp_path, monkeypatch):
+    """The fix must not weaken the gate: a real splice still exits 1."""
+    bad = tmp_path / "bad.py"
+    bad.write_text('x = d["\u7cfb"]\n', encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["verify_source.py", str(bad)])
+    assert verify_source.main() == 1
+
+
 def test_market_types_is_ascii_clean():
     """market_types.py is new; catch a corrupted write at commit time, not in prod."""
     import pathlib

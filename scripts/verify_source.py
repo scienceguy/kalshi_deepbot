@@ -163,8 +163,8 @@ def main():
     bad = 0
     for p in paths:
         if not pathlib.Path(p).exists():
-            print("%s: MISSING" % p)
-            bad += 1
+            # Deleted (or absent) path: nothing to scan, so not a finding.
+            # Counting it made every file-deleting commit fail the gate.
             continue
         try:
             found = check_file(p)
