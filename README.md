@@ -74,6 +74,24 @@ Size is a capped fraction of equity, so it compounds only if paper equity grows.
 On a synthetic efficient market it loses money, as it should: it needs a real
 information edge (e.g. Kalshi lagging spot) to pay for stop-outs.
 
+## Continuous ML training
+
+`scripts/train_ml.py` retrains the torch fair-value model from settled Kalshi
+history and writes the gitignored artifact `data/ml_model.pt`. It is **paper
+only** and is **not** wired into `trader.py` — the model loads only when
+`--ml-model` is passed, so retraining cannot change live behaviour on its own.
+
+`scripts/retrain_ml.sh` wraps it and is scheduled every 6 hours by
+`termux-job-scheduler` job **7002**. Re-register on a fresh clone:
+
+```bash
+termux-job-scheduler --job-id 7002 --period-ms 21600000 --network any \
+    --persisted true --battery-not-low true --script "$PWD/scripts/retrain_ml.sh"
+termux-job-scheduler --cancel 7002          # remove it
+```
+
+Logs append to `~/tmp/opencode/retrain_ml.log`.
+
 ## License
 
 Private
