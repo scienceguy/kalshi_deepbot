@@ -222,6 +222,7 @@ def _fetch_klines_paginated(
     timeout: int,
     limit_per_req: int = 1000,
     reverse_results: bool = False,
+    forward: bool = False,
 ) -> Optional[List[List]]:
     """Generic pagination helper for fetching klines from any venue.
     
@@ -233,11 +234,15 @@ def _fetch_klines_paginated(
         timeout: request timeout
         limit_per_req: max results per request
         reverse_results: if True, each batch is newest-first and will be reversed
+        forward: walk from start_ms towards end_ms. Binance needs this: it
+            treats the cursor as ``startTime`` grams, so starting at end_ms
+            returns only the candle at the window's far edge.
     """
     all_klines = []
-    cursor = end_ms
+    cursor = start_ms if forward else end_ms
     try:
-        while cursor > start_ms:
+        while (cursor < end_ms) if forward else (cursor > start_ms):
+            previous = cursor
             params = params_builder(cursor, start_ms, end_ms)
             resp = _session.get(url, params=params, timeout=timeout)
             resp.raise_for_status()
@@ -260,6 +265,10 @@ def _fetch_klines_paginated(
                 cursor = int(data[-1][0]) + 1  # Binance: after newest
             if len(data) < limit_per_req:
                 break
+            if cursor <= previous:
+                # A page that does not advance can only spin forever.
+                log.warning("klines pagination stalled at %s", cursor)
+                break
         return all_klines
     except Exception as e:
         log.warning("klines paginated fetch failed: %s", e)
@@ -274,7 +283,8 @@ def get_klines_range(symbol: str, start_ms: int, end_ms: int,
         return {"symbol": symbol, "interval": interval,
                 "startTime": cursor, "endTime": end_ms, "limit": 1000}
     return _fetch_klines_paginated(
-        f"{BINANCE_REST}/klines", _params, start_ms, end_ms, timeout, 1000, False
+        f"{BINANCE_REST}/klines", _params, start_ms, end_ms, timeout, 1000, False,
+        forward=True,
     )
 
 
