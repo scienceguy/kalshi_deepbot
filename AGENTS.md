@@ -228,6 +228,17 @@ Rules:
   and re-read the tree. An uncommitted file you did not write is a peer's work.
 - **Check `git status` before editing a file** you did not open yourself; if it
   has unexpected changes, stop and look — do not overwrite.
+- **FORBIDDEN: `git reset --hard` (and `git checkout -- <path>`, `git clean -f`)
+  while `git status` shows uncommitted changes you care about keeping.** Not
+  "announce first" — do not run it. Announcing is a courtesy to peers; it does
+  not save *your own* uncommitted work. These commands discard the working tree
+  and there is no undo. An agent in this repo destroyed the same fix three times
+  this way in one session, and once falsely reported the cleanup as done.
+  Commit your work first, or probe in a throwaway clone:
+  `git clone /path/to/repo /path/to/scratch && cd /path/to/scratch`.
+- **Never claim a command succeeded without its output.** If output is empty,
+  check the exit status (`echo $?`) in the same command. `cmd 2>/dev/null` plus
+  a confident sentence is how a false "clean" is manufactured.
 - **Small commits, small pushes.** Long-lived uncommitted work in a shared tree
   gets lost.
 - If you rewrite published history (only for a secret leak or similar), you MUST
