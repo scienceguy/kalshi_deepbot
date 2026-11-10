@@ -157,6 +157,10 @@ def _trend_maker_step(extra_markets, cash):
         out = _trend_engine.step(extra_markets, cash)
         if out["opened"] or out["positions"] or out["entries"]:
             log.info("TREND %s", out)
+        elif extra_markets:
+            # band populated but nothing opened: log the heartbeat so a
+            # rejection is distinguishable from an empty band
+            log.debug("TREND idle markets=%d %s", len(extra_markets), out)
     except Exception as e:
         log.warning("Trend maker step failed (ignored): %s", e)
 
