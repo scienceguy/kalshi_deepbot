@@ -21,7 +21,7 @@ os.environ["MARKOUT_LOG_FILE"] = os.path.join(_TMP, "markout_log.jsonl")
 os.environ["GATES_LOG_FILE"] = os.path.join(_TMP, "gates_log.jsonl")
 os.environ["PAPER_STATE_FILE"] = os.path.join(_TMP, "paper_state.json")
 os.environ["SUPERBOT_LOCAL_DB_DIR"] = os.path.join(_TMP, "local_data")
-os.environ.setdefault("TREND_MAKER_LOG_FILE", os.path.join(_TMP, "trend_maker_log.jsonl"))
+os.environ["TREND_MAKER_LOG_FILE"] = os.path.join(_TMP, "trend_maker_log.jsonl")
 
 import config  # noqa: E402
 import paper_mode  # noqa: E402
