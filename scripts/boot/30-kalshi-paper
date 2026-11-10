@@ -1,0 +1,15 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Boot autostart: paper trend-maker run. DRY ONLY — this file must never
+# pass --live. Live arming stays a manual, operator-confirmed action.
+# Single-instance: skip if a trader is already alive.
+termux-wake-lock
+cd "$HOME/kalshi_deepbot" || exit 1
+mkdir -p tmp
+if pgrep -f 'python trader\.py' > /dev/null 2>&1; then
+    echo "trader already running, not starting a second" >> tmp/paper_run.log
+    exit 0
+fi
+echo "--- boot start $(date -u +%Y-%m-%dT%H:%M:%SZ) ---" >> tmp/paper_run.log
+nohup env PYTHONPATH="$PWD" TREND_MAKER_ENABLED=true \
+    python trader.py --dry --interval 15 --debug \
+    >> tmp/paper_run.log 2>&1 &
