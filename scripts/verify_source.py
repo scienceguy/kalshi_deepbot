@@ -40,9 +40,11 @@ Exit 0 clean, 1 findings, 2 no input. No writes, and it never imports the target
 module (so it cannot execute a trading entry point).
 """
 import argparse
+import io
 import pathlib
 import subprocess
 import sys
+import tokenize
 import unicodedata
 
 SKIP_DIRS = {".git", "__pycache__", "legacy", "venv", ".venv", "node_modules"}
@@ -74,6 +76,35 @@ def _comment_only_lines(text):
         if not s or s.startswith("#"):
             out.add(lineno)
     return out
+
+
+def check_numbers(path):
+    """Return [(lineno, col, token, text)] for a number fused to a name.
+
+    The write path splices ASCII words onto numbers ("0.94laub"). A regex for
+    this falsely flags every valid float with an exponent ("1e-9"), so the rule
+    is Python's own tokenizer: two adjacent tokens, NUMBER then NAME, with no
+    whitespace between them. "1e-9" is one NUMBER token and never a finding.
+    A number in a string or docstring is a STRING token: prose, not code.
+    A file the tokenizer cannot read is reported by the caller as unreadable.
+    """
+    text = pathlib.Path(path).read_text(encoding="utf-8")
+    lines = text.splitlines()
+    findings = []
+    prev = None
+    for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+        if tok.type == tokenize.COMMENT:
+            continue
+        if (prev is not None
+                and prev.type == tokenize.NUMBER
+                and tok.type == tokenize.NAME
+                and prev.end == tok.start):
+            lineno = prev.start[0]
+            col = prev.start[1] + 1
+            src = lines[lineno - 1].strip() if lineno - 1 < len(lines) else ""
+            findings.append((lineno, col, prev.string + tok.string, src))
+        prev = tok
+    return findings
 
 
 def check_file(path):
@@ -129,15 +160,22 @@ def main():
             continue
         try:
             found = check_file(p)
+            # Python's tokenizer only defines a "number" in Python source.
+            # Markdown prose apostrophes ("n8n's") are an unterminated string
+            # to it, so it would fail every doc for no reason.
+            numeric = check_numbers(p) if p.endswith(".py") else []
         except UnicodeDecodeError as e:
             print("%s: not utf-8 (%s)" % (p, e))
             bad += 1
             continue
+        for lineno, col, tok, line in numeric:
+            print("%s:%d:%d: NUMERIC SPLICE %s in %s"
+                  % (p, lineno, col, repr(tok), line))
         for lineno, col, ch, line in found:
             name = unicodedata.name(ch, "U+%04X" % ord(ch))
             print("%s:%d:%d: %s %s in %s"
                   % (p, lineno, col, name, repr(ch), line))
-        if found:
+        if found or numeric:
             bad += 1
         else:
             print("%s: clean" % p)
