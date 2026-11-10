@@ -545,6 +545,7 @@ class TestMLModelLoading:
 
     def test_load_ml_model_success(self, monkeypatch):
         """_load_ml_model loads model via ml_model.MLFairValue.load."""
+        pytest.importorskip("torch")
         import trader
 
         mock_model = MagicMock()
@@ -557,6 +558,7 @@ class TestMLModelLoading:
 
     def test_load_ml_model_failure_returns_none(self, monkeypatch, caplog):
         """_load_ml_model returns None on load failure, logs warning."""
+        pytest.importorskip("torch")
         import trader
 
         monkeypatch.setattr(trader, "_ml_model", None)
@@ -570,6 +572,7 @@ class TestMLModelLoading:
 
     def test_load_ml_model_cached(self, monkeypatch):
         """_load_ml_model returns cached model without reloading."""
+        pytest.importorskip("torch")
         import trader
 
         mock_model = MagicMock()

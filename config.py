@@ -227,6 +227,10 @@ GATES_ATR_CACHE_SECONDS = _env_int("GATES_ATR_CACHE_SECONDS", 60)
 # protection: a 5-minute sync window can lose up to 5 minutes of P&L/state on
 # a crash. 30s keeps the local→online gap small without hammering Supabase.
 LOCAL_DB_SYNC_INTERVAL = _env_float("LOCAL_DB_SYNC_INTERVAL", 30.0)
+MARKOUT_LOG_FILE = Path(
+    os.environ.get("MARKOUT_LOG_FILE")
+    or Path(__file__).resolve().parent / "markout_log.jsonl"
+)
 GATES_LOG_FILE = Path(
     os.environ.get("GATES_LOG_FILE")
     or Path(__file__).resolve().parent / "gates_log.jsonl"
@@ -273,6 +277,38 @@ MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
 # min 75 is a wide guard, not a claim -- see tests/test_gates.py::measured_band_sides.
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 75)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
+
+# ═════════════════════════════════════════════════════════════════════
+# TREND MAKER (paper-only) - model-gated maker round trips.
+# Disabled by default. Buys and sells with resting (post-only style) limit
+# orders only; a taker exit happens only on the stop or the flatten clock.
+# See trend_maker.py. Live execution is deliberately NOT implemented.
+# ═════════════════════════════════════════════════════════════════════
+TREND_MAKER_ENABLED = _env_bool("TREND_MAKER_ENABLED", False)
+TREND_MAKER_MODELS = _env_str("TREND_MAKER_MODELS", "gbm,momentum")  # gbm,momentum,ml
+TREND_MAKER_MIN_MODELS = _env_int("TREND_MAKER_MIN_MODELS", 2)       # fail closed
+TREND_MAKER_BAND_MIN = _env_int("TREND_MAKER_BAND_MIN", 30)          # side price, cents
+TREND_MAKER_BAND_MAX = _env_int("TREND_MAKER_BAND_MAX", 70)
+TREND_MAKER_MAX_SPREAD = _env_int("TREND_MAKER_MAX_SPREAD", 4)
+TREND_MAKER_MIN_EDGE_CENTS = _env_float("TREND_MAKER_MIN_EDGE_CENTS", 4.0)
+TREND_MAKER_MIN_SLOPE = _env_float("TREND_MAKER_MIN_SLOPE", 0.5)     # cents/min
+TREND_MAKER_LOOKBACK_SECONDS = _env_float("TREND_MAKER_LOOKBACK_SECONDS", 180.0)
+TREND_MAKER_MIN_SAMPLES = _env_int("TREND_MAKER_MIN_SAMPLES", 5)
+TREND_MAKER_TP_CENTS = _env_int("TREND_MAKER_TP_CENTS", 3)
+TREND_MAKER_STOP_CENTS = _env_int("TREND_MAKER_STOP_CENTS", 6)
+TREND_MAKER_ENTRY_TTL_SECONDS = _env_float("TREND_MAKER_ENTRY_TTL_SECONDS", 45.0)
+TREND_MAKER_MIN_MINUTES_LEFT = _env_float("TREND_MAKER_MIN_MINUTES_LEFT", 5.0)
+TREND_MAKER_FLATTEN_MINUTES = _env_float("TREND_MAKER_FLATTEN_MINUTES", 3.0)
+TREND_MAKER_MAX_CONTRACTS = _env_int("TREND_MAKER_MAX_CONTRACTS", 2)
+TREND_MAKER_MAX_POSITIONS = _env_int("TREND_MAKER_MAX_POSITIONS", 2)
+TREND_MAKER_BANKROLL_FRACTION = _env_float("TREND_MAKER_BANKROLL_FRACTION", 0.02)
+TREND_MAKER_DAILY_LOSS_STOP = _env_float("TREND_MAKER_DAILY_LOSS_STOP", 3.0)  # dollars
+TREND_MAKER_MAX_CONSEC_LOSSES = _env_int("TREND_MAKER_MAX_CONSEC_LOSSES", 3)
+TREND_MAKER_SIGMA_CANDLES = _env_int("TREND_MAKER_SIGMA_CANDLES", 30)
+TREND_MAKER_LOG_FILE = Path(
+    os.environ.get("TREND_MAKER_LOG_FILE")
+    or Path(__file__).resolve().parent / "trend_maker_log.jsonl"
+)
 
 # NO *market data* format only: Kalshi returns NO prices directly (not
 # complemented), so this stays False. It does NOT affect order pricing —

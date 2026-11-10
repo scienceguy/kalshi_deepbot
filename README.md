@@ -49,6 +49,25 @@ Four workflows injected into n8n via `inject_n8n_workflows.py`:
 - `superbot-trade` — Settlement processor (webhook → Supabase PATCH)
 - `superbot-monitor` — Position monitoring
 
+## Trend maker (paper only)
+
+`trend_maker.py` is an opt-in, model-gated maker round-trip engine. It is **paper only**:
+it never places or cancels a real order.
+
+```bash
+TREND_MAKER_ENABLED=true python trader.py --dry     # or --live: the engine stays paper
+python scripts/trend_report.py                      # CI on net P&L per round trip
+```
+
+Each cycle it fits a slope to the YES mid, averages the enabled models
+(`TREND_MAKER_MODELS=gbm,momentum[,ml]`), and joins the bid on the side where fair
+value beats price by `TREND_MAKER_MIN_EDGE_CENTS` and the trend agrees. After a fill it
+rests a sell `TREND_MAKER_TP_CENTS` higher; a taker exit (with fee) happens only on the
+stop or the flatten clock. Every decision is appended to `trend_maker_log.jsonl`.
+Size is a capped fraction of equity, so it compounds only if paper equity grows.
+On a synthetic efficient market it loses money, as it should: it needs a real
+information edge (e.g. Kalshi lagging spot) to pay for stop-outs.
+
 ## License
 
 Private

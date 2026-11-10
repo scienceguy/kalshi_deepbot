@@ -524,7 +524,7 @@ class KalshiClient:
 
     def place_order(self, ticker: str, side: str, contracts: int,
                     price_cents: int, client_order_id: str,
-                    order_type: str = "limit") -> dict:
+                    order_type: str = "limit", post_only: bool | None = None) -> dict:
         """
         Place a limit order via Kalshi v2 API.
         side: "yes" or "no"
@@ -561,7 +561,8 @@ class KalshiClient:
             # pay a fee the zero-maker-fee model does not budget for. Post-only
             # makes Kalshi reject the cross instead. Aggressive mode wants the
             # cross, so it opts out.
-            "post_only":                   not config.AGGRESSIVE_FILL,
+            "post_only":                   ((not config.AGGRESSIVE_FILL)
+                                            if post_only is None else bool(post_only)),
         }
         _add_exchange_index(payload, ticker)
 

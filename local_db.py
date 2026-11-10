@@ -49,7 +49,8 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 # Local database path
-DB_DIR = Path(__file__).resolve().parent / "local_data"
+DB_DIR = Path(os.environ.get("SUPERBOT_LOCAL_DB_DIR")
+              or Path(__file__).resolve().parent / "local_data")
 DB_DIR.mkdir(exist_ok=True)
 DB_PATH = DB_DIR / "superbot_local.db"
 

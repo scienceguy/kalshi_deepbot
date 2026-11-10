@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import config
-from kalshi_client import KalshiClient
+from kalshi_client import KalshiClient, KalshiAPIError
 
 log = logging.getLogger(__name__)
 
@@ -286,19 +286,28 @@ class _MarketResult(list):
     exposing ``.total_available`` and ``.tradable_count``.
     """
 
-    def __init__(self, iterable=(), total_available=0, tradable_count=0):
+    def __init__(self, iterable=(), total_available=0, tradable_count=0, extra=()):
         super().__init__(iterable)
         self.total_available = total_available
         self.tradable_count = tradable_count
+        # Markets whose YES mid sits in the caller's extra_band. Kept apart from
+        # the list itself so the favourite strategy never sees them.
+        self.extra = list(extra)
 
 
-def find_active_markets(client: KalshiClient):
+def find_active_markets(client: KalshiClient, extra_band=None):
     now = datetime.now(timezone.utc)
     result = []
     total_available = 0
     MIN_P = config.MIN_YES_PRICE_CENTS
     MAX_P = config.MAX_YES_PRICE_CENTS
     HMAX  = config.HEDGE_YES_ASK_MAX
+    # extra_band=(lo, hi) widens only the *fetch* stage so mid-range markets get
+    # an orderbook; the favourite entry band (MIN_P/MAX_P) is untouched.
+    FETCH_MIN_P, FETCH_MAX_P = MIN_P, MAX_P
+    if extra_band:
+        FETCH_MIN_P = min(MIN_P, int(extra_band[0]))
+        FETCH_MAX_P = max(MAX_P, int(extra_band[1]))
 
     # Fetch markets for all series concurrently (bounded pool), then
     # fetch orderbooks concurrently below. This avoids spending several
@@ -308,7 +317,7 @@ def find_active_markets(client: KalshiClient):
 
     def _fetch_one(series: str):
         mains, hedges, n = _fetch_series_markets(client, series, now,
-                                                  MIN_P, MAX_P, HMAX, seen, seen_lock)
+                                                  FETCH_MIN_P, FETCH_MAX_P, HMAX, seen, seen_lock)
         return mains, hedges, n
 
     # Fetch markets for all series concurrently (bounded pool), then
@@ -353,6 +362,7 @@ def find_active_markets(client: KalshiClient):
                 except Exception:
                     ob_map[m["ticker"]] = ({}, ya)
 
+    extra = []
     # Process ALL mains passing the REAL entry band (using fresh orderbook prices).
     # A market is tradeable if YES ask is in band OR NO ask is in band
     # (final-minute taker pays the ask on the favourite side).
@@ -362,6 +372,9 @@ def find_active_markets(client: KalshiClient):
         info = _build(mkt, series, ct, ml, ob, "MAIN")
         yes_ask = info.yes_ask
         no_ask = info.no_ask
+        if extra_band and info.mid_yes is not None \
+                and extra_band[0] <= info.mid_yes <= extra_band[1]:
+            extra.append(info)
         yes_tradeable = yes_ask and MIN_P <= yes_ask <= MAX_P
         no_tradeable = no_ask and MIN_P <= no_ask <= MAX_P
         if yes_tradeable or no_tradeable:
@@ -392,4 +405,4 @@ def find_active_markets(client: KalshiClient):
     log.info("Found %d tradeable brackets out of %d total available markets",
              tradable_count, total_available)
     return _MarketResult(result, total_available=total_available,
-                         tradable_count=tradable_count)
+                         tradable_count=tradable_count, extra=extra)

@@ -56,7 +56,28 @@ if args.debug:
 
 import fees  # noqa: E402
 from supabase_client import get_supabase  # noqa: E402
-import ml_model  # noqa: E402
+
+
+class _LazyModule:
+    """Import a heavy optional module on first attribute access.
+
+    ml_model imports torch, which is not in requirements.txt and is hard to
+    install on aarch64/Termux. Importing it at module load made the whole bot
+    unimportable without torch even though it is only needed for --ml-model.
+    """
+
+    def __init__(self, name):
+        self._name = name
+        self._mod = None
+
+    def __getattr__(self, attr):
+        if self._mod is None:
+            import importlib
+            self._mod = importlib.import_module(self._name)
+        return getattr(self._mod, attr)
+
+
+ml_model = _LazyModule("ml_model")  # noqa: E402
 from local_db import get_local_db_api, get_local_db  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient, CRYPTO_EXCHANGE_INDEX  # noqa: E402
@@ -105,6 +126,39 @@ log = logging.getLogger("trader")
 _local_db_api = None
 # Raw Supabase client for direct reads (e.g., reconciliation)
 _raw_supabase = None
+
+
+_trend_engine = None
+
+
+def _trend_ml_fair(m):
+    """Fair P(YES) from the loaded torch model, or None when none is loaded."""
+    if _ml_model is None:
+        return None
+    asset = gates.asset_for(m)
+    spot = gates.spot_for(asset) if asset else None
+    if spot is None or not m.yes_bid or not m.yes_ask:
+        return None
+    mid = (m.yes_bid + m.yes_ask) / 200.0
+    row = {"strike": float(m.strike), "kalshi": mid, "fair": mid, "poly": mid,
+           "spread": (m.yes_ask - m.yes_bid) / 100.0, "minutes_left": m.minutes_left}
+    return _ml_model.predict_proba(row, spot, 0.0007, m.minutes_left)
+
+
+def _trend_maker_step(extra_markets, cash):
+    """Run the paper-only trend maker. Never raises into the trading cycle."""
+    global _trend_engine
+    try:
+        if _trend_engine is None:
+            import trend_maker
+            _trend_engine = trend_maker.TrendMakerEngine(ml_fair=_trend_ml_fair)
+            log.info("Trend maker: PAPER simulation only (no real orders) | models=%s",
+                     config.TREND_MAKER_MODELS)
+        out = _trend_engine.step(extra_markets, cash)
+        if out["opened"] or out["positions"] or out["entries"]:
+            log.info("TREND %s", out)
+    except Exception as e:
+        log.warning("Trend maker step failed (ignored): %s", e)
 
 
 def get_supabase_client():
@@ -1082,7 +1136,14 @@ def cycle(client: KalshiClient):
 
 # Fetch active markets for mark-to-market exposure computation.
     # find_active_markets fetches fresh data, so invalidation is not needed here.
-    markets = find_active_markets(client)
+    if config.TREND_MAKER_ENABLED:
+        markets = find_active_markets(
+            client, extra_band=(config.TREND_MAKER_BAND_MIN, config.TREND_MAKER_BAND_MAX))
+        # Runs before the empty-list return below: the trend band is mid-range,
+        # so it is usually populated when the favourite band is not.
+        _trend_maker_step(getattr(markets, "extra", []), cash)
+    else:
+        markets = find_active_markets(client)
     if not markets:
         log.info("No tradeable markets.")
         return
@@ -1353,7 +1414,7 @@ def cycle(client: KalshiClient):
                     "won": won,
                 }
                 try:
-                    mf_path = Path(__file__).resolve().parent / "markout_log.jsonl"
+                    mf_path = Path(config.MARKOUT_LOG_FILE)
                     # Locked append so concurrent bot processes can't interleave
                     # mid-line and corrupt the JSONL stream.
                     with open(mf_path, "a") as mf:

@@ -122,6 +122,17 @@ def atr_1m(asset: str) -> float | None:
     return _cached(_atr_cache, asset, config.GATES_ATR_CACHE_SECONDS, _fetch)
 
 
+_LAST_DECISION_MAX = 2000
+
+
+def _prune_last_decision() -> None:
+    """Drop the oldest cached decisions once the cache exceeds its cap."""
+    excess = len(_last_decision) - _LAST_DECISION_MAX
+    if excess > 0:
+        for key in list(_last_decision)[:excess]:
+            _last_decision.pop(key, None)
+
+
 def prefetch(assets) -> None:
     """Warm the spot/ATR caches concurrently before scoring candidates.
 
@@ -129,17 +140,12 @@ def prefetch(assets) -> None:
     inside a 30s cycle. Failures land in the cache as None, so a dead feed
     still fails closed rather than costing another timeout per candidate.
     """
-    # Clean up old _last_decision entries (keep only tickers seen in this cycle)
-    try:
-        seen_tickers = set(assets)
-        if seen_tickers:
-            global _last_decision
-            _last_decision = {
-                k: v for k, v in _last_decision.items()
-                if k[0] in seen_tickers
-            }
-    except Exception:
-        pass
+    # Bound the decision cache. Its keys are (ticker, side) and prefetch() only
+    # receives asset symbols, so pruning by "tickers seen this cycle" compared
+    # BTC against KXBTC15M-... and wiped the whole cache every cycle, which
+    # defeated the log-on-change dedupe. Prune by size instead (dicts keep
+    # insertion order, so this drops the oldest decisions first).
+    _prune_last_decision()
 
     unique = [a for a in dict.fromkeys(assets) if a]
     if len(unique) < 2:

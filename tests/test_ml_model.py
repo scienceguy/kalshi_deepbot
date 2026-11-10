@@ -2,6 +2,10 @@
 
 import ml_model as m
 
+# Skip (not error) on a torch-less checkout: the missing package is optional.
+import pytest
+pytest.importorskip("torch")
+
 
 def _row(strike, spot=100000.0, settle=100500.0, kalshi=None):
     """A rung row labelled by whether settlement cleared the strike."""

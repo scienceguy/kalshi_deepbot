@@ -20,7 +20,13 @@ class TestLoadApiKey:
         monkeypatch.delenv("N8N_API_KEY", raising=False)
         key_file = tmp_path / "n8n_api_key.txt"
         key_file.write_text("file_key_value")
-        monkeypatch.setattr("n8n_client.Path", lambda p: key_file if "n8n_api_key" in str(p) else p)
+        # The loader refuses key files readable by group/other (a deliberate
+        # security check), so the fixture must be owner-only.
+        key_file.chmod(0o600)
+        from pathlib import Path as _RealPath
+        monkeypatch.setattr(
+            "n8n_client.Path",
+            lambda p: key_file if "n8n_api_key" in str(p) else _RealPath(p))
         assert load_api_key() == "file_key_value"
 
 

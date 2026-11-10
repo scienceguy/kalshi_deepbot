@@ -269,6 +269,8 @@ class TestMeasuredFloorSide:
         market = MockMarket()
         book = Mock()
         with patch.object(gates, "normal_cdf", return_value=q_model), \
+             patch.object(gates, "spot_for", return_value=market.strike + 50.0), \
+             patch.object(gates, "atr_1m", return_value=10.0), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
              patch.object(config, "GATES_EV_ENABLED", False):
             return gates.evaluate_entry(
@@ -294,6 +296,8 @@ class TestMeasuredFloorSide:
         market = MockMarket()
         book = Mock()
         with patch.object(gates, "normal_cdf", return_value=0.50), \
+             patch.object(gates, "spot_for", return_value=market.strike + 50.0), \
+             patch.object(gates, "atr_1m", return_value=10.0), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
              patch.object(config, "GATES_EV_ENABLED", False), \
              patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True):

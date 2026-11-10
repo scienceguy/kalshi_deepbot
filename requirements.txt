@@ -6,6 +6,10 @@ pyarrow==14.0.1
 # Required by crossvenue.py and ladder_strategy.py (CDF interpolation).
 numpy>=1.24
 
+# Optional - only needed for --ml-model / ml_model.py / train_xgboost.py.
+# The trading loop imports it lazily and runs without it.
+# torch
+
 # Required by hf_backtest.py (Hugging Face dataset loader).
 huggingface_hub>=0.20
 
