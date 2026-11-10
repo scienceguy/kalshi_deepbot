@@ -50,8 +50,10 @@ def test_cdf_is_monotone_even_when_quotes_are_not():
     # 120 is quoted higher than 110: stale rung, must be flattened.
     lad = _ladder("kalshi", [(110.0, 0.50), (120.0, 0.70), (130.0, 0.20)])
     cdf = cv.to_cdf(lad)
-    probs = cdf[:, 1]
+    probs = [p for _, p in cdf]
     assert all(b <= a + 1e-12 for a, b in zip(probs, probs[1:]))
+    assert cdf[0][1] == pytest.approx(0.50)
+    assert cdf[-1][1] == pytest.approx(0.20)
 
 
 def test_to_cdf_needs_three_rungs():

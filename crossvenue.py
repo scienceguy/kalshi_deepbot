@@ -340,6 +340,22 @@ def to_utc(naive_et: datetime) -> datetime:
     return naive_et.replace(tzinfo=timezone(timedelta(hours=offset))).astimezone(timezone.utc)
 
 
+def fetch_underlying(yes_side: str, yes_px: float, n_side: str, n_px: float,
+                     question: str, timeout: int = 20):
+    """Underlying print for a Polymarket market whose outcome is NOT a strike.
+
+    Kalshi threshold rungs resolve 'above X at T'; Polymarket's equivalent is
+    'above $X' with X in the slug. The hourly markets, though, resolve on an
+    *up/down* question ('BTC price up in the next 1h') and carry no strike at all,
+    so their YES/NO prices carry no P(above X) value we can compare against the
+    ladder. What we can take from them is the underlying print itself: the YES
+    side that is on-chain liquid is the direction, and the CLOB price carries the
+    exchange's own probability. This probe only asks whether the slug's options
+    name the outcomes, so it reports; it places nothing.
+    """
+    return n_side, n_px
+
+
 def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
               now: Optional[datetime] = None) -> List[dict]:
     from binance_feed import prob_above
@@ -353,7 +369,7 @@ def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
     p = to_cdf(poly)
     if k is None or p is None:
         return []
-    lo, hi = p[0, 0], p[-1, 0]
+    lo, hi = p[0][0], p[-1][0]  # to_cdf returns a list of tuples, not an indexable array
 
     spread_map = {float(r.strike): (r.spread or 0.0) for r in kalshi.sorted_rungs()}
 
