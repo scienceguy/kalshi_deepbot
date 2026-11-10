@@ -185,8 +185,10 @@ def train_from_history(series: str = "KXBTCD", events: int = 6,
             ticker = near[strike]
             for c in ch.candles(ticker, series, start_ts, close_ts):
                 ts = int(c["end_period_ts"])
-                bid = c.get("yes_bid")
-                ask = c.get("yes_ask")
+                # candles() carries nested BidAskDistribution dicts; _ohlc
+                # unwraps the close (was a TypeError on dict<dict).
+                bid = ch._ohlc(c.get("yes_bid"))
+                ask = ch._ohlc(c.get("yes_ask"))
                 if bid is None or ask is None or ask < bid or ask - bid > 0.08:
                     continue
                 mid = (bid + ask) / 2.0
@@ -198,7 +200,9 @@ def train_from_history(series: str = "KXBTCD", events: int = 6,
                 mins_left = (close_ts - ts) / 60.0
                 if mins_left <= 0:
                     continue
-                sigma = sigma_by_minute.get(ts, 0.0007)
+                # sigma_curve stores None for minutes with too few klines; a
+                # plain .get(ts, default) returns that None. Fall back instead.
+                sigma = sigma_by_minute.get(ts) or 0.0007
                 sigmas.append(sigma)
                 spots_all.append(spot)
                 rows.append({
