@@ -93,6 +93,18 @@ n8n holds a **copy** of every credential, recreated from the mirror at any time.
 | Move the Kalshi PEM / n8n key into `~/.secrets/` | already done — see `.env` `*_FILE` vars |
 
 - **If a credential is missing from n8n: run `python scripts/n8n_creds_sync.py`.** That is the whole fix.
+- **Kalshi key trap (verified 2026-11-11):** the LIVE Kalshi pair is Bitwarden's
+  **"Kalshi GPT API Key"** + **"Kalshi GPT RSA Key"**. The items named plain
+  **"Kalshi API Key"** / **"Kalshi RSA Key"** are **STALE** (different key id,
+  `INCORRECT_API_KEY_SIGNATURE`). A `bw_pull_secure_notes.py` run copies the
+  stale pair into `bw/kalshi_api_key.json` and `bw/kalshi_rsa_key.json`, so
+  **after any pull, restore those two files** from `.env` `KALSHI_KEY_ID` +
+  `~/.secrets/kalshi_private.pem` (a stale copy is kept as
+  `*_stalebw_<stamp>.json`). Fix the vault item names to end this for good.
+- **Polymarket creds** live in `bw/polymarket_api_key.json` and
+  `bw/polymarket_secret_key.json`. They are CLOB L2 credentials: a
+  **passphrase** and the **wallet private key** (L1 signing) are still missing,
+  so they cannot place orders yet.
 - A background guard (`scripts/n8n_creds_guard.sh`, termux-job-scheduler job
   **7001**, every 15 min, persisted) re-runs the sync automatically.
 - `add_n8n_credentials.py` is deprecated; use `scripts/n8n_creds_sync.py`.
