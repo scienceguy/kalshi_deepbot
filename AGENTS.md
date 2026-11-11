@@ -145,6 +145,16 @@ Host:harness:project = `termux:opencode:kalshi_deepbot`.
 - File durable outcomes with `mempalace_add_drawer`. New KG facts: `mempalace_kg_add`. Changed single-valued fact: `mempalace_kg_supersede`. Ended fact: `mempalace_kg_invalidate`.
 - Do not file secrets or tokens.
 
+Writing drawers when the MCP tools are not exposed in the session:
+- The mempalace MCP server is not registered as a callable tool in every
+  OpenCode session (it is listed in the catalog but `tools.mempalace.*` fails
+  with "Unknown tool namespace"). The server itself writes fine, so drive it
+  over JSON-RPC with `~/bin/mp-call`:
+  `./bin/mp-call mempalace_add_drawer --wing home --room general --content - < note.md`
+  or `./bin/mp-call mempalace_delete_drawer '{"drawer_id":"drawer_..."}'`.
+  Content from stdin (`-`) avoids shell quoting on long notes. Never prints
+  secrets; keep them out of the note as usual.
+
 Coordination (logstream):
 - Always sweep the mempalace inbox at session start, before other work: `mempalace_event_list` to_agent=`termux:opencode:kalshi_deepbot`; act on anything addressed to you.
 - Arm `mempalace logstream watch --agent termux:opencode:kalshi_deepbot --type task.request --type task.reply --type patch.ready --json` when collaborating/claiming/delegating.
