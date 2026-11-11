@@ -61,6 +61,25 @@ if [ -n "$STAGED_PY" ]; then
         echo "       Fix the flagged lines, do not bypass with --no-verify."
         exit 1
     fi
+    # verify_source only sees non-ASCII letters and number+name splices. The
+    # same channel also emits ASCII-only substitutions ("file_env.get" became
+    # "file_env Ade(", "or" became a stray name). Those look like source to it.
+    # The parser is the oracle for that class, and it is read-only.
+    if ! python3 "$(git rev-parse --show-toplevel)/scripts/verify_compiles.py" $STAGED_PY; then
+        echo "ERROR: staged Python files do not parse (ASCII-only token splice)"
+        echo "       See AGENTS.md TOKEN CORRUPTION. Do not bypass with --no-verify."
+        exit 1
+    fi
+    # A splice can be ASCII-only AND still parse, which defeats both gates above:
+    # "return oder" is valid syntax. pyflakes reports the token that nothing
+    # declared, which is what a substitution looks like to Python. Only undefined
+    # names are enforced (see verify_undefined.py); the 84 unused-import style
+    # findings in this tree stay advisory. Skipped cleanly if pyflakes is absent.
+    if ! python3 "$(git rev-parse --show-toplevel)/scripts/verify_undefined.py" $STAGED_PY; then
+        echo "ERROR: staged Python files reference undefined names (token splice)"
+        echo "       See AGENTS.md TOKEN CORRUPTION. Do not bypass with --no-verify."
+        exit 1
+    fi
 fi
 
 # --- 4. /tmp-write guard on staged additions ---------------------------------
