@@ -100,6 +100,16 @@ def cmd_list():
     return 0
 
 
+def iso_now() -> str:
+    """n8n/TypeORM timestamps: milliseconds + Z, never "…+00:00Z".
+
+    `datetime.now(timezone.utc).isoformat() + "Z"` produces a value that
+    TypeORM fails to parse, which silently breaks every credential row's
+    updatedAt (it did, for all 41 of them, on 2026-11-11).
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 def cmd_sync(check: bool, prune: bool = False, force: bool = False) -> int:
     if not STORE.exists():
         print(f"ERROR: mirror {STORE} missing. Restore it with scripts/bw_pull_secure_notes.sh")
@@ -116,7 +126,7 @@ def cmd_sync(check: bool, prune: bool = False, force: bool = False) -> int:
         by_name.setdefault(cname, []).append(cid)
 
     key = None if check else load_encryption_key()
-    now = datetime.now(timezone.utc).isoformat() + "Z"
+    now = iso_now()
     created, deduped, present = 0, 0, 0
 
     for cred in desired:
