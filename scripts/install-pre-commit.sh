@@ -13,8 +13,13 @@ set -e
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK_DIR="$REPO_ROOT/.git/hooks"
 HOOK_FILE="$HOOK_DIR/pre-commit"
+# The versioned source of truth. Hooks under .git/hooks are not cloned or
+# reviewed and are overwritten by operations that rebuild the repo, so the
+# authoritative copy lives in the tree and is copied into place below.
+VERSIONED_HOOK="$REPO_ROOT/.githooks/pre-commit"
 
 mkdir -p "$HOOK_DIR"
+mkdir -p "$REPO_ROOT/.githooks"
 
 cat > "$HOOK_FILE" << 'HOOK_EOF'
 #!/bin/sh
@@ -96,5 +101,14 @@ fi
 exit 0
 HOOK_EOF
 
-chmod +x "$HOOK_FILE"
+# The heredoc above already wrote $HOOK_FILE; mirror that exact content into the
+# versioned path so the two can never drift.
+cp "$HOOK_FILE" "$VERSIONED_HOOK"
+chmod +x "$VERSIONED_HOOK" "$HOOK_FILE"
+
 echo "Pre-commit hook installed at $HOOK_FILE"
+echo "Versioned source of truth:            $VERSIONED_HOOK"
+if ! diff -q "$VERSIONED_HOOK" "$HOOK_FILE" >/dev/null; then
+    echo "WARNING: installed hook differs from the versioned copy" >&2
+fi
+echo "A fresh clone must run this once: sh scripts/install-pre-commit.sh"
