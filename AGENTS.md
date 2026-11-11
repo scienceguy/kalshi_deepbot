@@ -5,6 +5,10 @@ Places favourite-maker limit orders (YES/NO at 75–95c), evaluates signals via 
 LLM with 7-layer fallback, writes signals/orders/bot-state to Supabase, and
 routes settlement P&L through n8n webhooks.
 
+## System constraints (all agents)
+
+- `/tmp` is NOT writable on this termux/proot setup (restricted mount / Android). Never write temp files to `/tmp`. Use `$TMPDIR` (`/data/data/com.termux/files/home/tmp`) or `/data/data/com.termux/files/usr/tmp/opencode` for any temporary writes. Writing to `/tmp` fails with "Permission denied" every time — do not retry there.
+
 ## Repo layout
 
 | File | Purpose |
@@ -113,6 +117,26 @@ n8n holds a **copy** of every credential, recreated from the mirror at any time.
   additions for key patterns. Re-install it on a fresh clone.
 - Secret files: `~/.secrets/kalshi_private.pem`, `~/.secrets/n8n_api_key`,
   `~/.secrets/supabase_service_key`, `~/.secrets/bw/`.
+
+## TOKEN CORRUPTION
+
+The Kalshi generation channel (CI → builder → repo → commit) intermittently splices
+foreign script into identifiers/strings and ASCII words into numbers (`"0.94laub"`).
+
+These files compile, so tests alone do not catch them. The patched pre-commit hook
+(`.git/hooks/pre-commit`, installed by `scripts/install-pre-commit.sh`) runs
+`scripts/verify_source.py` against staged Python to catch:
+
+- **Non-ASCII letters in code** — CJK/Cyrillic/Hebrew/Arabic/Hangul spliced into
+  identifiers (e.g. `r["<han characters>"]` or `node.g<han>ojen`). A letter is only
+  allowed in comments or blank lines.
+- **Number + name splices** — ASCII words onto numbers (e.g. `0.94laub`, detected by
+  Python's own tokenizer as `NUMBER NAME` with no whitespace).
+
+The gate is enforced on every commit; any file that fails `scripts/verify_source.py`
+must be fixed — there is no bypass. HANDOFF.md "Standing trap: this session's write
+path corrupts source" documents the class. Every new source file must be verified
+with `scripts/verify_source.py --all`.
 
 ## Supabase database access
 
