@@ -2,7 +2,8 @@
 
 Regression: the PID write used `with os.fdopen(lock_fd, "w")`, which closed the
 descriptor and released the flock immediately, so a second bot could start and
-trade the same account.
+trade the same account. The lock no longer writes a PID at all, but the fd must
+still stay open for the process lifetime.
 """
 import fcntl
 import os
@@ -16,13 +17,9 @@ sys.argv = ["trader.py"]
 import trader
 
 
-def test_lock_stays_held_after_pid_write(tmp_path):
+def test_lock_stays_held_while_fd_open(tmp_path):
     path = tmp_path / ".lock"
     fd = trader.acquire_instance_lock(path)
-
-    # The PID was written without closing the fd.
-    with open(path) as f:
-        assert f.read() == str(os.getpid())
 
     # A second acquisition attempt must fail while the first fd is open.
     fd2 = os.open(path, os.O_CREAT | os.O_WRONLY)
@@ -53,14 +50,3 @@ def test_exhausted_retries_refuse_to_start(tmp_path, monkeypatch):
             trader.acquire_instance_lock(path)
     finally:
         os.close(holder)
-
-
-def test_pid_rewrite_does_not_leave_stale_digits(tmp_path):
-    path = tmp_path / ".lock"
-    path.write_text("9999999")  # longer than any future PID text
-    fd = trader.acquire_instance_lock(path)
-    try:
-        with open(path) as f:
-            assert f.read() == str(os.getpid())
-    finally:
-        os.close(fd)

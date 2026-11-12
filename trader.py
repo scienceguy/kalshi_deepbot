@@ -2334,23 +2334,20 @@ def acquire_instance_lock(lock_path: Path) -> int:
     """Take the single-instance lock. Returns an fd that must stay open.
 
     The fd has to live for the whole process: closing it releases the flock.
-    Write the PID with os.write rather than `with os.fdopen(...)`, which closes
-    the descriptor and silently unlocks, letting a second bot trade the same
-    account.
+    The lock file's contents are never read, so no PID is written — a stale PID
+    would only mislead a human about whether a bot is running.
     """
     for attempt in range(5):
-        fd = None
+        # Open the lock file (created if needed). Any failure here (permissions,
+        # read-only dir) is a real error and propagates with its own message.
+        fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY)
         try:
-            # Open lock file (create if needed)
-            fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY)
             # Try to acquire exclusive non-blocking lock
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            os.ftruncate(fd, 0)
-            os.write(fd, str(os.getpid()).encode())
             return fd
-        except (OSError, BlockingIOError):
-            if fd is not None:  # reviewed: close only the fd opened for this attempt
-                os.close(fd)
+        except BlockingIOError:
+            # Lock held by another process. Only contention is retried.
+            os.close(fd)
             if attempt < 4:
                 log.warning("Lock held by another process — retrying in 1s (attempt %d/5)", attempt + 2)
                 time.sleep(1)
