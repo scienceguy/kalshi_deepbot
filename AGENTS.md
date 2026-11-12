@@ -457,3 +457,15 @@ maker entry, hold to settlement): the favourite-maker band 15-55c returns
 do not widen it back to 15-55. The bot does find these markets (~28% of windows
 reach 95-99c at some minute 6-11). The binding filter is the gate EV hurdle, not
 the band. Decision drawer: `home/decisions` in MemPalace.
+
+**REALITY TAX (2026-11-12):** the band is right but the edge is thin and rests on
+the model gate. Same HF sample, band 95-99c, minutes 6-11, hold to settlement:
+idealized "fill at ask, no fee" = **+0.43c/trade**; honest **taker at ask, no gate
+= -0.29c**; **maker resting at ask-1 = -4.06c** (fill rate 36.5%, and the win rate
+drops 96.7% -> 91.2% on fills — adverse selection, so the maker variant is dead);
+taker **+ a model gate = +1.03c** (n=727, win 98.6%). But the bot's own gate with
+the configured `MODEL_TYPE=gbm, MODEL_VOLATILITY=0.80` returns **-0.01c**; the same
+gate with volatility scaled from realized per-minute vol returns **+1.03c**. So the
+whole edge is ~1c/trade and depends on the gate being calibrated — the fixed 0.80
+vol is not, and is unvalidated against live outcomes. Do not loosen the band or the
+gate expecting more edge; fix or validate the vol model first.
