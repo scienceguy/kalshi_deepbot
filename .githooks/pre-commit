@@ -68,6 +68,15 @@ if [ -n "$STAGED_PY" ]; then
         echo "       See AGENTS.md TOKEN CORRUPTION. Do not bypass with --no-verify."
         exit 1
     fi
+    # A PURELY ADDED condition in the money path has no removed counterpart, so the
+    # gate above never compares it (measured: exit 0). Nothing mechanical can judge
+    # whether the added branch is the intended one, so require the reviewer to say so
+    # next to the line, as "<line>  # reviewed: why this guard belongs here".
+    if ! python3 "$(git rev-parse --show-toplevel)/scripts/verify_review_marked.py"; then
+        echo "ERROR: new condition in the money path without a review marker"
+        echo "       See AGENTS.md TOKEN CORRUPTION. Do not bypass with --no-verify."
+        exit 1
+    fi
 fi
 
 # --- 4. /tmp-write guard on staged additions ---------------------------------
