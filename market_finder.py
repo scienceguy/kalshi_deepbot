@@ -388,7 +388,7 @@ def find_active_markets(client: KalshiClient, extra_band=None):
             result.append(info)
             side = "YES"
             price = yes_ask
-            log.info("✓ MAIN  %s %.1fmin YES ask=%dc mid=%.0fc bid=%dc skew=%+dc",
+            log.info("✓ MAIN  %s %.1fmin %s ask=%dc mid=%.0fc bid=%dc skew=%+dc",
                      info.ticker, ml, side, price, info.mid_yes or 0, info.yes_bid, info.skew)
         else:
             log.debug("MAIN failed real-price check yes_ask=%dc: %s",
