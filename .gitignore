@@ -130,3 +130,4 @@ trend_maker_log.jsonl
 data/candles_*.jsonl
 data/candles_smoke.jsonl
 tmp/
+fund_ledger.jsonl
