@@ -397,10 +397,15 @@ CONFIDENCE_STRENGTH_SCALE = _env_float("CONFIDENCE_STRENGTH_SCALE", 50.0)
 CONFIDENCE_MID_WEIGHT = _env_float("CONFIDENCE_MID_WEIGHT", 0.4)
 CONFIDENCE_STRENGTH_WEIGHT = _env_float("CONFIDENCE_STRENGTH_WEIGHT", 0.6)
 
-# ═════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # LOOP
 # ═════════════════════════════════════════════════════════════════════
 LOOP_INTERVAL_SECONDS = max(5, _env_int("LOOP_INTERVAL_SECONDS", 15))
+
+# ══════════════════════════════════════════════════════════════════════
+# OBSERVABILITY
+# ══════════════════════════════════════════════════════════════════════
+ZERO_TRADEABLE_ALERT_CYCLES = _env_int("ZERO_TRADEABLE_ALERT_CYCLES", 10)
 
 # ═════════════════════════════════════════════════════════════════════
 # DRY RUN — defaults to True for safety. Must explicitly set DRY_RUN=false

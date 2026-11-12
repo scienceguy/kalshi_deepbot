@@ -203,6 +203,9 @@ class BotState:
         self.last_order_time: float = 0.0
         self.orders_today: int = 0
         self.today: str = ""
+        self.consecutive_no_tradeable_cycles: int = 0
+        self.cycle_outcome: str = "pending"
+        self.tradeable_markets_count: int = 0
 
     def _pre_trade_check(self, sig, market, cash, exposure, total_value, client) -> bool:
         """Pre-trade risk checks (LLM evaluation moved to cycle() as pre-entry filter)."""
@@ -1123,7 +1126,26 @@ def cycle(client: KalshiClient):
     # but unreachable from the loop; `git revert <archive-sha>` restores the call.
     markets = find_active_markets(client)
     if not markets:
-        log.info("No tradeable markets.")
+        # Observability: record "no-tradeable" outcome and count
+        state.cycle_outcome = "no-tradeable"
+        state.tradeable_markets_count = 0
+        state.consecutive_no_tradeable_cycles += 1
+        log.info("No tradeable markets. (consecutive no-tradeable cycles: %d)",
+                 state.consecutive_no_tradeable_cycles)
+        # reviewed: observable alert for zero-tradeable market detection
+        if state.consecutive_no_tradeable_cycles >= config.ZERO_TRADEABLE_ALERT_CYCLES:
+            log.warning(
+                "Alert: %d consecutive cycles with 0 tradeable markets (threshold=%d)",
+                state.consecutive_no_tradeable_cycles, config.ZERO_TRADEABLE_ALERT_CYCLES,
+            )
+            try:
+                get_n8n_client().run_monitor({
+                    "alert": "zero_tradeable_markets",
+                    "consecutive_cycles": state.consecutive_no_tradeable_cycles,
+                    "threshold": config.ZERO_TRADEABLE_ALERT_CYCLES,
+                })
+            except Exception as e:
+                log.debug("Failed to fire n8n monitor webhook: %s", e)
         return
 
     # For dry-run: compute paper mark-to-market exposure from local paper positions
@@ -1649,6 +1671,10 @@ def cycle(client: KalshiClient):
         "cash": cash if cash_available else None,
         "exposure": mark_to_market_exposure,
         "session_pnl": state.session_pnl,
+        "cycle_outcome": state.cycle_outcome,
+        "tradeable_markets_count": state.tradeable_markets_count,
+        "balance": cash if cash_available else None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     if current_state != last_logged:
         try:
@@ -1688,7 +1714,26 @@ def cycle(client: KalshiClient):
         return
 
     if not markets:
-        log.info("No tradeable markets.")
+        # Observability: record "no-tradeable" outcome and count
+        state.cycle_outcome = "no-tradeable"
+        state.tradeable_markets_count = 0
+        state.consecutive_no_tradeable_cycles += 1
+        log.info("No tradeable markets. (consecutive no-tradeable cycles: %d)",
+                 state.consecutive_no_tradeable_cycles)
+        # reviewed: observable alert for zero-tradeable market detection
+        if state.consecutive_no_tradeable_cycles >= config.ZERO_TRADEABLE_ALERT_CYCLES:
+            log.warning(
+                "Alert: %d consecutive cycles with 0 tradeable markets (threshold=%d)",
+                state.consecutive_no_tradeable_cycles, config.ZERO_TRADEABLE_ALERT_CYCLES,
+            )
+            try:
+                get_n8n_client().run_monitor({
+                    "alert": "zero_tradeable_markets",
+                    "consecutive_cycles": state.consecutive_no_tradeable_cycles,
+                    "threshold": config.ZERO_TRADEABLE_ALERT_CYCLES,
+                })
+            except Exception as e:
+                log.debug("Failed to fire n8n monitor webhook: %s", e)
         return
 
     signals = []
@@ -1889,11 +1934,30 @@ def cycle(client: KalshiClient):
                 current_exposure += sig.dollar_risk
             else:
                 # Live mode: maker orders rest until filled.
-                # Only record as filled when floor_contracts(fill_count) > 0.
-                if floor_contracts(fill_count) > 0:
+                # Confirm the fill from the portfolio/orders API before booking PnL
+                # and before crediting the position. This prevents booking PnL at the
+                # wrong quantity or crediting without confirmation. Partial fills are
+                # handled by the API-confirmed fill_count (not assumed full).
+                confirmed_fill_count = None
+                try:
+                    api_resting = client.get_orders(status="resting")
+                    for o in api_resting:
+                        # reviewed: fill confirmation guard — only book PnL when API confirms fill
+                        if o.get("order_id") == oid:
+                            confirmed_fill_count = _order_fill_count(o)
+                            break
+                except Exception as e:
+                    log.warning(
+                        "Failed to confirm fill for %s from portfolio API: %s — "
+                        "keeping order resting",
+                        sig.market.ticker, e,
+                    )
+
+                # reviewed: fill confirmation guard — only book PnL when API confirms fill
+                if confirmed_fill_count is not None and floor_contracts(confirmed_fill_count) > 0:
                     fees_dollars = 0.0  # maker limit order — no taker fee
                     state._record_filled_order(
-                        client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
+                        client, sig, oid, confirmed_fill_count, "executed", fees_dollars, state.cycles
                     )
                     state.resting_value.pop(oid, None)
                     state.resting_tickers.discard(sig.market.ticker)
@@ -1904,12 +1968,19 @@ def cycle(client: KalshiClient):
                     # order's committed capital is already tracked in resting_value,
                     # which max_trade_dollars subtracts from cash — adding it to
                     # exposure too would double-count and over-restrict later trades.
-                    current_exposure += fill_count * sig.entry_price / 100.0
-                    log.info("✓ %s order_id=%s (fill_count=%.0f)", sig.market.ticker, oid, fill_count)
+                    current_exposure += confirmed_fill_count * sig.entry_price / 100.0
+                    log.info(
+                        "✓ %s order_id=%s (confirmed fill_count=%.0f)",
+                        sig.market.ticker, oid, confirmed_fill_count,
+                    )
                 else:
                     # Order is resting — keep in resting_value for future reconciliation.
-                    # The committed capital is already tracked in resting_value.
-                    log.info("↳ %s order_id=%s resting (fill_count=%.0f)", sig.market.ticker, oid, fill_count)
+                    # The committed capital is already tracked in resting_value (lines 1907-1908).
+                    # Do not remove from resting_value or add to exposure yet.
+                    log.info(
+                        "↳ %s order_id=%s resting (fill_count=%.0f)",
+                        sig.market.ticker, oid, fill_count,
+                    )
                 state.last_order_time = time.time()
                 state.orders_today += 1
 
