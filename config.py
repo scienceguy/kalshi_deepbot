@@ -481,6 +481,10 @@ LOG_FILE = Path(__file__).resolve().parent / "bot.log"
 # 5MB per file, 3 rotated backups = ~20MB cap instead of 54MB+ and climbing.
 LOG_MAX_BYTES = _env_int("LOG_MAX_BYTES", 5 * 1024 * 1024)
 LOG_BACKUP_COUNT = _env_int("LOG_BACKUP_COUNT", 3)
+# Paper early exits charge the same taker exit fee as live maker exits, so a
+# dry run's P&L does not silently diverge from live. Single knob; toggling it
+# off restores the old "free paper exit" behaviour.
+PAPER_TAKER_EXIT_FEE = _env_bool("PAPER_TAKER_EXIT_FEE", True)
 __version__ = "2.0.0-superbot"
 
 

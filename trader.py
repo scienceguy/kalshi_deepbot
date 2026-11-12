@@ -813,10 +813,15 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     is_paper = bool(pos.get("paper"))
 
     exit_price = exit_cents / 100.0
-    # Dry-run taker entry: charge taker fee on entry, no fee on settlement
-    # (Kalshi charges no settlement fee). Live maker entry: no fee on entry,
-    # taker fee on exit (crossing the spread).
-    if is_paper:
+    # Paper models a maker entry + taker exit, identical to live, so the dry
+    # run's per-exit fee matches live. Settlement is not a trade (no fee).
+    # reviewed: PAPER_TAKER_EXIT_FEE is a single knob; on = taker exit fee
+    if is_paper and config.PAPER_TAKER_EXIT_FEE:
+        buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=False)
+        sell_revenue = fees.sell_cash_in(filled, exit_price, taker=True)
+        fees_dollars = fees.taker_fee_dollars(filled, exit_price)
+    # reviewed: elif keeps the legacy paper model (taker entry, free exit) on
+    elif is_paper:
         buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=True)
         sell_revenue = fees.sell_cash_in(filled, exit_price, taker=False)
         fees_dollars = fees.taker_fee_dollars(filled, entry_price / 100.0)

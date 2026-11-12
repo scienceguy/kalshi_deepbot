@@ -954,3 +954,66 @@ def test_root_logger_file_handler_is_rotating():
     assert name == "RotatingFileHandler", out.stdout
     assert int(max_bytes) == config.LOG_MAX_BYTES
     assert int(backup) == config.LOG_BACKUP_COUNT
+
+
+def test_paper_exit_charges_taker_exit_fee_when_config_on(monkeypatch):
+    """With PAPER_TAKER_EXIT_FEE on (default), a paper early exit books the
+    same taker-on-exit fee model as a live maker exit, so dry-run P&L matches
+    live. Regression: the old paper path charged taker on entry and none on
+    exit, silently diverging from live."""
+    import config as _cfg
+    from fees import buy_cash_out, sell_cash_in
+    monkeypatch.setattr(_cfg, "PAPER_TAKER_EXIT_FEE", True)
+    monkeypatch.setattr(_cfg, "DRY_RUN", True)
+    # Mock the local ledger so _book_exit crediting is deterministic.
+    ledger = MagicMock()
+    ledger.apply_settlement_pnl.return_value = True
+    monkeypatch.setattr(trader, "get_local_db", lambda: ledger)
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
+    monkeypatch.setattr(trader.paper_mode, "add_pnl", lambda *a, **k: None)
+    monkeypatch.setattr(trader.state.risk, "record_trade_outcome", lambda *a, **k: None)
+    monkeypatch.setattr(trader.state.risk, "record_market_loss", lambda *a, **k: None)
+    trader.state.session_pnl = 0.0
+
+    filled = 10.0
+    entry_cents = 70  # $0.70 entry
+    exit_cents = 90   # $0.90 exit (early exit, before settlement)
+    pos = {"side": "yes", "entry_price": entry_cents, "order_id": "oid1", "paper": True}
+
+    trader._book_exit(MagicMock(), "KXBTC15M-TEST", pos, exit_cents, filled,
+                      reason="test-exit", exit_order_id="exit1")
+
+    # Paper (PAPER_TAKER_EXIT_FEE on) mirrors live maker: taker fee on exit.
+    expected_buy = buy_cash_out(filled, entry_cents / 100.0, taker=False)
+    expected_sell = sell_cash_in(filled, exit_cents / 100.0, taker=True)
+    expected_pnl = expected_sell - expected_buy
+    assert trader.state.session_pnl == pytest.approx(expected_pnl, abs=0.02)
+
+
+def test_paper_exit_fee_config_off_restores_entry_fee(monkeypatch):
+    """Toggling PAPER_TAKER_EXIT_FEE off restores the old paper model (taker
+    fee on entry, free exit)."""
+    import config as _cfg
+    from fees import buy_cash_out, sell_cash_in
+    monkeypatch.setattr(_cfg, "PAPER_TAKER_EXIT_FEE", False)
+    monkeypatch.setattr(_cfg, "DRY_RUN", True)
+    ledger = MagicMock()
+    ledger.apply_settlement_pnl.return_value = True
+    monkeypatch.setattr(trader, "get_local_db", lambda: ledger)
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
+    monkeypatch.setattr(trader.paper_mode, "add_pnl", lambda *a, **k: None)
+    monkeypatch.setattr(trader.state.risk, "record_trade_outcome", lambda *a, **k: None)
+    monkeypatch.setattr(trader.state.risk, "record_market_loss", lambda *a, **k: None)
+    trader.state.session_pnl = 0.0
+
+    filled = 10.0
+    entry_cents = 70
+    exit_cents = 90
+    pos = {"side": "yes", "entry_price": entry_cents, "order_id": "oid1", "paper": True}
+    trader._book_exit(MagicMock(), "KXBTC15M-TEST", pos, exit_cents, filled,
+                      reason="test-exit", exit_order_id="exit1")
+
+    expected_buy = buy_cash_out(filled, entry_cents / 100.0, taker=True)
+    expected_sell = sell_cash_in(filled, exit_cents / 100.0, taker=False)
+    expected_pnl = expected_sell - expected_buy
+    assert trader.state.session_pnl == pytest.approx(expected_pnl, abs=0.02)
