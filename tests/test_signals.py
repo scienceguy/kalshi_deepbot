@@ -2,8 +2,10 @@
 import pytest
 from unittest.mock import MagicMock
 from dataclasses import dataclass
-from signals import max_contracts_for_cash, _size, _maker_price, evaluate, rank_signals, TradeSignal
+from signals import (max_contracts_for_cash, _size, _maker_price, evaluate,
+                     rank_signals, TradeSignal, _model_volatility)
 import config
+import gates
 from market_finder import MarketInfo
 
 
@@ -128,3 +130,40 @@ class TestRankSignals:
         result = rank_signals([sig1, sig2])
         assert result[0].market.ticker == "BBB"
         assert result[1].market.ticker == "AAA"
+
+
+# ── _model_volatility: dynamic (realized) vs fixed fallback ────────────────
+
+def test_model_volatility_dynamic_annualizes_per_minute(monkeypatch):
+    """Realized per-minute vol is annualized by sqrt(minutes/year)."""
+    monkeypatch.setattr(config, "MODEL_VOL_DYNAMIC", True)
+    monkeypatch.setattr(gates, "sigma_per_min", lambda asset: 0.001)
+    # 0.001 * sqrt(365*24*60) ~= 0.725 — inside the clamp band.
+    assert _model_volatility("BTC") == pytest.approx(0.72498, abs=1e-4)
+
+
+def test_model_volatility_falls_back_when_feed_empty(monkeypatch):
+    """A missing feed value must use the configured fixed vol, not zero."""
+    monkeypatch.setattr(config, "MODEL_VOL_DYNAMIC", True)
+    monkeypatch.setattr(config, "MODEL_VOLATILITY", 0.80)
+    monkeypatch.setattr(gates, "sigma_per_min", lambda asset: None)
+    assert _model_volatility("BTC") == 0.80
+
+
+def test_model_volatility_disabled_uses_fixed(monkeypatch):
+    """MODEL_VOL_DYNAMIC off ignores the feed entirely."""
+    monkeypatch.setattr(config, "MODEL_VOL_DYNAMIC", False)
+    monkeypatch.setattr(config, "MODEL_VOLATILITY", 0.55)
+    monkeypatch.setattr(gates, "sigma_per_min", lambda asset: 0.01)
+    assert _model_volatility("BTC") == 0.55
+
+
+def test_model_volatility_clamps_extremes(monkeypatch):
+    """One bad tick cannot push the model vol outside [MIN, MAX]."""
+    monkeypatch.setattr(config, "MODEL_VOL_DYNAMIC", True)
+    monkeypatch.setattr(config, "MODEL_VOL_MIN", 0.20)
+    monkeypatch.setattr(config, "MODEL_VOL_MAX", 5.00)
+    monkeypatch.setattr(gates, "sigma_per_min", lambda asset: 10.0)
+    assert _model_volatility("BTC") == 5.00
+    monkeypatch.setattr(gates, "sigma_per_min", lambda asset: 1e-9)
+    assert _model_volatility("BTC") == 0.20

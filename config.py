@@ -227,6 +227,7 @@ GATES_DENY_HIGH_GAMMA = _env_bool("GATES_DENY_HIGH_GAMMA", False)
 # Feed cache + per-candidate JSONL diagnostics
 GATES_SPOT_CACHE_SECONDS = _env_int("GATES_SPOT_CACHE_SECONDS", 30)
 GATES_ATR_CACHE_SECONDS = _env_int("GATES_ATR_CACHE_SECONDS", 60)
+GATES_SIGMA_CACHE_SECONDS = _env_int("GATES_SIGMA_CACHE_SECONDS", 60)
 # How long a feed-outage stale spot/ATR may be reused before the gates fail
 # closed. 300s = 5 min of stale-ok: a transient Binance blip does not knock the
 # bot out of the market, but a long outage still blocks entries visibly.
@@ -306,8 +307,16 @@ MODEL_TYPE = _env_str("MODEL_TYPE", "gbm")
 # Started lenient so positive-edge trades can flow and compound; the model filter
 # still blocks any negative-edge trade.
 MODEL_MIN_EDGE_CENTS = _env_float("MODEL_MIN_EDGE_CENTS", 0.5)
-# Annualized volatility for GBM model (crypto ≈ 0.80 = 80%).
+# Annualized volatility for GBM model (crypto ≈ 0.80 = 80%). Used only as the
+# fallback when MODEL_VOL_DYNAMIC is off or the feed is empty.
 MODEL_VOLATILITY = _env_float("MODEL_VOLATILITY", 0.80)
+# When true the GBM model uses realized per-minute volatility from the
+# Binance/OKX feed (annualized) instead of the fixed MODEL_VOLATILITY. Measured
+# on 14 days of 15M quotes, band 95-99c: fixed 0.80 -> -0.01c/trade, realized
+# vol -> +1.03c. Clamped so one bad tick cannot blind the model.
+MODEL_VOL_DYNAMIC = _env_bool("MODEL_VOL_DYNAMIC", True)
+MODEL_VOL_MIN = _env_float("MODEL_VOL_MIN", 0.20)
+MODEL_VOL_MAX = _env_float("MODEL_VOL_MAX", 5.00)
 
 # ═════════════════════════════════════════════════════════════════════
 # HEDGE SETTINGS

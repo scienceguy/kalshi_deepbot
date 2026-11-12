@@ -49,6 +49,7 @@ SERIES_ASSET = {
 # called, so a dead feed is retried at most once per TTL, not every cycle.
 _spot_cache: dict[str, tuple[float, float, float | None]] = {}
 _atr_cache: dict[str, tuple[float, float, float | None]] = {}
+_sigma_cache: dict[str, tuple[float, float, float | None]] = {}
 
 # Last logged decision per candidate, so unchanged cycles add no log line.
 _last_decision: dict[tuple[str, str], str] = {}
@@ -145,6 +146,18 @@ def atr_1m(asset: str) -> float | None:
         return sum(window) / len(window)
 
     return _cached(_atr_cache, asset, config.GATES_ATR_CACHE_SECONDS, _fetch)
+
+
+def sigma_per_min(asset: str) -> float | None:
+    """Per-minute log-return volatility of the underlying, cached.
+
+    Std dev of 1-minute closes (binance_feed.sigma_per_minute, OKX fallback).
+    None when the feed is empty so callers fall back to a fixed model vol.
+    """
+    return _cached(
+        _sigma_cache, asset, config.GATES_SIGMA_CACHE_SECONDS,
+        lambda: binance_feed.composite_sigma(f"{asset}USDT"),
+    )
 
 
 _LAST_DECISION_MAX = 2000

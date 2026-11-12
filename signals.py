@@ -298,6 +298,26 @@ def _compute_momentum(ticker: str, now: float, lookback_min: float = 2.0) -> flo
     return (b1 - b0) / elapsed_min
 
 
+_MINUTES_PER_YEAR = 365 * 24 * 60
+
+
+def _model_volatility(asset: str) -> float:
+    """Annualized volatility for the GBM model.
+
+    Realized per-minute vol from the feed when MODEL_VOL_DYNAMIC is on and the
+    feed has data, else the configured MODEL_VOLATILITY. Clamped to a sane band
+    so one bad tick cannot blind the model.
+    """
+    fixed = config.MODEL_VOLATILITY
+    if not getattr(config, "MODEL_VOL_DYNAMIC", False) or not asset:  # reviewed: fixed vol when dynamic vol is off or the asset is unknown
+        return fixed
+    per_min = gates.sigma_per_min(asset)
+    if not per_min or per_min <= 0:  # reviewed: a dead or zero feed must not blind the model
+        return fixed
+    annual = per_min * math.sqrt(_MINUTES_PER_YEAR)
+    return max(config.MODEL_VOL_MIN, min(config.MODEL_VOL_MAX, annual))
+
+
 def _stability_ok(ticker: str, now: float):
     """
     Only quote when the underlying has stayed clearly away from the strike
@@ -594,7 +614,7 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
             market, model_type=config.MODEL_TYPE,
             spot_price=spot_price, strike=strike,
             minutes_left=market.minutes_left,
-            volatility=config.MODEL_VOLATILITY,
+            volatility=_model_volatility(asset),
             momentum_cents_per_min=momentum,
             # How far into the final (settlement) minute: 0 at start, 60 at close.
             # Locked-share model uses this to collapse uncertainty as BRTI average locks in.
