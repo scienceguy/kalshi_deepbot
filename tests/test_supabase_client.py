@@ -115,12 +115,11 @@ class TestSupabaseClientGetBotState:
 class TestSupabaseClientSetBotStateBatch:
     """Tests for SupabaseClient.set_bot_state_batch method.
 
-    Uses individual PATCH/POST for each key to properly upsert on unique 'key' column.
-    Supabase REST API's merge-duplicates only works on primary key (id), not unique constraints.
+    Each key is delegated to set_bot_state, which PATCHes by key and only
+    INSERTs (with an explicit id) for a key that does not exist yet.
     """
 
-    def test_batch_all_keys_succeed(self, monkeypatch):
-        """set_bot_state_batch upserts each key with a single POST per key."""
+    def _make_client(self, monkeypatch):
         monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
         monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
         monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
@@ -128,97 +127,87 @@ class TestSupabaseClientSetBotStateBatch:
         import supabase_client
         importlib.reload(supabase_client)
         client = supabase_client.SupabaseClient()
+        return client
 
+    def test_batch_existing_keys_are_patched(self, monkeypatch):
+        """Existing keys are PATCHed, one request per key, no INSERT."""
+        client = self._make_client(monkeypatch)
         calls = []
 
-        def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
-            calls.append((method, path, data, extra_headers))
-            if method in ("POST", "PATCH"):
-                return {"data": [{"key": data.get("key")}]}
+        def fake_request(method, path, data=None, params=None,
+                         extra_headers=None, max_retries=3):
+            calls.append((method, path, data))
+            if method == "PATCH":
+                return [{"key": path.rsplit("eq.", 1)[1]}]  # row matched
             return {}
 
         with patch.object(client, "_request", side_effect=fake_request):
             result = client.set_bot_state_batch({"session_pnl": 42.5, "cycles": 3})
-            assert result is True
-            # One upsert POST per key (2 keys = 2 POST calls)
-            assert len(calls) == 2
-            post_calls = [c for c in calls if c[0] == "POST"]
-            assert len(post_calls) == 2
-            keys = {c[2]["key"] for c in post_calls}
-            assert keys == {"session_pnl", "cycles"}
-            # Upsert uses the merge-duplicates prefer header
-            upsert_calls = [c for c in calls if c[3] is not None and "merge-duplicates" in str(c[3])]
-            assert len(upsert_calls) == 2
 
-    def test_batch_existing_keys_use_patch(self, monkeypatch):
-        """set_bot_state_batch upserts existing keys (POST with merge-duplicates, not PATCH)."""
-        monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
-        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
-        monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
-        import importlib
-        import supabase_client
-        importlib.reload(supabase_client)
-        client = supabase_client.SupabaseClient()
+        assert result is True
+        assert [c[0] for c in calls] == ["PATCH", "PATCH"]
+        assert {c[1] for c in calls} == {"bot_state?key=eq.session_pnl",
+                                         "bot_state?key=eq.cycles"}
 
+    def test_batch_new_key_inserts_with_explicit_id(self, monkeypatch):
+        """A key that PATCH misses is INSERTed with id = max(id)+1.
+
+        New keys cannot rely on the id default (DEFAULT 1) — that collides on
+        the PK, which is exactly what raised the 409 and disabled the client.
+        """
+        client = self._make_client(monkeypatch)
         calls = []
 
-        def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
+        def fake_request(method, path, data=None, params=None,
+                         extra_headers=None, max_retries=3):
             calls.append((method, path, data))
-            if method in ("POST", "PATCH"):
-                return {"data": [{"key": data.get("key")}]}
-            return {}
+            if method == "PATCH":
+                return []                                   # no row matched
+            if method == "GET":
+                return [{"id": 102}]                        # current max
+            return [{"id": 103, "key": data["key"]}]        # INSERT
 
         with patch.object(client, "_request", side_effect=fake_request):
-            result = client.set_bot_state_batch({"session_pnl": 42.5, "cycles": 3})
-            assert result is True
-            # Upsert: one POST per key, no GET/PATCH round-trips
-            assert len(calls) == 2
-            post_calls = [c for c in calls if c[0] == "POST"]
-            assert len(post_calls) == 2
-            patch_calls = [c for c in calls if c[0] == "PATCH"]
-            assert len(patch_calls) == 0
-            keys = {c[2]["key"] for c in post_calls}
-            assert keys == {"session_pnl", "cycles"}
+            result = client.set_bot_state_batch({"brand_new": 1.0})
 
-    def test_batch_stops_on_first_failure(self, monkeypatch):
-        """set_bot_state_batch returns False when any key fails."""
-        monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
-        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
-        monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
-        import importlib
-        import supabase_client
-        importlib.reload(supabase_client)
-        client = supabase_client.SupabaseClient()
+        assert result is True
+        assert [c[0] for c in calls] == ["PATCH", "GET", "POST"]
+        post = calls[-1]
+        assert post[2]["id"] == 103
+        assert post[2]["key"] == "brand_new"
+        assert json.loads(post[2]["value_json"]) == 1.0
 
+    def test_batch_reports_failure_but_tries_every_key(self, monkeypatch):
+        """set_bot_state_batch returns False when a key fails, after trying all."""
+        client = self._make_client(monkeypatch)
         calls = []
 
-        def fake_request(method, path, data=None, params=None, extra_headers=None, max_retries=3):
+        def fake_request(method, path, data=None, params=None,
+                         extra_headers=None, max_retries=3):
             calls.append((method, path, data))
-            if method == "GET" and "key=eq." in path:
-                return []  # Key doesn't exist
-            elif method == "GET" and "order=id.desc" in path:
+            if method == "PATCH":
+                return [] if "bad_key" in path else [{"key": path}]
+            if method == "GET":
                 return [{"id": 0}]
-            elif method == "POST":
-                key = data.get("key")
-                if key == "bad_key":
-                    return None  # Simulate failure
-                return {"data": [{"key": key}]}
-            return {}
+            return None if "bad_key" in data.get("key", "") else [{"id": 1}]
 
         with patch.object(client, "_request", side_effect=fake_request):
-            result = client.set_bot_state_batch({"good_key": 1.0, "bad_key": 2.0, "never_posted": 3.0})
-            assert result is False
-            # Should process all keys, but return False because one failed
-            post_calls = [c for c in calls if c[0] == "POST"]
-            assert len(post_calls) == 3  # All 3 keys attempted
+            result = client.set_bot_state_batch(
+                {"good_key": 1.0, "bad_key": 2.0, "never_posted": 3.0})
+
+        assert result is False
+        # PATCH carries the key in the path; POST carries it in the body.
+        attempted = {c[1].rsplit("eq.", 1)[-1] if c[0] == "PATCH" else c[2]["key"]
+                     for c in calls if c[0] in ("PATCH", "POST")}
+        assert attempted == {"good_key", "bad_key", "never_posted"}
 
 
 class TestSupabaseClientSetBotState:
     """Tests for SupabaseClient.set_bot_state single-key upsert.
 
-    set_bot_state issues a single POST with the merge-duplicates Prefer
-    header. The test class name is intentionally singular — it covers the
-    one-key path that set_bot_state_batch delegates to.
+    Contract: PATCH bot_state?key=eq.<key> when the key exists; otherwise
+    SELECT max(id) and INSERT with id = max(id)+1. It never issues the plain
+    POST that collided on bot_state_pkey and disabled the client.
     """
 
     def _make_client(self, monkeypatch):
@@ -230,103 +219,79 @@ class TestSupabaseClientSetBotState:
         importlib.reload(supabase_client)
         return supabase_client.SupabaseClient()
 
-    def test_single_key_upsert_succeeds(self, monkeypatch):
-        """set_bot_state POSTs one row with merge-duplicates and returns True."""
+    def test_existing_key_is_patched(self, monkeypatch):
+        """A key that exists is updated with a single PATCH, no INSERT."""
         client = self._make_client(monkeypatch)
-
-        captured = {}
+        calls = []
 
         def fake_request(method, path, data=None, params=None,
                          extra_headers=None, max_retries=3):
-            captured["method"] = method
-            captured["path"] = path
-            captured["data"] = data
-            captured["extra_headers"] = extra_headers
-            return {"data": [{"key": data["key"], "id": 1}]}
+            calls.append((method, path, data))
+            return [{"id": 100, "key": "session_pnl"}]  # row matched
 
         with patch.object(client, "_request", side_effect=fake_request):
             result = client.set_bot_state("session_pnl", 42.5)
 
         assert result is True
-        assert captured["method"] == "POST"
-        assert captured["path"] == "bot_state"
-        assert captured["data"]["key"] == "session_pnl"
-        assert json.loads(captured["data"]["value_json"]) == 42.5
-        assert "ts" in captured["data"]
-        assert captured["extra_headers"] == {"Prefer": "resolution=merge-duplicates"}
+        assert len(calls) == 1
+        method, path, data = calls[0]
+        assert method == "PATCH"
+        assert path == "bot_state?key=eq.session_pnl"
+        assert json.loads(data["value_json"]) == 42.5
+        assert "ts" in data
+        assert "id" not in data        # never mints an id on the update path
 
-    def test_multiple_keys_batched_correctly(self, monkeypatch):
-        """set_bot_state_batch delegates each key to set_bot_state.
-
-        Each key produces exactly one POST with merge-duplicates; no
-        GET/PATCH round-trips are performed.
-        """
+    def test_new_key_inserts_with_explicit_id(self, monkeypatch):
+        """A missing key is INSERTed with id = max(id)+1, not the default 1."""
         client = self._make_client(monkeypatch)
-
         calls = []
 
         def fake_request(method, path, data=None, params=None,
                          extra_headers=None, max_retries=3):
-            calls.append((method, path, data, extra_headers))
-            if method in ("POST", "PATCH"):
-                return {"data": [{"key": data.get("key")}]}
-            return {}
+            calls.append((method, path, data))
+            if method == "PATCH":
+                return []
+            if method == "GET":
+                return [{"id": 102}]
+            return [{"id": 103, "key": "new_key"}]
 
         with patch.object(client, "_request", side_effect=fake_request):
-            result = client.set_bot_state_batch(
-                {"session_pnl": 42.5, "cycles": 3, "last_ts": "2024-01-01T00:00:00+00:00"}
-            )
+            result = client.set_bot_state("new_key", 7)
 
         assert result is True
-        post_calls = [c for c in calls if c[0] == "POST"]
-        assert len(post_calls) == 3  # one POST per key
-        keys = {c[2]["key"] for c in post_calls}
-        assert keys == {"session_pnl", "cycles", "last_ts"}
-        # every POST carries the merge-duplicates Prefer header
-        for c in post_calls:
-            assert c[3] == {"Prefer": "resolution=merge-duplicates"}
-        # no GET/PATCH round-trips
-        assert not any(c[0] in ("GET", "PATCH") for c in calls)
+        assert [c[0] for c in calls] == ["PATCH", "GET", "POST"]
+        assert calls[1][1] == "bot_state?select=id&order=id.desc&limit=1"
+        assert calls[2][2]["id"] == 103
+        assert calls[2][2]["key"] == "new_key"
 
-    def test_merge_duplicates_resolution_works(self, monkeypatch):
-        """POST with merge-duplicates is used even when a row already exists.
-
-        The merge-duplicates Prefer header tells Supabase to update on
-        conflict rather than error, so re-writing the same key is idempotent.
-        """
+    def test_repeated_write_is_idempotent(self, monkeypatch):
+        """Writing the same key twice PATCHes twice — no duplicate row."""
         client = self._make_client(monkeypatch)
-
         calls = []
 
         def fake_request(method, path, data=None, params=None,
                          extra_headers=None, max_retries=3):
-            calls.append((method, path, data, extra_headers))
-            return {"data": [{"key": data["key"], "id": 5}]}
+            calls.append((method, path, data))
+            return [{"id": 100}]
 
         with patch.object(client, "_request", side_effect=fake_request):
-            # First write — new key
-            ok1 = client.set_bot_state("session_pnl", 100.0)
-            # Second write — same key, new value (merge-duplicates should update)
-            ok2 = client.set_bot_state("session_pnl", 200.0)
+            assert client.set_bot_state("session_pnl", 100.0) is True
+            assert client.set_bot_state("session_pnl", 200.0) is True
 
-        assert ok1 is True
-        assert ok2 is True
-        post_calls = [c for c in calls if c[0] == "POST"]
-        assert len(post_calls) == 2
-        for c in post_calls:
-            assert c[3] == {"Prefer": "resolution=merge-duplicates"}
-        # values differ between the two writes
-        assert json.loads(post_calls[0][2]["value_json"]) == 100.0
-        assert json.loads(post_calls[1][2]["value_json"]) == 200.0
+        assert [c[0] for c in calls] == ["PATCH", "PATCH"]
+        assert json.loads(calls[0][2]["value_json"]) == 100.0
+        assert json.loads(calls[1][2]["value_json"]) == 200.0
 
-    def test_set_bot_state_returns_false_on_failure(self, monkeypatch):
-        """set_bot_state returns False when the upsert POST fails."""
+    def test_returns_false_when_insert_fails(self, monkeypatch):
+        """set_bot_state returns False when the INSERT returns nothing."""
         client = self._make_client(monkeypatch)
 
-        with patch.object(client, "_request", return_value=None):
-            result = client.set_bot_state("bad_key", 1.0)
+        def fake_request(method, path, data=None, params=None,
+                         extra_headers=None, max_retries=3):
+            return [] if method in ("PATCH", "GET") else None
 
-        assert result is False
+        with patch.object(client, "_request", side_effect=fake_request):
+            assert client.set_bot_state("bad_key", 1.0) is False
 
 
 class TestCircuitBreakerReset:
