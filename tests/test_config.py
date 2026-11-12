@@ -68,3 +68,17 @@ def test_env_bool_unset_uses_default(monkeypatch):
 
     cfg = _reload_with(monkeypatch, AGGRESSIVE_FILL="")
     assert cfg.AGGRESSIVE_FILL is True  # final-minute taker default
+
+
+def test_log_rotation_defaults(monkeypatch):
+    """LOG_MAX_BYTES/LOG_BACKUP_COUNT default to 5MB / 3 backups."""
+    cfg = _reload_with(monkeypatch, LOG_MAX_BYTES="", LOG_BACKUP_COUNT="")
+    assert cfg.LOG_MAX_BYTES == 5 * 1024 * 1024
+    assert cfg.LOG_BACKUP_COUNT == 3
+
+
+def test_log_rotation_custom_values(monkeypatch):
+    """LOG_MAX_BYTES/LOG_BACKUP_COUNT honor explicit env values."""
+    cfg = _reload_with(monkeypatch, LOG_MAX_BYTES="1048576", LOG_BACKUP_COUNT="7")
+    assert cfg.LOG_MAX_BYTES == 1048576
+    assert cfg.LOG_BACKUP_COUNT == 7

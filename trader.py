@@ -23,6 +23,7 @@ Usage:
 """
 
 import argparse, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
+import logging.handlers  # noqa: E402  — needed for RotatingFileHandler (submodule)
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -118,7 +119,10 @@ logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(lf)],
+    handlers=[logging.StreamHandler(sys.stdout),
+              logging.handlers.RotatingFileHandler(
+                  lf, maxBytes=config.LOG_MAX_BYTES,
+                  backupCount=config.LOG_BACKUP_COUNT)],
 )
 log = logging.getLogger("trader")
 

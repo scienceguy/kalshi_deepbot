@@ -477,6 +477,10 @@ EXCHANGE_PRICE_CACHE_SECONDS = _env_int("EXCHANGE_PRICE_CACHE_SECONDS", 30)
 # ═════════════════════════════════════════════════════════════════════
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 LOG_FILE = Path(__file__).resolve().parent / "bot.log"
+# Rotate bot.log so it cannot grow unbounded on a constrained Android device.
+# 5MB per file, 3 rotated backups = ~20MB cap instead of 54MB+ and climbing.
+LOG_MAX_BYTES = _env_int("LOG_MAX_BYTES", 5 * 1024 * 1024)
+LOG_BACKUP_COUNT = _env_int("LOG_BACKUP_COUNT", 3)
 __version__ = "2.0.0-superbot"
 
 

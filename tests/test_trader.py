@@ -924,3 +924,33 @@ class TestShardAwareCash:
         client.get_balance.return_value = 1.22
         assert trader._sizing_cash(client) == 1.22
         client.get_shard_balance.assert_not_called()
+
+
+def test_root_logger_file_handler_is_rotating():
+    """bot.log must use a RotatingFileHandler (stdlib) so it cannot grow
+    unbounded on a constrained device. Regression: the bot used a plain
+    FileHandler and bot.log reached 54MB+ with no cap.
+
+    pytest replaces the root logger's handlers with a /dev/null FileHandler
+    during capture, so introspecting in-process sees pytest's handler, not the
+    bot's. Run a clean subprocess import instead to see the real config.
+    """
+    import subprocess, sys, os
+    code = (
+        "import logging, logging.handlers;"
+        "import config, trader;"
+        "hs=[h for h in logging.getLogger().handlers"
+        "      if isinstance(h, logging.FileHandler)];"
+        "print(type(hs[0]).__name__, hs[0].maxBytes, hs[0].backupCount)"
+    )
+    env = dict(os.environ)
+    # Point LOG_FILE at a temp path so the subprocess does not touch bot.log.
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, env=env, cwd=os.getcwd(),
+    )
+    assert out.returncode == 0, out.stderr
+    name, max_bytes, backup = out.stdout.strip().split()
+    assert name == "RotatingFileHandler", out.stdout
+    assert int(max_bytes) == config.LOG_MAX_BYTES
+    assert int(backup) == config.LOG_BACKUP_COUNT
