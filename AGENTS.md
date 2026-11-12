@@ -71,6 +71,20 @@ python trader.py --live
 
 - n8n runs at `http://127.0.0.1:5678`.
 - 4 workflows injected into n8n's SQLite DB: `superbot-backtest`, `superbot-collect`, `superbot-trade`, `superbot-monitor`.
+- Inject with the real project/user ids (defaults are now correct):
+  `python inject_n8n_workflows.py` — needs `SUPABASE_URL` and
+  `SUPABASE_SERVICE_KEY` for the settlement workflow, which is skipped without them.
+- Start n8n with **`sh scripts/start_n8n.sh`**, not plain `n8n start`. n8n 2.x
+  disables `n8n-nodes-base.executeCommand` by default; without
+  `NODES_EXCLUDE=[]` the backtest/collect webhooks fail with
+  "Unrecognized node type". After a restart n8n reconciles and registers the
+  webhooks (a few seconds after `/healthz` returns 200).
+- Workflow wiring facts learned against n8n 2.45.6: connections key by node
+  **name** (not id); a Respond node requires `responseMode: "responseNode"`;
+  webhook v2 payloads are under `$json.body`; PostgREST filters use `eq.`
+  (dot), and expression values need a leading `=`.
+- `superbot-monitor` is ack-only by design: running `trader.py` from a webhook
+  would start a second cycle that can place orders once `DRY_RUN=false`.
 - All 4 return HTTP 200 on health-check webhook. `llm-trade-veto` (external) returns 200 too.
 - `n8n_client.py` webhook timeout = `CYCLE_TIMEOUT_SECONDS - 5` (25s) so webhooks never block a cycle.
 - n8n REST API returns 401 (upstream bug #31011); webhooks + direct DB injection are the working path.
