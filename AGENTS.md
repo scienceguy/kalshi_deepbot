@@ -447,3 +447,13 @@ Backtest results on 900 historical 15M markets:
   - `PAPER_PER_TRADE_PCT=0.95` (dry-run only)
 
 Strategy: Early entry (6-11 min into 15-min window), wide favourite-maker band (15-55c), conservative per-trade sizing (8%).
+
+**CORRECTION (2026-11-12):** the `ENTRY_BAND_MIN=15 / ENTRY_BAND_MAX=55` above is
+EV-*negative* on current data. Re-measured on the HF dataset
+`papylove/kalshi-15m-data` (14 newest days, 15,420 windows, per-minute quotes,
+maker entry, hold to settlement): the favourite-maker band 15-55c returns
+**-0.94c/trade** (win 31%), 75-95c returns **-0.34c** (win 83%), while the live
+95-99c band returns **+0.43c** (win 97%). The live `.env` band 95-99 is correct;
+do not widen it back to 15-55. The bot does find these markets (~28% of windows
+reach 95-99c at some minute 6-11). The binding filter is the gate EV hurdle, not
+the band. Decision drawer: `home/decisions` in MemPalace.
