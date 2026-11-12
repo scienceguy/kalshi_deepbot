@@ -398,10 +398,10 @@ class MarketDataAggregator:
         Returns dict of series -> market snapshot.
         """
         results = {}
-        with ThreadPoolExecutor(max_workers=min(4, len(kalshi_series))) as executor:
+        with ThreadPoolExecutor(max_workers=min(4, len(kalshi_series_list))) as executor:
             futures = {
                 executor.submit(self.get_market_snapshot, series): series
-                for series in kalshi_series
+                for series in kalshi_series_list
             }
             for future in as_completed(futures):
                 series = futures[future]

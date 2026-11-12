@@ -42,20 +42,23 @@ SKIP_DIRS = {".git", "__pycache__", "venv", ".venv", "node_modules"}
 
 # legacy/ is skipped by --all ON PURPOSE and the reason is recorded here, not
 # left implicit: it is not imported by the trader (verified: no live importer),
-# and it contains three REAL pre-existing NameErrors that this gate correctly
-# reports and that nobody has triaged --
-#   legacy/market_data_aggregator.py:401,404  'kalshi_series'  (signature says
-#       kalshi_series_list; the body uses the old name, so the method raises)
-#   legacy/polymarket_arb.py:139              'pm'  (line builds pm_token_id,
-#       then passes the non-existent 'pm')
-# They are listed as a known-failure baseline rather than silently skipped, so
-# that (a) they are visible in this file, and (b) deleting legacy/ or fixing it
-# will make this baseline fail and force someone to decide. Scanning legacy/ is
-# opt-in:  python3 scripts/verify_undefined.py legacy/  --no-baseline
+# so none of it can reach a trade.
+#
+# Two hits were REAL and are now fixed (keep this note so nobody re-introduces
+# them): legacy/market_data_aggregator.py:401,404 read 'kalshi_series' in a method
+# whose parameter is 'kalshi_series_list'. They are gone from the baseline and the
+# gate reports that file clean.
+#
+# One hit remains and is NOT a one-token fix:
+#   legacy/polymarket_arb.py:139   self._get_polymarket_prices(pm)
+#   - 'pm' is never bound (138 builds 'pm_token_id'); AND
+#   - PolymarketArb has no '_get_polymarket_prices' method at all -- grep the tree.
+# Renaming 'pm' to 'pm_token_id' would satisfy this gate and still raise
+# AttributeError on the next line, so it is left as deliberately-dead code rather
+# than papered over. If legacy/ is ever revived, that class must be finished or
+# deleted first. Scanning legacy/ is opt-in: --all --include-legacy.
 LEGACY_SKIP = "legacy"
 LEGACY_KNOWN_UNDEFINED = {
-    ("legacy/market_data_aggregator.py", 401, "kalshi_series"),
-    ("legacy/market_data_aggregator.py", 404, "kalshi_series"),
     ("legacy/polymarket_arb.py", 139, "pm"),
 }
 
