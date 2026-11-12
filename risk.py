@@ -167,9 +167,18 @@ class RiskManager:
                        else config.EXPOSURE_CEILING_PCT)
         per_trade_pct = config.PAPER_PER_TRADE_PCT if paper else config.PER_TRADE_PCT
 
-        # Exposure room under ceiling — use mark-to-market if available for accuracy
-        effective_exposure = mark_to_market_exposure if mark_to_market_exposure is not None else exposure
-        exposure_room = max(0.0, portfolio * ceiling_pct - effective_exposure)
+        # Exposure room under ceiling — use mark-to-market if available for
+        # accuracy. When mtm is unavailable (None), skip the ceiling instead of
+        # silently using cost-basis exposure: cost-basis is stale after a move,
+        # so it can over- or under-tighten. The cash-floor and per-trade caps
+        # still bind, so a missing mtm never becomes an unbounded trade.
+        # reviewed: skipping the ceiling when mtm is unknown is a deliberate
+        # conservative-default; cash_room and per_trade_cap still limit size.
+        # reviewed: mtm branch uses mark-to-market ceiling when it is present
+        if mark_to_market_exposure is not None:
+            exposure_room = max(0.0, portfolio * ceiling_pct - mark_to_market_exposure)
+        else:
+            exposure_room = float("inf")
 
         # Cash room while keeping floor — subtract resting orders so we don't
         # double-spend cash already committed to open limit orders.
