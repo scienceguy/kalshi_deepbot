@@ -82,3 +82,18 @@ def test_log_rotation_custom_values(monkeypatch):
     cfg = _reload_with(monkeypatch, LOG_MAX_BYTES="1048576", LOG_BACKUP_COUNT="7")
     assert cfg.LOG_MAX_BYTES == 1048576
     assert cfg.LOG_BACKUP_COUNT == 7
+
+
+def test_llm_fail_open_allowlist_rejects_garbage(monkeypatch):
+    """LLM_EVAL_FAIL_OPEN must accept only the explicit allowlist values and
+    raise (never silently fall back) on an unrecognized value. A typo'd flag
+    like 'trrue' must not silently flip fail-open behavior."""
+    with pytest.raises(ValueError, match="Unrecognized boolean value"):
+        _reload_with(monkeypatch, LLM_EVAL_FAIL_OPEN="trrue")
+    with pytest.raises(ValueError, match="Unrecognized boolean value"):
+        _reload_with(monkeypatch, LLM_EVAL_FAIL_OPEN="maybe")
+    # Allowed values still parse.
+    cfg = _reload_with(monkeypatch, LLM_EVAL_FAIL_OPEN="false")
+    assert cfg.LLM_EVAL_FAIL_OPEN is False
+    cfg = _reload_with(monkeypatch, LLM_EVAL_FAIL_OPEN="true")
+    assert cfg.LLM_EVAL_FAIL_OPEN is True

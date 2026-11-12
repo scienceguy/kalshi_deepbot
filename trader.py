@@ -1937,6 +1937,13 @@ def main():
     log.info("LLM eval: %s | Supabase: %s",
              "enabled (NVIDIA)" if config.NVIDIA_API_KEY else "disabled",
              "enabled" if get_supabase_client().enabled else "disabled")
+    # reviewed: startup-only warning; fails-open only when the LLM is actually
+    # wired (NVIDIA key present) and the operator left fail-open on
+    # reviewed: the guard warns at startup, it never touches the order path
+    if config.NVIDIA_API_KEY and config.LLM_EVAL_FAIL_OPEN:
+        log.warning("LLM veto is FAIL-OPEN: an LLM provider outage will NOT "
+                    "block orders. To fail closed instead, set "
+                    "LLM_EVAL_FAIL_OPEN=false and LLM_EVAL_ENFORCE=true.")
     # Supabase is non-fatal — writes degrade gracefully when credentials are
     # missing or the service is down. The bot trades without it (dry-run).
     log.info("=" * 58)
