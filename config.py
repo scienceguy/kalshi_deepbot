@@ -123,6 +123,10 @@ KALSHI_PRIVATE_KEY_CONTENT = os.environ.get("KALSHI_PRIVATE_KEY", "")
 KALSHI_BASE_URL = os.environ.get("KALSHI_BASE_URL", "https://external-api.kalshi.com/trade-api/v2")
 KALSHI_ALLOW_NONSTANDARD_URL = _env_bool("KALSHI_ALLOW_NONSTANDARD_URL", False)
 
+# Polymarket US credentials
+POLYMARKET_KEY_ID = _env_str("POLYMARKET_KEY_ID", "")
+POLYMARKET_SECRET_KEY = _env_str("POLYMARKET_SECRET_KEY", "")
+
 # ═════════════════════════════════════════════════════════════════════
 # MARKET TARGETING (from kalshi_live_bot — expanded series list)
 # ═════════════════════════════════════════════════════════════════════
