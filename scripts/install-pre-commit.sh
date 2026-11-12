@@ -128,3 +128,19 @@ if ! diff -q "$VERSIONED_HOOK" "$HOOK_FILE" >/dev/null; then
     echo "WARNING: installed hook differs from the versioned copy" >&2
 fi
 echo "A fresh clone must run this once: sh scripts/install-pre-commit.sh"
+
+# --- pre-push: same gates, but over the commits leaving this clone ------------
+# The pre-commit hook only protects a writer who installed it. The pre-push hook
+# runs against whatever is about to become public, which is the path that let the
+# audit commits above reach main ungated.
+VERSIONED_PUSH="$REPO_ROOT/.githooks/pre-push"
+PUSH_SRC="$REPO_ROOT/scripts/pre-push"
+
+if [ -f "$PUSH_SRC" ]; then
+    cp "$PUSH_SRC" "$VERSIONED_PUSH"
+    chmod +x "$VERSIONED_PUSH"
+    if ! diff -q "$PUSH_SRC" "$VERSIONED_PUSH" >/dev/null; then
+        echo "WARNING: versioned pre-push differs from scripts/pre-push" >&2
+    fi
+    echo "Pre-push hook versioned at:          $VERSIONED_PUSH"
+fi

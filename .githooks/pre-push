@@ -1,0 +1,115 @@
+#!/bin/sh
+# Pre-push gate: run the token-corruption checks over everything this push adds.
+#
+# Why this exists, separate from pre-commit: a pre-commit hook only runs in the
+# tree that is doing the committing, only if that clone installed it, and can be
+# skipped per-commit with --no-verify. This hook runs the same five gates over the
+# FULL range of commits being pushed, at the moment they would become public.
+# That covers the path that produced a7f0112 and its sibling audit commits, whose
+# author never installed pre-commit at all.
+#
+# Install:
+#   cp scripts/pre-push .githooks/pre-push && chmod +x .githooks/pre-push
+#   git config core.hooksPath .githooks
+# (scripts/install-pre-commit.sh does both, plus the pre-commit hook.)
+#
+# Exit 0 = push may proceed. Exit 1 = push refused.
+#
+# Deliberate limits, do not overclaim:
+#   - Local hooks run only on this machine, and only if core.hooksPath (or
+#     .git/hooks) points at them. They are NOT a server-side gate; anyone who can
+#     push from a clone that lacks them still can. .github/workflows/guards.yml is
+#     what closes that, and adding it needs the 'workflow' scope on the credential.
+#   - The diff spans every commit being pushed, so it is judged against the
+#     remote base rather than the previous local commit. Intended: a multi-commit
+#     push should not hide a bad branch point.
+umask 077
+
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 1
+cd "$REPO_ROOT" || exit 1
+
+ZERO="0000000000000000000000000000000000000000000"
+status=0
+
+run_gate() {
+    name="$1"
+    shift
+    printf '\n== %s ==\n' "$name"
+    if ! "$@"; then
+        status=1
+        printf 'REFUSED: %s reported corruption\n' "$name" >&2
+    fi
+}
+
+printf '\n=== token-corruption gates: pre-push ===\n'
+printf 'tree: %s\n' "$REPO_ROOT"
+
+TMP_DIR=$(mktemp -d) || exit 1
+trap 'rm -rf "$TMP_DIR"' EXIT
+all_diff="$TMP_DIR/all.diff"
+: > "$all_diff"
+EMPTY_TREE=$(git hash-object -t tree /dev/null)
+
+ref_checked=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$ZERO" ] && continue      # ref being deleted
+
+    if [ "$remote_sha" = "$ZERO" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+        # New branch, or the remote sha is absent locally. The remote-tracking ref
+        # is the honest base; the empty tree is a LAST resort only, because diffing
+        # against it makes every line of the repository look newly added and turns
+        # a first push of a 400-condition file into 400 false findings.
+        branch=${local_ref#refs/heads/}
+        if git rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}" >/dev/null; then
+            base=$(git rev-parse --verify "refs/remotes/origin/$branch^{commit}")
+        elif git rev-parse --verify --quiet "origin/main^{commit}" >/dev/null; then
+            base=$(git rev-parse --verify "origin/main^{commit}")
+        else
+            base="$EMPTY_TREE"
+        fi
+    else
+        base="$remote_sha"
+    fi
+
+    printf 'ref %s\n  base %s -> %s\n' "$local_ref" "$base" "$local_sha"
+    git diff -U3 "$base" "$local_sha" -- '*.py' >> "$all_diff" 2>/dev/null || true
+    ref_checked=$((ref_checked + 1))
+done
+
+if [ "$ref_checked" -eq 0 ]; then
+    # Git handed us no refs -- some transports (notably a local file:// remote in
+    # this termux/proot build) call the hook with empty stdin. Refusing the push
+    # here would block legitimate work and teach the operator to add --no-verify,
+    # which loses every gate. Instead: say plainly that this push was NOT diffed,
+    # then still run the whole-tree gates against HEAD. The push continues, but
+    # the operator is told what was and was not checked.
+    echo "WARNING: git supplied no refs on stdin; this push was NOT diff-checked." >&2
+    echo "         Running whole-tree gates against HEAD instead." >&2
+fi
+
+printf '\ndiff bytes: %s\n' "$(wc -c < "$all_diff")"
+
+if [ -s "$all_diff" ]; then
+    run_gate "operator / not drift" \
+        python3 "$REPO_ROOT/scripts/verify_operators.py" --diff-file "$all_diff"
+    run_gate "unreviewed money-path conditions" \
+        python3 "$REPO_ROOT/scripts/verify_review_marked.py" --diff-file "$all_diff"
+else
+    echo "no python changes in this push, skipping diff gates"
+fi
+
+run_gate "non-ASCII and number+name splices" \
+    python3 "$REPO_ROOT/scripts/verify_source.py" --all
+run_gate "files that do not parse" \
+    python3 "$REPO_ROOT/scripts/verify_compiles.py" --all
+run_gate "undefined names" \
+    python3 "$REPO_ROOT/scripts/verify_undefined.py" --all
+
+printf '\n'
+if [ "$status" -ne 0 ]; then
+    echo "PUSH REFUSED: fix the findings above. Do not bypass." >&2
+    exit 1
+fi
+echo "pre-push gates passed."
+exit 0
