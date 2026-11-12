@@ -82,6 +82,10 @@ def main(argv=None):
     ap.add_argument("--pct", type=float, default=config.PAPER_PER_TRADE_PCT)
     ap.add_argument("--no-gate", action="store_true")
     ap.add_argument("--target", type=float, default=10000.0)
+    ap.add_argument("--band-min", type=int, default=config.ENTRY_BAND_MIN)
+    ap.add_argument("--band-max", type=int, default=config.ENTRY_BAND_MAX)
+    ap.add_argument("--window-start", type=float, default=config.ENTRY_WINDOW_START_MIN)
+    ap.add_argument("--window-end", type=float, default=config.ENTRY_WINDOW_END_MIN)
     a = ap.parse_args(argv)
 
     fv, res = T.load_frames(a.days)
@@ -90,14 +94,14 @@ def main(argv=None):
     print(f"data: {len(df)} rows, {df.ticker.nunique()} windows, "
           f"{df.day.nunique()} days ({min(df.day)}..{max(df.day)})")
 
-    args = (a.balance, a.pct, config.ENTRY_BAND_MIN, config.ENTRY_BAND_MAX,
-            config.ENTRY_WINDOW_START_MIN, config.ENTRY_WINDOW_END_MIN,
+    args = (a.balance, a.pct, a.band_min, a.band_max,
+            a.window_start, a.window_end,
             config.MODEL_MIN_EDGE_CENTS, not a.no_gate)
     start, end, n, wins, days, peak = run(df, *args)
     wr = 100.0 * wins / n if n else 0.0
     per_day = n / days if days else 0
-    print(f"\nband {config.ENTRY_BAND_MIN}-{config.ENTRY_BAND_MAX}c, "
-          f"minutes {config.ENTRY_WINDOW_START_MIN}-{config.ENTRY_WINDOW_END_MIN}, "
+    print(f"\nband {a.band_min}-{a.band_max}c, "
+          f"minutes {a.window_start}-{a.window_end}, "
           f"taker at ask + fee, gate={not a.no_gate}:")
     print(f"  start ${start:.2f} -> end ${end:.2f}  ({end / start:.2f}x)  "
           f"peak ${peak:.2f}")
