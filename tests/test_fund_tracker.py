@@ -40,6 +40,50 @@ def test_balance_handles_error_gracefully(monkeypatch, capsys):
     assert "$5.00" in out
 
 
+# --- _read_pm_balance parser against the real /v1/account/balances shape ----
+
+def _genuine_pm_module():
+    """Return the real polymarket_us_client module, evicting any sys.modules fake.
+
+    Other tests (test_crossvenue_pm, test_polymarket_portfolio) replace
+    sys.modules["polymarket_us_client"] with fakes and do not always restore
+    it, so a plain top-level import can be stale. This resolves the real module
+    and _read_pm_balance's lazy import will resolve the same object.
+    """
+    mod = sys.modules.get("polymarket_us_client")
+    if mod is None or not hasattr(mod, "usd_cash_balance"):
+        sys.modules.pop("polymarket_us_client", None)
+        import polymarket_us_client as mod
+    return mod
+
+
+def test_read_pm_balance_real_shape(monkeypatch):
+    mod = _genuine_pm_module()
+    monkeypatch.setattr(mod, "get_account_balances",
+                        lambda: {"balances": [{"currency": "USD",
+                                               "currentBalance": "30.0"}]})
+    monkeypatch.setitem(sys.modules, "polymarket_us_client", mod)
+    assert ft._read_pm_balance()["cash_dollars"] == 30.0
+
+
+def test_read_pm_balance_zero_usd(monkeypatch):
+    mod = _genuine_pm_module()
+    monkeypatch.setattr(mod, "get_account_balances",
+                        lambda: {"balances": [{"currency": "USD",
+                                               "currentBalance": 0}]})
+    monkeypatch.setitem(sys.modules, "polymarket_us_client", mod)
+    assert ft._read_pm_balance()["cash_dollars"] == 0.0
+
+
+def test_read_pm_balance_no_usd(monkeypatch):
+    mod = _genuine_pm_module()
+    monkeypatch.setattr(mod, "get_account_balances",
+                        lambda: {"balances": [{"currency": "EUR",
+                                               "currentBalance": 5.0}]})
+    monkeypatch.setitem(sys.modules, "polymarket_us_client", mod)
+    assert ft._read_pm_balance()["cash_dollars"] == 0.0
+
+
 # --- move subcommand --------------------------------------------------------
 
 def test_move_records_to_ledger(monkeypatch, tmp_path):

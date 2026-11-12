@@ -148,6 +148,21 @@ def get_account_balances() -> dict:
     return client.get("/v1/account/balances", authenticated=True)
 
 
+def usd_cash_balance(data: dict) -> float:
+    """Extract USD cash from a /v1/account/balances response.
+
+    Schema (official): {"balances": [{"currentBalance": <num>, "currency": "USD", ...}]}.
+    Returns 0.0 when no USD entry is present.
+    """
+    for entry in data.get("balances") or []:
+        if entry.get("currency") == "USD":
+            try:
+                return float(entry.get("currentBalance", 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
+
+
 def close() -> None:
     """Close the SDK client connection.
 

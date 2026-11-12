@@ -88,9 +88,10 @@ def _print_balances(client):
             return
 
         for bal in bal_list:
-            currency = bal.get("currency", bal.get("coin", bal.get("asset", "unknown")))
-            available = bal.get("available", bal.get("cash", bal.get("balance", 0.0)))
-            buying_power = bal.get("buying_power", None)
+            currency = bal.get("currency", "unknown")
+            # Official schema field is currentBalance; buyingPower (capital P).
+            available = bal.get("currentBalance", 0.0)
+            buying_power = bal.get("buyingPower", None)
 
             try:
                 available = float(available)

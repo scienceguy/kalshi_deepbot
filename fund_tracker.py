@@ -39,17 +39,8 @@ def _read_pm_balance() -> dict:
 
     try:
         data = pm.get_account_balances()
-        # Balances may be a dict or a list; extract a USD-ish total defensively.
-        total = None
-        if isinstance(data, dict):
-            total = data.get("total") or data.get("cash") or data.get("available")
-        elif isinstance(data, list) and data:
-            total = data[0].get("total") or data[0].get("balance")
-        if total is None:
-            return {"venue": "polymarket_us", "cash_dollars": None, "ok": True,
-                    "raw": data}
-        return {"venue": "polymarket_us", "cash_dollars": round(float(total), 2),
-                "ok": True}
+        total = pm.usd_cash_balance(data)
+        return {"venue": "polymarket_us", "cash_dollars": round(total, 2), "ok": True}
     except Exception as e:  # noqa: BLE001
         return {"venue": "polymarket_us", "cash_dollars": None, "ok": False,
                 "error": str(e)}

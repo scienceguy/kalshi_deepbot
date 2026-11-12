@@ -157,8 +157,8 @@ class TestBalancesSubcommand:
     def test_balances_with_data(self, capsys):
         _inject_fake_client(
             balances=[
-                {"currency": "USDC", "available": 1000.0, "buying_power": 800.0},
-                {"currency": "USDT", "available": 500.0},
+                {"currency": "USDC", "currentBalance": 1000.0, "buyingPower": 800.0},
+                {"currency": "USDT", "currentBalance": 500.0},
             ]
         )
         original_argv = sys.argv
