@@ -38,7 +38,26 @@ import subprocess
 import sys
 
 
-SKIP_DIRS = {".git", "__pycache__", "legacy", "venv", ".venv", "node_modules"}
+SKIP_DIRS = {".git", "__pycache__", "venv", ".venv", "node_modules"}
+
+# legacy/ is skipped by --all ON PURPOSE and the reason is recorded here, not
+# left implicit: it is not imported by the trader (verified: no live importer),
+# and it contains three REAL pre-existing NameErrors that this gate correctly
+# reports and that nobody has triaged --
+#   legacy/market_data_aggregator.py:401,404  'kalshi_series'  (signature says
+#       kalshi_series_list; the body uses the old name, so the method raises)
+#   legacy/polymarket_arb.py:139              'pm'  (line builds pm_token_id,
+#       then passes the non-existent 'pm')
+# They are listed as a known-failure baseline rather than silently skipped, so
+# that (a) they are visible in this file, and (b) deleting legacy/ or fixing it
+# will make this baseline fail and force someone to decide. Scanning legacy/ is
+# opt-in:  python3 scripts/verify_undefined.py legacy/  --no-baseline
+LEGACY_SKIP = "legacy"
+LEGACY_KNOWN_UNDEFINED = {
+    ("legacy/market_data_aggregator.py", 401, "kalshi_series"),
+    ("legacy/market_data_aggregator.py", 404, "kalshi_series"),
+    ("legacy/polymarket_arb.py", 139, "pm"),
+}
 
 # Only these message classes mean "a token that nothing declared". Everything
 # else pyflakes emits (unused import, unused variable, redefinition scenarios,
@@ -79,13 +98,41 @@ def find_undefined(path):
     return out
 
 
+def _tracked_files(pattern):
+    out = subprocess.run(
+        ["git", "ls-files", pattern],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return out.split()
+
+
+def cooked_name(text):
+    """'undefined name 'oder'' -> 'oder' (the name pyflakes complained about)."""
+    if "'" in text:
+        return text.split("'")[1]
+    return text
+
+
 def main():
     ap = argparse.ArgumentParser(description="Check for undefined names")
     ap.add_argument("files", nargs="*")
-    ap.add_argument("--all", action="store_true", help="check tracked python files")
+    ap.add_argument("--all", action="store_true",
+                    help="check tracked python files (legacy/ excluded)")
+    ap.add_argument("--include-legacy", action="store_true",
+                    help="also scan legacy/, honouring LEGACY_KNOWN_UNDEFINED")
     args = ap.parse_args()
 
-    paths = _tracked("*.py") if args.all else args.files
+    if args.all:
+        paths = _tracked("*.py")
+        if args.include_legacy:
+            paths = sorted(set(paths) | set(_tracked_files("legacy/*.py")))
+        else:
+            # --all covers the live tree unless legacy/ is asked for by name; the
+            # legacy findings are then neither reported nor silently dropped, they
+            # are listed in LEGACY_KNOWN_UNDEFINED and counted by --include-legacy.
+            paths = [f for f in paths if not f.startswith("legacy/")]
+    else:
+        paths = args.files
     if not paths:
         print("no files given (pass paths or --all)")
         return 2
@@ -97,22 +144,57 @@ def main():
               "(pip install pyflakes to enforce)")
         return 0
 
+    # The recorded legacy hits are a baseline: expected present, so a fix or a
+    # deletion has to update this file. Anything else in legacy is a finding.
+    # Only a full-tree scan with --include-legacy can judge the baseline: a scan
+    # of one legacy file would call every other recorded hit "stale".
+    allow = set()
+    if args.include_legacy:
+        allow = LEGACY_KNOWN_UNDEFINED
+    elif not args.all:
+        # Explicit paths: still tolerate a recorded hit in a file named on the
+        # command line, but never claim to adjudicate the ones not scanned.
+        allow = {e for e in LEGACY_KNOWN_UNDEFINED
+                 if any(e[0] == str(p) for p in paths)}
+
     bad = 0
+    seen = set()
     for p in paths:
         if not pathlib.Path(p).exists():
             continue
-        findings = find_undefined(p)
-        if not findings:
+        real = []
+        for lineno, col, cls, text in find_undefined(p):
+            if (p, lineno, cooked_name(text)) in allow:
+                seen.add((p, lineno, cooked_name(text)))
+                continue
+            real.append((lineno, col, cls, text))
+        if not real:
             print("%s: no undefined names" % p)
             continue
         bad += 1
-        for lineno, col, cls, text in findings:
+        for lineno, col, cls, text in real:
             print("%s:%d:%d: %s %s" % (p, lineno, col, cls, text))
+
+    # A baseline entry that no longer reproduces means the tree got fixed (or
+    # the file went away). Fail so the entry is deleted, not left to mask a
+    # future real hit at the same line.
+    stale = allow - seen if args.include_legacy else set()
+    if stale:
+        print("")
+        for p, lineno, name in sorted(stale):
+            print("%s:%d: baseline does not reproduce undefined name %r"
+                  % (p, lineno, name))
+        print("       The tree is better than the baseline -- delete that entry from")
+        print("       LEGACY_KNOWN_UNDEFINED in scripts/verify_undefined.py.")
+        return 1
 
     print("")
     if bad:
         print("%d file(s) with findings" % bad)
         return 1
+    if allow:
+        print("all clean (%d legacy baseline finding(s) accounted for)" % len(seen))
+        return 0
     print("all clean")
     return 0
 

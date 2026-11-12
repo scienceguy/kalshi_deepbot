@@ -61,6 +61,13 @@ if [ -n "$STAGED_PY" ]; then
         echo "       See AGENTS.md TOKEN CORRUPTION. Do not bypass with --no-verify."
         exit 1
     fi
+    # Operator drift: == -> !=, < -> <=, a dropped or doubled `not`, and -> or.
+    # Every name survives those edits, so all three gates above report clean.
+    if ! python3 "$(git rev-parse --show-toplevel)/scripts/verify_operators.py"; then
+        echo "ERROR: staged diff changes a comparison/boolean operator or a not"
+        echo "       See AGENTS.md TOKEN CORRUPTION. Do not bypass with --no-verify."
+        exit 1
+    fi
 fi
 
 # --- 4. /tmp-write guard on staged additions ---------------------------------

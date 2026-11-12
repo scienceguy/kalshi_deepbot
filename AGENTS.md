@@ -166,6 +166,33 @@ disjoint classes — never treat one as a substitute for another:
   redefinitions — 84 in this tree at the time of writing) are deliberately NOT
   enforced; a gate that fails on pre-existing style is a gate everyone skips with
   `--no-verify`. Skipped with a notice and exit 0 if pyflakes is not installed.
+- **`scripts/verify_operators.py`** — operator drift: reads `git diff --cached` and
+  flags a removed/added line pair whose identifiers are identical but whose
+  operator multiset differs (`>=`→`>`, `<`→`<=`, `and`→`or`, a dropped or doubled
+  `not`). These changes keep every name valid, so no name-based gate sees
+  them. A rename or a changed literal in the same line is an ordinary edit and is not
+  flagged.
+
+### legacy/ is an explicit baseline, not a silent skip
+
+`legacy/` contains three real `UndefinedName` hits that these gates would report
+(verified, not assumed):
+
+    legacy/market_data_aggregator.py:401,404  'kalshi_series'  (signature argument is
+         kalshi_series_list; the body reads the old name -- call raises NameError)
+    legacy/polymarket_arb.py:139             'pm'             (line 138 builds
+         pm_token_id; line 139 passes 'pm', which is never bound -- raises NameError)
+
+Nothing in the live tree imports `legacy/` (checked: no `from legacy`/`import legacy`
+outside it), and the trader does not load it, so they cannot affect a trade today.
+They are nevertheless recorded in `LEGACY_KNOWN_UNDEFINED` in
+`scripts/verify_undefined.py` and visible via `--all --include-legacy`, rather than
+being dropped by a blanket directory skip. That baseline fails in two directions:
+a new undefined name in `legacy/` fails the gate, and so does a *fix* of one of these
+(the entry stops reproducing), which forces the entry to be deleted instead of
+rotting. Rewriting retired trading code to clear them is not worth the risk; if
+`legacy/` is ever revived, that file must be assessed first.
+
 
 A file that fails a gate is fixed line by line; there is no `--no-verify`.
 Note the gates only see what is staged — run them yourself before believing a
