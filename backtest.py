@@ -66,6 +66,7 @@ def main():
     parser.add_argument("--limit", type=int, default=100, help="Max markets per series")
     parser.add_argument("--top", type=int, default=10, help="Show top N results")
     parser.add_argument("--jobs", type=int, default=4, help="Parallel workers")
+    parser.add_argument("--replay", action="store_true", help="Paper replay mode: run current config params over fetched markets, printing one-line per market")
     args = parser.parse_args()
 
     logging.getLogger().setLevel(logging.WARNING)
@@ -83,6 +84,29 @@ def main():
     if not markets:
         log.error("No markets fetched — cannot backtest")
         sys.exit(1)
+
+    if args.replay:
+        from backtest_engine import replay_backtest, StratParams
+        # Use current config parameters (config already imported at module level)
+        params = StratParams(
+            STRATEGY_MODE=getattr(config, 'STRATEGY_MODE', 'final_taker'),
+            ENTRY_WINDOW_START_MIN=getattr(config, 'ENTRY_WINDOW_START_MIN', 14.0),
+            ENTRY_WINDOW_END_MIN=getattr(config, 'ENTRY_WINDOW_END_MIN', 15.0),
+            ENTRY_BAND_MIN=getattr(config, 'ENTRY_BAND_MIN', 75),
+            ENTRY_BAND_MAX=getattr(config, 'ENTRY_BAND_MAX', 99),
+            AGGRESSIVE_FILL=getattr(config, 'AGGRESSIVE_FILL', True),
+            EXIT_STOP_LOSS_CENTS=getattr(config, 'EXIT_STOP_LOSS_CENTS', 0),
+            PER_TRADE_PCT=getattr(config, 'PER_TRADE_PCT', 0.08),
+            MAX_TRADE_DOLLARS=getattr(config, 'MAX_TRADE_DOLLARS', 3.00),
+            MAX_OPEN_POSITIONS=getattr(config, 'MAX_OPEN_POSITIONS', 4),
+            BALANCE_PCT_PER_TRADE=getattr(config, 'BALANCE_PCT_PER_TRADE', 0.10),
+            STARTING_BALANCE=100.0,
+        )
+        log.info("Running paper replay with %d markets...", len(markets))
+        result = replay_backtest(params, markets, settlement_yes_won=settlement_yes_won)
+        log.info("Replay complete: %d trades, EV/trade=$%.2f, total P&L=$%.2f, win_rate=%.1f%%",
+                 result["n_trades"], result["ev"], result["total_pnl"], result["win_rate"]*100)
+        sys.exit(0)
 
     run_sweep(
         markets,

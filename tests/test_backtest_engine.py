@@ -204,6 +204,133 @@ class TestParameterGrid:
         assert set(combo.keys()) == expected_keys
 
 
+class TestProfitFactorAndMetrics:
+    """Tests for the new metrics added to run_backtest: profit_factor, avg_win, avg_loss, sharpe."""
+
+    def test_profit_factor_profitable_trades(self):
+        """profit_factor is positive when there are winning trades."""
+        # Create results with all positive PnL
+        from backtest_engine import run_backtest, StratParams
+        from datetime import datetime, timezone, timedelta
+
+        markets = []
+        for i in range(3):
+            close = datetime.now(timezone.utc) + timedelta(minutes=(3-i)*15)
+            open_ = close - timedelta(minutes=15)
+            market = {
+                "ticker": f"TEST{i}",
+                "close_time": close.isoformat(),
+                "open_time": open_.isoformat(),
+                "expiration_value": 1.0,
+                "floor_strike": 1.0,
+                "yes_bid_dollars": "0.83",
+                "yes_ask_dollars": "0.87",
+                "no_bid_dollars": "0.13",
+                "no_ask_dollars": "0.17",
+                "last_price_dollars": "0.85",
+            }
+            markets.append(market)
+
+        params = StratParams(STRATEGY_MODE="early_maker", ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93,
+                              PER_TRADE_PCT=0.20, MAX_TRADE_DOLLARS=10.0)
+        result = run_backtest(params, markets, starting_balance=100.0)
+        assert result["profit_factor"] > 1.0
+        assert result["avg_win"] > 0
+        assert result["avg_loss"] == 0.0  # no losing trades
+        assert result["n_trades"] == 3
+
+    def test_profit_factor_lossmaking_trades(self):
+        """profit_factor is low/zero when there are losing trades."""
+        from backtest_engine import run_backtest, StratParams
+
+        markets = []
+        for i in range(3):
+            close = datetime.now(timezone.utc) + timedelta(minutes=(3-i)*15)
+            open_ = close - timedelta(minutes=15)
+            market = {
+                "ticker": f"TEST{i}",
+                "close_time": close.isoformat(),
+                "open_time": open_.isoformat(),
+                "expiration_value": 0.0,  # YES loses
+                "floor_strike": 1.0,
+                "yes_bid_dollars": "0.83",
+                "yes_ask_dollars": "0.87",
+                "no_bid_dollars": "0.13",
+                "no_ask_dollars": "0.17",
+                "last_price_dollars": "0.85",
+            }
+            markets.append(market)
+
+        params = StratParams(STRATEGY_MODE="early_maker", ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93,
+                              PER_TRADE_PCT=0.20, MAX_TRADE_DOLLARS=10.0)
+        result = run_backtest(params, markets, starting_balance=100.0)
+        assert result["profit_factor"] < 1.0
+        assert result["avg_win"] == 0.0  # no winning trades
+        assert result["avg_loss"] < 0  # have losing trades
+        assert result["n_trades"] == 3
+
+    def test_sharpe_single_trade(self):
+        """sharpe is 0 with a single trade (can't compute std)."""
+        from backtest_engine import run_backtest, StratParams
+        from datetime import datetime, timezone, timedelta
+
+        markets = []
+        close = datetime.now(timezone.utc) + timedelta(minutes=10)
+        open_ = close - timedelta(minutes=15)
+        market = {
+            "ticker": "TEST",
+            "close_time": close.isoformat(),
+            "open_time": open_.isoformat(),
+            "expiration_value": 1.0,
+            "floor_strike": 1.0,
+            "yes_bid_dollars": "0.83",
+            "yes_ask_dollars": "0.87",
+            "no_bid_dollars": "0.13",
+            "no_ask_dollars": "0.17",
+            "last_price_dollars": "0.85",
+        }
+        markets.append(market)
+
+        params = StratParams(STRATEGY_MODE="early_maker", ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93,
+                              PER_TRADE_PCT=0.20, MAX_TRADE_DOLLARS=10.0)
+        result = run_backtest(params, markets, starting_balance=100.0)
+        assert result["sharpe"] == 0.0  # single trade, no stddev
+
+    def test_sharpe_multiple_trades(self):
+        """sharpe is non-zero with multiple trades having varying PnL."""
+        from backtest_engine import run_backtest, StratParams
+        from datetime import datetime, timezone, timedelta
+
+        markets = []
+        # Create 5 markets with varying outcomes: some win, some lose
+        for i in range(5):
+            close = datetime.now(timezone.utc) + timedelta(minutes=(5-i)*15)
+            open_ = close - timedelta(minutes=15)
+            # Alternate winning and losing markets by setting expiration_value
+            won = i % 2 == 0  # 0,2,4 win; 1,3 lose
+            exp_val = 1.0 if won else 0.0
+            market = {
+                "ticker": f"TEST{i}",
+                "close_time": close.isoformat(),
+                "open_time": open_.isoformat(),
+                "expiration_value": exp_val,
+                "floor_strike": 1.0,
+                "yes_bid_dollars": "0.83",
+                "yes_ask_dollars": "0.87",
+                "no_bid_dollars": "0.13",
+                "no_ask_dollars": "0.17",
+                "last_price_dollars": "0.85",
+            }
+            markets.append(market)
+
+        params = StratParams(STRATEGY_MODE="early_maker", ENTRY_BAND_MIN=82, ENTRY_BAND_MAX=93,
+                              PER_TRADE_PCT=0.20, MAX_TRADE_DOLLARS=10.0)
+        result = run_backtest(params, markets, starting_balance=100.0)
+        # With mixed wins/losses, sharpe should be non-zero (some PnL variation)
+        assert result["sharpe"] != 0.0
+        assert result["n_trades"] == 5
+
+
 class TestStopLoss:
     """The early stop must cap the loss instead of letting it settle at zero."""
 

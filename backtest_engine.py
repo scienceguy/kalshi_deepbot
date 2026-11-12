@@ -254,7 +254,8 @@ def run_backtest(params, markets, starting_balance=10.0, settlement_yes_won=None
     if not trades:
         return {"ev": 0.0, "total_pnl": 0.0, "n_trades": 0, "win_rate": 0.0,
                 "avg_pnl": 0.0, "final_balance": balance, "max_drawdown": 0.0,
-                "avg_entry_cents": 0.0, "gross_edge_cents": 0.0}
+                "avg_entry_cents": 0.0, "gross_edge_cents": 0.0,
+                "profit_factor": 0.0, "avg_win": 0.0, "avg_loss": 0.0, "sharpe": 0.0}
 
     total_pnl = sum(t["pnl"] for t in trades)
     wins = sum(1 for t in trades if t["won"])
@@ -273,6 +274,29 @@ def run_backtest(params, markets, starting_balance=10.0, settlement_yes_won=None
         if dd > max_dd:
             max_dd = dd
 
+    # --- New metrics ---
+    # Profit factor: gross positive PnL / gross absolute negative PnL
+    gross_pnl_pos = sum(t["pnl"] for t in trades if t["pnl"] > 0)
+    gross_pnl_neg = abs(sum(t["pnl"] for t in trades if t["pnl"] < 0))
+    profit_factor = gross_pnl_pos / gross_pnl_neg if gross_pnl_neg > 0 else float("inf") if gross_pnl_pos > 0 else 0.0
+
+    # Avg win / avg loss
+    wins = [t["pnl"] for t in trades if t["pnl"] > 0]
+    losses = [t["pnl"] for t in trades if t["pnl"] < 0]
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+
+    # Sharpe ratio: (avg_pnl / std_pnl) * sqrt(n), using sample stddev (ddof=1)
+    import math
+    pnls = [t["pnl"] for t in trades]
+    if len(pnls) > 1:
+        mean = sum(pnls) / len(pnls)
+        var = sum((p - mean) ** 2 for p in pnls) / (len(pnls) - 1)  # sample variance
+        std = math.sqrt(var)
+        sharpe = (avg_pnl / std) * math.sqrt(len(pnls)) if std > 0 else 0.0
+    else:
+        sharpe = 0.0
+
     # The decisive metric: does the win rate actually beat the price paid?
     # An entry at 52c needs a win rate above 52% to break even before fees, so
     # a positive per-trade P&L on a losing edge means the sizing is lying.
@@ -289,6 +313,10 @@ def run_backtest(params, markets, starting_balance=10.0, settlement_yes_won=None
         "avg_pnl": avg_pnl,
         "final_balance": balance,
         "max_drawdown": max_dd,
+        "profit_factor": profit_factor,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "sharpe": sharpe,
         "trades": trades,
     }
 
@@ -345,6 +373,71 @@ def format_params(p):
     )
 
 
+def replay_backtest(params, markets, settlement_yes_won=None):
+    """Run a 'paper replay' of historical markets with given params.
+
+    Prints one line per market: ticker, entry_price, settlement result, PnL.
+    Useful for spot-checking strategy behavior against historical data.
+
+    Returns the full run_backtest result dict.
+    """
+    balance = params.STARTING_BALANCE
+    trades = []
+
+    sorted_markets = sorted(markets, key=lambda m: _parse_api_time(m.get("close_time", "")) or datetime.min)
+
+    for m in sorted_markets:
+        result = simulate_trade(m, params, balance, settlement_yes_won)
+        if not result:
+            continue
+        if result["dollar_risk"] > balance * params.PER_TRADE_PCT + 1e-9:
+            continue
+        if result["dollar_risk"] > params.MAX_TRADE_DOLLARS + 1e-9:
+            continue
+        balance -= result["buy_cost"]
+        balance += result["sell_revenue"]
+        trades.append(result)
+        # Print one-line per market
+        won_str = "YESwin" if result["won"] else ("NOWin" if not result["won"] and result["direction"] == "NO" else "??")
+        pnl_str = f"pnl={result['pnl']:.2f}"
+        entry_str = f"entry={result['entry_price']}c"
+        ticker_str = f"tkr={result['ticker']}"
+        print(f"  {ticker_str} {entry_str} {result['direction']} {won_str} {pnl_str}")
+
+    if not trades:
+        print("  No trades executed in replay.")
+
+    total_pnl = sum(t["pnl"] for t in trades)
+    wins = sum(1 for t in trades if t["won"])
+    win_rate = wins / len(trades) if trades else 0.0
+    avg_pnl = total_pnl / len(trades) if trades else 0.0
+
+    running = params.STARTING_BALANCE
+    peak = params.STARTING_BALANCE
+    max_dd = 0.0
+    for t in trades:
+        running += t["pnl"]
+        if running > peak:
+            peak = running
+        dd = (peak - running) / peak if peak > 0 else 0
+        if dd > max_dd:
+            max_dd = dd
+
+    result = {
+        "ev": avg_pnl,
+        "total_pnl": total_pnl,
+        "n_trades": len(trades),
+        "win_rate": win_rate,
+        "avg_pnl": avg_pnl,
+        "final_balance": balance,
+        "max_drawdown": max_dd,
+        "avg_entry_cents": sum(t["entry_price"] for t in trades) / len(trades) if trades else 0.0,
+        "gross_edge_cents": win_rate * 100.0 - (sum(t["entry_price"] for t in trades) / len(trades) if trades else 0.0),
+        "trades": trades,
+    }
+    return result
+
+
 def print_results(results, n_markets, n_combos, top=10):
     """Print ranked backtest results to stdout."""
     # Rank by return per unit of drawdown. Sorting on EV alone chose the
@@ -356,13 +449,15 @@ def print_results(results, n_markets, n_combos, top=10):
     print(f"BACKTEST RESULTS — {n_markets} markets, {n_combos} parameter sets")
     print("=" * 90)
     print(f"\n{'Rank':<5} {'EV/trade':<9} {'Total P&L':<10} {'Trades':<7} "
-          f"{'Win%':<7} {'Entry':<6} {'Edge/ct':<8} {'MaxDD':<7} {'Params'}")
+          f"{'Win%':<7} {'Entry':<6} {'Edge/ct':<8} {'MaxDD':<7} {'PF':<5} {'AvgW':<5} {'AvgL':<5} {'Sharpe':<6} {'Params'}")
     print("-" * 90)
     for i, r in enumerate(results[:top]):
         p = r["params"]
         print(f"{i+1:<5} {r['ev']:<9.4f} {r['total_pnl']:<10.2f} {r['n_trades']:<7} "
               f"{r['win_rate']*100:<6.1f}% {r.get('avg_entry_cents', 0):<6.1f} "
               f"{r.get('gross_edge_cents', 0):<+8.1f} {r['max_drawdown']*100:<6.1f}% "
+              f"{r.get('profit_factor', 0.0):<5.2f} {r.get('avg_win', 0.0):<5.2f} "
+              f"{r.get('avg_loss', 0.0):<5.2f} {r.get('sharpe', 0.0):<6.2f} "
               f"{format_params(p)}")
 
 
@@ -394,6 +489,10 @@ def print_best(results):
     print(f"  Trades: {best['n_trades']}")
     print(f"  Win rate: {best['win_rate']*100:.1f}%")
     print(f"  Max drawdown: {best['max_drawdown']*100:.1f}%")
+    print(f"  Profit factor: {best['profit_factor']:.2f}")
+    print(f"  Avg win: ${best['avg_win']:.2f}")
+    print(f"  Avg loss: ${best['avg_loss']:.2f}")
+    print(f"  Sharpe: {best['sharpe']:.2f}")
     print(f"  Final balance: ${best['final_balance']:.2f}")
 
 
