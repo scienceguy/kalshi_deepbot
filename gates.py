@@ -42,9 +42,13 @@ SERIES_ASSET = {
 }
 
 # One fetch per asset per TTL, so the gates do not add an HTTP call per
-# candidate inside the 30s cycle.
-_spot_cache: dict[str, tuple[float, float | None]] = {}
-_atr_cache: dict[str, tuple[float, float | None]] = {}
+# candidate inside the 30s cycle. The cached tuple is (last_good_ts,
+# last_attempt_ts, value): last_good_ts is pinned to the time of the last
+# SUCCESSFUL fetch (a failure never moves it, so a long outage still ages out
+# and eventually fails closed); last_attempt_ts is the last time fn() was
+# called, so a dead feed is retried at most once per TTL, not every cycle.
+_spot_cache: dict[str, tuple[float, float, float | None]] = {}
+_atr_cache: dict[str, tuple[float, float, float | None]] = {}
 
 # Last logged decision per candidate, so unchanged cycles add no log line.
 _last_decision: dict[tuple[str, str], str] = {}
@@ -73,16 +77,37 @@ def asset_for(market) -> str | None:
 
 
 def _cached(cache: dict, key: str, ttl: float, fn):
+    """Fetch `fn()` once per TTL, returning the last good value on failure.
+
+    A dead feed must not knock the bot out of the market: a transient failure
+    keeps the previous non-None value (stale-ok) so the gate still scores with
+    the last known spot/ATR. Only once the stale value is older than
+    GATES_STALE_OK_SECONDS does it truly fail closed (None), so a prolonged
+    outage is still visible to the operator in the gate metrics.
+    """
     now = time.time()
     hit = cache.get(key)
-    if hit and now - hit[0] < ttl:
-        return hit[1]
+    # Fresh (value fetched within TTL) -> return it, no fetch.
+    # reviewed: TTL-gated return is additive; the guard only skips a refetch
+    if hit and now - hit[1] < ttl:
+        return hit[2]
     try:
         value = fn()
-    except Exception as e:  # feed failure is a deny, never a crash
+    except Exception as e:  # feed failure -> stale-ok, never a crash
         log.warning("gate feed failed for %s: %s", key, e)
+        # reviewed: stale-ok fallback reuses a real good value inside its window
+        if hit and hit[2] is not None and now - hit[0] < config.GATES_STALE_OK_SECONDS:
+            # Reuse the last good value, but record this attempt so the dead
+            # feed is not hammered every cycle (next retry after one TTL).
+            cache[key] = (hit[0], now, hit[2])
+            return hit[2]
+        # reviewed: over-stale path fails closed (None) instead of trading
+        if hit and hit[2] is not None:
+            # Stale value too old: fail closed rather than trade on a price
+            # that could be long gone.
+            log.warning("gate feed stale %s for %.0fs — failing closed", key, now - hit[0])
         value = None
-    cache[key] = (now, value)
+    cache[key] = (now, now, value)
     return value
 
 

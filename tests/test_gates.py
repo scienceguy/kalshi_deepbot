@@ -3,6 +3,7 @@
 import pytest
 import math
 import time
+from contextlib import contextmanager
 from unittest.mock import Mock, patch, MagicMock
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -176,6 +177,61 @@ class TestGatesEvaluateEntry:
                                     result = gates.evaluate_entry(market, side="no", entry_price_cents=77)
                                     assert result.allowed is False
                                     assert any("gate1" in r for r in result.reasons)
+
+
+class TestGatesStaleOk:
+    """A feed outage must reuse the last good spot/ATR (stale-ok) rather than
+    knock the bot out of the market; only an over-stale value fails closed."""
+
+    @contextmanager
+    def _clock(self, ttl, stale_ok):
+        """Patch gates.time.time with a controllable clock; yield a mutable
+        {"now": float} dict so the test can advance time."""
+        import gates as _g
+        holder = {"now": 0.0}
+
+        class _Clock:
+            @staticmethod
+            def time():
+                return holder["now"]
+
+        patcher = patch.object(_g.time, "time", _Clock.time)
+        patcher.start()
+        try:
+            with patch.object(config, 'GATES_STALE_OK_SECONDS', stale_ok):
+                with patch.object(config, 'GATES_ATR_CACHE_SECONDS', ttl):
+                    with patch.object(config, 'GATES_SPOT_CACHE_SECONDS', ttl):
+                        yield holder
+        finally:
+            patcher.stop()
+
+    def test_feed_failure_returns_last_good_spot(self):
+        """After a good fetch, a TTL-expired refetch that fails returns the
+        last good value while it is still within the stale-ok window."""
+        gates._spot_cache.clear()
+        with self._clock(ttl=30, stale_ok=300) as holder:
+            with patch('binance_feed.composite_price', return_value=94000.0):
+                assert gates.spot_for("BTC") == 94000.0
+            # Advance past the spot TTL (30s) so the next call refetches.
+            holder["now"] += 31.0
+            with patch('binance_feed.composite_price',
+                       side_effect=RuntimeError("binance down")):
+                # 31s of age is < stale_ok (300) -> the gate reuses the good value.
+                assert gates.spot_for("BTC") == 94000.0
+
+    def test_over_stale_feed_fails_closed(self):
+        """Once the last good value is older than GATES_STALE_OK_SECONDS,
+        a failing feed returns None (fail closed)."""
+        gates._spot_cache.clear()
+        with self._clock(ttl=30, stale_ok=300) as holder:
+            with patch('binance_feed.composite_price', return_value=94000.0):
+                assert gates.spot_for("BTC") == 94000.0
+            # Advance past the stale-ok window (300s) and past the TTL.
+            holder["now"] += 301.0
+            with patch('binance_feed.composite_price',
+                       side_effect=RuntimeError("binance down")):
+                # 301s of age is >= stale_ok (300) -> fail closed with None.
+                assert gates.spot_for("BTC") is None
 
 
 class TestGatesPrefetch:
