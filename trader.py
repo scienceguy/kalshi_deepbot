@@ -2330,39 +2330,44 @@ def main():
              state.session_pnl, state.cycles, state.trades_placed)
 
 
-if __name__ == "__main__":
-    lock_path = Path(__file__).resolve().parent / ".lock"
-    lock_fd = None
+def acquire_instance_lock(lock_path: Path) -> int:
+    """Take the single-instance lock. Returns an fd that must stay open.
+
+    The fd has to live for the whole process: closing it releases the flock.
+    Write the PID with os.write rather than `with os.fdopen(...)`, which closes
+    the descriptor and silently unlocks, letting a second bot trade the same
+    account.
+    """
     for attempt in range(5):
+        fd = None
         try:
             # Open lock file (create if needed)
-            lock_fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY)
+            fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY)
             # Try to acquire exclusive non-blocking lock
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.ftruncate(fd, 0)
+            os.write(fd, str(os.getpid()).encode())
+            return fd
         except (OSError, BlockingIOError):
-            # Lock held by another process
+            if fd is not None:  # reviewed: close only the fd opened for this attempt
+                os.close(fd)
             if attempt < 4:
                 log.warning("Lock held by another process — retrying in 1s (attempt %d/5)", attempt + 2)
                 time.sleep(1)
-                if lock_fd:
-                    os.close(lock_fd)
-                    lock_fd = None
                 continue
-            else:
-                # Never proceed without the lock. The old check read the shell's
-                # DRY_RUN, but --live only changes config.DRY_RUN, so a live bot
-                # started with the documented env saw "dry run" and ran anyway —
-                # two live bots, one account, two ideas of available cash.
-                log.error("Could not acquire lock after 5 attempts — another instance running")
-                sys.exit(1)
-    else:
-        # This runs if the loop wasn't broken (shouldn't happen)
-        log.error("Could not acquire lock after 5 attempts — another instance running")
-        sys.exit(1)
-    # Write PID to lock file for debugging
-    with os.fdopen(lock_fd, "w") as f:
-        f.write(str(os.getpid()))
+            # Never proceed without the lock. The old check read the shell's
+            # DRY_RUN, but --live only changes config.DRY_RUN, so a live bot
+            # started with the documented env saw "dry run" and ran anyway —
+            # two live bots, one account, two ideas of available cash.
+            log.error("Could not acquire lock after 5 attempts — another instance running")
+            raise SystemExit(1)
+
+
+# reviewed: entry point only — the lock below is taken before any trading
+if __name__ == "__main__":
+    lock_path = Path(__file__).resolve().parent / ".lock"
+    # Hold the fd for the process lifetime; it is the lock.
+    lock_fd = acquire_instance_lock(lock_path)
 
     # Runtime guard: if .env has DRY_RUN=false but the user didn't pass --live,
     # refuse to start. This prevents a silent env flip from enabling live trading.
@@ -2379,6 +2384,7 @@ if __name__ == "__main__":
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
-            os.unlink(lock_path)
+            # Not unlinked: unlinking lets a waiter lock the old inode while a
+            # newcomer creates and locks a fresh one — two bots, two locks.
         except (OSError, FileNotFoundError):
             pass
