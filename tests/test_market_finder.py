@@ -271,5 +271,135 @@ class TestMarketFinderOrderbook:
                         assert m.yes_bid == 76
 
 
+class TestMarketFinderSignalQuality:
+    """Test signal quality improvements in market_finder."""
+    
+    def test_no_ask_false_positive_removed(self):
+        """Markets where only NO ask is in band (not YES ask) are not tradeable.
+        
+        For a favourite-YES strategy, a NO ask of 85 (YES bid 15) should NOT
+        flag the market as tradeable - this was a false positive.
+        """
+        client = MockKalshiClient()
+        
+        # Market with NO ask in band but YES ask OUTSIDE band
+        # YES ask = 60c (outside [75,99]), NO ask = 85c (inside [75,99])
+        def get_markets_no_ask_only(*args, **kwargs):
+            return [{
+                "ticker": "KXBTC15M-26NOV090415-15",
+                "series_ticker": "KXBTC15M",
+                "status": "active",
+                "close_time": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                "floor_strike": 95000.0,
+                "yes_bid_dollars": "0.60",   # YES bid 60c
+                "yes_ask_dollars": "0.62",   # YES ask 62c - OUTSIDE [75,99]
+                "no_bid_dollars": "0.15",    # NO bid 15c
+                "no_ask_dollars": "0.85",    # NO ask 85c - inside [75,99]
+                "yes_bid_size_fp": "100",
+                "no_bid_size_fp": "100",
+            }]
+        client.get_markets = get_markets_no_ask_only
+        
+        # Mock orderbook with low YES liquidity to trigger the liquidity guard
+        # and ensure the market is filtered for the right reason
+        client.get_orderbook = lambda ticker, depth=5: {
+            "yes": [[77, 1]],  # 1 contract only - low liquidity
+            "no": [[23, 100]],
+        }
+        
+        with patch.object(config, 'TARGET_SERIES', ['KXBTC15M']):
+            with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
+                with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
+                    with patch.object(config, 'HEDGE_YES_ASK_MAX', 12):
+                        with patch.object(config, 'MAX_HEDGE_PER_SERIES', 0):
+                            markets = market_finder.find_active_markets(client)
+                            # Market should NOT be tradeable because only NO ask is in band,
+                            # not YES ask. This was a false positive before the fix.
+                            assert markets.tradable_count == 0, \
+                                f"Expected 0 tradeable markets (NO-ask only false positive), got {markets.tradable_count}"
+                            assert len(markets) == 0, \
+                                f"Expected 0 markets, got {len(markets)}"
+    
+    def test_minimum_liquidity_guard(self):
+        """Markets with YES liquidity < 5 are skipped by the size guard."""
+        client = MockKalshiClient()
+        
+        # Market with YES liquidity = 2 (too low, should be skipped)
+        # and NO liquidity = 100
+        def get_markets_low_yes_liq(*args, **kwargs):
+            return [{
+                "ticker": "KXBTC15M-26NOV090415-15",
+                "series_ticker": "KXBTC15M",
+                "status": "active",
+                "close_time": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                "floor_strike": 95000.0,
+                "yes_bid_dollars": "0.75",
+                "yes_ask_dollars": "0.77",
+                "no_bid_dollars": "0.23",
+                "no_ask_dollars": "0.25",
+                "yes_bid_size_fp": "2",   # YES liquidity = 2 contracts (too low!)
+                "no_bid_size_fp": "100",
+            }]
+        client.get_markets = get_markets_low_yes_liq
+        
+        # Mock orderbook that preserves the low YES liquidity
+        client.get_orderbook = lambda ticker, depth=5: {
+            "yes": [[77, 2]],  # 2 contracts in orderbook
+            "no": [[23, 100]],
+        }
+        
+        with patch.object(config, 'TARGET_SERIES', ['KXBTC15M']):
+            with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
+                with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
+                    with patch.object(config, 'HEDGE_YES_ASK_MAX', 12):
+                        with patch.object(config, 'MAX_HEDGE_PER_SERIES', 0):
+                            markets = market_finder.find_active_markets(client)
+                            # Market should be skipped because yes_liquidity < 5
+                            assert markets.tradable_count == 0, \
+                                f"Expected 0 tradeable markets (low liquidity guard), got {markets.tradable_count}"
+                            assert len(markets) == 0, \
+                                f"Expected 0 markets, got {len(markets)}"
+    
+    def test_minimum_liquidity_passes_when_high(self):
+        """Markets with YES liquidity >= 5 pass the size guard."""
+        client = MockKalshiClient()
+        
+        # Market with YES liquidity = 10 (sufficient) and NO liquidity = 50
+        def get_markets_high_yes_liq(*args, **kwargs):
+            return [{
+                "ticker": "KXBTC15M-26NOV090415-15",
+                "series_ticker": "KXBTC15M",
+                "status": "active",
+                "close_time": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                "floor_strike": 95000.0,
+                "yes_bid_dollars": "0.75",
+                "yes_ask_dollars": "0.77",
+                "no_bid_dollars": "0.23",
+                "no_ask_dollars": "0.25",
+                "yes_bid_size_fp": "10",  # YES liquidity = 10 contracts (ok)
+                "no_bid_size_fp": "50",
+            }]
+        client.get_markets = get_markets_high_yes_liq
+        
+        # Mock orderbook with sufficient YES liquidity
+        client.get_orderbook = lambda ticker, depth=5: {
+            "yes": [[77, 10]],  # 10 contracts in orderbook
+            "no": [[23, 50]],
+        }
+        
+        with patch.object(config, 'TARGET_SERIES', ['KXBTC15M']):
+            with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
+                with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
+                    with patch.object(config, 'HEDGE_YES_ASK_MAX', 12):
+                        with patch.object(config, 'MAX_HEDGE_PER_SERIES', 0):
+                            markets = market_finder.find_active_markets(client)
+                            # Market should be tradeable because YES ask is in band
+                            # AND YES liquidity >= 5
+                            assert markets.tradable_count > 0, \
+                                f"Expected >0 tradeable markets (sufficient liquidity), got {markets.tradable_count}"
+                            assert len(markets) > 0, \
+                                f"Expected >0 markets, got {len(markets)}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
