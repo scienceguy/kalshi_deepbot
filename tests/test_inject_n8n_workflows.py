@@ -23,10 +23,18 @@ def test_python_script_workflow_shape():
     nodes = _nodes(data)
     types = [n["type"] for n in nodes]
     assert "n8n-nodes-base.webhook" in types
-    assert "n8n-nodes-base.code" in types
+    assert "n8n-nodes-base.executeCommand" in types
+    assert "n8n-nodes-base.code" not in types
     assert "n8n-nodes-base.respondToWebhook" in types
+    # the command must invoke the script with its flags
+    cmd = next(n for n in nodes if n["type"] == "n8n-nodes-base.executeCommand")
+    assert "/tmp/backtest.py --quick" in cmd["parameters"]["command"]
+    assert "PYTHONPATH=" in cmd["parameters"]["command"]
     conns = _connections(data)
-    assert set(conns) == {"node_webhook", "node_code"}
+    assert set(conns) == {"SuperBot Backtest", "Execute Python"}
+    # targets must be node NAMES, not ids (n8n resolves by name)
+    assert conns["SuperBot Backtest"]["main"][0][0]["node"] == "Execute Python"
+    assert conns["Execute Python"]["main"][0][0]["node"] == "Respond to Webhook"
 
 
 def test_settlement_workflow_uses_http_request():

@@ -10,21 +10,23 @@ Creates n8n workflows that act as tools:
 
 Each workflow uses:
 - Webhook trigger node (receives HTTP POST)
-- Code node (executes Python via subprocess)
+- Execute Command node (runs a Python script)
 - Respond to Webhook node (returns results)
 
 Injects directly into n8n SQLite database.
 """
 
 import os
+import shlex
 import sqlite3
+import sys
 import json
 import uuid
 from datetime import datetime, timezone
 
 DB_PATH = os.environ.get("N8N_DB_PATH", "/data/data/com.termux/files/home/.n8n/database.sqlite")
-PROJECT_ID = os.environ.get("N8N_PROJECT_ID", "9WCli3nfVzBpxYqg")
-USER_ID = os.environ.get("N8N_USER_ID", "user-gentry")
+PROJECT_ID = os.environ.get("N8N_PROJECT_ID", "Tnj4bqvQK0YrKDi3")
+USER_ID = os.environ.get("N8N_USER_ID", "8479b7c4-cebe-4ef5-807e-9cb8e6f2f773")
 
 # Scripts the workflows execute, resolved relative to this file so the
 # injector is not tied to one checkout path.
@@ -35,56 +37,15 @@ now = datetime.now(timezone.utc).isoformat() + "Z"
 def new_id():
     return uuid.uuid4().hex
 
-def make_code_node_code(script, args, webhook_path):
-    """Build the JavaScript code for the Code node."""
-    # Escape % for Python % formatting safety
-    script_s = script.replace("%", "%%")
-    args_s = args.replace("%", "%%")
-    path_s = webhook_path.replace("%", "%%")
-    # Escape backticks and ${ for shell safety in execSync template literal
-    script_s = script_s.replace("`", "\\`").replace("${", "\\${")
-    args_s = args_s.replace("`", "\\`").replace("${", "\\${")
-    return """// Execute SuperBot Python script
-const { execSync } = require('child_process');
-const script = '%s';
-const args = '%s';
-const input = $input.all()[0].json || {};
+def make_command(script, args):
+    """Shell command for the Execute Command node.
 
-try {
-  const payload = JSON.stringify({ body: input, webhookPath: '%s' });
-  const result = execSync(`/data/data/com.termux/files/usr/bin/python3 ${script} ${args}`, {
-    input: payload,
-    encoding: 'utf8',
-    timeout: 60000,
-    maxBuffer: 10 * 1024 * 1024
-  });
-
-  try {
-    return [{
-      json: {
-        success: true,
-        output: JSON.parse(result.toString().trim())
-      }
-    }];
-  } catch (e) {
-    return [{
-      json: {
-        success: true,
-        output: result.toString().trim()
-      }
-    }];
-  }
-} catch (e) {
-  return [{
-    json: {
-      success: false,
-      error: e.message,
-      stdout: e.stdout?.toString() || '',
-      stderr: e.stderr?.toString() || ''
-    }
-  }];
-}
-""" % (script_s, args_s, path_s)
+    n8n 2.x blocks `require('child_process')` in Code nodes, so the script
+    runs through n8n-nodes-base.executeCommand instead. None of the SuperBot
+    scripts read stdin; each one is invoked for its side effect and CLI flags.
+    """
+    return shlex.join(["env", f"PYTHONPATH={BASE_DIR}", sys.executable,
+                       script] + shlex.split(args))
 
 
 def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python_script=None, python_args="",
@@ -103,7 +64,7 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
         "parameters": {
             "httpMethod": "POST",
             "path": webhook_path,
-            "responseMode": "lastNode",
+            "responseMode": "responseNode",
             "authentication": "none",
             "webhookId": webhook_id,
             "responseData": True,
@@ -123,35 +84,27 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
             "typeVersion": 4.1,
             "position": [300, 0],
             "parameters": {
-                "requestMethod": "PATCH",
-                "url": f"{supabase_url_clean}/rest/v1/orders?order_id=eq={{{{ $json.order_id }}}}",
-                "authentication": "headerAuth",
-                "authHeaderName": "apikey",
-                "authHeaderValue": supabase_key,
+                "method": "PATCH",
+                "url": f"={{{{ '{supabase_url_clean}/rest/v1/orders?order_id=eq.' + $json.body.order_id }}}}",
                 "sendHeaders": True,
-                "headerParameters": [
-                    {
-                        "name": "Authorization",
-                        "value": f"Bearer {supabase_key}"
-                    },
-                    {
-                        "name": "Content-Type",
-                        "value": "application/json"
-                    },
-                    {
-                        "name": "Prefer",
-                        "value": "return=representation"
-                    }
-                ],
-                "bodyContentType": "json",
-                "jsonParameters": True,
-                "jsonParametersBody": {
-                    "status": "={{ $json.status }}",
-                    "fill_price_cents": "{{= $json.fill_price_cents }}",
-                    "outcome_won": "{{= $json.outcome_won }}",
-                    "pnl_dollars": "{{= $json.pnl_dollars }}",
-                    "settled_at": "{{= $json.ts if $json.ts else $now }}"
+                "headerParameters": {
+                    "parameters": [
+                        {"name": "apikey", "value": supabase_key},
+                        {"name": "Authorization", "value": f"Bearer {supabase_key}"},
+                        {"name": "Content-Type", "value": "application/json"},
+                        {"name": "Prefer", "value": "return=representation"},
+                    ]
                 },
+                "sendBody": True,
+                "specifyBody": "json",
+                "jsonBody": (
+                    # The deployed public.orders table has no fill_price_cents /
+                    # outcome_won / settled_at columns; PATCHing them returns
+                    # PGRST204. status + pnl_dollars are the settlement facts it
+                    # can hold. See supabase/schema.sql for the full schema.
+                    "={{ JSON.stringify({ status: $json.body.status,"
+                    " pnl_dollars: $json.body.pnl_dollars }) }}"
+                ),
                 "options": {}
             },
             "isActive": True
@@ -174,42 +127,59 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
         
         nodes = [webhook_node, http_request_node, respond_node]
         
+        # n8n resolves connections by node NAME, not id.
         connections = {
-            "node_webhook": {
+            node_name: {
                 "main": [[
-                    {
-                        "node": "node_http_request",
-                        "type": "main",
-                        "index": 0
-                    }
+                    {"node": "Update Order Settlement", "type": "main", "index": 0}
                 ]]
             },
-            "node_http_request": {
+            "Update Order Settlement": {
                 "main": [[
-                    {
-                        "node": "node_respond",
-                        "type": "main",
-                        "index": 0
-                    }
+                    {"node": "Respond to Webhook", "type": "main", "index": 0}
+                ]]
+            }
+        }
+    elif workflow_type == "ack_only":
+        # Health/alert sink: acknowledge without running any subprocess, so a
+        # monitor ping can never start a trading cycle.
+        respond_node = {
+            "id": "node_respond",
+            "name": "Respond to Webhook",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1,
+            "position": [300, 0],
+            "parameters": {
+                "responseCode": "200",
+                "responseBody": "={{ {ok: true, received: $json.body} }}",
+                "respondWith": "json",
+                "options": {}
+            },
+            "position": [300, 0]
+        }
+
+        nodes = [webhook_node, respond_node]
+
+        connections = {
+            node_name: {
+                "main": [[
+                    {"node": "Respond to Webhook", "type": "main", "index": 0}
                 ]]
             }
         }
     else:
-        # Python script workflow (original behavior)
-        code_js = make_code_node_code(python_script, python_args, webhook_path)
-        
+        command = make_command(python_script, python_args)
+
         code_node = {
-            "id": "node_code",
+            "id": "node_exec",
             "name": "Execute Python",
-            "type": "n8n-nodes-base.code",
-            "typeVersion": 2,
+            "type": "n8n-nodes-base.executeCommand",
+            "typeVersion": 1,
             "position": [300, 0],
             "parameters": {
-                "jsCode": code_js,
-                "language": "javascript",
-                "mode": "runOnceForAllItems"
-            },
-            "position": [300, 0]
+                "command": command,
+                "executeOnce": True
+            }
         }
         
         respond_node = {
@@ -229,23 +199,16 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
         
         nodes = [webhook_node, code_node, respond_node]
         
+        # n8n resolves connections by node NAME, not id.
         connections = {
-            "node_webhook": {
+            node_name: {
                 "main": [[
-                    {
-                        "node": "node_code",
-                        "type": "main",
-                        "index": 0
-                    }
+                    {"node": "Execute Python", "type": "main", "index": 0}
                 ]]
             },
-            "node_code": {
+            "Execute Python": {
                 "main": [[
-                    {
-                        "node": "node_respond",
-                        "type": "main",
-                        "index": 0
-                    }
+                    {"node": "Respond to Webhook", "type": "main", "index": 0}
                 ]]
             }
         }
@@ -394,8 +357,9 @@ def main():
             'webhook_path': 'superbot-monitor',
             'webhook_id': 'superbot-monitor-auto',
             'node_name': 'SuperBot Monitor',
-            'script': os.path.join(BASE_DIR, 'trader.py'),
-            'args': '--once --debug'
+            # Acknowledge alerts only. Spawning trader.py here would run a
+            # second cycle that can place orders once DRY_RUN is false.
+            'workflow_type': 'ack_only',
         }
     ]
     
