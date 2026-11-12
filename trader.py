@@ -2085,11 +2085,14 @@ def main():
                     "Bot continues trading without n8n routing.")
     log.info("n8n health check %s", "✓" if n8n_ok else "✗")
 
-    # Lazy-load ML fair-value model if requested (torch import is heavy;
-    # only pay the cost when --ml-model is passed).
+    # Lazy-load the ML fair-value model if requested (torch import is heavy;
+    # only pay the cost when --ml-model is passed). Deliberately NOT auto-loaded:
+    # an HF-trained model (scripts/train_ml_hf.py) validates as well-calibrated
+    # but predicts the venue mid, so it rejects every ask-paying entry. Loading
+    # it by default would silently stop all trading.
     if args.ml_model:
         _load_ml_model(args.ml_model)
-        log.info("ML fair-value filtering enabled")
+        log.info("ML fair-value filtering enabled (%s)", args.ml_model)
 
     # Validate the Supabase service key at startup — an invalid/leaked key
     # (e.g. the one previously committed to git history) returns 401 on every
