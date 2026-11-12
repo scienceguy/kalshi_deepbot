@@ -514,6 +514,11 @@ class LocalDB:
                 pk_col = "id"
                 pk_val = row_dict.pop("id")
             
+            if table == "pnl_ledger":
+                # No pnl_ledger table exists in the deployed Supabase schema;
+                # the local ledger is the source of truth for settlements.
+                continue
+
             try:
                 # Map local column names to Supabase column names
                 if table == "signals":
@@ -526,6 +531,8 @@ class LocalDB:
                                   if k in ("ts", "ticker", "side", "contracts",
                                            "price_cents", "order_id", "status",
                                            "fees_dollars", "cycles")}
+                    # remote orders.action is NOT NULL with no default
+                    order_data["action"] = "buy"
                     result = supabase_client.insert_order(order_data)
                 elif table == "bot_state":
                     key = row_dict.pop("key")
