@@ -119,10 +119,22 @@ n8n holds a **copy** of every credential, recreated from the mirror at any time.
   **after any pull, restore those two files** from `.env` `KALSHI_KEY_ID` +
   `~/.secrets/kalshi_private.pem` (a stale copy is kept as
   `*_stalebw_<stamp>.json`). Fix the vault item names to end this for good.
-- **Polymarket creds** live in `bw/polymarket_api_key.json` and
-  `bw/polymarket_secret_key.json`. They are CLOB L2 credentials: a
-  **passphrase** and the **wallet private key** (L1 signing) are still missing,
-  so they cannot place orders yet.
+- **Polymarket US is fully wired and works** (verified 2026-11-12). Two separate
+  Polymarket APIs; do not conflate them:
+  - **US** (`api.polymarket.us`, the one this repo uses): signs with only
+    **Key ID + Ed25519 secret**, read from `bw/polymarket_api_key.json` and
+    `bw/polymarket_secret_key.json`. No passphrase, no wallet key. Verified:
+    balances (`$35`), `orders.list` (authenticated), live book, and
+    `orders.preview` all return 200. This is a *trading* scope, so US orders can
+    be placed with just these two creds. Shape traps: `markets.list` filters are
+    ignored (fetch the market via `events.retrieve_by_slug(...)["event"]["markets"]`);
+    the market slug is `cpc-btc-updown-15m-...`, not the event slug; `orders.preview`
+    takes `{"request": {...}}`; `price` is `{"value":"0.90","currency":"USD"}`.
+  - **International CLOB** (`clob.polymarket.com`): the old L2-credential path
+    (passphrase + L1 wallet key) — that is what `scripts/derive_poly_creds.py`
+    produces and it is unrelated to the US bot. `polymarket_us_client.py` is
+    deliberately read-only; order placement for US goes through the
+    `polymarket_us` SDK's `PolymarketUS.orders` resource.
 - A background guard (`scripts/n8n_creds_guard.sh`, termux-job-scheduler job
   **7001**, every 15 min, persisted) re-runs the sync automatically.
 - `add_n8n_credentials.py` is deprecated; use `scripts/n8n_creds_sync.py`.
@@ -469,3 +481,15 @@ gate with volatility scaled from realized per-minute vol returns **+1.03c**. So 
 whole edge is ~1c/trade and depends on the gate being calibrated — the fixed 0.80
 vol is not, and is unvalidated against live outcomes. Do not loosen the band or the
 gate expecting more edge; fix or validate the vol model first.
+
+**ML MODEL VALIDATION (2026-11-12):** `scripts/train_ml_hf.py` trains
+`ml_model.MLFairValue` on the HF set and validates the entry gate on held-out
+days (14 days: train 09-29..10-08, test 10-09..10-11). The ML model is far better
+*calibrated* than the GBM (Brier 0.149 vs 0.195; AUC 0.876 vs 0.787), but as an
+ask-paying gate it selects **0 trades** at every edge threshold ≥ 0: it learns to
+predict the venue mid, so it can never beat the ask (ask = mid + half-spread).
+The GBM gate's positive EV therefore comes from being *overconfident* — it ignores
+the venue quote — not from information the ML model lacks. Conclusion: do NOT
+auto-enable the ML model; `--ml-model` stays explicit (an auto-loaded artifact
+would silently stop all trading). The artifact is gitignored (`*.pt`); regenerate
+with `python scripts/train_ml_hf.py`.
