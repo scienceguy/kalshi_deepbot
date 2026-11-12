@@ -11,7 +11,20 @@ _STORE = {}
 
 CHECKPOINT_ENTITY = "agent_continuity_checkpoint"
 
-_MP = shutil.which("mempalace") or "/data/data/com.termux/files/home/.local/bin/mempalace"
+_MP = ""
+# Try shutil.which first (works when PATH includes ~/bin)
+_candidate = shutil.which("mempalace")
+if _candidate and os.path.isfile(_candidate) and os.access(_candidate, os.X_OK):
+    _MP = _candidate
+# Explicit candidates for restricted-PATH environments
+if not _MP:
+    for _p in (
+        "/data/data/com.termux/files/home/bin/mempalace",
+        "/data/data/com.termux/files/home/.local/bin/mempalace",
+    ):
+        if os.path.isfile(_p) and os.access(_p, os.X_OK):
+            _MP = _p
+            break
 _MP_TMP = "/data/data/com.termux/files/usr/tmp/opencode"
 
 def _mp_available() -> bool:
@@ -21,7 +34,7 @@ def _mp_available() -> bool:
 def _mp(*args):
     import shlex
     if not _mp_available():
-        raise RuntimeError("mempalace CLI not found (checked PATH and ~/.local/bin/mempalace)")
+        raise RuntimeError("mempalace CLI not found (tried PATH candidates and /data/data/com.termux/files/home/bin/mempalace, /data/data/com.termux/files/home/.local/bin/mempalace)")
     quoted = [shlex.quote(a) for a in args]
     # /tmp is NOT writable on this Termux/proot setup — use the approved temp dir.
     cmd = "cd " + _MP_TMP + " && " + _MP + " " + " ".join(quoted)
