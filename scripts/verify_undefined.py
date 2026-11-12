@@ -18,10 +18,12 @@ and a gate that fails on 84 pre-existing lines is a gate everyone passes with
 --no-verify.
 
 Honest limit, do not overclaim it: this does NOT bound the whole class. A
-splice that swaps a defined name for another defined name, flips a comparison
-operator, drops a `not`, or renames a parameter through every use, still parses
-AND still resolves. Those need review. This gate removes the cheapest way for a
-splice to survive unnoticed, nothing more.
+splice that swaps one DEFINED name for another still parses AND still resolves,
+and nothing here sees it. A comparison operator swap or a dropped or
+doubled `not` are covered by scripts/verify_operators.py instead. What all three
+gates provably miss is listed under "Not caught" in AGENTS.md -- read it before
+treating a clean run as review. This gate removes the cheapest way for a splice
+to survive unnoticed, nothing more.
 
     python3 scripts/verify_undefined.py FILES...
     python3 scripts/verify_undefined.py --all
@@ -40,27 +42,12 @@ import sys
 
 SKIP_DIRS = {".git", "__pycache__", "venv", ".venv", "node_modules"}
 
-# legacy/ is skipped by --all ON PURPOSE and the reason is recorded here, not
-# left implicit: it is not imported by the trader (verified: no live importer),
-# so none of it can reach a trade.
-#
-# Two hits were REAL and are now fixed (keep this note so nobody re-introduces
-# them): legacy/market_data_aggregator.py:401,404 read 'kalshi_series' in a method
-# whose parameter is 'kalshi_series_list'. They are gone from the baseline and the
-# gate reports that file clean.
-#
-# One hit remains and is NOT a one-token fix:
-#   legacy/polymarket_arb.py:139   self._get_polymarket_prices(pm)
-#   - 'pm' is never bound (138 builds 'pm_token_id'); AND
-#   - PolymarketArb has no '_get_polymarket_prices' method at all -- grep the tree.
-# Renaming 'pm' to 'pm_token_id' would satisfy this gate and still raise
-# AttributeError on the next line, so it is left as deliberately-dead code rather
-# than papered over. If legacy/ is ever revived, that class must be finished or
-# deleted first. Scanning legacy/ is opt-in: --all --include-legacy.
-LEGACY_SKIP = "legacy"
-LEGACY_KNOWN_UNDEFINED = {
-    ("legacy/polymarket_arb.py", 139, "pm"),
-}
+# No directory exemption and no baseline. legacy/ is scanned like everything
+# else. It briefly held a recorded exemption for one unfixed name; that file
+# (legacy/polymarket_arb.py) called a method defined nowhere in the tree, so it
+# was deleted rather than papered over (AUDIT_REPORT.md:236 lists it under
+# "unused exchange clients, delete"). An exemption set whose only correct state
+# is empty is a hole waiting to be refilled, so the mechanism is gone too.
 
 # Only these message classes mean "a token that nothing declared". Everything
 # else pyflakes emits (unused import, unused variable, redefinition scenarios,
@@ -101,41 +88,13 @@ def find_undefined(path):
     return out
 
 
-def _tracked_files(pattern):
-    out = subprocess.run(
-        ["git", "ls-files", pattern],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    return out.split()
-
-
-def cooked_name(text):
-    """'undefined name 'oder'' -> 'oder' (the name pyflakes complained about)."""
-    if "'" in text:
-        return text.split("'")[1]
-    return text
-
-
 def main():
     ap = argparse.ArgumentParser(description="Check for undefined names")
     ap.add_argument("files", nargs="*")
-    ap.add_argument("--all", action="store_true",
-                    help="check tracked python files (legacy/ excluded)")
-    ap.add_argument("--include-legacy", action="store_true",
-                    help="also scan legacy/, honouring LEGACY_KNOWN_UNDEFINED")
+    ap.add_argument("--all", action="store_true", help="check tracked python files")
     args = ap.parse_args()
 
-    if args.all:
-        paths = _tracked("*.py")
-        if args.include_legacy:
-            paths = sorted(set(paths) | set(_tracked_files("legacy/*.py")))
-        else:
-            # --all covers the live tree unless legacy/ is asked for by name; the
-            # legacy findings are then neither reported nor silently dropped, they
-            # are listed in LEGACY_KNOWN_UNDEFINED and counted by --include-legacy.
-            paths = [f for f in paths if not f.startswith("legacy/")]
-    else:
-        paths = args.files
+    paths = _tracked("*.py") if args.all else args.files
     if not paths:
         print("no files given (pass paths or --all)")
         return 2
@@ -147,30 +106,11 @@ def main():
               "(pip install pyflakes to enforce)")
         return 0
 
-    # The recorded legacy hits are a baseline: expected present, so a fix or a
-    # deletion has to update this file. Anything else in legacy is a finding.
-    # Only a full-tree scan with --include-legacy can judge the baseline: a scan
-    # of one legacy file would call every other recorded hit "stale".
-    allow = set()
-    if args.include_legacy:
-        allow = LEGACY_KNOWN_UNDEFINED
-    elif not args.all:
-        # Explicit paths: still tolerate a recorded hit in a file named on the
-        # command line, but never claim to adjudicate the ones not scanned.
-        allow = {e for e in LEGACY_KNOWN_UNDEFINED
-                 if any(e[0] == str(p) for p in paths)}
-
     bad = 0
-    seen = set()
     for p in paths:
         if not pathlib.Path(p).exists():
             continue
-        real = []
-        for lineno, col, cls, text in find_undefined(p):
-            if (p, lineno, cooked_name(text)) in allow:
-                seen.add((p, lineno, cooked_name(text)))
-                continue
-            real.append((lineno, col, cls, text))
+        real = find_undefined(p)
         if not real:
             print("%s: no undefined names" % p)
             continue
@@ -178,26 +118,10 @@ def main():
         for lineno, col, cls, text in real:
             print("%s:%d:%d: %s %s" % (p, lineno, col, cls, text))
 
-    # A baseline entry that no longer reproduces means the tree got fixed (or
-    # the file went away). Fail so the entry is deleted, not left to mask a
-    # future real hit at the same line.
-    stale = allow - seen if args.include_legacy else set()
-    if stale:
-        print("")
-        for p, lineno, name in sorted(stale):
-            print("%s:%d: baseline does not reproduce undefined name %r"
-                  % (p, lineno, name))
-        print("       The tree is better than the baseline -- delete that entry from")
-        print("       LEGACY_KNOWN_UNDEFINED in scripts/verify_undefined.py.")
-        return 1
-
     print("")
     if bad:
         print("%d file(s) with findings" % bad)
         return 1
-    if allow:
-        print("all clean (%d legacy baseline finding(s) accounted for)" % len(seen))
-        return 0
     print("all clean")
     return 0
 

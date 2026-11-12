@@ -173,26 +173,34 @@ disjoint classes — never treat one as a substitute for another:
   them. A rename or a changed literal in the same line is an ordinary edit and is not
   flagged.
 
-### legacy/ is an explicit baseline, not a silent skip
+### Not caught (measured, not guessed)
 
-`legacy/` contains three real `UndefinedName` hits that these gates would report
-(verified, not assumed):
+These four classes pass every gate and every test. Each was tried against the
+gates in this session; do not assume a clean run covers them:
 
-    legacy/market_data_aggregator.py:401,404  'kalshi_series'  (signature argument is
-         kalshi_series_list; the body reads the old name -- call raises NameError)
-    legacy/polymarket_arb.py:139             'pm'             (line 138 builds
-         pm_token_id; line 139 passes 'pm', which is never bound -- raises NameError)
+1. **Pure insertion of a condition.** A staged `+ if limit != 0:` with no removed
+   line has no counterpart to compare, so nothing is judged: exit 0. Adding a
+   guard is legitimate feature work, so flagging every added branch would make the
+   gate unusable.
+2. **One defined name swapped for another.** `return total` -> `return lines`
+   where `lines` is bound in an enclosing scope parses and resolves to a *real*
+   object, so pyflakes is silent and the operator gate is silent. A swap is only
+   caught when the replacement is undefined (`oder`, `Fill`, `limtt`), i.e.
+   partially, and incidentally.
+3. **A condition moved to another line.** `if not x:` hoisted into a `should_skip`
+   variable, or a `not` dropped at one site and added at another, nets to no
+   single-line change.
+4. **A deleted branch or body.** Removing an `else:`, a `return`, or a whole `if`
+   deletes operators rather than changing a compared pair; nothing widens on a
+   line that survives.
 
-Nothing in the live tree imports `legacy/` (checked: no `from legacy`/`import legacy`
-outside it), and the trader does not load it, so they cannot affect a trade today.
-They are nevertheless recorded in `LEGACY_KNOWN_UNDEFINED` in
-`scripts/verify_undefined.py` and visible via `--all --include-legacy`, rather than
-being dropped by a blanket directory skip. That baseline fails in two directions:
-a new undefined name in `legacy/` fails the gate, and so does a *fix* of one of these
-(the entry stops reproducing), which forces the entry to be deleted instead of
-rotting. Rewriting retired trading code to clear them is not worth the risk; if
-`legacy/` is ever revived, that file must be assessed first.
+So: the gates prove a diff is *not obviously corrupted*. They do not prove it is
+correct or intended. Anything on a money path, an order path, or a risk limit
+still needs a human reading the diff against the stated intent.
 
+Wire the gates in locally (a clone does not get them for free):
+
+    sh scripts/install-pre-commit.sh
 
 A file that fails a gate is fixed line by line; there is no `--no-verify`.
 Note the gates only see what is staged — run them yourself before believing a

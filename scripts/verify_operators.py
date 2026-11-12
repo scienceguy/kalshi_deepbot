@@ -53,7 +53,26 @@ def _identifiers(tree):
             parts.append(("attr", node.attr))
         elif isinstance(node, ast.Constant):
             parts.append(("const", repr(node.value)))
-    return sorted(parts)
+    return collections.Counter(parts)
+
+
+def _is_deletion_only(ids_a, ids_b, ops_a, ops_b):
+    """True when b is a of a with identifiers/operators REMOVED and none changed.
+
+    `x > 0 and limit != 0` -> `x > 0` drops the name `limit` and the ops
+    {And, NotEq, Gt} while keeping {Gt}: nothing new was introduced, so the
+    wording of what remains is untouched and a conjunct/guard was deleted.
+    A rename (`edge` -> `cost`) adds as many identifiers as it removes also and is
+    therefore NOT flagged -- counting is what separates deletion from rewrite.
+    """
+    removed_ids = list((ids_a - ids_b))
+    added_ids = list((ids_b - ids_a))
+    if added_ids:
+        return False
+    for name, count in ops_a.items():
+        if ops_b.get(name, 0) > count:
+            return False
+    return bool(removed_ids or ops_a != ops_b)
 
 
 def _blank_ops(tree):
@@ -131,10 +150,14 @@ def pairs(diff_text):
     added = []
 
     def flush():
-        for old in removed:
-            for new in added:
-                if old.strip() != new.strip():
-                    yield path, old, new
+        # Compare only a genuine 1-for-1 line replacement. A cross product over a
+        # multi-line hunk (e.g. deleting 21 baseline lines) pairs unrelated texts,
+        # and two unrelated lines can differ only in an operator by coincidence --
+        # that produced 21 false findings. Bulk insertion/deletion is out of scope
+        # here and must be read by a human.
+        if len(removed) == 1 and len(added) == 1:
+            if removed[0].strip() != added[0].strip():
+                yield path, removed[0], added[0]
 
     for line in diff_text.splitlines():
         if line.startswith("--- "):
@@ -170,7 +193,13 @@ def findings(diff_text):
         # because dropping a `not` legitimately changes the shape (UnaryOp -> Name)
         # while changing no identifier -- that is exactly the case to catch.
         if mask_a[1] != mask_b[1]:
-            continue  # something other than an operator changed
+            # Not an operator-only edit. It may still be a DELETION: a conjunct or
+            # guard dropped (`x > 0 and limit != 0` -> `x > 0`, `not x` -> `x`),
+            # which leaves the wording of what survives untouched and silently
+            # widens the branch. Flag that too; leave renames and literal edits alone.
+            if _is_deletion_only(mask_a[1], mask_b[1], ops_a, ops_b):
+                out.append((path, old, new, ops_a, ops_b))
+            continue
         if ops_a != ops_b:
             out.append((path, old, new, ops_a, ops_b))
     return out
