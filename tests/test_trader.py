@@ -403,6 +403,25 @@ def test_replay_keeps_unresolvable_pending_queued(monkeypatch, tmp_path):
     assert len(json.loads(qfile.read_text())) == 1  # still queued
 
 
+def test_save_settlement_queue_uses_unique_tmp_and_clean_final(monkeypatch, tmp_path):
+    """_save_settlement_queue writes via a unique-per-writer tmp and leaves no
+    leftover tmp files; the final file is the exact queued JSON.
+
+    Regression: the old fixed '.tmp' suffix let two concurrent writers open
+    the same temp file and os.replace clobber each other.
+    """
+    import json
+    qfile = tmp_path / "q.json"
+    monkeypatch.setattr(trader, "SETTLEMENT_QUEUE_FILE", qfile)
+    data = [{"order_id": "oid1", "payload": {"status": "pending"}}]
+    trader._save_settlement_queue(data)
+    # Final file is exactly what we queued.
+    assert json.loads(qfile.read_text()) == data
+    # No fixed or per-writer tmp files are left behind.
+    leftovers = [p.name for p in tmp_path.glob("*.tmp")]
+    assert leftovers == []
+
+
 def test_settlement_records_market_loss_to_correct_ticker(monkeypatch):
     """Settlement of a losing position books the loss to the settled ticker.
 

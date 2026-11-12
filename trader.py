@@ -575,8 +575,15 @@ def _save_settlement_queue(queue: list):
     corruption and race conditions.
     """
     try:
-        # Atomic write: write to temp file then rename
-        tmp_file = SETTLEMENT_QUEUE_FILE.with_suffix(SETTLEMENT_QUEUE_FILE.suffix + ".tmp")
+        # Atomic write: write to a unique temp file then rename.
+        # The tmp name must be unique per writer (pid + nonce): a fixed ".tmp"
+        # lets two concurrent writers open the same temp file, interleave, and
+        # os.replace clobber whatever the other just committed. Unique names
+        # keep each writer's tmp isolated, so the last rename wins whole and
+        # never a torn mix.
+        tmp_file = SETTLEMENT_QUEUE_FILE.with_name(
+            f"{SETTLEMENT_QUEUE_FILE.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+        )
         with open(tmp_file, "w") as f:
             import fcntl
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
