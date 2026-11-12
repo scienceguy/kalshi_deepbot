@@ -177,6 +177,115 @@ def fetch_kalshi_ladder(event_ticker: str, timeout: int = 20) -> Optional[Ladder
     return ladder
 
 
+def fetch_pm_ladder_us(slug: str, timeout: int = 20) -> Optional[Ladder]:
+    """Threshold markets from the Polymarket US production API (api.polymarket.us).
+
+    Lazily imports polymarket_us_client so the module loads even if that client
+    hasn't been created yet — falls back to the Gamma path gracefully.
+    """
+    # Lazy import: only attempt if the module exists
+    try:
+        from polymarket_us_client import get_market_by_slug  # type: ignore
+    except Exception:
+        log.debug("polymarket_us_client not available, skipping US fetch")
+        return None
+
+    try:
+        market = get_market_by_slug(slug, timeout=timeout)
+    except Exception as e:
+        log.debug("US fetch %s failed: %s", slug, e)
+        return None
+
+    if market is None:
+        return None
+
+    parsed = parse_pm_slug(slug)
+    if not parsed:
+        return None
+    asset, expiry = parsed
+
+    # Map asset symbol from assetPriceTerms
+    asset_symbol = market.get("assetPriceTerms", {}).get("asset", {}).get("symbol", "")
+    pm_asset = ASSETS.get(asset_symbol.lower(), asset)
+
+    # Determine strike from assetPriceTerms
+    apt = market.get("assetPriceTerms", {})
+    strike_float: Optional[float] = None
+    strike = apt.get("strike")
+    if strike is not None:
+        strike_float = _f(strike)
+    # For range markets, use rangeLower/rangeUpper
+    if strike_float is None:
+        rl = _f(apt.get("rangeLower"))
+        ru = _f(apt.get("rangeUpper"))
+        if rl is not None and ru is not None:
+            strike_float = (rl + ru) / 2.0
+    # For up/down markets, use priceToBeat
+    if strike_float is None:
+        ptb = _f(apt.get("priceToBeat"))
+        if ptb is not None:
+            strike_float = ptb
+
+    if strike_float is None:
+        log.debug("US %s: could not determine strike", slug)
+        return None
+
+    # Find YES side price from marketSides
+    yes_price: Optional[float] = None
+    for side in market.get("marketSides", []):
+        if side.get("long", False) or side.get("marketSideType", "") == "YES":
+            yes_price = _f(side.get("price"))
+            break
+    # Fallback: try bestBidQuote/bestAskQuote
+    if yes_price is None:
+        for quote_key in ("bestBidQuote", "bestAskQuote"):
+            q = market.get(quote_key)
+            if q:
+                yes_price = _f(q.get("value"))
+                if yes_price is not None:
+                    break
+
+    # Determine bid and ask from bestBidQuote/bestAskQuote
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    for quote_key in ("bestBidQuote", "bestAskQuote"):
+        q = market.get(quote_key)
+        if q:
+            val = _f(q.get("value"))
+            if val is not None:
+                if quote_key == "bestBidQuote":
+                    bid = val
+                else:
+                    ask = val
+
+    # If no explicit bid/ask from quotes, use YES side price as both
+    if bid is None or ask is None:
+        if yes_price is not None:
+            if bid is None:
+                bid = yes_price
+            if ask is None:
+                ask = yes_price
+
+    # Compute mid
+    if bid is not None and ask is not None and ask > bid:
+        mid = (bid + ask) / 2.0
+    else:
+        mid = yes_price if yes_price is not None else strike_float
+    if mid is None:
+        return None
+    if not (0.0 <= mid <= 1.0):
+        # clamp to valid probability range
+        mid = max(0.0, min(1.0, mid))
+
+    # Determine label/ticker from asset name
+    asset_name = apt.get("assetName", "") or ""
+    ticker = asset_name[:4] if asset_name else slug[:4]
+
+    ladder = Ladder("polymarket", pm_asset, expiry, label=slug)
+    ladder.rungs.append(Rung(strike_float, mid, bid, ask, ticker, ""))
+    return ladder
+
+
 def fetch_pm_ladder(slug: str, timeout: int = 20) -> Optional[Ladder]:
     """Threshold markets inside one Polymarket event (a single ladder)."""
     parsed = parse_pm_slug(slug)
@@ -394,6 +503,18 @@ def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
     return rows
 
 
+def _fetch_pm_ladder_with_fallback(slug: str, timeout: int = 20) -> Optional[Ladder]:
+    """Try US production API first, fall back to Gamma."""
+    # Try US production API first
+    pl = fetch_pm_ladder_us(slug, timeout=timeout)
+    if pl is not None:
+        log.info("polymarket source: US production api.polymarket.us")
+        return pl
+    # Fall back to Gamma
+    log.info("polymarket source: gamma fallback")
+    return fetch_pm_ladder(slug, timeout=timeout)
+
+
 def main() -> int:
     """Three-way comparison: spot-implied fair value vs each venue's ladder."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -438,7 +559,7 @@ def main() -> int:
         if not kl or not kl.ok:
             continue
         for slug in candidate_pm_slugs(asset, expiry):
-            pl = fetch_pm_ladder(slug)
+            pl = _fetch_pm_ladder_with_fallback(slug)
             if not pl or not pl.ok:
                 continue
             rows = three_way(kl, pl, spot, sigma)
