@@ -67,6 +67,47 @@ def _start_webhook_worker():
             _webhook_worker_started = True
 
 
+_N8N_TOKEN_KEY_NAMES = {"n8n_local_access_token", "n8n_api_key", "n8n_access_token",
+                         "n8n_api_token", "api_key", "token", "n8n_key"}
+
+
+def _read_api_key_file(key_file: Path) -> Optional[str]:
+    """Read an n8n API key from a protected file.
+
+    Accepts either a bare token on one line or a KEY=VALUE file whose key
+    matches a known token name (e.g. n8n_local_access_token). A multi-line
+    KEY=VALUE file must never be returned whole — it is not a valid header
+    value and requests raises before the HTTP call is even attempted.
+    """
+    try:
+        mode = stat.S_IMODE(os.stat(str(key_file)).st_mode)
+        if mode & 0o077:
+            log.warning(
+                "%s has insecure permissions (mode %o) — "
+                "skipping file, falling back to env var only",
+                key_file, mode,
+            )
+            return None
+        text = key_file.read_text().strip()
+        if not text:
+            return None
+        if "=" in text:
+            for raw_line in text.splitlines():
+                k, sep, v = raw_line.partition("=")
+                if sep and k.strip().lower() in _N8N_TOKEN_KEY_NAMES:
+                    token = v.strip().strip('"').strip("'")
+                    return token or None
+            log.warning(
+                "%s contains KEY=VALUE lines but no recognisable token key — "
+                "refusing to use it as an API key",
+                key_file,
+            )
+            return None
+        return text
+    except Exception:
+        return None
+
+
 def load_api_key() -> Optional[str]:
     """Load n8n API key from env var or n8n_api_key.txt file."""
     api_key = os.environ.get("N8N_API_KEY", "").strip()
@@ -80,22 +121,9 @@ def load_api_key() -> Optional[str]:
             "/data/data/com.termux/files/home/.n8n/n8n_api_key.txt",
         )
     )
-    if key_file.exists():
-        try:
-            # Refuse to read if the file is world-readable (any "other" bit set)
-            mode = stat.S_IMODE(os.stat(str(key_file)).st_mode)
-            if mode & 0o077:
-                log.warning(
-                    "n8n_api_key.txt has insecure permissions (mode %o) — "
-                    "skipping file, falling back to env var only",
-                    mode,
-                )
-            else:
-                api_key = key_file.read_text().strip()
-                if api_key:
-                    return api_key
-        except Exception:
-            pass
+    api_key = _read_api_key_file(key_file)
+    if api_key:
+        return api_key
 
     # Also check the programmatic API key file created by n8n setup
     # (path overridable via N8N_PROGRAMMATIC_API_KEY_FILE)
@@ -105,23 +133,7 @@ def load_api_key() -> Optional[str]:
             "/data/data/com.termux/files/home/n8n-programmatic-api-key.txt",
         )
     )
-    if key_file.exists():
-        try:
-            mode = stat.S_IMODE(os.stat(str(key_file)).st_mode)
-            if mode & 0o077:
-                log.warning(
-                    "n8n-programmatic-api-key.txt has insecure permissions (mode %o) — "
-                    "skipping file, falling back to env var only",
-                    mode,
-                )
-            else:
-                api_key = key_file.read_text().strip()
-                if api_key:
-                    return api_key
-        except Exception:
-            pass
-
-    return None
+    return _read_api_key_file(key_file)
 
 
 class N8nClient:

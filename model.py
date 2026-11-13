@@ -31,7 +31,8 @@ _NORMAL = NormalDist()
 def gbm_probability_yes_wins(spot_price: float, strike: float,
                              minutes_left: float,
                              volatility_annualized: float = 0.80,
-                             risk_free_rate: float = 0.05) -> float:
+                             risk_free_rate: float = 0.05,
+                             momentum_cents_per_min: float = 0.0) -> float:
     """
     GBM probability that spot >= strike at expiry.
 
@@ -56,15 +57,17 @@ def gbm_probability_yes_wins(spot_price: float, strike: float,
     sigma = volatility_annualized
     if T <= 0 or sigma <= 0:
         return 1.0 if spot_price >= strike else 0.0
-
     try:
         d2 = (math.log(spot_price / strike) +
-              (risk_free_rate - 0.5 * sigma * sigma) * T) / \
-             (sigma * math.sqrt(T))
-        prob = _NORMAL.cdf(d2)
-        return max(0.001, min(0.999, prob))
+              (risk_free_rate - 0.5 * sigma * sigma) * T) /              (sigma * math.sqrt(T))
+        base_prob = _NORMAL.cdf(d2)
     except (ValueError, OverflowError):
         return 0.5
+
+    # Apply momentum adjustment
+    adjustment = momentum_cents_per_min * minutes_left / 100.0
+    prob = base_prob + adjustment
+    return max(0.001, min(0.999, prob))
 
 
 def momentum_adjusted_probability(mid_yes_cents: float,
@@ -163,6 +166,8 @@ def model_probability_from_market(market, model_type: str = "gbm",
     Compute model-implied probability of YES winning from a MarketInfo.
 
     Dispatches to the appropriate model based on model_type.
+    Automatically uses locked_share model when seconds_into_final_minute > 0
+    (final minute of settlement), as the BRTI 60-second average locks in.
     """
     mid = market.mid_yes
     if mid is None:
@@ -170,10 +175,17 @@ def model_probability_from_market(market, model_type: str = "gbm",
 
     base_prob = mid / 100.0
 
+    # In the final minute, use locked_share model regardless of model_type
+    # because the 60-second BRTI average locks in second by second
+    if seconds_into_final_minute > 0:
+        return locked_share_probability(
+            base_prob * 100.0, seconds_into_final_minute)
+
     if model_type == "gbm":
         if spot_price is not None and strike is not None and minutes_left > 0:
             return gbm_probability_yes_wins(
-                spot_price, strike, minutes_left, volatility)
+                spot_price, strike, minutes_left, volatility,
+                momentum_cents_per_min=momentum_cents_per_min)
         # Fall back to momentum model if no spot data (logged so a silent
         # model swap in the trade record is visible in the run log).
         log.debug("gbm fallback to momentum: %s spot=%s strike=%s",

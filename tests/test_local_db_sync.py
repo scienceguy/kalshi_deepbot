@@ -56,3 +56,52 @@ def test_pnl_ledger_sync_is_skipped(tmp_path):
     # no pnl_ledger table exists remotely, so nothing is sent
     assert db._sync_table("pnl_ledger", fake) == 0  # noqa: SLF001
     assert fake.pnl == []
+
+
+def test_update_order_settlement_by_order_id(tmp_path):
+    db = _db(tmp_path)
+    _insert_order(db)
+    assert db.update_order_settlement(
+        "oid1",
+        fill_price_cents=100,
+        outcome_won=True,
+        pnl_dollars=0.10,
+        settled_at="2026-11-12T01:00:00Z",
+        ticker="KXBTC15M",
+    )
+    conn = db._get_conn()  # noqa: SLF001
+    row = conn.execute(
+        "SELECT status, fill_price_cents, outcome_won, pnl_dollars, settled_at"
+        " FROM orders WHERE order_id = 'oid1'"
+    ).fetchone()
+    assert tuple(row) == ("settled", 100, 1, 0.10, "2026-11-12T01:00:00Z")
+
+
+def test_update_order_settlement_falls_back_to_ticker(tmp_path):
+    db = _db(tmp_path)
+    _insert_order(db)
+    assert db.update_order_settlement(
+        "unknown-id",
+        fill_price_cents=0,
+        outcome_won=False,
+        pnl_dollars=-0.90,
+        settled_at="2026-11-12T01:05:00Z",
+        ticker="KXBTC15M",
+    )
+    conn = db._get_conn()  # noqa: SLF001
+    row = conn.execute(
+        "SELECT status, outcome_won, pnl_dollars FROM orders WHERE ticker = 'KXBTC15M'"
+    ).fetchone()
+    assert tuple(row) == ("settled", 0, -0.90)
+
+
+def test_update_order_settlement_unknown_row_is_false(tmp_path):
+    db = _db(tmp_path)
+    assert not db.update_order_settlement(
+        "nope",
+        fill_price_cents=100,
+        outcome_won=True,
+        pnl_dollars=0.1,
+        settled_at="2026-11-12T01:00:00Z",
+        ticker="NOSUCH",
+    )

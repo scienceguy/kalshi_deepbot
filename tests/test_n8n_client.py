@@ -196,3 +196,28 @@ class TestN8nHealthCheck:
         client = get_client()
         with patch.object(client.session, "get", side_effect=Exception("Connection error")):
             assert n8n_health_check() is False
+
+def test_load_api_key_parses_kv_file(monkeypatch, tmp_path):
+    """A KEY=VALUE n8n access file must yield just the token, never the
+    whole multi-line file (the raw file is not a valid HTTP header value)."""
+    monkeypatch.delenv("N8N_API_KEY", raising=False)
+    key_file = tmp_path / "n8n_access"
+    key_file.write_text(
+        "n8n_local_access_token=tok123\n"
+        "n8n_url=http://127.0.0.1:5678\n"
+        "login_note: never expose\n"
+    )
+    key_file.chmod(0o600)
+    monkeypatch.setenv("N8N_API_KEY_FILE", str(key_file))
+    monkeypatch.setenv("N8N_PROGRAMMATIC_API_KEY_FILE", str(tmp_path / "missing"))
+    assert load_api_key() == "tok123"
+
+
+def test_load_api_key_kv_file_without_known_key_refuses(monkeypatch, tmp_path):
+    monkeypatch.delenv("N8N_API_KEY", raising=False)
+    key_file = tmp_path / "n8n_access"
+    key_file.write_text("some_random_key=abc\nother=def\n")
+    key_file.chmod(0o600)
+    monkeypatch.setenv("N8N_API_KEY_FILE", str(key_file))
+    monkeypatch.setenv("N8N_PROGRAMMATIC_API_KEY_FILE", str(tmp_path / "missing"))
+    assert load_api_key() is None

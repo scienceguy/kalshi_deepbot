@@ -131,3 +131,7 @@ data/candles_*.jsonl
 data/candles_smoke.jsonl
 tmp/
 fund_ledger.jsonl
+
+# Bot log rotation / backups
+bot.log.*
+*.backup

@@ -311,3 +311,29 @@ class TestCircuitBreakerReset:
         # one subsequent failure must NOT reopen the circuit
         supabase_client._supabase_record_failure()
         assert supabase_client._supabase_circuit_open() is False
+
+
+def test_parse_raw_key_file_kv_shape(tmp_path):
+    """KEY=VALUE protected files yield only the recognised key's value."""
+    from supabase_client import _parse_raw_key_file
+    f = tmp_path / "supabase_key"
+    f.write_text("SUPABASE_SERVICE_KEY=sb_secret_example123\n")
+    f.chmod(0o600)
+    assert _parse_raw_key_file(str(f)) == "sb_secret_example123"
+
+
+def test_parse_raw_key_file_bare_key(tmp_path):
+    """A bare single-line key is returned as-is."""
+    from supabase_client import _parse_raw_key_file
+    f = tmp_path / "supabase_key"
+    f.write_text("sb_secret_barekey456\n")
+    f.chmod(0o600)
+    assert _parse_raw_key_file(str(f)) == "sb_secret_barekey456"
+
+
+def test_parse_raw_key_file_kv_without_known_key_refuses(tmp_path):
+    from supabase_client import _parse_raw_key_file
+    f = tmp_path / "supabase_key"
+    f.write_text("PREFERENCE_TOKEN=xyz\n")
+    f.chmod(0o600)
+    assert _parse_raw_key_file(str(f)) == ""

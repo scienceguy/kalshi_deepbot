@@ -113,10 +113,15 @@ def _parse_kv_file(path: str) -> tuple:
 
 
 def _parse_raw_key_file(path: str) -> str:
-    """Read a raw service key from a protected file (no KEY=VALUE wrapper).
+    """Read a raw service key from a protected file.
 
-    The file must contain only the key value, with optional trailing newline.
-    Mode must be 0600 or stricter; otherwise the key is refused.
+    Two shapes are accepted (mode must be 0600 or stricter):
+      1. KEY=VALUE file whose key is one of _VALID_KEY_NAMES (e.g. sb_secret)
+         — the value of the first matching line is returned.
+      2. A bare key on a single line.
+    Multi-line KEY=VALUE files previously fell through to branch 2 and the
+    ENTIRE file (including "KEY=" prefixes and newlines) was sent as the
+    apikey, so every Supabase call failed auth.
     """
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
@@ -128,7 +133,15 @@ def _parse_raw_key_file(path: str) -> str:
             )
             return ""
         with open(path) as f:
-            return f.read().strip()
+            content = f.read()
+        # KEY=VALUE shape: return the value of the first recognised key line.
+        if "=" in content:
+            _, kv_key = _parse_kv_file(path)
+            if kv_key:
+                log.info("Supabase service key parsed from KEY=VALUE file %s", path)
+                return kv_key
+            return ""  # KEY=VALUE file without a recognisable key — refuse to guess
+        return content.strip()
     except OSError as e:
         log.warning("Could not read Supabase key file %s: %s", path, e)
         return ""

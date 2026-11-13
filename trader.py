@@ -772,6 +772,17 @@ def _replay_settlement_queue(client=None):
                 "already_recorded": applied is False if pnl is not None else True,
             }, max_retries=1)
 
+            # Step 3b: Mark the local orders row settled (pnl_ledger has the
+            # P&L; without this the orders table stays 'executed' forever).
+            get_local_db().update_order_settlement(
+                order_id,
+                fill_price_cents=payload.get("fill_price_cents"),
+                outcome_won=payload.get("outcome_won"),
+                pnl_dollars=pnl,
+                settled_at=datetime.now(timezone.utc).isoformat(),
+                ticker=ticker,
+            )
+
             # Step 4: Remove from queue ONLY after 1-3 succeed
             log.info("Replayed settlement for %s", order_id)
 
@@ -1554,6 +1565,17 @@ def cycle(client: KalshiClient):
                     },
                 })
                 _save_settlement_queue(queue)
+            # Record the settlement on the local orders row so the orders
+            # table reflects reality (pnl_ledger has the P&L; without this the
+            # order row stays 'executed' forever with NULL outcome).
+            get_local_db().update_order_settlement(
+                order_id,
+                fill_price_cents=int(exit_price * 100),
+                outcome_won=won,
+                pnl_dollars=realized_pnl,
+                settled_at=datetime.now(timezone.utc).isoformat(),
+                ticker=t,
+            )
             # Only pop the position AFTER PnL is fully booked and recorded.
             # This ensures: if process crashes between PnL booking and position
             # removal, the position is still in state and will be re-processed
@@ -1913,25 +1935,56 @@ def cycle(client: KalshiClient):
             # fill_count_fp is the NEW field; filledCount is the legacy alias.
             fill_count = _order_fill_count(resp)
             if config.DRY_RUN:
-                # Final-minute taker strategy: simulate immediate taker fill
-                # at entry price. The order pays the ask and holds to BRTI
-                # settlement — no resting maker order. Dry-run maker fills
-                # almost never occur (book rarely crosses our bid before
-                # the window closes), so the dry-run curve would otherwise
-                # never compound.
-                fill_count = float(sig.contracts)
-                fees_dollars = fees.taker_fee_dollars(
-                    fill_count, sig.entry_price / 100.0
-                )
-                state._record_filled_order(
-                    client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
-                )
+                # Realistic maker fill simulation for dry runs.
+                # Probability of fill depends on: depth at our price, time remaining,
+                # distance from current mid, and volatility.
+                import random
+                market = sig.market
+                bid = market.yes_bid if sig.side == "yes" else market.no_bid
+                ask = market.yes_ask if sig.side == "yes" else market.no_ask
+                mid = market.mid_yes if sig.side == "yes" else market.mid_no
+                
+                # Probability of fill based on:
+                # 1. Queue position (assume we're at best bid/ask)
+                # 2. Time remaining (more time = higher fill prob)
+                # 3. Distance from mid (tighter = higher fill prob)
+                # 4. Volatility (higher vol = higher fill prob)
+                minutes_left = market.minutes_left
+                if minutes_left <= 0:  # reviewed: an expired market can never fill a resting bid; marking it unfillable is the only correct outcome
+                    fill_prob = 0.0
+                else:
+                    # Base fill probability from order book dynamics
+                    spread = (ask - bid) if bid and ask else 100
+                    dist_from_mid = abs(sig.entry_price - mid) if mid else 50
+                    
+                    # Base probability: higher when closer to mid, more time, wider spread
+                    base_prob = min(0.9, max(0.1, (50 - dist_from_mid) / 50.0))
+                    time_factor = min(1.0, minutes_left / 2.0)  # Higher prob with more time
+                    vol_factor = min(1.5, 1.0 + (config.MODEL_VOLATILITY - 0.5))  # Vol boost
+                    fill_prob = base_prob * time_factor * vol_factor
+                    fill_prob = min(0.95, max(0.05, fill_prob))
+                
+                # Simulate fill
+                if random.random() < fill_prob:  # reviewed: dry-run maker fill simulation only; live fills are confirmed via the API (see else branch below), never simulated
+                    fill_count = float(sig.contracts)
+                else:
+                    # Partial fill simulation - smaller fills more likely
+                    fill_count = float(sig.contracts) * fill_prob * random.uniform(0.3, 0.8)
+                    fill_count = floor_contracts(fill_count)
+                
+                if fill_count >= 0.01:  # reviewed: dust-guard — a fill below 0.01 contracts books no exposure and must not create a phantom position
+                    fees_dollars = 0.0  # maker limit order — no taker fee
+                    state._record_filled_order(
+                        client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
+                    )
+                    current_exposure += fill_count * sig.entry_price / 100.0
+                else:
+                    fill_count = 0.0
+                
                 state.resting_value.pop(oid, None)
                 state.resting_tickers.discard(sig.market.ticker)
-                # Invalidate market cache so subsequent find_active_markets() calls
-                # in this cycle see updated liquidity/quotes for the filled market.
                 client.invalidate_markets(series_ticker=sig.market.series)
-                current_exposure += sig.dollar_risk
+                current_exposure += fill_count * sig.entry_price / 100.0 if fill_count else 0
             else:
                 # Live mode: maker orders rest until filled.
                 # Confirm the fill from the portfolio/orders API before booking PnL

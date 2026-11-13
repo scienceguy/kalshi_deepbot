@@ -279,6 +279,58 @@ class LocalDB:
                 log.warning("insert_order error: %s", e)
                 return False
 
+    def update_order_settlement(self, order_id: str, *, fill_price_cents: Optional[int],
+                                outcome_won: Optional[bool], pnl_dollars: Optional[float],
+                                settled_at: str, ticker: Optional[str] = None) -> bool:
+        """Mark a local order row as settled with outcome fields.
+
+        Matches on order_id first; falls back to the latest still-open row for
+        `ticker` (dry-run rows where order_id may differ). Never touches the
+        `synced` flag: outcome columns stay local-only (the remote orders table
+        has no such columns), and the periodic sync pushes `status='settled'`
+        on its own schedule.
+        """
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                won = None if outcome_won is None else int(bool(outcome_won))
+                if order_id:
+                    cur = conn.execute(
+                        """UPDATE orders
+                              SET status = 'settled',
+                                  fill_price_cents = ?,
+                                  outcome_won = ?,
+                                  pnl_dollars = ?,
+                                  settled_at = ?
+                            WHERE order_id = ?""",
+                        (fill_price_cents, won, pnl_dollars, settled_at, order_id),
+                    )
+                    if cur.rowcount > 0:
+                        conn.commit()
+                        return True
+                if ticker:
+                    cur = conn.execute(
+                        """UPDATE orders
+                              SET status = 'settled',
+                                  fill_price_cents = ?,
+                                  outcome_won = ?,
+                                  pnl_dollars = ?,
+                                  settled_at = ?
+                            WHERE id = (SELECT id FROM orders
+                                         WHERE ticker = ? AND settled_at IS NULL
+                                         ORDER BY id DESC LIMIT 1)""",
+                        (fill_price_cents, won, pnl_dollars, settled_at, ticker),
+                    )
+                    if cur.rowcount > 0:
+                        conn.commit()
+                        return True
+                log.warning("update_order_settlement: no open orders row for order_id=%s ticker=%s",
+                            order_id, ticker)
+                return False
+            except Exception as e:
+                log.warning("update_order_settlement(%s, %s) error: %s", order_id, ticker, e)
+                return False
+
     # ── bot_state ───────────────────────────────────────────────────────────────
 
     def set_bot_state(self, key: str, value: Any) -> bool:
