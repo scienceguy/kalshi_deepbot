@@ -380,6 +380,16 @@ class SupabaseClient:
             return False
 
     # ─── bot state ─────────────────────────────────────────────────────────────
+    def _ns_key(self, key: str) -> str:
+        """Namespace a bot_state key by host when BOT_STATE_HOST is set.
+
+        # reviewed: two dry-run traders share the Supabase bot_state row space,
+        # so the non-authoritative one tags its keys "<host>:<key>" to stop the
+        # last-writer-wins race. The authoritative writer leaves the tag empty.
+        """
+        host = (getattr(config, "BOT_STATE_HOST", "") or "").strip()
+        return f"{host}:{key}" if host else key
+
     def set_bot_state(self, key: str, value: Any) -> bool:
         """Upsert one bot_state key (PATCH by key, INSERT only for a new key).
 
@@ -391,6 +401,7 @@ class SupabaseClient:
         after the first run); a brand-new key is the only case needing an
         explicit id.
         """
+        key = self._ns_key(key)
         try:
             data = {"value_json": json.dumps(value),
                     "ts": datetime.now(timezone.utc).isoformat()}
@@ -427,7 +438,8 @@ class SupabaseClient:
             return False
 
     def get_bot_state(self, key: str) -> Optional[Any]:
-        """Get a bot state value by key."""
+        """Get a bot state value by key (host-namespaced when BOT_STATE_HOST set)."""
+        key = self._ns_key(key)
         try:
             result = self._request("GET", f"bot_state?key=eq.{key}&select=value_json")
             # Supabase returns either a list [{"value_json": "..."}] or a dict {"value_json": "..."}

@@ -294,6 +294,71 @@ class TestSupabaseClientSetBotState:
             assert client.set_bot_state("bad_key", 1.0) is False
 
 
+class TestBotStateHostNamespace:
+    """BOT_STATE_HOST tags a non-authoritative writer's bot_state keys.
+
+    Two dry-run traders share the Supabase bot_state row space; the host tag
+    stops the last-writer-wins race and leaves the bare keys to the VPS.
+    """
+
+    def _make_client(self, monkeypatch):
+        monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test_key")
+        monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
+        import importlib
+        import supabase_client
+        importlib.reload(supabase_client)
+        return supabase_client.SupabaseClient()
+
+    def test_set_bot_state_is_namespaced(self, monkeypatch):
+        import config
+        client = self._make_client(monkeypatch)
+        calls = []
+
+        def fake_request(method, path, data=None, params=None,
+                         extra_headers=None, max_retries=3):
+            calls.append((method, path))
+            return [{"id": 1}]
+
+        with patch.object(config, "BOT_STATE_HOST", "local"), \
+             patch.object(client, "_request", side_effect=fake_request):
+            assert client.set_bot_state("balance", 96.29) is True
+
+        assert calls[0] == ("PATCH", "bot_state?key=eq.local:balance")
+
+    def test_set_bot_state_bare_when_host_empty(self, monkeypatch):
+        import config
+        client = self._make_client(monkeypatch)
+        calls = []
+
+        def fake_request(method, path, data=None, params=None,
+                         extra_headers=None, max_retries=3):
+            calls.append((method, path))
+            return [{"id": 1}]
+
+        with patch.object(config, "BOT_STATE_HOST", ""), \
+             patch.object(client, "_request", side_effect=fake_request):
+            assert client.set_bot_state("balance", 96.29) is True
+
+        assert calls[0] == ("PATCH", "bot_state?key=eq.balance")
+
+    def test_get_bot_state_reads_namespaced_key(self, monkeypatch):
+        import config
+        client = self._make_client(monkeypatch)
+        calls = []
+
+        def fake_request(method, path, data=None, params=None,
+                         extra_headers=None, max_retries=3):
+            calls.append((method, path))
+            return [{"value_json": "7"}]
+
+        with patch.object(config, "BOT_STATE_HOST", "local"), \
+             patch.object(client, "_request", side_effect=fake_request):
+            assert client.get_bot_state("cycles") == 7
+
+        assert calls[0] == ("GET", "bot_state?key=eq.local:cycles&select=value_json")
+
+
 class TestCircuitBreakerReset:
     """The circuit breaker must reset its counter when the cooldown expires.
 

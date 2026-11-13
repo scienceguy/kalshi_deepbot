@@ -236,6 +236,15 @@ GATES_STALE_OK_SECONDS = _env_int("GATES_STALE_OK_SECONDS", 300)
 # protection: a 5-minute sync window can lose up to 5 minutes of P&L/state on
 # a crash. 30s keeps the local→online gap small without hammering Supabase.
 LOCAL_DB_SYNC_INTERVAL = _env_float("LOCAL_DB_SYNC_INTERVAL", 30.0)
+
+# Per-host bot_state namespace. Two dry-run traders (a VPS one and a local
+# boot-started one) write the SAME Supabase bot_state keys, so `balance` and
+# `session_pnl` flip-flopped between them (last-writer-wins) and the audit trail
+# was ambiguous — the local bot even carried a phantom +$4.00. Set this to a
+# short host tag (e.g. "local") on any non-authoritative machine: its bot_state
+# keys are then written as "<tag>:<key>", leaving the bare keys to the single
+# authoritative writer (the VPS, which leaves this empty).
+BOT_STATE_HOST = _env_str("BOT_STATE_HOST", "")
 MARKOUT_LOG_FILE = Path(
     os.environ.get("MARKOUT_LOG_FILE")
     or Path(__file__).resolve().parent / "markout_log.jsonl"
