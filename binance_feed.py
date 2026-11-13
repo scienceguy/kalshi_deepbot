@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 from typing import AsyncIterator, Dict, List, Optional
 
 import time
@@ -48,6 +49,18 @@ _KRAKEN_PAIR = {
 }
 
 _KNOWN_BASES = {"BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE", "ZEC", "NEAR"}
+
+# RedStone oracle cache (a third, non-exchange reference price). The legacy
+# keyless host api.redstone.finance is DECOMMISSIONED: it CNAMEs to a dead
+# CloudFront distribution (d1zxl4a1bpt7kn.cloudfront.net has no A record), and
+# modern RedStone serves prices through an authenticated gateway/WebSocket.
+# Point REDSTONE_CACHE_URL at a working gateway (e.g. an authenticated
+# oracle-gateway URL) to enable it; when unreachable the source is skipped and
+# the composite falls back to Binance + Coinbase + OKX + Kraken.
+REDSTONE_CACHE_URL = os.environ.get(
+    "REDSTONE_CACHE_URL",
+    "https://api.redstone.finance/prices/?symbol={base}&provider=redstone&limit=1",
+)
 
 
 def _base_asset(symbol: str) -> Optional[str]:
@@ -76,6 +89,10 @@ def _fallback_sources(base: str):
          lambda d: float(d["data"][0]["last"])),
         ("coinbase", f"https://api.exchange.coinbase.com/products/{base}-USD/ticker",
          lambda d: float(d["price"])),
+        # RedStone oracle cache — third non-exchange reference. Skipped when the
+        # configured gateway is unreachable (the legacy host is decommissioned).
+        ("redstone", REDSTONE_CACHE_URL.format(base=base),
+         lambda d: float((d[0] if isinstance(d, list) else d)["value"])),
         *kraken,
     )
 
