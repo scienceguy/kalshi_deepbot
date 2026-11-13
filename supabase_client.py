@@ -299,9 +299,12 @@ class SupabaseClient:
                     else:
                         log.debug("Supabase %s %s: table not created yet", method, path)
                     return None
-                # Persistent client/schema 4xx (400=bad request, 409=conflict, 422=unprocessable)
-                # These indicate a bug in our request or schema mismatch — disable to stop spam
-                if resp.status_code in (400, 409, 422):
+                # Persistent client/schema 4xx (400=bad request, 422=unprocessable).
+                # 409 is deliberately NOT here: a unique-constraint conflict on ONE
+                # row (e.g. pnl_ledger's idempotency_key) must not disable every
+                # later Supabase write for the process — that silently dropped the
+                # whole audit trail. Conflicts are logged and the row is skipped.
+                if resp.status_code in (400, 422):
                     log.error(
                         "Supabase %s %s: HTTP %s — client/schema error, disabling Supabase writes. "
                         "Fix request payload or schema, then restart.",
@@ -476,7 +479,11 @@ class SupabaseClient:
                         ", ".join(missing))
             return False
         try:
+            # Upsert on the unique idempotency_key, not the bigserial PK: the
+            # default on_conflict target is the PK, so a re-run collides on the
+            # idempotency_key unique constraint and PostgREST answers 409.
             result = self._request("POST", "pnl_ledger", data=ledger_data,
+                                   params={"on_conflict": "idempotency_key"},
                                    extra_headers={"Prefer": "resolution=merge-duplicates"})
             return result is not None
         except Exception as e:

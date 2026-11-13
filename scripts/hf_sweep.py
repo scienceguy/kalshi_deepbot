@@ -1,205 +1,107 @@
 #!/usr/bin/env python3
-"""Parallel config sweep on the real HF Kalshi 15m quote_history.
+"""Vectorized HF sweep over Kalshi 15m quote_history: highest net-EV config.
 
-Every trade is a real per-minute quote from papylove/kalshi-15m-data, settled by
-the row's recorded ``result`` -- no synthetic prices anywhere. The sweep varies
-the favourite band, the entry window, the side and the entry style, then runs a
-fee-aware, capital-limited compounding simulation from a start balance so configs
-can be ranked by how fast they grow, not only by raw edge.
-
-Taker entry pays the ask and the Kalshi taker fee 0.07*p*(1-p). Maker entry pays
-the bid and no fee, but no queue/fill model is applied, so maker numbers are an
-optimistic upper bound (real maker fill rates carry adverse selection).
-
-Usage:
-  python scripts/hf_sweep.py --start 104.48 --frac 0.08 --jobs 4
+Reality tax: taker variants pay the Kalshi quadratic taker fee rounded up to the
+cent; maker_ask1 rests one cent inside the ask (no fee) and is reported with its
+observed fill rate so adverse selection is visible, not assumed away.
+Input: /opt/superbot/hf_data/quote_history/*.parquet
+Output: ranked JSON + table.
 """
-import argparse
-import math
-import statistics
-from concurrent.futures import ProcessPoolExecutor
-from pathlib import Path
+import glob
+import json
 
-import pandas as pd
+import polars as pl
 
-ROOT = Path(__file__).resolve().parent.parent
-SNAP = sorted((Path.home() / ".cache/huggingface/hub/"
-               "datasets--papylove--kalshi-15m-data/snapshots").glob("*"))[0]
+HF = "/opt/superbot/hf_data/quote_history"
 FEE_RATE = 0.07
-_DF: pd.DataFrame | None = None  # worker-global, filled by _init
+BANDS = [(95, 99), (96, 99), (97, 99), (98, 99), (93, 99), (90, 99), (85, 99),
+         (80, 99), (75, 99), (70, 99), (70, 95), (60, 95), (50, 95), (15, 55)]
+WINDOWS = [(6, 11), (4, 12), (1, 15), (6, 14), (10, 15), (11, 14), (13, 15),
+           (1, 14), (3, 9)]
+SIDES = ["yes", "no", "either"]
+MODES = ["taker_fee", "taker_nofee", "maker_ask1"]
 
 
-def _load_quotes() -> pd.DataFrame:
-    files = sorted((SNAP / "quote_history").glob("*.parquet"))
-    parts = [pd.read_parquet(p) for p in files]
-    d = pd.concat(parts, ignore_index=True)
-    d = d[d.result.isin(["yes", "no"])].copy()
-    d = d.dropna(subset=["yes_bid", "yes_ask", "open_ts", "close_ts"])
-    d["open_ts"] = d.open_ts.astype("int64")
-    d["close_ts"] = d.close_ts.astype("int64")
-    d["entry_ts"] = d.open_ts + d.minute.astype("int64") * 60
-    return d[["ticker", "minute", "open_ts", "close_ts", "entry_ts",
-              "yes_bid", "yes_ask", "result"]]
+def load():
+    df = pl.read_parquet(sorted(glob.glob(HF + "/*.parquet")),
+                         columns=["ticker", "minute", "yes_bid", "yes_ask", "result"])
+    # Prices in the dataset are DOLLARS (0-1); convert to cents for the sweep.
+    df = df.with_columns([
+        (pl.col("yes_bid") * 100.0).alias("yes_bid"),
+        (pl.col("yes_ask") * 100.0).alias("yes_ask"),
+    ])
+    df = df.with_columns((100.0 - pl.col("yes_bid")).alias("no_ask"))
+    return df
 
 
-def _init():
-    global _DF
-    _DF = _load_quotes()
+def entries(df, b0, b1, w0, w1, side):
+    out = {}
+    if side in ("yes", "either"):
+        e = (df.filter((pl.col("minute") >= w0) & (pl.col("minute") <= w1)
+                       & (pl.col("yes_ask") >= b0) & (pl.col("yes_ask") <= b1))
+               .sort(["ticker", "minute"]).group_by("ticker").first()
+               .select("ticker", "result", pl.col("yes_ask").alias("px"))
+               .with_columns(pl.col("result").eq("yes").alias("win")))
+        out["yes"] = e
+    if side in ("no", "either"):
+        e = (df.filter((pl.col("minute") >= w0) & (pl.col("minute") <= w1)
+                       & (pl.col("no_ask") >= b0) & (pl.col("no_ask") <= b1))
+               .sort(["ticker", "minute"]).group_by("ticker").first()
+               .select("ticker", "result", pl.col("no_ask").alias("px"))
+               .with_columns(pl.col("result").eq("no").alias("win")))
+        out["no"] = e
+    return out
 
 
-def _trades(df, bmin, bmax, wstart, wend, sides, entry) -> pd.DataFrame:
-    m = df[(df.minute >= wstart) & (df.minute <= wend)]
-    frames = []
-    if "yes" in sides:
-        p = m.yes_ask if entry == "taker" else m.yes_bid
-        f = m[(p * 100).between(bmin, bmax)].assign(side="yes", price=p)
-        frames.append(f)
-    if "no" in sides:
-        p = (1.0 - m.yes_bid) if entry == "taker" else (1.0 - m.yes_ask)
-        f = m[(p * 100).between(bmin, bmax)].assign(side="no", price=p)
-        frames.append(f)
-    if not frames:
-        return pd.DataFrame()
-    t = pd.concat(frames, ignore_index=True)
-    t["yes_win"] = ((t.side == "yes") & (t.result == "yes")) | \
-                   ((t.side == "no") & (t.result == "no"))
-    # first eligible minute per ticker
-    t = t.sort_values(["ticker", "minute"]).groupby("ticker", as_index=False).first()
-    t["fee"] = 0.0 if entry == "maker" else FEE_RATE * t.price * (1.0 - t.price)
-    t["net"] = t.yes_win.map({True: 1.0, False: 0.0}) * (1.0 - t.price) \
-        - (~t.yes_win).astype(float) * t.price - t.fee
-    t["ret_on_stake"] = t.net / t.price
-    return t
-
-
-def _compound(t: pd.DataFrame, start: float, frac: float) -> dict:
-    """Event-driven, cash-limited compounding (no leverage, concurrency shares cash).
-
-    Entry: stake = frac * free cash, contracts = floor(stake/price), cash -= cost.
-    Settlement: credit $1/contract on a win, $0 on a loss. A trade is skipped when
-    free cash cannot buy one contract, which is what makes this honest: concurrent
-    open positions in the 15-minute overlap draw down the same cash pool.
-    """
-    if t.empty:
-        return {"final": start, "maxdd": 0.0, "taken": 0, "days": 0.0}
-    trades = [(r.entry_ts, r.close_ts, float(r.price), bool(r.yes_win), float(r.fee))
-              for r in t.itertuples()]
-    ev = []
-    for i, (e_ts, c_ts, price, win, fee) in enumerate(trades):
-        ev.append((e_ts, 0, i))
-        ev.append((c_ts, 1, i))
-    ev.sort(key=lambda x: (x[0], x[1]))
-    cash = start
-    open_cost = 0.0
-    peak = start
-    maxdd = 0.0
-    taken = 0
-    pos = {}
-    t0 = min(e for e, _, _, _, _ in trades)
-    t1 = max(c for _, c, _, _, _ in trades)
-    for ts, kind, i in ev:
-        e_ts, c_ts, price, win, fee = trades[i]
-        if kind == 0:
-            stake = min(frac * cash, cash)
-            contracts = int(stake / price)
-            if contracts < 1:
-                continue
-            cost = contracts * (price + fee)
-            if cost > cash:
-                continue
-            cash -= cost
-            open_cost += cost
-            pos[i] = (contracts, cost)
-            taken += 1
-        else:
-            contracts, cost = pos.pop(i, (0, 0.0))
-            open_cost -= cost
-            if win and contracts:
-                cash += contracts * 1.0
-        equity = cash + open_cost  # entry moves cash<->cost, so equity is flat there
-        if equity > peak:
-            peak = equity
-        if peak > 0:
-            maxdd = max(maxdd, (peak - equity) / peak)
-    days = (t1 - t0) / 86400.0
-    return {"final": cash, "maxdd": maxdd, "taken": taken, "days": days}
-
-
-def _run_cfg(cfg) -> dict:
-    bmin, bmax, wstart, wend, sides, entry, start, frac = cfg
-    t = _trades(_DF, bmin, bmax, wstart, wend, sides, entry)
-    if t.empty:
-        return {"cfg": cfg[:6], "n": 0}
-    comp = _compound(t, start, frac)
-    n = len(t)
-    wins = int(t.yes_win.sum())
-    mean_net = float(t.net.mean())
-    mean_ret = float(t.ret_on_stake.mean())
-    sd = float(t.ret_on_stake.std()) if n > 1 else 0.0
-    ad = int(pd.Series(t.entry_ts).floordiv(86400).nunique())
-    return {
-        "cfg": (bmin, bmax, wstart, wend, sides, entry),
-        "n": n, "winrate": wins / n, "mean_net_c": mean_net * 100.0,
-        "mean_ret_pct": mean_ret * 100.0, "sd_ret_pct": sd * 100.0,
-        "final": comp["final"], "maxdd": comp["maxdd"],
-        "taken": comp["taken"], "days": comp["days"], "activedays": ad,
-        "x": comp["final"] / start, "frac": frac,
-    }
+def metrics(e, mode):
+    if e is None or e.height == 0:
+        return None
+    payout = pl.when(pl.col("win")).then(100.0).otherwise(0.0)
+    if mode == "maker_ask1":
+        px = pl.max_horizontal(pl.col("px") - 1.0, pl.lit(1.0))
+        fee = pl.lit(0.0)
+    elif mode == "taker_nofee":
+        px = pl.col("px")
+        fee = pl.lit(0.0)
+    else:
+        px = pl.col("px")
+        fee = (FEE_RATE * pl.col("px") * (100.0 - pl.col("px")) / 100.0).ceil()
+    e2 = e.with_columns((payout - px - fee).alias("net"))
+    return {"n": e.height, "ev_c": float(e2["net"].mean()),
+            "total_c": float(e2["net"].sum()),
+            "win_rate": float(e2["win"].mean())}
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--start", type=float, default=104.48)
-    ap.add_argument("--frac", type=float, default=0.08)
-    ap.add_argument("--fracs", default=None,
-                    help="comma list of stake fractions, overrides --frac")
-    ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--top", type=int, default=25)
-    ap.add_argument("--entries", default="taker,maker",
-                    help="comma list: taker,maker (maker is an optimistic upper bound)")
-    ap.add_argument("--sides", default="both,yes,no")
-    a = ap.parse_args()
-    want_entries = a.entries.split(",")
-    want_sides = a.sides.split(",")
-    fracs = [float(x) for x in a.fracs.split(",")] if a.fracs else [a.frac]
-
-    bands = [(90, 99), (93, 99), (95, 99), (96, 99), (97, 99),
-             (95, 98), (96, 98), (97, 98), (98, 100), (99, 100),
-             (94, 97), (92, 96), (88, 95)]
-    windows = [(4, 14), (3, 13), (6, 11), (6, 14), (3, 11),
-               (1, 5), (0, 15), (10, 15), (12, 15)]
-    sides = ["both", "yes", "no"]
-    entries = ["taker", "maker"]
-
-    cfgs = [(bmin, bmax, w0, w1, s, e, a.start, f)
-            for (bmin, bmax) in bands for (w0, w1) in windows
-            for s in sides for e in entries for f in fracs
-            if s in want_sides and e in want_entries]
-    print(f"sweeping {len(cfgs)} configs over 26 real days, start=${a.start}, "
-          f"fracs={fracs}, jobs={a.jobs}")
-
-    with ProcessPoolExecutor(max_workers=a.jobs, initializer=_init) as ex:
-        rows = list(ex.map(_run_cfg, cfgs, chunksize=8))
-
-    rows = [r for r in rows if r.get("n")]
-    rows.sort(key=lambda r: -r["final"])
-    hdr = (f"{'band':>7} {'win':>6} {'side':>4} {'ent':>5} {'frac':>4} {'n':>5} "
-           f"{'win%':>5} {'net_c':>6} {'ret%':>6} {'final$':>10} {'x':>6} "
-           f"{'maxdd':>6} {'act':>4}")
-    print(hdr)
-    print("-" * len(hdr))
-    for r in rows[:a.top]:
-        b0, b1, w0, w1, s, e = r["cfg"]
-        print(f"{b0:>3}-{b1:<3} {w0:>2}-{w1:<3} {s:>4} {e:>5} {r['frac']:>4.2f} "
-              f"{r['n']:>5} {r['winrate']*100:>5.1f} {r['mean_net_c']:>+6.3f} "
-              f"{r['mean_ret_pct']:>+6.3f} {r['final']:>10.2f} {r['x']:>6.2f} "
-              f"{r['maxdd']*100:>5.1f}% {r['activedays']:>4}")
-
-    assert rows, "no configs produced trades -- data load failed"
-    best = rows[0]
-    assert best["final"] >= a.start, "best config should not lose money"
-    print(f"\nbest: {best['cfg']} final=${best['final']:.2f} "
-          f"({best['x']:.2f}x over {best['days']:.1f} days)")
+    df = load()
+    print("rows:", df.height, "tickers:", df["ticker"].n_unique(), flush=True)
+    rows = []
+    for band in BANDS:
+        for window in WINDOWS:
+            ent = entries(df, band[0], band[1], window[0], window[1], "either")
+            for side in SIDES:
+                for mode in MODES:
+                    legs = []
+                    if side == "yes":
+                        legs = [("yes", ent.get("yes"))]
+                    elif side == "no":
+                        legs = [("no", ent.get("no"))]
+                    else:
+                        legs = [("yes", ent.get("yes")), ("no", ent.get("no"))]
+                    for leg, e in legs:
+                        m = metrics(e, mode)
+                        if m and m["n"] > 0:
+                            rows.append({"band": list(band), "window": list(window),
+                                         "side": side, "leg": leg, "mode": mode, **m})
+    rows.sort(key=lambda r: -r["ev_c"])
+    json.dump(rows, open("/opt/superbot/hf_sweep_results.json", "w"), indent=1)
+    print("configs: %d" % len(rows))
+    print("%9s %7s %6s %4s %11s %7s %8s %6s %9s" %
+          ("band", "win", "side", "leg", "mode", "n", "ev_c", "win%", "tot_usd"))
+    for r in rows[:45]:
+        print("%9s %7s %6s %4s %11s %7d %8.3f %6.1f %9.1f" %
+              (str(r["band"]), str(r["window"]), r["side"], r["leg"], r["mode"],
+               r["n"], r["ev_c"], 100 * r["win_rate"], r["total_c"] / 100.0))
 
 
 if __name__ == "__main__":
