@@ -1,0 +1,15 @@
+[Unit]
+Description=Polymarket 5m crypto book collector (read-only)
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/superbot
+Environment=PYTHONPATH=/opt/superbot
+ExecStart=/opt/superbot/.venv/bin/python scripts/poly5m_collect.py --interval 15 --coins btc,eth,sol,doge,hype,xrp
+StandardOutput=append:/opt/superbot/poly5m_collect.log
+StandardError=append:/opt/superbot/poly5m_collect.log
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
