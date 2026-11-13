@@ -237,8 +237,6 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
         1,  # versionCounter
         None,  # description
         version_id,  # activeVersionId
-        '[]',  # nodeGroups
-        None  # sourceWorkflowId
     )
     
     # workflow_history row
@@ -253,7 +251,6 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
         name,  # name
         False,  # autosaved
         None,  # description
-        '[]'  # nodeGroups
     )
     
     # workflow_published_version row
@@ -384,12 +381,12 @@ def main():
 
         # Insert into all tables
         cur.execute(
-            "INSERT INTO workflow_entity (id, name, active, nodes, connections, settings, staticData, pinData, versionId, triggerCount, meta, parentFolderId, createdAt, updatedAt, isArchived, versionCounter, description, activeVersionId, nodeGroups, sourceWorkflowId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO workflow_entity (id, name, active, nodes, connections, settings, staticData, pinData, versionId, triggerCount, meta, parentFolderId, createdAt, updatedAt, isArchived, versionCounter, description, activeVersionId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             data['workflow_entity']
         )
         
         cur.execute(
-            "INSERT INTO workflow_history (versionId, workflowId, authors, createdAt, updatedAt, nodes, connections, name, autosaved, description, nodeGroups) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO workflow_history (versionId, workflowId, authors, createdAt, updatedAt, nodes, connections, name, autosaved, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             data['workflow_history']
         )
         
