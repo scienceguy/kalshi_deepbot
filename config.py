@@ -450,8 +450,11 @@ CYCLE_TIMEOUT_SECONDS = _env_int("CYCLE_TIMEOUT_SECONDS", 30)
 CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 20)
 
 # ═════════════════════════════════════════════════════════════════════
-# LLM (optional, NVIDIA-only via integrate.api.nvidia.com)
+# LLM (optional, Vertex AI + NVIDIA + free provider fallback)
 # ═════════════════════════════════════════════════════════════════════
+VERTEX_PROJECT_ID = os.environ.get("VERTEX_PROJECT_ID", "project-ba3748e7-0d3a-4268-b7c")
+VERTEX_LOCATION = os.environ.get("VERTEX_LOCATION", "global")
+VERTEX_MODEL = os.environ.get("VERTEX_MODEL", "google/gemini-3.6-flash")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 NVIDIA_MODEL = os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
 LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", True)

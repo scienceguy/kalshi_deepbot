@@ -177,5 +177,38 @@ class TestLLMEvalConfig:
                         assert should_block is True
 
 
+class TestVertexAILayer:
+    """Test Vertex AI ADC token resolution and layer configuration."""
+
+    def test_vertex_layer_is_first_in_fallback_chain(self):
+        """Vertex AI should be the primary layer in LAYERS."""
+        assert llm_eval.LAYERS[0]["name"] == "vertex_ai"
+        assert llm_eval.LAYERS[0]["auth_type"] == "vertex_adc"
+
+    def test_resolve_vertex_token_refreshes_and_caches(self, tmp_path):
+        """Should exchange refresh_token from ADC file and cache the access token."""
+        adc_file = tmp_path / "adc.json"
+        adc_file.write_text(
+            '{"type": "authorized_user", "client_id": "cid", '
+            '"client_secret": "csec", "refresh_token": "rtok"}'
+        )
+        adc_file.chmod(0o600)
+
+        llm_eval._vertex_token_cache["token"] = ""
+        llm_eval._vertex_token_cache["expires_at"] = 0.0
+
+        mock_resp = Mock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"access_token": "ya29.test_token", "expires_in": 3600}
+
+        with patch.dict("os.environ", {"VERTEX_ADC_FILE": str(adc_file)}, clear=False):
+            with patch("llm_eval.requests.post", return_value=mock_resp) as mock_post:
+                tok1 = llm_eval._resolve_vertex_token()
+                tok2 = llm_eval._resolve_vertex_token()
+                assert tok1 == "ya29.test_token"
+                assert tok2 == "ya29.test_token"
+                assert mock_post.call_count == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

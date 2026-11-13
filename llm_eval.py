@@ -1,16 +1,17 @@
 """
-llm_eval.py — LLM trade evaluation with a 7-layer fallback across free providers.
+llm_eval.py — LLM trade evaluation with an 8-layer fallback across providers.
 
-Layers are tried in order; a layer is skipped when its API key is unset or its
-circuit breaker is open:
+Layers are tried in order; a layer is skipped when its API key / ADC is unset or
+its circuit breaker is open:
 
-  1. NVIDIA  (NVIDIA_API_KEY, integrate.api.nvidia.com)
-  2. OpenRouter free models (OPENROUTER_API_KEY)
-  3. Groq free tier (GROQ_API_KEY)
-  4. DeepSeek (DEEPSEEK_API_KEY)
-  5. OpenAI (OPENAI_API_KEY)
-  6. Gemini (GEMINI_API_KEY)
-  7. DSH our-free-model local gateway (http://127.0.0.1:18900, no key)
+  1. Vertex AI (Google Cloud ADC at ~/.config/gcloud/application_default_credentials.json)
+  2. NVIDIA  (NVIDIA_API_KEY, integrate.api.nvidia.com)
+  3. OpenRouter free models (OPENROUTER_API_KEY)
+  4. Groq free tier (GROQ_API_KEY)
+  5. DeepSeek (DEEPSEEK_API_KEY)
+  6. OpenAI (OPENAI_API_KEY)
+  7. Gemini (GEMINI_API_KEY)
+  8. DSH our-free-model local gateway (http://127.0.0.1:18900, no key)
 
 Ollama local is deliberately not a layer.
 
@@ -67,10 +68,130 @@ def _resolve_api_key(env_key: str) -> str:
             log.debug("Could not read %s_FILE (%s): %s", env_key, path, e)
     return ""
 
+
+# ── Vertex AI OAuth2 ADC token cache ─────────────────────────────────────────
+_vertex_token_cache: dict[str, Any] = {"token": "", "expires_at": 0.0}
+VERTEX_DEFAULT_ADC_PATH = os.path.expanduser(
+    "~/.config/gcloud/application_default_credentials.json"
+)
+VERTEX_DEFAULT_PROJECT = "project-ba3748e7-0d3a-4268-b7c"
+VERTEX_DEFAULT_LOCATION = "global"
+
+
+def _resolve_vertex_token() -> str:
+    """Return a valid OAuth2 access token for Vertex AI using ADC refresh token.
+
+    Reads GOOGLE_APPLICATION_CREDENTIALS or VERTEX_ADC_FILE (falling back to
+    ~/.config/gcloud/application_default_credentials.json), exchanges the
+    authorized_user refresh_token at https://oauth2.googleapis.com/token, and
+    caches the short-lived access_token until 60s before expiry.
+    """
+    now = time.time()
+    cached = _vertex_token_cache.get("token", "")
+    if cached and now < _vertex_token_cache.get("expires_at", 0.0):
+        return cached
+
+    env_token = os.environ.get("VERTEX_ACCESS_TOKEN", "")
+    if env_token:
+        return env_token
+
+    adc_path = (
+        os.environ.get("VERTEX_ADC_FILE")
+        or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        or VERTEX_DEFAULT_ADC_PATH
+    )
+    if not os.path.exists(adc_path):
+        return ""
+
+    try:
+        mode = stat.S_IMODE(os.stat(adc_path).st_mode)
+        if mode & 0o077:
+            log.warning(
+                "Vertex ADC file %s has insecure permissions (mode %o) — "
+                "refusing to read. Set chmod 600.", adc_path, mode,
+            )
+            return ""
+        with open(adc_path) as f:
+            adc = json.load(f)
+    except (OSError, ValueError) as e:
+        log.debug("Could not read Vertex ADC (%s): %s", adc_path, e)
+        return ""
+
+    client_id = adc.get("client_id", "")
+    client_secret = adc.get("client_secret", "")
+    refresh_token = adc.get("refresh_token", "")
+    if not (client_id and client_secret and refresh_token):
+        return ""
+
+    try:
+        resp = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=min(10, REQUEST_TIMEOUT),
+        )
+        if resp.status_code != 200:
+            log.debug("Vertex OAuth token refresh HTTP %s", resp.status_code)
+            return ""
+        data = resp.json()
+        token = data.get("access_token", "")
+        expires_in = float(data.get("expires_in", 3600))
+        if token:
+            _vertex_token_cache["token"] = token
+            _vertex_token_cache["expires_at"] = now + max(60.0, expires_in - 60.0)
+        return token
+    except (requests.RequestException, ValueError) as e:
+        log.debug("Vertex OAuth token refresh failed: %s", e)
+        return ""
+
+
+def _vertex_base_url() -> str:
+    explicit = os.environ.get("VERTEX_BASE_URL", "")
+    if explicit:
+        return explicit
+    project = os.environ.get("VERTEX_PROJECT_ID", VERTEX_DEFAULT_PROJECT)
+    location = os.environ.get("VERTEX_LOCATION", VERTEX_DEFAULT_LOCATION)
+    host = (
+        "https://aiplatform.googleapis.com"
+        if location == "global"
+        else f"https://{location}-aiplatform.googleapis.com"
+    )
+    return f"{host}/v1beta1/projects/{project}/locations/{location}/endpoints/openapi"
+
+
 # ── Layer configurations ─────────────────────────────────────────────────────
 # Each layer: (name, env_key, base_url, model, chat_path, auth_header_name)
 
 LAYERS = [
+    {
+        "name": "vertex_ai",
+        "env_key": None,  # OAuth2 ADC token via _resolve_vertex_token()
+        "auth_type": "vertex_adc",
+        "base_url": _vertex_base_url(),
+        "model": os.environ.get("VERTEX_MODEL", "google/gemini-3.6-flash"),
+        "chat_path": "/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "max_tokens": 512,
+        "extra_payload": {
+            "extra_body": {
+                "google": {
+                    "thinking_config": {
+                        "thinking_budget": 0,
+                    }
+                }
+            }
+        },
+        "free_models": [
+            "google/gemini-3.8-flash",
+            "google/gemini-3.5-flash",
+            "google/gemini-3.5-flash-lite",
+        ],
+    },
     {
         "name": "nvidia",
         "env_key": "NVIDIA_API_KEY",
@@ -276,7 +397,12 @@ def _parse_llm_response(content: str) -> Optional[Dict[str, Any]]:
 def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> Optional[Dict[str, Any]]:
     """Call a single LLM layer. Returns parsed result or None."""
     api_key = None
-    if layer["env_key"]:
+    if layer.get("auth_type") == "vertex_adc":
+        api_key = _resolve_vertex_token()
+        if not api_key:
+            log.debug("Layer %s skipped: no Vertex AI ADC token", layer["name"])
+            return None
+    elif layer["env_key"]:
         api_key = _resolve_api_key(layer["env_key"])
         if not api_key:
             log.debug("Layer %s skipped: no API key", layer["name"])
@@ -291,6 +417,8 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
 
     # Try primary model, then free models
     models_to_try = [layer["model"]] + layer.get("free_models", [])
+    max_tokens = layer.get("max_tokens", 256)
+    extra_payload = layer.get("extra_payload", {})
 
     for model in models_to_try:
         # Check deadline before each model attempt
@@ -302,7 +430,8 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
             "model": model,
             "messages": messages,
             "temperature": 0.1,
-            "max_tokens": 256,
+            "max_tokens": max_tokens,
+            **extra_payload,
         }
 
         for attempt in range(MAX_RETRIES_PER_LAYER):
