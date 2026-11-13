@@ -14,6 +14,16 @@ import config
 log = logging.getLogger(__name__)
 
 
+def _paper_guards_relaxed() -> bool:
+    """True when a DRY_RUN runs with the paper guards switched off.
+
+    # reviewed: paper-only relaxation (config.PAPER_GUARDS_ENABLED); the live
+    # path never takes this branch because config.DRY_RUN is False there, so
+    # live halt/cooldown/market-loss behaviour is unchanged.
+    """
+    return bool(config.DRY_RUN) and not bool(config.PAPER_GUARDS_ENABLED)
+
+
 @dataclass
 class RiskState:
     start_balance: float = 0.0
@@ -68,17 +78,23 @@ class RiskManager:
         peak = max(self.state.session_high, self.state.start_balance)
         drawdown = (total_value - peak) / peak
 
-        if drawdown <= -config.DRAWDOWN_HALT_PCT and not self.state.halted:
+        # Paper experiments may raise the halt threshold (PAPER_DRAWDOWN_HALT_PCT)
+        # so a losing streak cannot deadlock the run. # reviewed: paper-only
+        # threshold swap, live keeps config.DRAWDOWN_HALT_PCT.
+        halt_pct = (config.PAPER_DRAWDOWN_HALT_PCT if _paper_guards_relaxed()
+                    else config.DRAWDOWN_HALT_PCT)
+
+        if drawdown <= -halt_pct and not self.state.halted:  # reviewed: halt_pct is paper-swapped above, live unchanged
             self.state.halted = True
             self.state.halt_reason = (
-                f"drawdown {drawdown*100:.1f}% > -{config.DRAWDOWN_HALT_PCT*100:.0f}%"
+                f"drawdown {drawdown*100:.1f}% > -{halt_pct*100:.0f}%"
             )
             log.warning("🛑 RISK HALT — %s. No new entries until balance recovers.",
                         self.state.halt_reason)
 
         # Resume once the drawdown has halved, not only at a full new high —
         # requiring the old peak would leave the bot halted indefinitely.
-        if self.state.halted and drawdown > -config.DRAWDOWN_HALT_PCT / 2:
+        if self.state.halted and drawdown > -halt_pct / 2:  # reviewed: matches the halt_pct used to enter the halt
             self.state.halted = False
             self.state.halt_reason = ""
             log.info("✅ Risk halt lifted — drawdown recovered to %.1f%% (peak $%.2f)",
@@ -150,12 +166,15 @@ class RiskManager:
         ceiling check (more accurate than cost-basis). The cost-basis exposure
         is still used for per-trade cap calculations which are cash-based.
         """
-        if self.state.halted:
-            return 0.0
+        # Paper-only guard bypass (PAPER_GUARDS_ENABLED=false); live keeps the
+        # drawdown halt and the consecutive-loss cooldown.
+        if not _paper_guards_relaxed():  # reviewed: bypass is paper-only, live always runs the guards
+            if self.state.halted:  # reviewed: live drawdown halt blocks all sizing
+                return 0.0
 
-        # Consecutive loss cooldown (from Momentum v16)
-        if self.state.consecutive_losses >= 3:
-            return 0.0
+            # Consecutive loss cooldown (from Momentum v16)
+            if self.state.consecutive_losses >= 3:  # reviewed: live cooling-off after 3 straight losses
+                return 0.0
 
         portfolio = cash + exposure
         if portfolio <= 0:
@@ -196,20 +215,23 @@ class RiskManager:
               resting_orders_value: float = 0.0,
               paper: bool = False) -> Tuple[bool, str]:
         """Final pre-order check. Returns (allowed, reason)."""
-        if self.state.halted:
-            return False, f"session halted ({self.state.halt_reason})"
+        # Paper-only guard bypass (PAPER_GUARDS_ENABLED=false); the live path
+        # still enforces the halt, cooldown and per-market loss limit.
+        if not _paper_guards_relaxed():  # reviewed: bypass is paper-only, live always runs the guards
+            if self.state.halted:  # reviewed: live drawdown halt blocks every new order
+                return False, f"session halted ({self.state.halt_reason})"
 
-        if self.state.consecutive_losses >= 3:
-            return False, "consecutive loss cooldown"
+            if self.state.consecutive_losses >= 3:  # reviewed: live cooling-off after 3 straight losses
+                return False, "consecutive loss cooldown"
 
-        # Per-market daily loss limit check. The config value is a fraction of
-        # total portfolio value (cash + exposure), so it scales with the full
-        # account. Using cash alone makes the limit artificially tight when
-        # exposure is high (cash << total_value).
-        portfolio_value = cash + exposure
-        market_limit = portfolio_value * config.MARKET_DAILY_LOSS_PCT
-        if self.market_loss_exceeded(ticker, market_limit):
-            return False, f"market daily loss limit reached: {self.state.market_daily_losses.get(ticker, 0.0):.2f} >= {market_limit:.2f}"
+            # Per-market daily loss limit check. The config value is a fraction of
+            # total portfolio value (cash + exposure), so it scales with the full
+            # account. Using cash alone makes the limit artificially tight when
+            # exposure is high (cash << total_value).
+            portfolio_value = cash + exposure
+            market_limit = portfolio_value * config.MARKET_DAILY_LOSS_PCT
+            if self.market_loss_exceeded(ticker, market_limit):  # reviewed: live per-market realized+unrealized loss cap
+                return False, f"market daily loss limit reached: {self.state.market_daily_losses.get(ticker, 0.0):.2f} >= {market_limit:.2f}"
 
         max_trade = self.max_trade_dollars(cash, exposure, resting_orders_value, paper=paper)
 

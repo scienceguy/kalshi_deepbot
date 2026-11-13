@@ -384,6 +384,15 @@ PAPER_EXPOSURE_CEILING_PCT = _env_float("PAPER_EXPOSURE_CEILING_PCT", 0.30)
 PAPER_PER_TRADE_PCT = _env_float("PAPER_PER_TRADE_PCT", 0.12)
 PAPER_MIN_CASH_ABSOLUTE = _env_float("PAPER_MIN_CASH_ABSOLUTE", 0.02)
 DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.08)
+# Paper-mode guard relaxation (operator directive 2026-11-13: "drop the guards
+# for now so we can better understand the behavior, we can always reset the dry
+# run balance"). When PAPER_GUARDS_ENABLED is false, a DRY_RUN ignores the
+# drawdown halt, the consecutive-loss cooldown and the per-market daily loss
+# limit, and uses PAPER_DRAWDOWN_HALT_PCT as an (almost inert) backstop, so an
+# experiment keeps gathering data after a losing streak instead of deadlocking
+# in a halt it can never trade its way out of. The live path is untouched.
+PAPER_GUARDS_ENABLED = _env_bool("PAPER_GUARDS_ENABLED", True)
+PAPER_DRAWDOWN_HALT_PCT = _env_float("PAPER_DRAWDOWN_HALT_PCT", 0.90)
 MAX_DRAWDOWN_PCT = _env_float("MAX_DRAWDOWN_PCT", 0.12)
 STALE_ORDER_MINS = _env_float("STALE_ORDER_MINS", 5.0)
 ADVERSE_MOVE_CENTS = _env_int("ADVERSE_MOVE_CENTS", 10)
