@@ -82,6 +82,7 @@ def _supabase_record_success() -> None:
 # 3. .env (loaded by config.py at import)
 
 SUPABASE_KEY_FILE = os.environ.get("SUPABASE_KEY_FILE", "")
+SUPABASE_SERVICE_KEY_FILE = os.environ.get("SUPABASE_SERVICE_KEY_FILE", "")
 
 # Valid key names recognised in key=value files (order: first match wins)
 _VALID_KEY_NAMES = {"SUPABASE_SERVICE_KEY", "SUPABASE_API_KEY", "sb_secret"}

@@ -566,11 +566,6 @@ class LocalDB:
                 pk_col = "id"
                 pk_val = row_dict.pop("id")
             
-            if table == "pnl_ledger":
-                # No pnl_ledger table exists in the deployed Supabase schema;
-                # the local ledger is the source of truth for settlements.
-                continue
-
             try:
                 # Map local column names to Supabase column names
                 if table == "signals":
