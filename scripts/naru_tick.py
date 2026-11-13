@@ -93,25 +93,47 @@ def first_entries(k: pd.DataFrame, bmin: int, bmax: int, edge: float,
 
 
 def compound(t: pd.DataFrame, start: float, frac: float, slip: float = 0.0) -> dict:
+    """Event-driven, cash-limited compounding with integer contracts (Kalshi reality).
+
+    Entry: stake = frac * free cash, contracts = floor(stake/price), cash -= cost.
+    Settlement: credit $1/contract on a win, $0 on a loss. Skipped when
+    free cash cannot buy one contract.
+    """
+    if t.empty:
+        return {"final": start, "maxdd": 0.0, "fees": 0.0, "fills": 0}
+    trades = [(r.close_s, float(r.price), bool(r.yes_win)) for r in t.itertuples()]
+    ev = []
+    for i, (c_ts, price, win) in enumerate(trades):
+        ev.append((c_ts, 0, i))
+        ev.append((c_ts + 1, 1, i))  # settlement immediately after close in this model
+    ev.sort(key=lambda x: (x[0], x[1]))
     bal, peak, maxdd, fees = start, start, 0.0, 0.0
     fills = 0
     step = slip / 100.0
-    for row in t.sort_values("close_s").itertuples():
-        price = min(0.99, float(row.price) + step)
-        contracts = bal * frac / price
-        if contracts <= 0:
-            continue
-        cost = contracts * price
-        fee = contracts * 0.07 * price * (1.0 - price)
-        if cost + fee > bal:
-            continue
-        bal -= cost + fee
-        fees += fee
-        fills += 1
-        if bool(row.yes_win):
-            bal += contracts
+    pos = {}
+    for ts, kind, i in ev:
+        c_ts, price, win = trades[i]
+        if kind == 0:
+            price = min(0.99, price + step)
+            stake = min(frac * bal, bal)
+            contracts = int(stake / price)
+            if contracts < 1:
+                continue
+            cost = contracts * price
+            fee = contracts * 0.07 * price * (1.0 - price)
+            if cost + fee > bal:
+                continue
+            bal -= cost + fee
+            fees += fee
+            fills += 1
+            pos[i] = (contracts, price)
+        else:
+            contracts, entry_price = pos.pop(i, (0, 0.0))
+            if win and contracts:
+                bal += contracts * 1.0
         peak = max(peak, bal)
-        maxdd = max(maxdd, 1.0 - bal / peak)
+        if peak > 0:
+            maxdd = max(maxdd, 1.0 - bal / peak)
         if bal < 1.0:
             break
     return {"final": bal, "maxdd": maxdd, "fees": fees, "fills": fills}

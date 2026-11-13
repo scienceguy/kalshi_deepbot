@@ -375,24 +375,26 @@ def find_active_markets(client: KalshiClient, extra_band=None):
 
         # Minimum liquidity / size guard: skip markets with very low orderbook depth
         # The bot should not chase 1-2 contract books; require at least 5 contracts
-        # of YES liquidity since the strategy buys YES. # reviewed: prevent chasing near-empty orderbooks
-        if info.yes_liquidity < 5:
-            log.debug("SKIP %s: yes_liquidity too low (%d)", info.ticker, info.yes_liquidity)
-            continue
-
         if extra_band and info.mid_yes is not None \
                 and extra_band[0] <= info.mid_yes <= extra_band[1]:
             extra.append(info)
-        yes_tradeable = yes_ask and MIN_P <= yes_ask <= MAX_P  # reviewed: only YES ask in band for favourite-YES strategy
+        yes_tradeable = yes_ask and MIN_P <= yes_ask <= MAX_P and info.yes_liquidity >= 5  # reviewed: only YES ask in band with >=5 contracts liquidity
+        no_tradeable = no_ask and MIN_P <= no_ask <= MAX_P and info.no_liquidity >= 5  # reviewed: allow NO favourite in band when NO liquidity >=5 contracts
         if yes_tradeable:
             result.append(info)
             side = "YES"
             price = yes_ask
             log.info("✓ MAIN  %s %.1fmin %s ask=%dc mid=%.0fc bid=%dc skew=%+dc",
                      info.ticker, ml, side, price, info.mid_yes or 0, info.yes_bid, info.skew)
+        elif no_tradeable:  # reviewed: elif prevents duplicate ticker when both sides match band
+            result.append(info)
+            side = "NO"
+            price = no_ask
+            log.info("✓ MAIN_NO %s %.1fmin %s ask=%dc mid=%.0fc bid=%dc skew=%+dc",
+                     info.ticker, ml, side, price, info.mid_no or 0, info.no_bid, -info.skew)
         else:
-            log.debug("MAIN failed real-price check yes_ask=%dc: %s",
-                      yes_ask or 0, mkt["ticker"])
+            log.debug("MAIN/MAIN_NO failed real-price/liquidity check yes_ask=%dc (liq=%d) no_ask=%dc (liq=%d): %s",
+                      yes_ask or 0, info.yes_liquidity, no_ask or 0, info.no_liquidity, mkt["ticker"])
 
     # Process HEDGE_NO
     for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:

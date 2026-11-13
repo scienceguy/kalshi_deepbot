@@ -206,6 +206,7 @@ class BotState:
         self.consecutive_no_tradeable_cycles: int = 0
         self.cycle_outcome: str = "pending"
         self.tradeable_markets_count: int = 0
+        self.available_markets_count: int = 0
 
     def _pre_trade_check(self, sig, market, cash, exposure, total_value, client) -> bool:
         """Pre-trade risk checks (LLM evaluation moved to cycle() as pre-entry filter)."""
@@ -1136,28 +1137,13 @@ def cycle(client: KalshiClient):
     # Trend maker archived (operator decision 2026-11-10): engine kept on disk
     # but unreachable from the loop; `git revert <archive-sha>` restores the call.
     markets = find_active_markets(client)
-    if not markets:
-        # Observability: record "no-tradeable" outcome and count
+    state.tradeable_markets_count = len(markets)
+    state.available_markets_count = getattr(markets, "total_available", len(markets))
+    if markets:  # reviewed: reset consecutive no-tradeable counter when tradeable markets exist
+        state.consecutive_no_tradeable_cycles = 0
+        state.cycle_outcome = "evaluated"
+    else:
         state.cycle_outcome = "no-tradeable"
-        state.tradeable_markets_count = 0
-        state.consecutive_no_tradeable_cycles += 1
-        log.info("No tradeable markets. (consecutive no-tradeable cycles: %d)",
-                 state.consecutive_no_tradeable_cycles)
-        # reviewed: observable alert for zero-tradeable market detection
-        if state.consecutive_no_tradeable_cycles >= config.ZERO_TRADEABLE_ALERT_CYCLES:
-            log.warning(
-                "Alert: %d consecutive cycles with 0 tradeable markets (threshold=%d)",
-                state.consecutive_no_tradeable_cycles, config.ZERO_TRADEABLE_ALERT_CYCLES,
-            )
-            try:
-                get_n8n_client().run_monitor({
-                    "alert": "zero_tradeable_markets",
-                    "consecutive_cycles": state.consecutive_no_tradeable_cycles,
-                    "threshold": config.ZERO_TRADEABLE_ALERT_CYCLES,
-                })
-            except Exception as e:
-                log.debug("Failed to fire n8n monitor webhook: %s", e)
-        return
 
     # For dry-run: compute paper mark-to-market exposure from local paper positions
     # and current market mids, so cash sizing reflects unrealized gains/losses.
@@ -1695,6 +1681,7 @@ def cycle(client: KalshiClient):
         "session_pnl": state.session_pnl,
         "cycle_outcome": state.cycle_outcome,
         "tradeable_markets_count": state.tradeable_markets_count,
+        "available_markets_count": state.available_markets_count,
         "balance": cash if cash_available else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -1984,7 +1971,6 @@ def cycle(client: KalshiClient):
                 state.resting_value.pop(oid, None)
                 state.resting_tickers.discard(sig.market.ticker)
                 client.invalidate_markets(series_ticker=sig.market.series)
-                current_exposure += fill_count * sig.entry_price / 100.0 if fill_count else 0
             else:
                 # Live mode: maker orders rest until filled.
                 # Confirm the fill from the portfolio/orders API before booking PnL
@@ -2038,6 +2024,7 @@ def cycle(client: KalshiClient):
                 state.orders_today += 1
 
     if placed:
+        state.cycle_outcome = "traded"
         log.info("Placed %d order(s) this cycle.", placed)
 
 
@@ -2125,7 +2112,7 @@ def main():
             )
             return
         log.info("Connected ✓ Balance: $%.2f", bal)
-        state.risk.initialize(bal)
+        state.risk.initialize(paper_mode.cash(0.0) if config.DRY_RUN else bal)
     except Exception as e:
         log.error("Auth failed: %s — continuing without Kalshi connection", e)
         return  # return to main loop instead of exiting
