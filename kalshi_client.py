@@ -333,6 +333,25 @@ class KalshiClient:
                 return float(entry.get("balance", "0") or 0)
         return 0.0
 
+    def transfer_shard(self, source_shard: int, dest_shard: int, amount_dollars: float) -> str:
+        """Transfer funds between exchange shards within the same account.
+
+        Amount is specified in dollars; Kalshi's intra_exchange_instance_transfer
+        endpoint requires centicents (1 dollar = 10,000 centicents).
+        """
+        centicents = int(round(amount_dollars * 10000))
+        payload = {
+            "source": "event_contract",
+            "destination": "event_contract",
+            "source_exchange_shard": source_shard,
+            "destination_exchange_shard": dest_shard,
+            "amount": centicents,
+            "source_subaccount": 0,
+            "destination_subaccount": 0,
+        }
+        resp = self._request("POST", "/portfolio/intra_exchange_instance_transfer", json=payload)
+        return resp.get("transfer_id", "")
+
     def get_positions(self) -> list:
         """Return list of open market positions."""
         data = self._request("GET", "/portfolio/positions")
