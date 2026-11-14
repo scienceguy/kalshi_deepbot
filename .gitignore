@@ -110,6 +110,8 @@ data/crossvenue/
 !MEMPALACE_GUIDE.md
 !TOOL_AWARENESS_GUIDE.md
 !PONYTAIL_AUDIT.md
+# Audit reports written under docs/ are part of the record (same reason as above).
+!docs/*.md
 !HANDOFF.md
 # A blanket `!*.md` would sweep unrelated new notes onto the private remote.
 # Add each doc's name here when it earns tracking.
@@ -135,3 +137,8 @@ fund_ledger.jsonl
 # Bot log rotation / backups
 bot.log.*
 *.backup
+
+# OpenCode plugin installs dropped in the repo root (never part of the Python bot)
+node_modules/
+package.json
+package-lock.json

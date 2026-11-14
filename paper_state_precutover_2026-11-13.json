@@ -1,0 +1,6 @@
+{
+  "note": "Pre-cutover paper curve, all produced by the old random fill simulator. Kept for audit only; the live paper curve restarts at 0 from book-based fills.",
+  "local": {"start_balance": 100.0, "pnl": 4.6, "settlement_pnl": 4.6},
+  "vps": {"start_balance": 100.0, "pnl": -0.79, "settlement_pnl": -0.79},
+  "cutover": "2026-11-13"
+}

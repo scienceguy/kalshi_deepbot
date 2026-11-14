@@ -603,6 +603,66 @@ def _save_settlement_queue(queue: list):
         raise
 
 
+def _dry_run_fill_count(market, side: str, entry_price_cents: int,
+                        contracts: float) -> float:
+    """How many contracts a resting dry-run order would actually get.
+
+    A paper fill must come from the live book, never from a random number.
+    Our order rests at ``entry_price_cents``; it fills only when the ask on
+    that side is at or below our price, i.e. a seller actually crosses into
+    us. No quote means no fill, because a synthetic price would make the
+    paper balance a fiction.
+
+    Depth is the COUNTERPARTY size at the ask, not our own side's bid size.
+    Buying YES lifts the best NO bid (YES ask = 100 - NO bid), so the
+    contracts available are ``no_liquidity``; buying NO lifts the best YES
+    bid, so they are ``yes_liquidity``. When the book reports no size, the
+    crossing ask still proves a counterparty exists, so our full size fills.
+    """
+    ask = market.yes_ask if side == "yes" else market.no_ask
+    depth = market.no_liquidity if side == "yes" else market.yes_liquidity
+    if market.minutes_left <= 0:  # reviewed: expired market cannot fill a resting bid; marking it unfillable is the only correct outcome
+        return 0.0
+    if not ask or ask > entry_price_cents:  # reviewed: book-based fill rule — no cross means no fill, so paper PnL tracks real quotes only
+        return 0.0
+    if depth:  # reviewed: cap at quoted size; an empty book still fills our size because the ask proves a counterparty
+        return floor_contracts(min(contracts, float(depth)))
+    return floor_contracts(contracts)
+
+
+def _entry_fee_dollars(contracts: float, entry_price_cents: float) -> float:
+    """Fee paid to enter, in dollars.
+
+    A taker entry (AGGRESSIVE_FILL crosses the ask) pays Kalshi's fee; a
+    resting maker order pays nothing. The value is the *effective* fee: what
+    actually leaves the balance above the contract cost, including Kalshi's
+    rounding up to the account's cent grid. One definition so the order row,
+    the settlement math and the paper ledger cannot drift apart.
+    """
+    if not config.AGGRESSIVE_FILL:  # reviewed: only a taker entry pays the exchange fee; makers pay nothing
+        return 0.0
+    price = entry_price_cents / 100.0
+    return fees.buy_cash_out(contracts, price, taker=True) - contracts * price
+
+
+def _settle_pnl(contracts: float, entry_price_cents: float,
+                exit_price_dollars: float) -> tuple:
+    """(realized_pnl_dollars, entry_fee_dollars) for a position held to settlement.
+
+    The entry is a taker when AGGRESSIVE_FILL crosses the ask, and a taker pays
+    the fee; a resting maker order pays nothing. Settlement itself is not a
+    trade, so it is always fee-free. Live and paper both come through here so
+    the paper curve carries exactly the fee live does — previously the paper
+    path booked zero entry fee even while taking, which flattered the curve by
+    roughly the whole per-trade edge.
+    """
+    taker = bool(config.AGGRESSIVE_FILL)
+    buy_cost = fees.buy_cash_out(contracts, entry_price_cents / 100.0, taker=taker)
+    sell_revenue = fees.sell_cash_in(contracts, exit_price_dollars, taker=False)
+    entry_fee = _entry_fee_dollars(contracts, entry_price_cents)
+    return sell_revenue - buy_cost, entry_fee
+
+
 def _resolve_pending_settlement(client, payload):
     """Compute realized PnL for a queued 'pending' settlement from the exchange.
 
@@ -624,14 +684,13 @@ def _resolve_pending_settlement(client, payload):
         return None
     exit_price = (float(settled_yes) / 100.0 if side == "yes"
                   else float(100 - settled_yes) / 100.0)
-    buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0, taker=False)
-    sell_revenue = fees.sell_cash_in(contracts, exit_price, taker=False)
+    pnl_dollars, _ = _settle_pnl(contracts, entry_price, exit_price)
     return {
         **payload,
         "status": "settled",
         "fill_price_cents": int(exit_price * 100),
-        "outcome_won": sell_revenue > buy_cost,
-        "pnl_dollars": sell_revenue - buy_cost,
+        "outcome_won": pnl_dollars > 0,
+        "pnl_dollars": pnl_dollars,
     }
 
 
@@ -707,14 +766,13 @@ def _replay_settlement_queue(client=None):
             continue
         exit_price = (float(settled_yes) / 100.0 if side == "yes"
                       else float(100 - settled_yes) / 100.0)
-        buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0, taker=False)
-        sell_revenue = fees.sell_cash_in(contracts, exit_price, taker=False)
+        pnl_dollars, _ = _settle_pnl(contracts, entry_price, exit_price)
         resolved_payload = {
             **payload,
             "status": "settled",
             "fill_price_cents": int(exit_price * 100),
-            "outcome_won": sell_revenue > buy_cost,
-            "pnl_dollars": sell_revenue - buy_cost,
+            "outcome_won": pnl_dollars > 0,
+            "pnl_dollars": pnl_dollars,
         }
         resolved_pending.append((entry, resolved_payload))
     
@@ -734,7 +792,10 @@ def _replay_settlement_queue(client=None):
             # Step 1: Apply to local pnl_ledger FIRST (idempotency key prevents double-count)
             if pnl is not None:
                 applied = get_local_db().apply_settlement_pnl(
-                    settle_key, ticker, pnl, fee_dollars=0.0, source="local")
+                    settle_key, ticker, pnl,
+                    fee_dollars=_entry_fee_dollars(
+                        payload.get("contracts", 0), payload.get("entry_price", 0)),
+                    source="local")
                 # applied is True=new, False=duplicate, None=DB error.
                 # Never credit PnL when the ledger write failed (None).
                 if applied is True:
@@ -828,22 +889,20 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     is_paper = bool(pos.get("paper"))
 
     exit_price = exit_cents / 100.0
-    # Paper models a maker entry + taker exit, identical to live, so the dry
-    # run's per-exit fee matches live. Settlement is not a trade (no fee).
-    # reviewed: PAPER_TAKER_EXIT_FEE is a single knob; on = taker exit fee
-    if is_paper and config.PAPER_TAKER_EXIT_FEE:
-        buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=False)
-        sell_revenue = fees.sell_cash_in(filled, exit_price, taker=True)
-        fees_dollars = fees.taker_fee_dollars(filled, exit_price)
-    # reviewed: elif keeps the legacy paper model (taker entry, free exit) on
-    elif is_paper:
-        buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=True)
-        sell_revenue = fees.sell_cash_in(filled, exit_price, taker=False)
-        fees_dollars = fees.taker_fee_dollars(filled, entry_price / 100.0)
-    else:
-        buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=False)
-        sell_revenue = fees.sell_cash_in(filled, exit_price, taker=True)
-        fees_dollars = fees.taker_fee_dollars(filled, exit_price)
+    # Entry and exit are priced by the same rule live uses: the entry pays a
+    # taker fee only when we crossed the ask (AGGRESSIVE_FILL), and the exit
+    # pays the taker fee because selling into the book is a taker action. A
+    # dry run now matches that exactly instead of assuming a fee-free entry.
+    entry_taker = bool(config.AGGRESSIVE_FILL)
+    # reviewed: paper may keep the legacy free-exit model via PAPER_TAKER_EXIT_FEE; live exits always take
+    exit_taker = bool(config.PAPER_TAKER_EXIT_FEE) if is_paper else True
+    buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=entry_taker)
+    sell_revenue = fees.sell_cash_in(filled, exit_price, taker=exit_taker)
+    # Report the effective fees (what the cent-grid cost actually contains),
+    # not the raw model fee, so the order row agrees with the P&L.
+    entry_fee = (buy_cost - filled * entry_price / 100.0) if entry_taker else 0.0
+    exit_fee = (filled * exit_price - sell_revenue) if exit_taker else 0.0
+    fees_dollars = entry_fee + exit_fee
     realized_pnl = sell_revenue - buy_cost
     won = sell_revenue > buy_cost
 
@@ -1369,14 +1428,9 @@ def cycle(client: KalshiClient):
 
         # If settlement data available, book PnL and clear position.
         if exit_price is not None:
-            buy_cost = fees.buy_cash_out(contracts, entry_price / 100.0, taker=False)
-            sell_revenue = fees.sell_cash_in(contracts, exit_price, taker=False)
-            realized_pnl = sell_revenue - buy_cost
-            won = sell_revenue > buy_cost
-
-            # Fees in dollars for the order
-            # Maker limit order: Kalshi charges the taker, so entry fees are 0.
-            fees_dollars = 0.0
+            realized_pnl, fees_dollars = _settle_pnl(
+                contracts, entry_price, exit_price)
+            won = realized_pnl > 0
 
             log.info(
                 "Cleared settled position: %s (side=%s, released $%.2f, realized P&L $%.2f, won=%s)",
@@ -1922,45 +1976,31 @@ def cycle(client: KalshiClient):
             # fill_count_fp is the NEW field; filledCount is the legacy alias.
             fill_count = _order_fill_count(resp)
             if config.DRY_RUN:
-                # Realistic maker fill simulation for dry runs.
-                # Probability of fill depends on: depth at our price, time remaining,
-                # distance from current mid, and volatility.
-                import random
+                # Dry-run fills come from the live book, never from a random
+                # number. Our order rests at sig.entry_price; it can only fill
+                # when the market's ask on that side is at or below our price,
+                # i.e. a seller actually crosses into us. Size is capped by the
+                # quoted depth on that side. No quote means no fill: a synthetic
+                # price would make the paper balance a fiction.
+                #
+                # Depth must be the COUNTERPARTY size at the ask, not our own
+                # bid size. Buying YES lifts the best NO bid (YES ask =
+                # 100 - NO bid), so the contracts available are no_liquidity;
+                # buying NO lifts the best YES bid, so it is yes_liquidity.
+                # Using our own side's bid size overstates or understates the
+                # fill by whatever the other queue holds.
                 market = sig.market
-                bid = market.yes_bid if sig.side == "yes" else market.no_bid
-                ask = market.yes_ask if sig.side == "yes" else market.no_ask
-                mid = market.mid_yes if sig.side == "yes" else market.mid_no
-                
-                # Probability of fill based on:
-                # 1. Queue position (assume we're at best bid/ask)
-                # 2. Time remaining (more time = higher fill prob)
-                # 3. Distance from mid (tighter = higher fill prob)
-                # 4. Volatility (higher vol = higher fill prob)
-                minutes_left = market.minutes_left
-                if minutes_left <= 0:  # reviewed: an expired market can never fill a resting bid; marking it unfillable is the only correct outcome
-                    fill_prob = 0.0
-                else:
-                    # Base fill probability from order book dynamics
-                    spread = (ask - bid) if bid and ask else 100
-                    dist_from_mid = abs(sig.entry_price - mid) if mid else 50
-                    
-                    # Base probability: higher when closer to mid, more time, wider spread
-                    base_prob = min(0.9, max(0.1, (50 - dist_from_mid) / 50.0))
-                    time_factor = min(1.0, minutes_left / 2.0)  # Higher prob with more time
-                    vol_factor = min(1.5, 1.0 + (config.MODEL_VOLATILITY - 0.5))  # Vol boost
-                    fill_prob = base_prob * time_factor * vol_factor
-                    fill_prob = min(0.95, max(0.05, fill_prob))
-                
-                # Simulate fill
-                if random.random() < fill_prob:  # reviewed: dry-run maker fill simulation only; live fills are confirmed via the API (see else branch below), never simulated
-                    fill_count = float(sig.contracts)
-                else:
-                    # Partial fill simulation - smaller fills more likely
-                    fill_count = float(sig.contracts) * fill_prob * random.uniform(0.3, 0.8)
-                    fill_count = floor_contracts(fill_count)
+                fill_count = _dry_run_fill_count(
+                    market, sig.side, sig.entry_price, sig.contracts)
                 
                 if fill_count >= 0.01:  # reviewed: dust-guard — a fill below 0.01 contracts books no exposure and must not create a phantom position
-                    fees_dollars = 0.0  # maker limit order — no taker fee
+                    # A taker entry (AGGRESSIVE_FILL crosses the ask) pays the
+                    # Kalshi taker fee; a resting maker order pays none. The
+                    # same rule is applied to settlement P&L via _settle_pnl.
+                    fees_dollars = (
+                        fees.taker_fee_dollars(fill_count, sig.entry_price / 100.0)
+                        if config.AGGRESSIVE_FILL  # reviewed: taker entry pays the fee, maker entry does not
+                        else 0.0)
                     state._record_filled_order(
                         client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
                     )
@@ -1994,7 +2034,12 @@ def cycle(client: KalshiClient):
 
                 # reviewed: fill confirmation guard — only book PnL when API confirms fill
                 if confirmed_fill_count is not None and floor_contracts(confirmed_fill_count) > 0:
-                    fees_dollars = 0.0  # maker limit order — no taker fee
+                    # Taker entries pay the exchange fee; makers pay nothing.
+                    fees_dollars = (
+                        fees.taker_fee_dollars(confirmed_fill_count,
+                                               sig.entry_price / 100.0)
+                        if config.AGGRESSIVE_FILL  # reviewed: taker entry pays the fee, maker entry does not
+                        else 0.0)
                     state._record_filled_order(
                         client, sig, oid, confirmed_fill_count, "executed", fees_dollars, state.cycles
                     )
@@ -2049,7 +2094,7 @@ def main():
              (config.PAPER_EXPOSURE_CEILING_PCT if config.DRY_RUN else config.EXPOSURE_CEILING_PCT) * 100,
              (config.PAPER_PER_TRADE_PCT if config.DRY_RUN else config.PER_TRADE_PCT) * 100,
              config.DRAWDOWN_HALT_PCT * 100,
-             " (paper — dry runs fill at the posted maker price and settle for real)" if config.DRY_RUN else "")
+             " (paper — dry runs fill only when the live book crosses the resting price and settle for real)" if config.DRY_RUN else "")
     log.info("LLM eval: %s | Supabase: %s",
              "enabled (NVIDIA)" if config.NVIDIA_API_KEY else "disabled",
              "enabled" if get_supabase_client().enabled else "disabled")

@@ -68,12 +68,10 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
 
     Returns a result dict or None if no signal.
 
-    ⚠️  LOOKAHEAD BIAS WARNING: When bid/ask data is available, the entry price
-    proxy uses bid/ask mid. When only settlement data is available (no orderbook
-    history), a fixed synthetic entry price of 45c for YES is used. This is a
-    simplifying assumption: it models always entering YES at 45c, which is an
-    executable strategy but may not reflect actual entry prices at entry time.
-    Results should be treated as indicative, not a prediction of live performance.
+    ⚠️  LOOKAHEAD BIAS WARNING: the entry price proxy is the bid/ask mid at the
+    entry minute (or the ask, for final_taker). Markets with no quote for that
+    minute are skipped — the engine never invents an entry price, because a
+    synthetic fill price makes every downstream number a fiction.
     """
     ticker = market.get("ticker", "")
     ct = _parse_api_time(market.get("close_time", ""))
@@ -125,8 +123,9 @@ def simulate_trade(market, params, balance=100.0, settlement_yes_won=None):
             mid_proxy = (yb + ya) // 2
             entry_price_proxy = mid_proxy
         else:
-            mid_proxy = 45  # Fixed synthetic entry price for YES when no orderbook
-            entry_price_proxy = mid_proxy
+            # No quote for this minute: skip the market. A made-up entry price
+            # (previously a fixed 45c) would turn a data gap into a fake result.
+            return None
 
     if settlement_yes_won is None:
         yes_won = _default_settlement_yes_won(market)

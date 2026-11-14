@@ -991,11 +991,13 @@ def test_paper_exit_charges_taker_exit_fee_when_config_on(monkeypatch):
 
 
 def test_paper_exit_fee_config_off_restores_entry_fee(monkeypatch):
-    """Toggling PAPER_TAKER_EXIT_FEE off restores the old paper model (taker
-    fee on entry, free exit)."""
+    """The entry fee follows how the order was placed (AGGRESSIVE_FILL = taker),
+    while PAPER_TAKER_EXIT_FEE controls only the exit. With the exit fee off and
+    a taker entry, paper books the entry fee and a free exit."""
     import config as _cfg
     from fees import buy_cash_out, sell_cash_in
     monkeypatch.setattr(_cfg, "PAPER_TAKER_EXIT_FEE", False)
+    monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", True)
     monkeypatch.setattr(_cfg, "DRY_RUN", True)
     ledger = MagicMock()
     ledger.apply_settlement_pnl.return_value = True
@@ -1017,6 +1019,83 @@ def test_paper_exit_fee_config_off_restores_entry_fee(monkeypatch):
     expected_sell = sell_cash_in(filled, exit_cents / 100.0, taker=False)
     expected_pnl = expected_sell - expected_buy
     assert trader.state.session_pnl == pytest.approx(expected_pnl, abs=0.02)
+
+
+# ── Dry-run fill rule (real book only) ──────────────────────────────────────
+
+def _book(yes_ask=0, no_ask=0, yes_liq=0, no_liq=0, minutes_left=5.0):
+    m = MagicMock()
+    m.yes_ask = yes_ask
+    m.no_ask = no_ask
+    m.yes_liquidity = yes_liq
+    m.no_liquidity = no_liq
+    m.minutes_left = minutes_left
+    return m
+
+
+def test_dry_run_fill_needs_the_ask_at_or_below_our_price():
+    """A resting bid only fills when a seller crosses down to it."""
+    m = _book(yes_ask=97, yes_liq=50, no_liq=50)
+    assert trader._dry_run_fill_count(m, "yes", 96, 10) == 0.0
+    assert trader._dry_run_fill_count(m, "yes", 97, 10) == 10.0
+
+
+def test_dry_run_fill_needs_a_quote():
+    """No ask means no fill — the paper balance never invents a price."""
+    m = _book(yes_ask=0, minutes_left=5.0)
+    assert trader._dry_run_fill_count(m, "yes", 99, 10) == 0.0
+
+
+def test_dry_run_fill_uses_counterparty_depth_not_our_own_bid():
+    """Buying YES lifts the NO bid, so the cap is no_liquidity."""
+    m = _book(yes_ask=96, yes_liq=999, no_liq=3)
+    assert trader._dry_run_fill_count(m, "yes", 96, 10) == 3.0
+    # Buying NO lifts the YES bid, so the cap flips to yes_liquidity.
+    m2 = _book(no_ask=96, yes_liq=3, no_liq=999)
+    assert trader._dry_run_fill_count(m2, "no", 96, 10) == 3.0
+
+
+def test_dry_run_fill_is_zero_after_the_market_closes():
+    m = _book(yes_ask=90, no_liq=100, minutes_left=0.0)
+    assert trader._dry_run_fill_count(m, "yes", 95, 10) == 0.0
+
+
+# ── Settlement fee accuracy ──────────────────────────────────────────────────
+
+def test_settle_pnl_maker_entry_pays_no_fee(monkeypatch):
+    """A resting maker entry pays nothing, so settlement PnL is the raw edge."""
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", False)
+    pnl, fee = trader._settle_pnl(10.0, 97, 1.00)
+    assert fee == 0.0
+    assert pnl == pytest.approx(10.0 * (1.00 - 0.97), abs=1e-6)
+
+
+def test_settle_pnl_taker_entry_pays_the_fee_it_would_pay_live(monkeypatch):
+    """A taker entry pays Kalshi's fee, so paper PnL cannot exceed live."""
+    import config as _cfg
+    from fees import buy_cash_out, sell_cash_in
+    monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", True)
+    pnl, fee = trader._settle_pnl(10.0, 97, 1.00)
+    # Effective cost includes Kalshi's rounding up to the cent grid, which the
+    # live balance also pays — so the expectation uses the same function.
+    expected_pnl = (sell_cash_in(10.0, 1.00, taker=False)
+                    - buy_cash_out(10.0, 0.97, taker=True))
+    assert pnl == pytest.approx(expected_pnl, abs=1e-9)
+    assert fee == pytest.approx(buy_cash_out(10.0, 0.97, taker=True) - 10.0 * 0.97,
+                                abs=1e-9)
+    # The fee is real money: the taker PnL must be strictly lower than maker.
+    monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", False)
+    maker_pnl, _ = trader._settle_pnl(10.0, 97, 1.00)
+    assert pnl < maker_pnl
+
+
+def test_entry_fee_is_zero_for_maker_and_positive_for_taker(monkeypatch):
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", False)
+    assert trader._entry_fee_dollars(10.0, 97) == 0.0
+    monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", True)
+    assert trader._entry_fee_dollars(10.0, 97) > 0.0
 
 
 # ── Live fill-confirmation tests ─────────────────────────────────────────────
