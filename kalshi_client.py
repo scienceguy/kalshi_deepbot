@@ -31,7 +31,8 @@ def _min_request_gap() -> float:
 
 
 def _min_balance_gap() -> float:
-    return float(config.REQUEST_MIN_GAP_SECONDS) * 2.0  # 2x for balance endpoint
+    # Kalshi limits /portfolio/balance to 1 req/sec; enforce >=1.1s between balance calls
+    return max(1.1, float(config.REQUEST_MIN_GAP_SECONDS) * 2.0)
 
 # Engine mapping — crypto 15M series moved to engine 2 in Aug 2026.
 # https://www.reddit.com/r/Kalshi/comments/1vy26z9/
@@ -228,7 +229,7 @@ class KalshiClient:
             with self._lock:
                 now_m = time.monotonic()
                 # reviewed: verify balance cache validity window before returning cached response
-                if self._balance_cache and (now_m - self._balance_cache_ts < 2.0):  # reviewed: check 2s cache window
+                if self._balance_cache and (now_m - self._balance_cache_ts < 5.0):  # reviewed: check 5s cache window
                     return self._balance_cache
         url       = self.base_url + full_path
         headers   = self._auth_header(method, full_path)
@@ -239,7 +240,7 @@ class KalshiClient:
         kwargs.setdefault("timeout", timeout)
 
         # Choose which rate-limit timer to use
-        is_balance = path == "/portfolio/balance"
+        is_balance = full_path == "/portfolio/balance"
 
         # Retry loop for 429 (rate limit)
         for _attempt in range(5):
