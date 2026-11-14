@@ -348,3 +348,68 @@ def test_public_aliases_and_exceptions():
     assert polymarket_us_client.get_client is polymarket_us_client._get_client
     assert polymarket_us_client.get_authenticated_client is polymarket_us_client._get_authenticated_client
     assert issubclass(polymarket_us_client.PolymarketAPIError, Exception)
+
+
+# ---------------------------------------------------------------------------
+# (g) NO-side price conversion (long-side price.value rule)
+# ---------------------------------------------------------------------------
+
+def test_poly_price_yes_is_literal():
+    """YES side price passes straight through as price.value."""
+    assert polymarket_us_client._poly_price("yes", 0.05) == 0.05
+    assert polymarket_us_client._poly_price("yes", 0.95) == 0.95
+    assert polymarket_us_client._poly_price("yes", 0.99) == 0.99
+
+
+def test_poly_price_no_is_complement():
+    """NO side price maps to 1 - price (long side's quote)."""
+    assert polymarket_us_client._poly_price("no", 0.05) == 0.95   # buy NO @ 0.05 → YES quoted at 0.95
+    assert polymarket_us_client._poly_price("no", 0.95) == 0.05   # buy NO @ 0.95 → YES quoted at 0.05
+    assert polymarket_us_client._poly_price("no", 0.99) == 0.01   # buy NO @ 0.99 → YES quoted at 0.01
+
+
+def test_place_maker_order_no_side_sends_complement(monkeypatch):
+    """place_maker_order() sends 1-price for NO side (long-side price.value rule)."""
+    monkeypatch.setenv("POLYMARKET_KEY_ID", "dummy-key-id")
+    monkeypatch.setenv("POLYMARKET_SECRET_KEY", "dummy-secret-key")
+
+    captured = {}
+
+    def fake_preview(params):
+        captured["price"] = params["request"]["price"]
+        return {"order": {"state": "ORDER_STATE_PENDING_NEW"}}
+
+    def fake_create(params):
+        captured["create_price"] = params["price"]
+        return {"id": "ORD-NO"}
+
+    mock_client = MagicMock()
+    mock_client.orders.preview.side_effect = fake_preview
+    mock_client.orders.create.side_effect = fake_create
+    monkeypatch.setattr(polymarket_us_client, "_get_authenticated_client", lambda: mock_client)
+
+    resp = polymarket_us_client.place_maker_order("test-slug", "no", 0.99, 1)
+    assert resp == {"id": "ORD-NO"}
+    # price.value must be 1 - 0.99 = 0.01 (the YES side's quote for NO @ 0.99)
+    assert captured["price"]["value"] == "0.01"
+    assert captured["create_price"]["value"] == "0.01"
+
+
+def test_preview_order_no_side_sends_complement(monkeypatch):
+    """preview_order() sends 1-price for NO side (long-side price.value rule)."""
+    monkeypatch.setenv("POLYMARKET_KEY_ID", "dummy-key-id")
+    monkeypatch.setenv("POLYMARKET_SECRET_KEY", "dummy-secret-key")
+
+    captured = {}
+
+    def fake_preview(params):
+        captured["price"] = params["request"]["price"]
+        return {"order": {"state": "ORDER_STATE_PENDING_NEW"}}
+
+    mock_client = MagicMock()
+    mock_client.orders.preview.side_effect = fake_preview
+    monkeypatch.setattr(polymarket_us_client, "_get_authenticated_client", lambda: mock_client)
+
+    resp = polymarket_us_client.preview_order("test-slug", "no", 0.99, 1)
+    assert resp == {"order": {"state": "ORDER_STATE_PENDING_NEW"}}
+    assert captured["price"]["value"] == "0.01"

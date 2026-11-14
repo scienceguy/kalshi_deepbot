@@ -292,6 +292,18 @@ def _poly_amount(value: float) -> dict:
     return {"value": f"{value:.2f}", "currency": "USD"}
 
 
+def _poly_price(side: str, price_dollars: float) -> float:
+    """Convert a user-facing side price to the long-side (YES) price.
+
+    Polymarket US `price.value` always represents the long side's price.
+    Buying NO at price X means the YES token is priced at (1 - X), so
+    price.value = 1 - X. Buying YES at price X means price.value = X.
+    """
+    if side == "yes":
+        return price_dollars
+    return round(1.0 - price_dollars, 4)
+
+
 def preview_order(slug: str, side: str, price_dollars: float,
                   contracts: int) -> dict | None:
     """Validate an order against Polymarket US production order preview API.
@@ -306,7 +318,7 @@ def preview_order(slug: str, side: str, price_dollars: float,
         "marketSlug": slug,
         "intent": intent,
         "type": "ORDER_TYPE_LIMIT",
-        "price": _poly_amount(price_dollars),
+        "price": _poly_amount(_poly_price(side, price_dollars)),
         "quantity": contracts,
         "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
         "participateDontInitiate": True,   # fee-free maker
@@ -349,7 +361,7 @@ def place_maker_order(slug: str, side: str, price_dollars: float,
         "marketSlug": slug,
         "intent": intent,
         "type": "ORDER_TYPE_LIMIT",
-        "price": _poly_amount(price_dollars),
+        "price": _poly_amount(_poly_price(side, price_dollars)),
         "quantity": contracts,
         "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
         "participateDontInitiate": True,   # fee-free maker
