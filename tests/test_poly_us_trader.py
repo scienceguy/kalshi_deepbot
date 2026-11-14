@@ -14,14 +14,23 @@ def temp_trader(tmp_path):
     state_file = tmp_path / "state.json"
     ledger_file = tmp_path / "ledger.jsonl"
     with patch("poly_us_trader.STATE_FILE", state_file), patch("poly_us_trader.LEDGER_FILE", ledger_file):
-        trader = PolyUSPaperTrader(initial_cash=100.0)
+        trader = PolyUSPaperTrader(initial_cash=35.0, reset=True)
         yield trader
 
 
 def test_initial_state(temp_trader):
-    assert temp_trader.state["cash"] == 100.0
-    assert temp_trader.state["start_balance"] == 100.0
+    assert temp_trader.state["cash"] == 35.0
+    assert temp_trader.state["start_balance"] == 35.0
     assert temp_trader.state["positions"] == []
+
+
+def test_reset_state(temp_trader):
+    temp_trader.state["positions"] = [{"slug": "old", "cost": 10.0}]
+    state = temp_trader.reset_state(35.0)
+    assert state["start_balance"] == 35.0
+    assert state["cash"] == 35.0
+    assert state["positions"] == []
+    assert state["milestones_reached"] == [35.0]
 
 
 def test_evaluate_opportunity_finds_favorites(temp_trader):
@@ -68,7 +77,7 @@ def test_execute_paper_trade_updates_bankroll(temp_trader):
     temp_trader.preview_order = MagicMock(return_value=True)
     temp_trader.execute_paper_trade(opp)
     assert len(temp_trader.state["positions"]) == 1
-    assert temp_trader.state["cash"] < 100.0
+    assert temp_trader.state["cash"] < 35.0
     assert temp_trader.state["trades_count"] == 1
 
 
@@ -117,9 +126,9 @@ def test_opp_sorting_prioritizes_soonest_active():
 
 
 def test_cash_reserve_floor_blocks_overtrade(temp_trader):
-    # Total equity = $20 cash + $80 positions = $100
-    temp_trader.state["positions"] = [{"cost": 80.0, "slug": "p1"}]
-    temp_trader.state["cash"] = 20.0  # Cash is 20% of equity, below 30% floor
+    # Total equity = $7 cash + $28 positions = $35
+    temp_trader.state["positions"] = [{"cost": 28.0, "slug": "p1"}]
+    temp_trader.state["cash"] = 7.0  # Cash is 20% of equity, below 30% floor
     opp = {
         "slug": "test-market-low-cash",
         "question": "Sample",

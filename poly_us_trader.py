@@ -41,11 +41,14 @@ LEDGER_FILE = Path("local_data/poly_us_paper_ledger.jsonl")
 
 
 class PolyUSPaperTrader:
-    def __init__(self, initial_cash: float = 100.0):
+    def __init__(self, initial_cash: float = 35.0, reset: bool = False):
         self.state_file = STATE_FILE
         self.ledger_file = LEDGER_FILE
         self.max_open_positions = 25
-        self.state = self._load_state(initial_cash)
+        if reset:
+            self.state = self.reset_state(initial_cash)
+        else:
+            self.state = self._load_state(initial_cash)
         self.client = polymarket_us_client._get_client()
         self.auth_client = None
         try:
@@ -58,6 +61,28 @@ class PolyUSPaperTrader:
             log.info("Polymarket US gateway health check: OK")
         else:
             log.warning("Polymarket US gateway health check: FAILED or unreachable")
+
+    def reset_state(self, initial_cash: float = 35.0) -> dict:
+        """Reset paper bankroll to starting balance with clean position ledger."""
+        state = {
+            "start_balance": initial_cash,
+            "cash": initial_cash,
+            "positions": [],
+            "realized_pnl": 0.0,
+            "trades_count": 0,
+            "milestones_reached": [float(initial_cash)],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._save_state(state)
+        self.state = state
+        self._append_ledger({
+            "event": "reset",
+            "start_balance": initial_cash,
+            "cash": initial_cash,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        log.info("Reset Polymarket US paper state with initial bankroll $%.2f", initial_cash)
+        return state
 
     def _load_state(self, initial_cash: float) -> dict:
         if self.state_file.exists():
@@ -333,7 +358,7 @@ class PolyUSPaperTrader:
         available_cash = max(0.0, self.state["cash"] - min_cash_floor)
         max_trade_dollars = self.compute_tier_size(total_balance)
         max_trade_dollars = min(max_trade_dollars, available_cash, round(total_balance * 0.03, 2))
-        if max_trade_dollars < 1.00:
+        if max_trade_dollars < 0.90:  # Allow 1 contract at 92-99c on starting $35 bankrolls
             return False
 
         qty = int(max_trade_dollars / price)
@@ -482,8 +507,8 @@ class PolyUSPaperTrader:
         self.state["unrealized_pnl"] = round(total_unrealized, 4)
         self.state["total_pnl"] = total_pnl
 
-        # Track compounding milestones ($100, $1K, $10K, $100K, $1M)
-        milestones = [100.0, 1000.0, 10000.0, 100000.0, 1000000.0]
+        # Track compounding milestones ($35, $100, $1K, $10K, $100K, $1M)
+        milestones = [35.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0]
         reached = self.state.setdefault("milestones_reached", [])
         for m in milestones:
             if total_equity >= m and m not in reached:
@@ -546,32 +571,34 @@ class PolyUSPaperTrader:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Polymarket US Paper Trader ($100 Bankroll)")
+    parser = argparse.ArgumentParser(description="Polymarket US Paper Trader ($35 Bankroll)")
     parser.add_argument("--once", action="store_true", help="Run single cycle and exit")
     parser.add_argument("--interval", type=int, default=15, help="Seconds between cycles (default 15)")
     parser.add_argument("--status", action="store_true", help="Show current paper state and exit")
+    parser.add_argument("--reset", nargs="?", const=35.0, type=float, default=None, help="Reset paper bankroll to starting balance (default: 35.0)")
     args = parser.parse_args()
 
-    trader = PolyUSPaperTrader(initial_cash=100.0)
+    init_cash = args.reset if args.reset is not None else 35.0
+    trader = PolyUSPaperTrader(initial_cash=init_cash, reset=args.reset is not None)
 
     if args.status:
         state = trader.state
         positions = state.get("positions", [])
         total_mtm = sum(p.get("mtm_value", p.get("cost", 0.0)) for p in positions)
-        total_equity = round(state.get("cash", 100.0) + total_mtm, 2)
+        total_equity = round(state.get("cash", init_cash) + total_mtm, 2)
         realized = state.get("realized_pnl", 0.0)
         unrealized = state.get("unrealized_pnl", 0.0)
         total_pnl = state.get("total_pnl", round(realized + unrealized, 4))
         print("=== Polymarket US Paper Trader ===")
-        print(f"Start Balance:  ${state.get('start_balance', 100.0):.2f}")
+        print(f"Start Balance:  ${state.get('start_balance', init_cash):.2f}")
         print(f"Total Equity:   ${total_equity:.2f}")
-        print(f"Available Cash: ${state.get('cash', 100.0):.2f}")
+        print(f"Available Cash: ${state.get('cash', init_cash):.2f}")
         print(f"Open Positions: {len(positions)} (${total_mtm:.2f} MTM)")
         print(f"Realized P&L:   ${realized:+.2f}")
         print(f"Unrealized P&L: ${unrealized:+.2f}")
         print(f"Total Net P&L:  ${total_pnl:+.2f}")
         print(f"Trades Count:   {state.get('trades_count', 0)}")
-        print(f"Milestones Reached: {state.get('milestones_reached', [100.0])}")
+        print(f"Milestones Reached: {state.get('milestones_reached', [init_cash])}")
         for p in positions:
             cat = f"[{p['category']}] " if p.get("category") else ""
             cur_p = p.get("current_price", p["price"])
