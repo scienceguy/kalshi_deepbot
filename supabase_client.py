@@ -378,6 +378,7 @@ class SupabaseClient:
         """Insert a new order record (upsert on order_id)."""
         try:
             result = self._request("POST", "orders", data=order_data,
+                                   params={"on_conflict": "order_id"},
                                    extra_headers={"Prefer": "resolution=merge-duplicates"})
             return result is not None
         except Exception as e:
