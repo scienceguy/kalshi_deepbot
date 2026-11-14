@@ -254,6 +254,8 @@ class BotState:
         self.cycle_outcome: str = "pending"
         self.tradeable_markets_count: int = 0
         self.available_markets_count: int = 0
+        self.available_active_markets: int = 0
+        self.tradeable_brackets: int = 0
 
     def _pre_trade_check(self, sig, market, cash, exposure, total_value, client) -> bool:
         """Pre-trade risk checks (LLM evaluation moved to cycle() as pre-entry filter)."""
@@ -1423,8 +1425,10 @@ def cycle(client: KalshiClient):
     # Trend maker archived (operator decision 2026-11-10): engine kept on disk
     # but unreachable from the loop; `git revert <archive-sha>` restores the call.
     markets = find_active_markets(client)
-    state.tradeable_markets_count = len(markets)
-    state.available_markets_count = getattr(markets, "total_available", len(markets))
+    state.tradeable_brackets = len(markets)
+    state.available_active_markets = getattr(markets, "total_available", len(markets))
+    state.tradeable_markets_count = state.tradeable_brackets
+    state.available_markets_count = state.available_active_markets
     if markets:  # reviewed: reset consecutive no-tradeable counter when tradeable markets exist
         state.consecutive_no_tradeable_cycles = 0
         state.cycle_outcome = "evaluated"
@@ -1961,9 +1965,10 @@ def cycle(client: KalshiClient):
         log.warning("Balance unknown — skipping balance-dependent risk checks")
 
     log.info(
-        "%s | window $%.2f/%.2f | trades=%d cycles=%d",
+        "%s | window $%.2f/%.2f | active_markets=%d tradeable_brackets=%d | trades=%d cycles=%d",
         state.risk.summary(cash if cash_available else 0.0, mark_to_market_exposure),
         state.window["used"], state.window["budget"],
+        state.available_active_markets, state.tradeable_brackets,
         state.trades_placed, state.cycles,
     )
     if config.DRY_RUN and cash_available:
@@ -1987,6 +1992,8 @@ def cycle(client: KalshiClient):
         "cycle_outcome": state.cycle_outcome,
         "tradeable_markets_count": state.tradeable_markets_count,
         "available_markets_count": state.available_markets_count,
+        "available_active_markets": state.available_active_markets,
+        "tradeable_brackets": state.tradeable_brackets,
         "balance": cash if cash_available else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
