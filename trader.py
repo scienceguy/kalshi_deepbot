@@ -516,13 +516,22 @@ def _window_id(now: datetime) -> int:
     return int(now.timestamp() // (15 * 60))
 
 
-def _touch_window(now: datetime, cash: float):
-    """Reset per-window budget if a new 15m window begins."""
+def _touch_window(now: datetime, cash: float, exposure: float = 0.0):
+    """Reset per-window budget if a new 15m window begins.
+
+    Under $10 equity the budget uses tradable_balance_limit() (60% of equity,
+    leaving a 40% cash reserve) instead of 100% of equity — that was the
+    exposure cliff that let a micro-account deploy its entire bankroll on one
+    coin-flip. Above $10 the WINDOW_TRADE_PCT rule is unchanged.
+    """
     wid = _window_id(now)
     if state.window["id"] == wid:
         if cash > state.window["start_cash"] + 1e-9:
             state.window["start_cash"] = cash
-            state.window["budget"] = cash if cash < 10.0 else (cash * config.WINDOW_TRADE_PCT)
+            state.window["budget"] = (
+                tradable_balance_limit(cash, exposure) if cash < 10.0
+                else cash * config.WINDOW_TRADE_PCT
+            )
             state.window["reserved_cash"] = 0.0 if cash < 10.0 else max(0.0, cash * config.CASH_RESERVED_PCT)
             log.info(
                 "Window budget refreshed — cash grew to $%.2f, budget=$%.2f reserved=$%.2f",
@@ -550,9 +559,11 @@ def _touch_window(now: datetime, cash: float):
 
     state.window["id"] = wid
     state.window["start_cash"] = cash
-    # reviewed: on micro-balances under $10, window budget covers single contract bootstrap without reserving cash
+    # reviewed: on micro-balances under $10, cap the window budget at 60% of
+    # equity (tradable_balance_limit) leaving a 40% cash reserve instead of
+    # deploying 100% (the exposure cliff).
     if cash < 10.0:
-        state.window["budget"] = cash
+        state.window["budget"] = tradable_balance_limit(cash, exposure)
         state.window["reserved_cash"] = 0.0
     else:
         state.window["budget"] = cash * config.WINDOW_TRADE_PCT
@@ -2140,7 +2151,8 @@ def cycle(client: KalshiClient):
             except Exception:
                 live_exposure = 0.0
         state.risk.update_balance(total_account_cash, live_exposure, mark_to_market_exposure=live_exposure)
-        _touch_window(datetime.now(timezone.utc), total_account_cash + live_exposure)
+        now_dt = datetime.now(timezone.utc)
+        _touch_window(now_dt, total_account_cash, live_exposure)
 
     # Reset daily order counter on new day
     today = datetime.now(timezone.utc).date().isoformat()
@@ -2463,7 +2475,11 @@ def cycle(client: KalshiClient):
         oid = (resp.get("order") or {}).get("order_id") or resp.get("order_id", "")
         if oid:
             placed += 1
-            state.trades_placed += 1
+            # trades_placed counts filled trades (recorded once in
+            # _record_filled_order), not placement attempts. Counting placement
+            # too double-counts a dry-run place+fill in the same cycle and
+            # diverges from live; reconciliation rebuilds this counter from
+            # filled/settled orders.
             state.window["trades_placed_in_window"] = state.window.get("trades_placed_in_window", 0) + 1
             log.info(
                 "🎯 PLACED TRADE: %s %s %.1fx @ %dc ($%.2f) order_id=%s (Signal: %s)",
