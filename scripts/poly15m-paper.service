@@ -1,0 +1,16 @@
+[Unit]
+Description=Polymarket 15m crypto PAPER trader (fair-value gate, read-only)
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/superbot
+Environment=PYTHONPATH=/opt/superbot
+Environment=POLY_TF=15m
+ExecStart=/opt/superbot/.venv/bin/python scripts/poly5m_paper.py --interval 15 --margin 0.03 --min_elapsed 300 --coins btc,eth,sol,doge,hype,xrp,bnb
+StandardOutput=append:/opt/superbot/poly15m_paper.log
+StandardError=append:/opt/superbot/poly15m_paper.log
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
