@@ -2369,8 +2369,9 @@ def main():
              (config.PAPER_PER_TRADE_PCT if config.DRY_RUN else config.PER_TRADE_PCT) * 100,
              config.DRAWDOWN_HALT_PCT * 100,
              " (paper — dry runs fill only when the live book crosses the resting price and settle for real)" if config.DRY_RUN else "")
+    llm_active = bool(config.NVIDIA_API_KEY or getattr(config, "GROQ_API_KEY", ""))
     log.info("LLM eval: %s | Supabase: %s",
-             "enabled (NVIDIA)" if config.NVIDIA_API_KEY else "disabled",
+             "enabled (Consensus Quorum)" if llm_active else "disabled",
              "enabled" if get_supabase_client().enabled else "disabled")
     # reviewed: startup-only warning; fails-open only when the LLM is actually
     # wired (NVIDIA key present) and the operator left fail-open on

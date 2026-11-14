@@ -8,6 +8,7 @@ Consolidation strategy: take the best-performing parameters from each bot's
 backtests, with environment-variable overrides for live tuning.
 """
 
+import json
 import logging
 import os
 import socket
@@ -485,10 +486,23 @@ CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 20)
 # ═════════════════════════════════════════════════════════════════════
 # LLM (optional, Vertex AI + NVIDIA + free provider fallback)
 # ═════════════════════════════════════════════════════════════════════
+def _resolve_secret_key(name: str) -> str:
+    val = os.environ.get(name, "")
+    if val:
+        return val
+    bw_file = Path.home() / ".secrets" / "bw" / f"{name.lower()}.json"
+    if bw_file.exists():
+        try:
+            return json.loads(bw_file.read_text()).get("value", "").strip()
+        except Exception:
+            pass
+    return ""
+
 VERTEX_PROJECT_ID = os.environ.get("VERTEX_PROJECT_ID", "project-ba3748e7-0d3a-4268-b7c")
 VERTEX_LOCATION = os.environ.get("VERTEX_LOCATION", "global")
 VERTEX_MODEL = os.environ.get("VERTEX_MODEL", "google/gemini-3.6-flash")
-NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
+NVIDIA_API_KEY = _resolve_secret_key("NVIDIA_API_KEY")
+GROQ_API_KEY = _resolve_secret_key("GROQ_API_KEY")
 NVIDIA_MODEL = os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
 LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", True)
 LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.70)
