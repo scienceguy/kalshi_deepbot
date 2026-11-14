@@ -217,6 +217,19 @@ LAYERS = [
         ],
     },
     {
+        "name": "groq",
+        "env_key": "GROQ_API_KEY",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "qwen/qwen3.8-27b",
+        "chat_path": "/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "max_tokens": 256,
+        "free_models": [
+            "qwen/qwen3.8-27b",
+        ],
+    },
+    {
         "name": "nvidia_lightning",
         "env_key": "NVIDIA_API_KEY",
         "base_url": "https://integrate.api.nvidia.com/v1",

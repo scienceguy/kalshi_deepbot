@@ -501,7 +501,7 @@ LLM_EVAL_ENFORCE = _env_bool("LLM_EVAL_ENFORCE", True)
 # Deadline for the full LLM evaluation so a slow/hung LLM can't
 # blow the cycle timeout. Must be < CYCLE_TIMEOUT_SECONDS.
 LLM_EVAL_DEADLINE_SECONDS = _env_float("LLM_EVAL_DEADLINE_SECONDS", 25.0)
-LLM_CONSENSUS_QUORUM = _env_int("LLM_CONSENSUS_QUORUM", 2)  # number of models averaged for consensus
+LLM_CONSENSUS_QUORUM = _env_int("LLM_CONSENSUS_QUORUM", 3)  # number of models averaged for consensus (Vertex + NVIDIA + Groq)
 # LLM rate limiting
 LLM_REQUEST_TIMEOUT = _env_int("LLM_REQUEST_TIMEOUT", 20)
 LLM_MAX_RETRIES = _env_int("LLM_MAX_RETRIES", 2)
