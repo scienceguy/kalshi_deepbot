@@ -429,7 +429,18 @@ def _evaluate_common(
     risk_ = fees.buy_cash_out(n, ep / 100.0, taker=config.AGGRESSIVE_FILL)
 
     # Confidence scoring (from kalshi_live_bot)
-    if source in ("SKEW", "TREND", "TAKER_FAVOURITE"):
+    # reviewed: compute taker favourite confidence from distance from 50c coinflip
+    if source == "TAKER_FAVOURITE":
+        # Taker favourite confidence scales with distance from 50c coinflip
+        confidence = min(1.0, max(0.0, strength / 50.0))
+        # reviewed: check confidence against configured minimum confidence threshold
+        if confidence < config.MIN_CONFIDENCE:
+            return _pass(f"Confidence {confidence:.2f} below {config.MIN_CONFIDENCE:.2f}")
+        # reviewed: ensure YES buys are allowed before approving bullish signal
+        if bullish and not config.ALLOW_YES_BUYS:
+            return _pass(f"ALLOW_YES_BUYS=false blocks YES {source} signal")
+    # reviewed: evaluate legacy SKEW and TREND confidence with mid distance
+    elif source in ("SKEW", "TREND"):
         mid = market.mid_yes
         mid_distance = max(0.0, 1.0 - abs(mid - config.MID_TARGET_CENTS) / max(1.0, config.MID_TOLERANCE_CENTS))
         strength_score = min(1.0, strength / config.CONFIDENCE_STRENGTH_SCALE)
@@ -440,7 +451,7 @@ def _evaluate_common(
         )
         if confidence < config.MIN_CONFIDENCE:
             return _pass(f"Confidence {confidence:.2f} below {config.MIN_CONFIDENCE:.2f}")
-        # ALLOW_YES_BUYS gate for SKEW/TREND/TAKER_FAVOURITE sources
+        # ALLOW_YES_BUYS gate for SKEW/TREND sources
         if bullish and not config.ALLOW_YES_BUYS:
             return _pass(f"ALLOW_YES_BUYS=false blocks YES {source} signal")
     else:
