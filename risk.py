@@ -206,7 +206,8 @@ class RiskManager:
         if portfolio < 10.0 and resting_orders_value == 0.0:
             exposure_room = max(0.0, cash)
             cash_room = max(0.0, cash)
-            per_trade_cap = max(0.0, cash)
+            # reviewed: Half-Kelly sizing above $0.50 prevents single-trade wipeouts while allowing micro-trades below $0.50
+            per_trade_cap = max(0.0, cash * 0.50 if cash >= 0.50 else cash)
         else:
             # reviewed: use mark-to-market ceiling when present on standard sizing
             if mark_to_market_exposure is not None:
