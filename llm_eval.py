@@ -38,9 +38,9 @@ log = logging.getLogger("llm_eval")
 
 # ── Timeout and retry config ─────────────────────────────────────────────────
 # Uses config._env_int / config._env_float (deduped — do not redefine here).
-REQUEST_TIMEOUT = config._env_int("LLM_REQUEST_TIMEOUT", 20)
-MAX_RETRIES_PER_LAYER = config._env_int("LLM_MAX_RETRIES", 2)
-BACKOFF_BASE = config._env_float("LLM_BACKOFF_BASE", 1.0)
+REQUEST_TIMEOUT = config._env_int("LLM_REQUEST_TIMEOUT", 5)
+MAX_RETRIES_PER_LAYER = config._env_int("LLM_MAX_RETRIES", 1)
+BACKOFF_BASE = config._env_float("LLM_BACKOFF_BASE", 0.5)
 
 
 def _resolve_api_key(env_key: str) -> str:
@@ -180,89 +180,54 @@ def _vertex_base_url() -> str:
 
 LAYERS = [
     {
-        "name": "nvidia",
-        "env_key": "NVIDIA_API_KEY",
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "model": os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b"),
+        "name": "vertex_ai",
+        "env_key": None,  # OAuth2 ADC token via _resolve_vertex_token()
+        "auth_type": "vertex_adc",
+        "base_url": _vertex_base_url(),
+        "model": os.environ.get("VERTEX_MODEL", "google/gemini-3.6-flash"),
         "chat_path": "/chat/completions",
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
+        "max_tokens": 512,
+        "extra_payload": {
+            "extra_body": {
+                "google": {
+                    "thinking_config": {
+                        "thinking_budget": 0,
+                    }
+                }
+            }
+        },
+        "free_models": [
+            "google/gemini-3.6-flash",
+            "google/gemini-3.5-flash",
+        ],
+    },
+    {
+        "name": "nvidia_bolt",
+        "env_key": "NVIDIA_API_KEY",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "model": "nvidia/nemotron-3.5-bolt-e4b",
+        "chat_path": "/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "max_tokens": 256,
         "free_models": [
             "nvidia/nemotron-3.5-bolt-e4b",
         ],
     },
     {
-        "name": "openrouter",
-        "env_key": "OPENROUTER_API_KEY",
-        "base_url": os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-        "model": os.environ.get("OPENROUTER_MODEL", "particle-ai/particle-1:free"),
+        "name": "nvidia_lightning",
+        "env_key": "NVIDIA_API_KEY",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
         "chat_path": "/chat/completions",
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
+        "max_tokens": 600,
         "free_models": [
-            "particle-ai/particle-1:free",
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
         ],
-    },
-    {
-        "name": "dsh_our_free_model",
-        "env_key": "DSH_API_KEY",
-        "default_key": "ofm-uXQa4m0QYkzsfPsZ-piqPvZsuskHq6MZ",
-        "base_url": os.environ.get("DSH_BASE_URL", "http://127.0.0.1:18900"),
-        "model": os.environ.get("DSH_MODEL", "kilo-auto/free"),
-        "chat_path": "/v1/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "free_models": ["kilo-auto/free"],
-    },
-    {
-        "name": "groq",
-        "env_key": "GROQ_API_KEY",
-        "base_url": "https://api.groq.com/openai/v1",
-        "model": os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
-        "chat_path": "/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "free_models": ["llama-3.1-8b-instant"],
-    },
-    {
-        "name": "deepseek",
-        "env_key": "DEEPSEEK_API_KEY",
-        "base_url": "https://api.deepseek.com/v1",
-        "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
-        "chat_path": "/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "free_models": ["deepseek-chat"],
-    },
-    {
-        "name": "openai",
-        "env_key": "OPENAI_API_KEY",
-        "base_url": "https://api.openai.com/v1",
-        "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-        "chat_path": "/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "free_models": ["gpt-4o-mini"],
-    },
-    {
-        "name": "gemini",
-        "env_key": "GEMINI_API_KEY",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "model": os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
-        "chat_path": "/openai/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "free_models": ["gemini-2.5-flash"],
-    },
-    {
-        "name": "dsh_our_free_model",
-        "env_key": None,  # local gateway, no key
-        "base_url": os.environ.get("DSH_BASE_URL", "http://127.0.0.1:18900"),
-        "model": os.environ.get("DSH_MODEL", "free-model"),
-        "chat_path": "/v1/chat/completions",
-        "auth_header": None,
-        "auth_prefix": None,
-        "free_models": ["free-model", "kimi-k3-dsh", "deepseek-v4.1-flash-free"],
     },
 ]
 
@@ -462,7 +427,12 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
                 if not choices:
                     continue
                 msg = choices[0].get("message", {})
-                content = msg.get("content") or msg.get("reasoning") or ""
+                content = (
+                    msg.get("content")
+                    or msg.get("reasoning_content")
+                    or msg.get("reasoning")
+                    or ""
+                )
                 result = _parse_llm_response(content)
                 if result:
                     result["layer"] = layer["name"]

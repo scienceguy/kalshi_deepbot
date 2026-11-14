@@ -1909,8 +1909,10 @@ def cycle(client: KalshiClient):
         log.warning("🛑 Risk halt active — no new entries")
         return
 
-    if cash_available and cash < 1.00:
-        log.warning("Cash $%.2f below minimum $1.00", cash)
+    min_cash_req = config.PAPER_MIN_CASH_ABSOLUTE if config.DRY_RUN else config.MIN_CASH_ABSOLUTE
+    # reviewed: check minimum cash floor dynamically from config
+    if cash_available and cash < min_cash_req:
+        log.warning("Cash $%.2f below minimum $%.2f", cash, min_cash_req)
         return
 
     if config.DRY_RUN:
