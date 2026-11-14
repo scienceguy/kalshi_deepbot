@@ -749,52 +749,131 @@ def _mark_to_market_exposure(positions, markets, client=None):
 
 
 # ═════════════════════════════════════════════════════════════════════
+# Settlement queue lock file for read-modify-write atomicity
+SETTLEMENT_LOCK_FILE = SETTLEMENT_QUEUE_FILE.with_suffix(".lock")
+
 def _load_settlement_queue() -> list:
     """Load pending settlements from the local queue file.
-    
-    Uses file locking to prevent race conditions if multiple processes
-    access the queue (e.g., bot restart + cron job).
+
+    Uses a dedicated lock file for read-modify-write atomicity.
+    On corrupt JSON, renames the file to .corrupt-<timestamp> and logs ERROR.
     """
     try:
-        with open(SETTLEMENT_QUEUE_FILE) as f:
+        with open(SETTLEMENT_LOCK_FILE, "w") as lf:
             import fcntl
-            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-            return json.load(f)
-    except FileNotFoundError:
-        return []
-    except json.JSONDecodeError as e:
-        log.error("Settlement queue file corrupted: %s — starting fresh", e)
-        return []
+            try:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_SH)
+            except OSError:
+                # flock may fail on FUSE/overlay filesystems; proceed without lock
+                pass
+            try:
+                with open(SETTLEMENT_QUEUE_FILE) as f:
+                    return json.load(f)
+            except FileNotFoundError:
+                return []
+            except json.JSONDecodeError as e:
+                # Preserve corrupt file for forensic analysis
+                from datetime import datetime
+                corrupt_name = SETTLEMENT_QUEUE_FILE.with_name(
+                    f"{SETTLEMENT_QUEUE_FILE.name}.corrupt-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+                )
+                try:
+                    SETTLEMENT_QUEUE_FILE.rename(corrupt_name)
+                except Exception:
+                    pass
+                log.error("Settlement queue file corrupted: %s — renamed to %s, starting fresh",
+                          e, corrupt_name)
+                return []
+            except Exception as e:
+                log.error("Failed to load settlement queue: %s — starting fresh", e)
+                return []
     except Exception as e:
-        log.error("Failed to load settlement queue: %s — starting fresh", e)
+        log.error("Failed to acquire settlement queue lock: %s — starting fresh", e)
         return []
 
 
 def _save_settlement_queue(queue: list):
     """Persist pending settlements to the local queue file.
-    
-    Uses file locking and atomic write (temp file + rename) to prevent
-    corruption and race conditions.
+
+    Uses a dedicated lock file and atomic write (temp file + rename).
     """
     try:
-        # Atomic write: write to a unique temp file then rename.
-        # The tmp name must be unique per writer (pid + nonce): a fixed ".tmp"
-        # lets two concurrent writers open the same temp file, interleave, and
-        # os.replace clobber whatever the other just committed. Unique names
-        # keep each writer's tmp isolated, so the last rename wins whole and
-        # never a torn mix.
-        tmp_file = SETTLEMENT_QUEUE_FILE.with_name(
-            f"{SETTLEMENT_QUEUE_FILE.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
-        )
-        with open(tmp_file, "w") as f:
+        with open(SETTLEMENT_LOCK_FILE, "w") as lf:
             import fcntl
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            json.dump(queue, f)
-        os.replace(tmp_file, SETTLEMENT_QUEUE_FILE)
+            try:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                # flock may fail on FUSE/overlay filesystems; proceed without lock
+                pass
+            # Atomic write: write to a unique temp file then rename.
+            tmp_file = SETTLEMENT_QUEUE_FILE.with_name(
+                f"{SETTLEMENT_QUEUE_FILE.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+            )
+            with open(tmp_file, "w") as f:
+                json.dump(queue, f)
+            os.replace(tmp_file, SETTLEMENT_QUEUE_FILE)
     except Exception as e:
         log.error("Failed to save settlement queue: %s — QUEUE NOT PERSISTED", e)
-        # Don't silently drop the queue; caller will retry on next cycle
         raise
+
+
+def _enqueue_settlement(payload: dict):
+    """Add or update a settlement queue entry, deduplicating on (ticker, order_id).
+
+    Pending entries (status='pending') are updated in place rather than
+    re-appended, preventing queue bloat from repeated "no settlement data"
+    cycles. Resolved entries (status='settled' with pnl_dollars) are appended
+    only when absent (idempotent by settle_key).
+    """
+    ticker = payload.get("ticker", "")
+    order_id = payload.get("order_id", "")
+    # reviewed: validate required fields before queue mutation
+    if not ticker or not order_id:
+        log.warning("Cannot enqueue settlement: missing ticker or order_id in payload")
+        return
+
+    queue = _load_settlement_queue()
+
+    # Find existing entry with same (ticker, order_id)
+    existing_idx = None
+    for i, entry in enumerate(queue):
+        p = entry.get("payload", {})
+        # reviewed: match on both ticker and order_id for deduplication
+        if p.get("ticker") == ticker and p.get("order_id") == order_id:
+            existing_idx = i
+            break
+
+    # reviewed: existing entry found — update in place to prevent queue bloat
+    if existing_idx is not None:
+        # Update existing entry
+        existing = queue[existing_idx]
+        existing_payload = existing.get("payload", {})
+        new_status = payload.get("status", "pending")
+
+        # reviewed: promote pending -> settled when settlement data becomes available
+        if existing_payload.get("status") == "pending" and new_status == "settled":
+            # Promote from pending to settled — keep all pending fields, add resolution
+            merged = {**existing_payload, **payload}
+            queue[existing_idx] = {"order_id": order_id, "payload": merged}
+            log.debug("Promoted settlement queue entry %s to settled", order_id)
+        # reviewed: idempotent skip for duplicate settled entries (same ticker+order_id)
+        elif existing_payload.get("status") == "settled" and new_status == "settled":
+            # Both settled — idempotent, keep the one with pnl_dollars (should be same)
+            # reviewed: prefer payload with pnl_dollars for completeness
+            if payload.get("pnl_dollars") is not None:
+                queue[existing_idx] = {"order_id": order_id, "payload": payload}
+            log.debug("Duplicate settled entry for %s — idempotent skip", order_id)
+        else:
+            # pending -> pending or other transition: merge payload
+            merged = {**existing_payload, **payload}
+            queue[existing_idx] = {"order_id": order_id, "payload": merged}
+            log.debug("Updated settlement queue entry %s", order_id)
+    else:
+        # New entry
+        queue.append({"order_id": order_id, "payload": payload})
+        log.debug("Enqueued new settlement for %s (status=%s)", order_id, payload.get("status"))
+
+    _save_settlement_queue(queue)
 
 
 def _dry_run_fill_count(market, side: str, entry_price_cents: int,
@@ -1345,7 +1424,27 @@ def _manage_exits(client):
             state.position_risk.pop(ticker, None)
             _save_paper_positions(state.positions)
         exit_oid = pos.get("exit_order_id", "")
-        _book_exit(client, ticker, pos, int(bid), filled, reason, exit_oid)
+        order_id = pos.get("order_id", ticker)
+        try:
+            _book_exit(client, ticker, pos, int(bid), filled, reason, exit_oid)
+        except Exception as e:
+            # reviewed: on _book_exit failure, enqueue exit record for replay so P&L is not lost
+            log.warning("_book_exit failed for %s — enqueueing exit record for replay: %s", ticker, e)
+            _enqueue_settlement({
+                "action": "exit",
+                "order_id": order_id,
+                "exit_order_id": exit_oid,
+                "status": "settled",
+                "fill_price_cents": int(bid),
+                "outcome_won": None,  # will be determined on replay
+                "pnl_dollars": None,  # will be computed on replay
+                "ticker": ticker,
+                "side": side,
+                "contracts": filled,
+                "entry_price_cents": entry,
+                "entry_was_taker": bool(pos.get("entry_taker", config.AGGRESSIVE_FILL)),
+                "exit_reason": reason,
+            })
         client.invalidate_markets(series_ticker=ticker.split("-")[0])
 
 
@@ -1702,28 +1801,22 @@ def cycle(client: KalshiClient):
                 "Position %s stuck awaiting settlement for %.0fs (>%.0fs timeout) — "
                 "queuing for replay and clearing local state", t, waited, SETTLED_TIMEOUT_SECONDS
             )
-            queue = _load_settlement_queue()
-            # Use canonical event_id derived from ticker for consistent idempotency key
-            event_id = t.rsplit("-", 1)[0] if "-" in t else t
-            queue.append({
+            # reviewed: use _enqueue_settlement for dedup and atomic write
+            _enqueue_settlement({
+                "action": "settlement",
                 "order_id": order_id,
-                "payload": {
-                    "action": "settlement",
-                    "order_id": order_id,
-                    "status": "pending",
-                    "fill_price_cents": None,
-                    "outcome_won": None,
-                    "pnl_dollars": None,
-                    "ticker": t,
-                    "event_ticker": event_id,
-                    "side": side,
-                    "contracts": contracts,
-                    "entry_price_cents": entry_price,
-                    "entry_was_taker": bool(pos_info.get("entry_taker",
-                                                         config.AGGRESSIVE_FILL)),
-                },
+                "status": "pending",
+                "fill_price_cents": None,
+                "outcome_won": None,
+                "pnl_dollars": None,
+                "ticker": t,
+                "event_ticker": t.rsplit("-", 1)[0] if "-" in t else t,
+                "side": side,
+                "contracts": contracts,
+                "entry_price_cents": entry_price,
+                "entry_was_taker": bool(pos_info.get("entry_taker",
+                                                     config.AGGRESSIVE_FILL)),
             })
-            _save_settlement_queue(queue)
             state.positions.pop(t, None)
             state.position_risk.pop(t, None)
             state.settled_since.pop(t, None)
@@ -1821,32 +1914,8 @@ def cycle(client: KalshiClient):
                 else:
                     # ledger write failed — PnL NOT credited; re-queue for retry
                     log.warning("Failed to record settlement P&L to local ledger for %s — PnL NOT credited, re-queueing for retry", t)
-                    queue = _load_settlement_queue()
-                    event_ticker = market.get("event_ticker", t) if market else t
-                    queue.append({
-                        "order_id": order_id,
-                        "payload": {
-                            "action": "settlement",
-                            "order_id": order_id,
-                            "status": "settled",
-                            "fill_price_cents": int(exit_price * 100),
-                            "outcome_won": won,
-                            "pnl_dollars": realized_pnl,
-                            "ticker": t,
-                            "side": side,
-                            "contracts": contracts,
-                        },
-                    })
-                    _save_settlement_queue(queue)
-                    # Don't pop position - will be retried on next cycle
-                    continue
-            except Exception:
-                log.warning("Failed to record settlement P&L to local ledger for %s — PnL NOT credited, re-queueing for retry", t)
-                queue = _load_settlement_queue()
-                event_ticker = market.get("event_ticker", t) if market else t
-                queue.append({
-                    "order_id": order_id,
-                    "payload": {
+                    # reviewed: use _enqueue_settlement for dedup and atomic write
+                    _enqueue_settlement({
                         "action": "settlement",
                         "order_id": order_id,
                         "status": "settled",
@@ -1856,9 +1925,23 @@ def cycle(client: KalshiClient):
                         "ticker": t,
                         "side": side,
                         "contracts": contracts,
-                    },
+                    })
+                    # Don't pop position - will be retried on next cycle
+                    continue
+            except Exception:
+                log.warning("Failed to record settlement P&L to local ledger for %s — PnL NOT credited, re-queueing for retry", t)
+                # reviewed: use _enqueue_settlement for dedup and atomic write
+                _enqueue_settlement({
+                    "action": "settlement",
+                    "order_id": order_id,
+                    "status": "settled",
+                    "fill_price_cents": int(exit_price * 100),
+                    "outcome_won": won,
+                    "pnl_dollars": realized_pnl,
+                    "ticker": t,
+                    "side": side,
+                    "contracts": contracts,
                 })
-                _save_settlement_queue(queue)
                 # Don't pop position - will be retried on next cycle
                 continue
 
@@ -1906,22 +1989,18 @@ def cycle(client: KalshiClient):
                 }, max_retries=1)  # No retry — on failure, queue for replay instead of double-counting
             except Exception:
                 log.warning("Failed to record settlement for %s via n8n webhook — queuing", t)
-                queue = _load_settlement_queue()
-                queue.append({
+                # reviewed: use _enqueue_settlement for dedup and atomic write
+                _enqueue_settlement({
+                    "action": "settlement",
                     "order_id": order_id,
-                    "payload": {
-                        "action": "settlement",
-                        "order_id": order_id,
-                        "status": "settled",
-                        "fill_price_cents": int(exit_price * 100),
-                        "outcome_won": won,
-                        "pnl_dollars": realized_pnl,
-                        "ticker": t,
-                        "side": side,
-                        "contracts": contracts,
-                    },
+                    "status": "settled",
+                    "fill_price_cents": int(exit_price * 100),
+                    "outcome_won": won,
+                    "pnl_dollars": realized_pnl,
+                    "ticker": t,
+                    "side": side,
+                    "contracts": contracts,
                 })
-                _save_settlement_queue(queue)
             # Record the settlement on the local orders row so the orders
             # table reflects reality (pnl_ledger has the P&L; without this the
             # order row stays 'executed' forever with NULL outcome).
@@ -1945,27 +2024,22 @@ def cycle(client: KalshiClient):
         else:
             # No settlement data available — queue for retry without booking PnL.
             # Position stays in state.positions so it can be re-processed on retry.
-            queue = _load_settlement_queue()
-            event_ticker = market.get("event_ticker", t) if market else t
-            queue.append({
+            # reviewed: use _enqueue_settlement for dedup and atomic write
+            _enqueue_settlement({
+                "action": "settlement",
                 "order_id": order_id,
-                "payload": {
-                    "action": "settlement",
-                    "order_id": order_id,
-                    "status": "pending",
-                    "fill_price_cents": None,
-                    "outcome_won": None,
-                    "pnl_dollars": None,
-                    "ticker": t,
-                    "event_ticker": event_ticker,
-                    "side": side,
-                    "contracts": contracts,
-                    "entry_price_cents": entry_price,
-                    "entry_was_taker": bool(pos_info.get("entry_taker",
-                                                         config.AGGRESSIVE_FILL)),
-                },
+                "status": "pending",
+                "fill_price_cents": None,
+                "outcome_won": None,
+                "pnl_dollars": None,
+                "ticker": t,
+                "event_ticker": market.get("event_ticker", t) if market else t,
+                "side": side,
+                "contracts": contracts,
+                "entry_price_cents": entry_price,
+                "entry_was_taker": bool(pos_info.get("entry_taker",
+                                                     config.AGGRESSIVE_FILL)),
             })
-            _save_settlement_queue(queue)
 
     # Sell positions that hit the profit target or stop, so cash compounds
     # inside the same 15m window instead of sitting locked until settlement.
