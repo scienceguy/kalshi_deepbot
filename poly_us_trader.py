@@ -49,6 +49,59 @@ LOCK_FILE = Path(__file__).resolve().parent / ".lock_poly"
 log = logging.getLogger("poly_us_trader")
 
 
+def market_end_dt(market: dict):
+    """Single source of truth for a market's end time (R5).
+
+    ``assetPriceTerms.windowEnd`` (event-window markets) wins over ``endDate``.
+    ``gameStartTime`` is a game's START, never an end, so it is deliberately
+    not consulted. Returns None when no parseable end time exists.
+    """
+    terms = market.get("assetPriceTerms") or {}
+    for candidate in (terms.get("windowEnd"), market.get("endDate")):
+        if not candidate:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(candidate).replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _book_yes_prices(book: dict):
+    """(yes_bid, yes_ask) from a Polymarket US BBO response; (None, None) if unreadable."""
+    if not isinstance(book, dict):
+        return None, None
+    bbo = book.get("bbo") if isinstance(book.get("bbo"), dict) else book
+    try:
+        bid = float(bbo["yes_bid"])
+        ask = float(bbo["yes_ask"])
+        return bid, ask
+    except (KeyError, TypeError, ValueError):
+        return None, None
+
+
+def _slippage_cents() -> float:
+    return float(getattr(config, "PM_SLIPPAGE_TICKS", 1)) * 1.0
+
+
+def _fee_cents(price_dollars: float) -> float:
+    return price_dollars * 100.0 * float(getattr(config, "PM_FEE_BPS", 0.0)) / 10_000.0
+
+
+def _fill_buy_price(displayed: float, ask) -> float:
+    """Paper fill at the best ask (displayed mark when the book is unreadable)."""
+    return round(ask if ask is not None else displayed, 4)
+
+
+def _fill_sell_price(displayed: float, bid) -> float:
+    return round(bid if bid is not None else displayed, 4)
+
+
+def _fee_dollars(notional: float) -> float:
+    return round(notional * float(getattr(config, "PM_FEE_BPS", 0.0)) / 10_000.0, 4)
+
+
 class PolyUSPaperTrader:
     def __init__(self, initial_cash: float = 35.0, reset: bool = False, live_mode: bool = False):
         self.state_file = STATE_FILE
@@ -330,15 +383,9 @@ class PolyUSPaperTrader:
                 if status in ("RESOLVED", "RESOLVING", "CLOSED"):
                     is_closed = True
                 else:
-                    terms = m_info.get("assetPriceTerms") or {}
-                    end_date_str = terms.get("windowEnd") or m_info.get("endDate") or m_info.get("gameStartTime")
-                    if end_date_str:
-                        try:
-                            end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-                            if now >= end_dt:
-                                is_closed = True
-                        except Exception:
-                            pass
+                    end_dt = market_end_dt(m_info)
+                    if end_dt and now >= end_dt:
+                        is_closed = True
 
             # If market is still actively trading and not past end date, keep holding
             if not is_closed and m_info is not None:
@@ -407,6 +454,7 @@ class PolyUSPaperTrader:
                 "payout": total_payout,
                 "pnl": pnl,
                 "cash_after": self.state["cash"],
+                "source": pos.get("source", ""),
                 "timestamp": now.isoformat(),
             })
             continue
@@ -421,14 +469,11 @@ class PolyUSPaperTrader:
             return None
 
         terms = market.get("assetPriceTerms") or {}
-        end_date = terms.get("windowEnd") or market.get("endDate") or market.get("gameStartTime") or ""
+        end_dt = market_end_dt(market)
+        end_date = end_dt.isoformat() if end_dt else ""
         hours_left = None
-        if end_date:
-            try:
-                end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
-                hours_left = (end_dt - datetime.now(timezone.utc)).total_seconds() / 3600.0
-            except Exception:
-                pass
+        if end_dt:
+            hours_left = (end_dt - datetime.now(timezone.utc)).total_seconds() / 3600.0
 
         # Only trade markets expiring within max_hours_to_expiry (default 24h) and not already expired
         max_h = getattr(self, "max_hours_to_expiry", 24.0)
@@ -442,24 +487,29 @@ class PolyUSPaperTrader:
 
         # 1. Evaluate cross-venue spot price & distributional fair value edge
         cv_edge = crossvenue_edge.evaluate_crossvenue_edge(market)
-        # High-EV favorite hurdle: ref_prob >= MODEL_PROB_MIN (0.96) and favorite band (92c-99c)
+        # High-EV favorite hurdle: ref_prob >= MODEL_PROB_MIN (0.96) and favorite band (92c-99c).
+        # Edge must clear modelled costs (fee + slippage + margin) — the raw 0.5c hurdle
+        # was below any plausible spread/model error (R5).
         if (cv_edge
-                and cv_edge["best_edge_cents"] >= 0.5
                 and cv_edge["ref_prob"] >= getattr(config, "MODEL_PROB_MIN", 0.96)
                 and 0.92 <= cv_edge["best_price"] <= 0.99):
-            return {
-                "slug": slug,
-                "question": market.get("question", slug),
-                "side": cv_edge["best_side"],
-                "price": cv_edge["best_price"],
-                "category": "crypto",
-                "cross_edge_cents": cv_edge["best_edge_cents"],
-                "ref_prob": cv_edge["ref_prob"],
-                "spot": cv_edge["spot"],
-                "strike": cv_edge["strike"],
-                "end_date": end_date,
-                "hours_left": hours_left,
-            }
+            modelled_cost_cents = (_fee_cents(cv_edge["best_price"]) + _slippage_cents()
+                                   + float(getattr(config, "PM_EDGE_MARGIN_CENTS", 0.5)))
+            if cv_edge["best_edge_cents"] >= modelled_cost_cents:
+                return {
+                    "slug": slug,
+                    "question": market.get("question", slug),
+                    "side": cv_edge["best_side"],
+                    "price": cv_edge["best_price"],
+                    "category": "crypto",
+                    "cross_edge_cents": cv_edge["best_edge_cents"],
+                    "ref_prob": cv_edge["ref_prob"],
+                    "spot": cv_edge["spot"],
+                    "strike": cv_edge["strike"],
+                    "end_date": end_date,
+                    "hours_left": hours_left,
+                    "source": "crossvenue",
+                }
 
         long_p = None
         short_p = None
@@ -610,6 +660,7 @@ class PolyUSPaperTrader:
             "strike": strike_val,
             "end_date": end_date,
             "hours_left": hours_left,
+            "source": "fallback",
         }
 
     @staticmethod
@@ -669,12 +720,25 @@ class PolyUSPaperTrader:
         if qty < 1:
             return False
 
-        cost = round(qty * price, 4)
+        # Model the paper fill at the venue's best ask (+ slippage ticks), not the
+        # displayed mark (R5). Buying NO pays the NO ask = 1 - YES bid.
+        try:
+            book = polymarket_us_client.get_market_book(slug)
+        except Exception:
+            book = {}
+        yes_bid, yes_ask = _book_yes_prices(book)
+        if side == "yes":
+            ask = yes_ask
+        else:
+            ask = round(1.0 - yes_bid, 4) if yes_bid is not None else None
+        fill_price = _fill_buy_price(price, ask)
+        entry_fee = _fee_dollars(qty * fill_price)
+        cost = round(qty * fill_price + entry_fee, 4)
         if cost > available_window_budget or cost > available_cash:
             return False
 
-        # Validate order syntax with Polymarket US production API
-        valid = self.preview_order(slug, side, price, qty)
+        # Validate order syntax with Polymarket US production API (at the fill price)
+        valid = self.preview_order(slug, side, fill_price, qty)
         if not valid:
             return False
 
@@ -695,7 +759,11 @@ class PolyUSPaperTrader:
             "slug": slug,
             "question": opp["question"],
             "side": side,
-            "price": price,
+            "price": fill_price,
+            "fill_price": fill_price,
+            "displayed_price": price,
+            "fee": entry_fee,
+            "source": opp.get("source", ""),
             "qty": qty,
             "cost": cost,
             "order_id": order_id,
@@ -716,7 +784,7 @@ class PolyUSPaperTrader:
             self.cal_monitor.record_entry(
                 slug=slug,
                 side=side,
-                price_dollars=price,
+                price_dollars=fill_price,
                 predicted_p=opp.get("ref_prob"),
                 z=z,
                 strike=strike,
@@ -730,15 +798,17 @@ class PolyUSPaperTrader:
         edge_tag = f" [CrossEdge: {opp['cross_edge_cents']:+.1f}c]" if "cross_edge_cents" in opp else ""
         log.info(
             "⚡ PAPER BUY [%s] %s | %s %dx @ $%.2f = $%.2f%s | Cash Remaining: $%.2f",
-            opp.get("category", "gen"), slug, side.upper(), qty, price, cost, edge_tag, self.state["cash"]
+            opp.get("category", "gen"), slug, side.upper(), qty, fill_price, cost, edge_tag, self.state["cash"]
         )
         self._append_ledger({
             "event": "open",
             "slug": slug,
             "side": side,
             "qty": qty,
-            "price": price,
+            "price": fill_price,
             "cost": cost,
+            "fee": entry_fee,
+            "source": opp.get("source", ""),
             "cash_after": self.state["cash"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
@@ -789,27 +859,34 @@ class PolyUSPaperTrader:
         for pos in self.state.get("positions", []):
             slug = pos["slug"]
             m_info = market_map.get(slug)
-            end_date_str = (m_info.get("endDate") or m_info.get("gameStartTime")) if m_info else None
+            end_dt = market_end_dt(m_info) if m_info else None
             is_stale_long_dated = False
-            if end_date_str:
-                try:
-                    end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-                    h_left = (end_dt - now).total_seconds() / 3600.0
-                    if h_left > getattr(self, "max_hours_to_expiry", 24.0):
-                        is_stale_long_dated = True
-                except Exception:
-                    pass
+            if end_dt:
+                h_left = (end_dt - now).total_seconds() / 3600.0
+                if h_left > getattr(self, "max_hours_to_expiry", 24.0):
+                    is_stale_long_dated = True
             if is_stale_long_dated:
-                exit_price = pos.get("current_price", pos["price"])
-                payout = round(exit_price * pos["qty"], 4)
+                # Exit at the venue bid with the same fee model — never at the
+                # displayed mark (R5). Selling NO means its bid = 1 - YES ask.
+                try:
+                    book = polymarket_us_client.get_market_book(slug)
+                except Exception:
+                    book = {}
+                yes_bid, yes_ask = _book_yes_prices(book)
+                current_mark = float(pos.get("current_price", pos["price"]))
+                bid = yes_bid if pos["side"] == "yes" else (
+                    round(1.0 - yes_ask, 4) if yes_ask is not None else None)
+                exit_price = _fill_sell_price(current_mark, bid)
+                exit_fee = _fee_dollars(exit_price * pos["qty"])
+                payout = round(exit_price * pos["qty"] - exit_fee, 4)
                 pnl = round(payout - pos["cost"], 4)
                 self.state["cash"] = round(self.state["cash"] + payout, 4)
                 self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
                 self.state["lifetime_realized_pnl"] = round(
                     float(self.state.get("lifetime_realized_pnl", 0.0) or 0.0) + pnl, 4)
                 log.info(
-                    "🔄 ROTATED long-dated position %s (>24h) | Payout=$%.2f PnL=$%+.2f -> Freed cash=$%.2f",
-                    slug, payout, pnl, self.state["cash"]
+                    "🔄 ROTATED long-dated position %s (>24h) | Exit=$%.4f Fee=$%.4f Payout=$%.2f PnL=$%+.2f -> Freed cash=$%.2f",
+                    slug, exit_price, exit_fee, payout, pnl, self.state["cash"]
                 )
                 self._append_ledger({
                     "event": "rotate_exit",
@@ -817,8 +894,10 @@ class PolyUSPaperTrader:
                     "side": pos["side"],
                     "qty": pos["qty"],
                     "exit_price": exit_price,
+                    "fee": exit_fee,
                     "payout": payout,
                     "pnl": pnl,
+                    "source": pos.get("source", ""),
                     "cash_after": self.state["cash"],
                     "timestamp": now.isoformat(),
                 })

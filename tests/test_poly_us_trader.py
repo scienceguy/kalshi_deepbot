@@ -309,12 +309,15 @@ def test_cycle_rotates_stale_long_dated_positions(temp_trader):
             "outcomePrices": ["0.01", "0.99"],
         }
     }
-    with patch.object(temp_trader, "scan_markets", return_value=list(market_map.values())):
+    # R5: rotation exits at the venue NO bid (= 1 - YES ask) with the fee model.
+    book = {"bbo": {"yes_bid": "0.00", "yes_ask": "0.02"}}
+    with patch.object(temp_trader, "scan_markets", return_value=list(market_map.values())), \
+         patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
         temp_trader.cycle()
 
-    # Stale position rotated out, cash credited back
+    # Stale position rotated out at the NO bid (0.98); cash credited gross of fee (fee=0)
     assert len(temp_trader.state["positions"]) == 0
-    assert temp_trader.state["cash"] == 50.0 + 4.95
+    assert temp_trader.state["cash"] == round(50.0 + 0.98 * 5, 4)
 
 
 def test_window_budget_blocks_overtrade_in_same_window(temp_trader):
@@ -537,6 +540,90 @@ def test_instance_lock_flock_failure_is_nonfatal(tmp_path, monkeypatch):
         raise OSError("flock not supported here")
     monkeypatch.setattr(poly_us_trader.fcntl, "flock", _boom)
     assert acquire_instance_lock(tmp_path / ".lock_poly", attempts=1) is None
+
+
+def test_market_end_dt_prefers_windowEnd(temp_trader):
+    """market_end_dt: windowEnd wins over endDate; gameStartTime is never an end (R5)."""
+    from datetime import datetime, timezone, timedelta
+    from poly_us_trader import market_end_dt
+    now = datetime.now(timezone.utc)
+    m = {
+        "assetPriceTerms": {"windowEnd": (now + timedelta(minutes=20)).isoformat()},
+        "endDate": (now + timedelta(days=3)).isoformat(),
+        "gameStartTime": (now - timedelta(hours=6)).isoformat(),
+    }
+    dt = market_end_dt(m)
+    assert dt is not None
+    assert abs((dt - now).total_seconds() - 1200) < 60
+
+    # gameStartTime alone must not be read as an end time.
+    m2 = {"gameStartTime": (now + timedelta(hours=2)).isoformat()}
+    assert market_end_dt(m2) is None
+
+
+def test_cycle_does_not_rotate_windowEnd_market(temp_trader):
+    """A market whose windowEnd is in 20 min but endDate is 3 days out is NOT stale (R5)."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    market = {
+        "slug": "short-window",
+        "question": "Q",
+        "outcomePrices": ["0.95", "0.05"],
+        "endDate": (now + timedelta(days=3)).isoformat(),
+        "assetPriceTerms": {"windowEnd": (now + timedelta(minutes=20)).isoformat()},
+    }
+    temp_trader.state["positions"] = [{
+        "slug": "short-window", "side": "yes", "price": 0.95, "qty": 5, "cost": 4.75,
+    }]
+    temp_trader.state["cash"] = 50.0
+    with patch.object(temp_trader, "scan_markets", return_value=[market]):
+        temp_trader.cycle()
+    assert len(temp_trader.state["positions"]) == 1
+    assert temp_trader.state["cash"] == 50.0
+
+
+def test_buy_fill_records_best_ask(temp_trader):
+    """A buy at displayed 0.95 with best ask 0.96 records a 0.96 fill (R5)."""
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    opp = {"slug": "ask-market", "question": "Q", "side": "yes", "price": 0.95,
+           "source": "crossvenue"}
+    temp_trader.preview_order = MagicMock(return_value=True)
+    book = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.96"}}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        ok = temp_trader.execute_paper_trade(opp)
+    assert ok is True
+    pos = temp_trader.state["positions"][0]
+    assert pos["fill_price"] == 0.96
+    assert pos["cost"] == round(1 * 0.96, 4)
+    assert temp_trader.state["cash"] == round(35.0 - 0.96, 4)
+    ledger = temp_trader.ledger_file.read_text()
+    assert '"source": "crossvenue"' in ledger
+
+
+def test_crossvenue_edge_below_modelled_costs_rejected(temp_trader):
+    """A 0.5c edge is rejected when modelled costs (slippage + margin) are 1.5c (R5)."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    end = (now + timedelta(hours=1)).isoformat()
+    market = {
+        "slug": "cv-edge-market",
+        "question": "Q",
+        "endDate": end,
+        "assetPriceTerms": {
+            "windowEnd": end,
+            "strike": {"value": 100000.0},
+            "asset": {"symbol": "BTC"},
+        },
+    }
+    cv = {
+        "best_edge_cents": 0.5, "ref_prob": 0.97, "best_price": 0.95,
+        "best_side": "yes", "spot": 100000.0, "strike": 99000.0,
+    }
+    with patch("poly_us_trader.crossvenue_edge.evaluate_crossvenue_edge", return_value=cv):
+        opp = temp_trader.evaluate_opportunity(market)
+    assert opp is None
 
 
 def test_check_settlements_tracks_stuck_position_fail_count(temp_trader):

@@ -135,6 +135,16 @@ POLYMARKET_SECRET_KEY = _env_str("POLYMARKET_SECRET_KEY", "")
 # international CLOB with L2 credentials.
 POLYMARKET_ENABLED = _env_bool("POLYMARKET_ENABLED", False)
 
+# Polymarket US paper-trader fill model (R5): paper fills are modelled at the
+# venue's best ask (buys) / best bid (sells) plus slippage ticks and a fee rate
+# taken from the venue's published schedule. Polymarket US maker orders are
+# fee-free, so the default fee is 0 bps; set PM_FEE_BPS if the schedule changes.
+# One "tick" is $0.01 on a binary contract.
+PM_FEE_BPS = _env_float("PM_FEE_BPS", 0.0)
+PM_SLIPPAGE_TICKS = _env_int("PM_SLIPPAGE_TICKS", 1)
+# Minimum modelled edge (cents) required on top of fee + slippage to enter.
+PM_EDGE_MARGIN_CENTS = _env_float("PM_EDGE_MARGIN_CENTS", 0.5)
+
 # Paper ruin limits (R4): halt entries — requiring a manual --reset — when the
 # realized loss or the peak-to-equity drawdown crosses these dollar amounts.
 # Evaluated on realized/drawdown basis, never on instantaneous MTM.
