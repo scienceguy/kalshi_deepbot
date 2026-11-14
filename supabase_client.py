@@ -375,9 +375,10 @@ class SupabaseClient:
 
     # ─── orders table ──────────────────────────────────────────────────────────
     def insert_order(self, order_data: Dict[str, Any]) -> bool:
-        """Insert a new order record."""
+        """Insert a new order record (upsert on order_id)."""
         try:
-            result = self._request("POST", "orders", data=order_data)
+            result = self._request("POST", "orders", data=order_data,
+                                   extra_headers={"Prefer": "resolution=merge-duplicates"})
             return result is not None
         except Exception as e:
             log.warning("insert_order error: %s", e)
