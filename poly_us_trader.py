@@ -1,10 +1,10 @@
 """
 poly_us_trader.py — Polymarket US Paper Trading Engine ($100 Starting Bankroll).
 
-Monitors Polymarket US production API (api.polymarket.us), scans active markets,
-evaluates high-probability favorite pricing (92c-99c), validates order parameters
-with real orders.preview calls, simulates paper fills, and settles positions against
-live venue settlements.
+Monitors Polymarket US production API (api.polymarket.us), scans active markets across
+crypto and event categories, evaluates high-probability favorite pricing (92c-99c),
+validates order parameters with real orders.preview calls, simulates paper fills,
+and tracks portfolio mark-to-market equity and venue settlements.
 
 Usage:
     python poly_us_trader.py --once
@@ -72,7 +72,10 @@ class PolyUSPaperTrader:
     def _save_state(self, state: dict):
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        self.state_file.write_text(json.dumps(state, indent=2))
+        # Atomic write to prevent file corruption
+        tmp_file = self.state_file.with_name(f"{self.state_file.name}.{os.getpid()}.tmp")
+        tmp_file.write_text(json.dumps(state, indent=2))
+        os.replace(tmp_file, self.state_file)
 
     def _append_ledger(self, record: dict):
         self.ledger_file.parent.mkdir(parents=True, exist_ok=True)
@@ -80,15 +83,31 @@ class PolyUSPaperTrader:
             f.write(json.dumps(record) + "\n")
 
     def scan_markets(self) -> list:
-        """Scan open active markets on Polymarket US in a single batch call."""
+        """Scan open active markets across crypto and active categories."""
         if not self.client:
             return []
+        markets_by_slug = {}
+        # 1. Fetch active crypto price markets
         try:
-            res = self.client.get("/v1/markets?active=true&closed=false&limit=100", authenticated=False)
-            return res.get("markets", [])
+            res_crypto = self.client.get("/v1/markets?active=true&closed=false&categories=crypto&limit=100", authenticated=False)
+            for m in res_crypto.get("markets", []):
+                slug = m.get("slug")
+                if slug:
+                    markets_by_slug[slug] = m
         except Exception as e:
-            log.error("Failed to scan Polymarket US markets: %s", e)
-            return []
+            log.debug("Failed crypto scan: %s", e)
+
+        # 2. Fetch general active markets
+        try:
+            res_gen = self.client.get("/v1/markets?active=true&closed=false&limit=100", authenticated=False)
+            for m in res_gen.get("markets", []):
+                slug = m.get("slug")
+                if slug:
+                    markets_by_slug[slug] = m
+        except Exception as e:
+            log.debug("Failed general scan: %s", e)
+
+        return list(markets_by_slug.values())
 
     def preview_order(self, slug: str, side: str, price_dollars: float, qty: int) -> bool:
         """Validate order against Polymarket US production order preview API."""
@@ -112,12 +131,19 @@ class PolyUSPaperTrader:
             log.debug("Order preview failed for %s %s @ $%.2f: %s", slug, side, price_dollars, e)
             return False
 
-    def check_settlements(self):
-        """Check settlement status for all open paper positions."""
+    def check_settlements(self, market_map: dict):
+        """Check settlement status for closed paper positions."""
         remaining_positions = []
         now = datetime.now(timezone.utc)
         for pos in self.state.get("positions", []):
             slug = pos["slug"]
+            m_info = market_map.get(slug)
+            # Only poll settlement endpoint if market is known closed or not found in active list
+            is_closed = m_info.get("closed", False) if m_info else False
+            if not is_closed and m_info is not None:
+                remaining_positions.append(pos)
+                continue
+
             try:
                 settle_res = self.client.get(f"/v1/markets/{slug}/settlement", authenticated=False)
                 settlement = settle_res.get("settlement")
@@ -196,6 +222,7 @@ class PolyUSPaperTrader:
             "question": market.get("question", slug),
             "side": side,
             "price": price,
+            "category": market.get("category", ""),
         }
 
     def execute_paper_trade(self, opp: dict):
@@ -236,14 +263,15 @@ class PolyUSPaperTrader:
             "price": price,
             "qty": qty,
             "cost": cost,
+            "category": opp.get("category", ""),
             "opened_at": datetime.now(timezone.utc).isoformat(),
         }
         self.state["positions"].append(pos)
         self._save_state(self.state)
 
         log.info(
-            "⚡ PAPER BUY %s | %s %dx @ $%.2f = $%.2f | Cash Remaining: $%.2f",
-            slug, side.upper(), qty, price, cost, self.state["cash"]
+            "⚡ PAPER BUY [%s] %s | %s %dx @ $%.2f = $%.2f | Cash Remaining: $%.2f",
+            opp.get("category", "gen"), slug, side.upper(), qty, price, cost, self.state["cash"]
         )
         self._append_ledger({
             "event": "open",
@@ -258,11 +286,17 @@ class PolyUSPaperTrader:
 
     def cycle(self):
         """Run one full cycle."""
-        self.check_settlements()
         markets = self.scan_markets()
+        market_map = {m["slug"]: m for m in markets if "slug" in m}
+        self.check_settlements(market_map)
+
+        # Compute mark-to-market portfolio value
+        positions_cost = sum(p.get("cost", 0.0) for p in self.state.get("positions", []))
+        total_equity = round(self.state["cash"] + positions_cost, 2)
+
         log.info(
-            "── PolyUS Cycle ── Cash: $%.2f | Open Positions: %d | Realized P&L: %+.2f | Markets: %d",
-            self.state["cash"], len(self.state["positions"]), self.state["realized_pnl"], len(markets)
+            "── PolyUS Cycle ── Equity: $%.2f (Cash: $%.2f, Open: $%.2f) | Positions: %d | Realized P&L: %+.2f | Markets: %d",
+            total_equity, self.state["cash"], positions_cost, len(self.state["positions"]), self.state["realized_pnl"], len(markets)
         )
 
         opportunities = []
@@ -287,14 +321,19 @@ def main():
 
     if args.status:
         state = trader.state
+        positions = state.get("positions", [])
+        pos_cost = sum(p.get("cost", 0.0) for p in positions)
+        total_equity = round(state.get("cash", 100.0) + pos_cost, 2)
         print(f"=== Polymarket US Paper Trader ===")
         print(f"Start Balance: ${state.get('start_balance', 100.0):.2f}")
-        print(f"Current Cash:  ${state.get('cash', 100.0):.2f}")
+        print(f"Total Equity:  ${total_equity:.2f}")
+        print(f"Available Cash:${state.get('cash', 100.0):.2f}")
         print(f"Realized P&L:  ${state.get('realized_pnl', 0.0):+.2f}")
         print(f"Trades Count:  {state.get('trades_count', 0)}")
-        print(f"Open Positions: {len(state.get('positions', []))}")
-        for p in state.get("positions", []):
-            print(f"  - {p['slug']} | {p['side'].upper()} {p['qty']}x @ ${p['price']:.2f} (cost: ${p['cost']:.2f})")
+        print(f"Open Positions: {len(positions)}")
+        for p in positions:
+            cat = f"[{p['category']}] " if p.get("category") else ""
+            print(f"  - {cat}{p['slug']} | {p['side'].upper()} {p['qty']}x @ ${p['price']:.2f} (cost: ${p['cost']:.2f})")
         return
 
     log.info("Starting Polymarket US Paper Trader with $%.2f Bankroll", trader.state["start_balance"])
