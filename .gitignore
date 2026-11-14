@@ -125,6 +125,12 @@ real_markets.json
 best_params_real.json
 backtest_real_results.json
 
+# Backups and temporary edits
+*.bak
+*.modified
+*.f[0-9]*
+.github/
+
 # trend_maker paper engine output (appended every cycle)
 trend_maker_log.jsonl
 

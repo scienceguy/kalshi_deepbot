@@ -1,0 +1,33 @@
+Polymarket "0 tradable markets" — Concise Diagnosis
+===================================================
+
+1. CREDENTIALS: NOT required for discovery.
+   - legacy/polymarket_client.py:9–11 — "No authentication required for
+     public read endpoints (prices, order book). Order placement requires
+     signed API key — optional for read-only."
+   - crossvenue.py:180–197 (fetch_pm_ladder) — uses public Gamma API
+     https://gamma-api.polymarket.com/events?slug=... ; works 20/20, no auth.
+   - grid_latency.py:101–115 (pm_event_markets) — same Gamma API, no auth.
+   - scripts/derive_poly_creds.py — only derives CLOB L2 keys (API key/
+     secret/passphrase) for ORDER PLACEMENT. Does not affect discovery.
+
+2. "0 tradable" BY CODE PATH:
+   - crossvenue.py main(): ✅ Finds 2+ Kalshi+Poly pairs with edge
+   - crossvenue_collect.py --once: ✅ Writes 72 rows/cycle
+   - grid_latency.py --once: ❌ tradeable=0 (taker fee erodes edge; regime="basis")
+   - ladder_strategy.py main(): ❌ found=0 (no plans clear adverse-selection bar)
+
+3. ROOT CAUSE of tradeable=0 (grid_latency.py):
+   - grid_latency.py:260–261: buy_yes_net = (fair - ya - taker_fee(ya)) * 100.0
+   - When venues are consistent (basis regime: fair ≈ ya), the 7% taker fee
+     makes buy_yes_net negative → correctly reports 0 tradable.
+   - No bug: there is no fee-clearing edge when venues agree.
+
+4. SMALLEST FIX (read-only):
+   - No credentials needed — path already works read-only.
+   - To report non-zero tradeable in grid_latency.py: remove/loosen the
+     taker-fee filter (line 272). But the resulting "edge" would be net-
+     negative after fees, not a valid signal.
+   - For the bot: Polymarket cross-venue path functional without creds.
+     Credentials (POLY_API_KEY/SECRET/PASSPHRASE) only needed for order
+     placement via derive_poly_creds.py.
