@@ -145,8 +145,13 @@ def get_market_settlement(slug: str) -> dict | None:
 
     Returns dict with {"slug": slug, "settlement": float(1.0 or 0.0)} if settled,
     or None if market is not yet settled or not found.
+
+    Retries on any error (including 404 "not settled yet") with exponential
+    backoff so a market that closes mid-cycle gets credited on a subsequent
+    cycle instead of stranding the position forever.
     """
     temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
+    last_error: str | None = None
     for attempt in range(3):
         try:
             _enforce_rate_limit()
@@ -157,13 +162,21 @@ def get_market_settlement(slug: str) -> dict | None:
                 return {"slug": slug, "settlement": float(res.settlement)}
             return None
         except Exception as e:
-            err_str = str(e).lower()
+            last_error = str(e)
+            err_str = last_error.lower()
             if "429" in err_str or "too many" in err_str:
                 wait_time = 1.0 * (2 ** attempt)
                 log.warning("Polymarket 429 throttled on %s — backing off %.1fs (attempt %d/3)", slug, wait_time, attempt + 1)
                 time.sleep(wait_time)
                 continue
-            break
+            # 404 / not-found / transient: retry once more before giving up
+            wait_time = 0.5 * (2 ** attempt)
+            log.debug("Settlement lookup failed for %s (attempt %d/3): %s — retrying in %.1fs",
+                      slug, attempt + 1, last_error, wait_time)
+            time.sleep(wait_time)
+            continue
+    if last_error:
+        log.warning("Settlement lookup exhausted for %s: %s", slug, last_error)
     return None
 
 

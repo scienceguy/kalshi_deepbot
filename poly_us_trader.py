@@ -42,8 +42,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("poly_us_trader")
 
-STATE_FILE = Path("local_data/poly_us_state.json")
-LEDGER_FILE = Path("local_data/poly_us_paper_ledger.jsonl")
+STATE_FILE = Path(__file__).resolve().parent / "local_data" / "poly_us_state.json"
+LEDGER_FILE = Path(__file__).resolve().parent / "local_data" / "poly_us_paper_ledger.jsonl"
 
 
 class PolyUSPaperTrader:
@@ -179,14 +179,18 @@ class PolyUSPaperTrader:
         return list(markets_by_slug.values())
 
     def preview_order(self, slug: str, side: str, price_dollars: float, qty: int) -> bool:
-        """Validate order against Polymarket US production order preview API."""
-        if not self.auth_client:
-            return True
+        """Validate order against Polymarket US production order preview API.
+
+        Always calls the live orders.preview endpoint (even in paper mode) so
+        that every simulated fill is backed by HTTP 200 validation against
+        api.polymarket.us. Returns True only on a successful preview.
+        """
         try:
             res = polymarket_us_client.preview_order(slug, side, price_dollars, qty)
             return res is not None
         except Exception as e:
-            log.debug("Order preview failed for %s %s @ $%.2f: %s", slug, side, price_dollars, e)
+            log.warning("Order preview failed for %s %s @ $%.2f: %s",
+                        slug, side, price_dollars, e)
             return False
 
     def check_settlements(self, market_map: dict):
@@ -276,7 +280,15 @@ class PolyUSPaperTrader:
             if isinstance(settle_res, dict):
                 settlement = settle_res.get("settlement")
             if settlement is None:
-                # Not settled yet (or not found): skip, retry next cycle.
+                # Not settled yet (or not found): track consecutive failures and
+                # alert once per position so a stranded position is visible.
+                fail_count = int(pos.get("settle_fail_count", 0)) + 1
+                pos["settle_fail_count"] = fail_count
+                if fail_count % 12 == 0:  # once every 12 cycles (~3 min at 15s)
+                    log.warning(
+                        "STRANDED POSITION %s: settlement not published after %d consecutive checks "
+                        "(past windowEnd: %s) — realized_pnl stuck until venue settles",
+                        slug, fail_count, bool(pos.get("end_date")))
                 remaining_positions.append(pos)
                 continue
             try:

@@ -385,3 +385,44 @@ def test_live_mode_places_real_order(temp_trader):
         assert temp_trader.state["positions"][-1]["order_id"] == "ORDER123"
 
 
+def test_preview_order_always_calls_api_even_without_auth_client(temp_trader):
+    """preview_order() must call the live orders.preview endpoint even in paper mode
+    when auth_client is None — no silent short-circuit to True."""
+    temp_trader.auth_client = None
+    with patch("poly_us_trader.polymarket_us_client.preview_order",
+               return_value={"order": {"state": "ORDER_STATE_PENDING_NEW"}}) as mock_preview:
+        ok = temp_trader.preview_order("test-slug", "yes", 0.95, 1)
+        assert ok is True
+        mock_preview.assert_called_once_with("test-slug", "yes", 0.95, 1)
+
+
+def test_preview_order_returns_false_on_api_failure(temp_trader):
+    """preview_order() returns False (not True) when the preview API raises."""
+    temp_trader.auth_client = None
+    with patch("poly_us_trader.polymarket_us_client.preview_order",
+               side_effect=RuntimeError("no credentials")):
+        ok = temp_trader.preview_order("test-slug", "yes", 0.95, 1)
+        assert ok is False
+
+
+def test_check_settlements_tracks_stuck_position_fail_count(temp_trader):
+    """A position whose market never settles accumulates settle_fail_count instead
+    of silently stranding."""
+    temp_trader.state["positions"] = [{
+        "slug": "stranded-slug",
+        "side": "yes",
+        "price": 0.95,
+        "qty": 5,
+        "cost": 4.75,
+    }]
+    temp_trader.state["cash"] = 30.25
+
+    with patch("poly_us_trader.polymarket_us_client.get_market_settlement", return_value=None):
+        temp_trader.check_settlements({"stranded-slug": {"closed": True}})
+
+    # Position still open, fail count incremented
+    assert len(temp_trader.state["positions"]) == 1
+    assert temp_trader.state["positions"][0]["settle_fail_count"] == 1
+    assert temp_trader.state["realized_pnl"] == 0.0  # nothing credited
+
+

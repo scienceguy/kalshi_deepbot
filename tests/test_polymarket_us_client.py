@@ -413,3 +413,43 @@ def test_preview_order_no_side_sends_complement(monkeypatch):
     resp = polymarket_us_client.preview_order("test-slug", "no", 0.99, 1)
     assert resp == {"order": {"state": "ORDER_STATE_PENDING_NEW"}}
     assert captured["price"]["value"] == "0.01"
+
+
+# ---------------------------------------------------------------------------
+# (h) get_market_settlement retry behavior
+# ---------------------------------------------------------------------------
+
+def test_get_market_settlement_retries_on_error(monkeypatch):
+    """get_market_settlement() retries on non-429 errors (e.g. 404 not-settled-yet)
+    before returning None, instead of giving up on the first failure."""
+    import time as _time
+
+    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda: None)
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+
+    class _SettlementError(Exception):
+        pass
+
+    mock_client = MagicMock()
+    mock_client.markets.settlement.side_effect = _SettlementError("Settlement not found")
+    monkeypatch.setattr(polymarket_us_client, "_get_client", lambda: mock_client)
+
+    res = polymarket_us_client.get_market_settlement("test-slug")
+
+    assert res is None
+    # 3 attempts total (initial + 2 retries)
+    assert mock_client.markets.settlement.call_count == 3
+
+
+def test_get_market_settlement_returns_value_on_success(monkeypatch):
+    """get_market_settlement() returns the settlement dict on first success."""
+    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda: None)
+
+    mock_client = MagicMock()
+    mock_client.markets.settlement.return_value = {"settlement": 1.0}
+    monkeypatch.setattr(polymarket_us_client, "_get_client", lambda: mock_client)
+
+    res = polymarket_us_client.get_market_settlement("test-slug")
+
+    assert res == {"slug": "test-slug", "settlement": 1.0}
+    assert mock_client.markets.settlement.call_count == 1
