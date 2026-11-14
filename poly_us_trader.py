@@ -195,13 +195,19 @@ class PolyUSPaperTrader:
         elif isinstance(outcome_raw, list):
             prices = outcome_raw
 
-        if len(prices) < 2:
-            return None
-
-        try:
-            long_p = float(prices[0])
-            short_p = float(prices[1])
-        except (ValueError, TypeError):
+        if len(prices) == 1:
+            try:
+                long_p = float(prices[0])
+                short_p = round(1.0 - long_p, 4)
+            except (ValueError, TypeError):
+                return None
+        elif len(prices) >= 2:
+            try:
+                long_p = float(prices[0])
+                short_p = float(prices[1])
+            except (ValueError, TypeError):
+                return None
+        else:
             return None
 
         candidates = []

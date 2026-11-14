@@ -46,6 +46,18 @@ def test_evaluate_opportunity_ignores_mid_band(temp_trader):
     assert opp is None
 
 
+def test_evaluate_opportunity_supports_single_price_complement(temp_trader):
+    market = {
+        "slug": "cpc-btc-150k-11-30-2026",
+        "question": "When will Bitcoin hit $150k?",
+        "outcomePrices": ["0.0100"],
+    }
+    opp = temp_trader.evaluate_opportunity(market)
+    assert opp is not None
+    assert opp["side"] == "no"
+    assert opp["price"] == 0.99
+
+
 def test_execute_paper_trade_updates_bankroll(temp_trader):
     opp = {
         "slug": "test-market-1",
