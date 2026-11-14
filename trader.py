@@ -2118,6 +2118,7 @@ def cycle(client: KalshiClient):
                     "source": getattr(sig, 'source', 'unknown'),
                     "strength": sig.strength,
                     "signal_reason": getattr(sig, 'reason', ''),
+                    "mempalace_checkpoint": _local_module.get_latest_checkpoint() if _local_module else {},
                 }
                 should_block, eval_result = should_block_trade(
                     signal_info, min_probability=config.LLM_EVAL_MIN_PROBABILITY,
@@ -2654,7 +2655,7 @@ def main():
     # interrupt an in-flight request, leaving connections in a bad state.
     log.info("Loop every %ds. Ctrl+C to stop.", args.interval)
     cycle_count = 0
-    MEM_PALACE_CHECKPOINT_EVERY = 10
+    MEM_PALACE_CHECKPOINT_EVERY = int(os.environ.get("MEMPALACE_CHECKPOINT_INTERVAL", 5))
 
     def _handle_task(task: dict) -> None:
         """Log a delegated task.request so the operator is aware of it."""

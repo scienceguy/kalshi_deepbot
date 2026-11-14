@@ -27,6 +27,8 @@ if not _MP:
 # Explicit candidates for restricted-PATH environments
 if not _MP:
     for _p in (
+        "/usr/local/bin/mempalace",
+        "/usr/bin/mempalace",
         "/data/data/com.termux/files/home/bin/mempalace",
         "/data/data/com.termux/files/home/.local/bin/mempalace",
     ):
@@ -86,6 +88,15 @@ def _STORE_set(k: str, v) -> None:
 def _STORE_get(k: str, default=None):
     return _STORE.get(k, default)
 
+def get_latest_checkpoint() -> dict:
+    """Return the latest MemPalace checkpoint state for LLM consensus context."""
+    return {
+        "cycles_completed": _STORE_get("_cycles_completed", 0),
+        "session_pnl": _STORE_get("_session_pnl", 0.0),
+        "last_activity": _STORE_get("_last_activity", ""),
+        "checkpoint_key": _STORE_get("_resume_key", "active"),
+    }
+
 def checkpoint(state: dict | None = None, correlation_id: str | None = None) -> dict:
     if state is None:
         state = {
@@ -117,7 +128,7 @@ def checkpoint(state: dict | None = None, correlation_id: str | None = None) -> 
         "--body", body,
     )
     if r.returncode == 0:
-        log.debug("Checkpoint KG saved: key=%s", state.get("resume_key", "unknown"))
+        log.info("MemPalace checkpoint saved: cycles=%s, pnl=$%s, key=%s", state.get("cycles_completed", 0), state.get("session_pnl", 0.0), state.get("resume_key", "unknown"))
     else:
         log.warning("Checkpoint KG RC=%s: %s", r.returncode, r.stderr[:120])
     for k, v in state.items():

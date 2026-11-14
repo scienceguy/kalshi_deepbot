@@ -492,6 +492,7 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
         "contracts": signal_info.get("contracts", 0),
         "dollar_risk": signal_info.get("dollar_risk", 0.0),
         "skew_cents": signal_info.get("skew", 0),
+        "mempalace_checkpoint": signal_info.get("mempalace_checkpoint", {}),
     })
 
     messages = _build_messages(system_prompt, user_prompt)
