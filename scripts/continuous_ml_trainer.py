@@ -24,11 +24,11 @@ def train_iteration(days: int = 4, epochs: int = 2, out_path: str = "ml_model.pt
     try:
         import scripts.train_ml_hf as trainer
         log.info("Starting continuous ML model training (days=%d, epochs=%d)...", days, epochs)
-        frames, results = trainer.load_frames(days=days)
-        train_df, test_df = trainer.split_train_test(frames, test_days=1)
-        model = trainer.train(train_df, results, epochs=epochs, lr=0.01)
-        model.save(out_path)
-        log.info("Continuous ML model successfully trained and saved to %s", out_path)
+        ret = trainer.main(["--days", str(days), "--test-days", "1", "--epochs", str(epochs), "--out", out_path])
+        if ret == 0 or ret is None:
+            log.info("Continuous ML model successfully trained and saved to %s", out_path)
+        else:
+            log.warning("Continuous ML training exited with code %s", ret)
     except Exception as e:
         log.warning("Continuous ML training iteration error: %s", e)
 
