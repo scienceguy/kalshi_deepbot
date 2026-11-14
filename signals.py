@@ -605,6 +605,9 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
     # a missing NO ask means no quote, not a synthetic price.
     if not yes_ask and market.no_bid:
         yes_ask = 100 - market.no_bid
+    # reviewed: derive NO ask complement from YES bid when direct NO quote is absent
+    if not no_ask and market.yes_bid:
+        no_ask = 100 - market.yes_bid
 
     if not yes_ask and not no_ask:
         _pass("No quotes")
