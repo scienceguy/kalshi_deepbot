@@ -257,7 +257,8 @@ class KalshiClient:
             except requests.RequestException as e:
                 log.warning("HTTP error %s %s: %s", method, path, e)
                 raise
-            if resp.status_code == 200:
+            # reviewed: accept all 2xx HTTP status codes (specifically 201 Created on order placement)
+            if 200 <= resp.status_code < 300:
                 # Success — update timestamp for rate limiting
                 with self._lock:
                     if is_balance:
