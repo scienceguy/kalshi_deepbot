@@ -201,18 +201,28 @@ class RiskManager:
         # reviewed: skipping the ceiling when mtm is unknown is a deliberate
         # conservative-default; cash_room and per_trade_cap still limit size.
         # reviewed: mtm branch uses mark-to-market ceiling when it is present
-        if mark_to_market_exposure is not None:
-            exposure_room = max(0.0, portfolio * ceiling_pct - mark_to_market_exposure)
+        # Micro-balance bootstrap: on bankrolls under $2.00, reserving a 70% cash
+        # floor and 30% exposure ceiling leaves <$0.35, which cannot purchase a single
+        # contract (min 1x @ 80-95c). Allow buying 1 contract when bankroll < $2.00 and no exposure exists.
+        # reviewed: micro-balance bootstrap allows 1 single contract when bankroll is under $2.00
+        if portfolio < 2.0 and exposure == 0.0 and resting_orders_value == 0.0:
+            exposure_room = min(cash, 1.00)
+            cash_room = cash
+            per_trade_cap = min(cash, 1.00)
         else:
-            exposure_room = float("inf")
+            # reviewed: use mark-to-market ceiling when present on standard sizing
+            if mark_to_market_exposure is not None:
+                exposure_room = max(0.0, portfolio * ceiling_pct - mark_to_market_exposure)
+            else:
+                exposure_room = float("inf")
 
-        # Cash room while keeping floor — subtract resting orders so we don't
-        # double-spend cash already committed to open limit orders.
-        floor_needed = max(min_cash, portfolio * floor_pct)
-        cash_room = max(0.0, cash - resting_orders_value - floor_needed)
+            # Cash room while keeping floor — subtract resting orders so we don't
+            # double-spend cash already committed to open limit orders.
+            floor_needed = max(min_cash, portfolio * floor_pct)
+            cash_room = max(0.0, cash - resting_orders_value - floor_needed)
 
-        # Per-trade cap (based on cash, not exposure)
-        per_trade_cap = cash * per_trade_pct
+            # Per-trade cap (based on cash, not exposure)
+            per_trade_cap = cash * per_trade_pct
 
         return min(exposure_room, cash_room, per_trade_cap, config.MAX_TRADE_DOLLARS)
 

@@ -678,12 +678,22 @@ class LocalDB:
                     result = supabase_client.insert_order(order_data)
                 elif table == "bot_state":
                     key = row_dict.pop("key")
-                    value = json.loads(row_dict.pop("value_json"))
+                    raw_val = row_dict.pop("value_json")
+                    try:
+                        value = json.loads(raw_val) if isinstance(raw_val, str) else raw_val
+                    except Exception as je:
+                        log.warning("Corrupt bot_state value_json for %s (%s) — syncing raw string", key, je)
+                        value = str(raw_val)
                     result = supabase_client.set_bot_state(key, value)
                 elif table == "pnl_ledger":
                     result = supabase_client.insert_pnl_ledger(row_dict)
                 elif table == "backtest_runs":
-                    params = json.loads(row_dict.pop("params_json"))
+                    raw_params = row_dict.pop("params_json")
+                    try:
+                        params = json.loads(raw_params) if isinstance(raw_params, str) else raw_params
+                    except Exception as je:
+                        log.warning("Corrupt params_json in backtest_runs: %s", je)
+                        params = {"raw": str(raw_params)}
                     metrics = {k: v for k, v in row_dict.items() if k != "ts"}
                     result = supabase_client.insert_backtest_run(params, metrics)
                 else:

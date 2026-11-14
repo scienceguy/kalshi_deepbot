@@ -1147,6 +1147,9 @@ def _already_ordered(ticker: str) -> bool:
     race where a fill between cycles leaves the ticker in resting_tickers
     until the next reconciliation.
     """
+    # reviewed: prevent placing duplicate orders when a position is already open on this ticker
+    if ticker in state.positions:
+        return True
     if ticker in state.resting_tickers:  # reviewed: per-cycle resting tickers — immediate block on orders placed this cycle
         return True
     for o in state.live_resting_orders:  # reviewed: live resting orders cache — catches fills between cycles before reconciliation
@@ -2277,25 +2280,29 @@ def cycle(client: KalshiClient):
                 state.resting_tickers.discard(sig.market.ticker)
                 client.invalidate_markets(series_ticker=sig.market.series)
             else:
-                # Live mode: maker orders rest until filled.
-                # Confirm the fill from the portfolio/orders API before booking PnL
-                # and before crediting the position. This prevents booking PnL at the
-                # wrong quantity or crediting without confirmation. Partial fills are
-                # handled by the API-confirmed fill_count (not assumed full).
-                confirmed_fill_count = None
-                try:
-                    api_resting = client.get_orders(status="resting")
-                    for o in api_resting:
-                        # reviewed: fill confirmation guard — only book PnL when API confirms fill
-                        if o.get("order_id") == oid:
-                            confirmed_fill_count = _order_fill_count(o)
-                            break
-                except Exception as e:
-                    log.warning(
-                        "Failed to confirm fill for %s from portfolio API: %s — "
-                        "keeping order resting",
-                        sig.market.ticker, e,
-                    )
+                # Live mode: check placement response first for immediate fills.
+                order_status = (resp.get("order") or {}).get("status") or resp.get("status")
+                # reviewed: check placement response fill count or executed status for immediate fills
+                if fill_count > 0:
+                    confirmed_fill_count = fill_count
+                # reviewed: treat executed status as full fill when fill count was omitted
+                elif order_status in ("executed", "settled", "filled"):
+                    confirmed_fill_count = sig.contracts
+                else:
+                    confirmed_fill_count = None
+                    try:
+                        api_resting = client.get_orders(status="resting")
+                        for o in api_resting:
+                            # reviewed: fill confirmation guard — only book PnL when API confirms fill
+                            if o.get("order_id") == oid:
+                                confirmed_fill_count = _order_fill_count(o)
+                                break
+                    except Exception as e:
+                        log.warning(
+                            "Failed to confirm fill for %s from portfolio API: %s — "
+                            "keeping order resting",
+                            sig.market.ticker, e,
+                        )
 
                 # reviewed: fill confirmation guard — only book PnL when API confirms fill
                 if confirmed_fill_count is not None and floor_contracts(confirmed_fill_count) > 0:
