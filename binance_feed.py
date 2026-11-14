@@ -70,7 +70,7 @@ REDSTONE_CACHE_URL = os.environ.get(
 # LIVE WEBSOCKET PRICE CACHE — subsecond spot for momentum gauging
 # ════════════════════════════════════════════════════════════════════════════
 
-_WS_STALE_SECONDS = float(os.environ.get("WS_SPOT_STALE_SECONDS", "5.0"))
+_WS_STALE_SECONDS = float(os.environ.get("WS_SPOT_STALE_SECONDS", "1.0"))
 
 # {symbol: (price, ts)} — updated by background WS threads; read by spot_price().
 _ws_prices: dict[str, tuple[float, float]] = {}

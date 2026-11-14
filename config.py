@@ -410,7 +410,7 @@ DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.08)
 PAPER_GUARDS_ENABLED = _env_bool("PAPER_GUARDS_ENABLED", True)
 PAPER_DRAWDOWN_HALT_PCT = _env_float("PAPER_DRAWDOWN_HALT_PCT", 0.90)
 MAX_DRAWDOWN_PCT = _env_float("MAX_DRAWDOWN_PCT", 0.12)
-STALE_ORDER_MINS = _env_float("STALE_ORDER_MINS", 5.0)
+STALE_ORDER_MINS = _env_float("STALE_ORDER_MINS", 1.0)
 ADVERSE_MOVE_CENTS = _env_int("ADVERSE_MOVE_CENTS", 10)
 MARKET_DAILY_LOSS_PCT = _env_float("MARKET_DAILY_LOSS_PCT", 0.10)
 
@@ -494,7 +494,7 @@ LLM_EVAL_FAIL_OPEN = _env_bool("LLM_EVAL_FAIL_OPEN", True)
 # helping short-horizon binaries is absent (the one published test found the
 # model just re-picked the favourite and lost after fees), so enforcement is an
 # explicit opt-in rather than the default.
-LLM_EVAL_ENFORCE = _env_bool("LLM_EVAL_ENFORCE", False)
+LLM_EVAL_ENFORCE = _env_bool("LLM_EVAL_ENFORCE", True)
 # Deadline for the full LLM evaluation so a slow/hung LLM can't
 # blow the cycle timeout. Must be < CYCLE_TIMEOUT_SECONDS.
 LLM_EVAL_DEADLINE_SECONDS = _env_float("LLM_EVAL_DEADLINE_SECONDS", 25.0)
@@ -517,6 +517,7 @@ N8N_BASE_URL = os.environ.get("N8N_BASE_URL", "http://127.0.0.1:5678")
 BINANCE_ENABLED = _env_bool("BINANCE_ENABLED", False)
 COINBASE_ENABLED = _env_bool("COINBASE_ENABLED", False)
 REDSTONE_ENABLED = _env_bool("REDSTONE_ENABLED", False)
+WS_SPOT_STALE_SECONDS = _env_float("WS_SPOT_STALE_SECONDS", 1.0)
 EXCHANGE_PRICE_CACHE_SECONDS = _env_int("EXCHANGE_PRICE_CACHE_SECONDS", 30)
 
 # ═════════════════════════════════════════════════════════════════════
