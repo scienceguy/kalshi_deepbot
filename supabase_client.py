@@ -305,12 +305,10 @@ class SupabaseClient:
                 # later Supabase write for the process — that silently dropped the
                 # whole audit trail. Conflicts are logged and the row is skipped.
                 if resp.status_code in (400, 422):
-                    log.error(
-                        "Supabase %s %s: HTTP %s — client/schema error, disabling Supabase writes. "
-                        "Fix request payload or schema, then restart.",
-                        method, path, resp.status_code,
+                    log.warning(
+                        "Supabase %s %s: HTTP %s (%s) — skipping row, keeping client enabled",
+                        method, path, resp.status_code, resp.text[:200],
                     )
-                    self.enabled = False
                     return None
                 # Other 4xx — log but don't disable (could be transient)
                 log.warning("Supabase %s %s: HTTP %s — non-retryable error, not recording failure",
@@ -331,13 +329,16 @@ class SupabaseClient:
     # ─── signals table ─────────────────────────────────────────────────────────
     def insert_signal(self, signal_data: Dict[str, Any]) -> bool:
         """Insert a new trade signal."""
+        data = dict(signal_data)
+        if not data.get("type"):
+            data["type"] = "taker"
         required = ("ts", "ticker", "side", "price_cents", "contracts")
-        missing = [f for f in required if f not in signal_data]
+        missing = [f for f in required if f not in data]
         if missing:
             log.warning("insert_signal: missing required fields %s — skipping", ", ".join(missing))
             return False
         try:
-            result = self._request("POST", "signals", data=signal_data)
+            result = self._request("POST", "signals", data=data)
             return result is not None
         except Exception as e:
             log.warning("insert_signal error: %s", e)
@@ -355,11 +356,14 @@ class SupabaseClient:
         required = ("ts", "ticker", "side", "price_cents", "contracts")
         clean = []
         for s in signals:
-            missing = [f for f in required if f not in s]
+            item = dict(s)
+            if not item.get("type"):
+                item["type"] = "taker"
+            missing = [f for f in required if f not in item]
             if missing:
                 log.warning("insert_signals_batch: skipping signal missing %s", ", ".join(missing))
                 continue
-            clean.append(s)
+            clean.append(item)
         if not clean:
             return False
         try:

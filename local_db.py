@@ -470,6 +470,45 @@ class LocalDB:
                 log.warning("get_unsynced_pnl_rows error: %s", e)
                 return []
 
+    def get_unsynced_bot_state(self) -> list:
+        """Get unsynced bot_state rows for cloud sync."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM bot_state WHERE synced = 0 ORDER BY updated_at LIMIT 100"
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except Exception as e:
+                log.warning("get_unsynced_bot_state error: %s", e)
+                return []
+
+    def get_unsynced_signals(self) -> list:
+        """Get unsynced signals rows for cloud sync."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM signals WHERE synced = 0 ORDER BY created_at LIMIT 100"
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except Exception as e:
+                log.warning("get_unsynced_signals error: %s", e)
+                return []
+
+    def get_unsynced_orders(self) -> list:
+        """Get unsynced orders rows for cloud sync."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM orders WHERE synced = 0 ORDER BY created_at LIMIT 100"
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except Exception as e:
+                log.warning("get_unsynced_orders error: %s", e)
+                return []
+
     def mark_pnl_synced(self, idempotency_key: str) -> bool:
         """Mark a pnl_ledger row as synced to Supabase."""
         conn = self._get_conn()
@@ -569,6 +608,8 @@ class LocalDB:
             try:
                 # Map local column names to Supabase column names
                 if table == "signals":
+                    if not row_dict.get("type"):
+                        row_dict["type"] = "taker"
                     result = supabase_client.insert_signal(row_dict)
                 elif table == "orders":
                     # Strip columns that may not exist in remote Supabase schema yet

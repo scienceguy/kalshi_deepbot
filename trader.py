@@ -2038,6 +2038,7 @@ def cycle(client: KalshiClient):
                     try:
                         get_supabase_client().insert_signal({
                             "ts": datetime.now(timezone.utc).isoformat(),
+                            "type": "taker",
                             "ticker": sig.market.ticker,
                             "side": sig.side,
                             "price_cents": sig.entry_price,
