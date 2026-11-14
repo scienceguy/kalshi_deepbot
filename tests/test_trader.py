@@ -1060,13 +1060,64 @@ def test_dry_run_fill_is_zero_after_the_market_closes():
     assert trader._dry_run_fill_count(m, "yes", 95, 10) == 0.0
 
 
+def test_dry_run_fill_zero_depth_is_phantom_liquidity():
+    """A crossing ask with no quoted size must not fill a phantom full order."""
+    m = _book(yes_ask=96, yes_liq=999, no_liq=0)
+    assert trader._dry_run_fill_count(m, "yes", 96, 10) == 0.0
+    m2 = _book(no_ask=96, yes_liq=0, no_liq=999)
+    assert trader._dry_run_fill_count(m2, "no", 96, 10) == 0.0
+    # Depth None (unknown) is treated the same: conservative no-fill.
+    m3 = _book(yes_ask=96, yes_liq=None, no_liq=None)
+    assert trader._dry_run_fill_count(m3, "yes", 96, 10) == 0.0
+
+
+# ── Paper positions survive a restart ───────────────────────────────────────
+
+def test_paper_position_is_persisted_and_reloaded(tmp_path, monkeypatch):
+    """A restart in dry-run must not silently drop an open fill.
+
+    Positions used to be memory-only, so every restart lost the current
+    window's fills and their settlement P&L was never booked.
+    """
+    import config as _cfg
+    import trader as _t
+    monkeypatch.setattr(_cfg, "DRY_RUN", True)
+    pos_file = tmp_path / "paper_positions.json"
+    monkeypatch.setattr(_t, "PAPER_POSITIONS_FILE", pos_file)
+
+    st = _t.BotState()
+    st.positions = {"KXBTC15M-X": {"side": "no", "entry_price": 90,
+                                   "contracts": 3, "order_id": "oid",
+                                   "paper": True}}
+    _t._save_paper_positions(st.positions)
+    loaded = _t._load_paper_positions()
+    assert loaded["KXBTC15M-X"]["contracts"] == 3
+
+    # A fresh BotState (what a restart builds) must see the position and
+    # reserve its capital, so cash cannot be double-spent on new trades.
+    fresh = _t.BotState()
+    assert "KXBTC15M-X" in fresh.positions
+    assert fresh.position_risk["KXBTC15M-X"] == pytest.approx(3 * 0.90)
+
+
+def test_paper_positions_are_not_loaded_in_live_mode(tmp_path, monkeypatch):
+    """Live mode reads real positions from the exchange, never this file."""
+    import config as _cfg
+    import trader as _t
+    pos_file = tmp_path / "paper_positions.json"
+    pos_file.write_text('{"KXBTC15M-X": {"contracts": 3}}')
+    monkeypatch.setattr(_t, "PAPER_POSITIONS_FILE", pos_file)
+    monkeypatch.setattr(_cfg, "DRY_RUN", False)
+    assert _t._load_paper_positions() == {}
+
+
 # ── Settlement fee accuracy ──────────────────────────────────────────────────
 
 def test_settle_pnl_maker_entry_pays_no_fee(monkeypatch):
     """A resting maker entry pays nothing, so settlement PnL is the raw edge."""
     import config as _cfg
     monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", False)
-    pnl, fee = trader._settle_pnl(10.0, 97, 1.00)
+    pnl, fee = trader._settle_pnl(10.0, 97, 1.00, entry_taker=False)
     assert fee == 0.0
     assert pnl == pytest.approx(10.0 * (1.00 - 0.97), abs=1e-6)
 
@@ -1076,7 +1127,7 @@ def test_settle_pnl_taker_entry_pays_the_fee_it_would_pay_live(monkeypatch):
     import config as _cfg
     from fees import buy_cash_out, sell_cash_in
     monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", True)
-    pnl, fee = trader._settle_pnl(10.0, 97, 1.00)
+    pnl, fee = trader._settle_pnl(10.0, 97, 1.00, entry_taker=True)
     # Effective cost includes Kalshi's rounding up to the cent grid, which the
     # live balance also pays — so the expectation uses the same function.
     expected_pnl = (sell_cash_in(10.0, 1.00, taker=False)
@@ -1086,16 +1137,16 @@ def test_settle_pnl_taker_entry_pays_the_fee_it_would_pay_live(monkeypatch):
                                 abs=1e-9)
     # The fee is real money: the taker PnL must be strictly lower than maker.
     monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", False)
-    maker_pnl, _ = trader._settle_pnl(10.0, 97, 1.00)
+    maker_pnl, _ = trader._settle_pnl(10.0, 97, 1.00, entry_taker=False)
     assert pnl < maker_pnl
 
 
 def test_entry_fee_is_zero_for_maker_and_positive_for_taker(monkeypatch):
     import config as _cfg
     monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", False)
-    assert trader._entry_fee_dollars(10.0, 97) == 0.0
+    assert trader._entry_fee_dollars(10.0, 97, entry_taker=False) == 0.0
     monkeypatch.setattr(_cfg, "AGGRESSIVE_FILL", True)
-    assert trader._entry_fee_dollars(10.0, 97) > 0.0
+    assert trader._entry_fee_dollars(10.0, 97, entry_taker=True) > 0.0
 
 
 # ── Live fill-confirmation tests ─────────────────────────────────────────────

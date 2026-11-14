@@ -59,13 +59,17 @@ class CycleSupervisor:
         return delay
 
     def is_auth_error(self) -> bool:
-        """Return True if the last recorded error was authentication-related."""
+        """Return True if the last recorded error was authentication-related.
+
+        Only 401/403 and explicit auth/permission strings count. A plain
+        HTTPError (429 rate limit, 5xx, 404...) is NOT an auth error — it
+        must trigger backoff/retry, not kill the bot.
+        """
         if self.last_error_type is None:
             return False
         haystack = f"{self.last_error_type} {self.last_error_message or ''}".lower()
         return ("auth" in haystack or "permission" in haystack
-                or "401" in haystack or "403" in haystack
-                or self.last_error_type == "HTTPError")
+                or "401" in haystack or "403" in haystack)
 
     def should_rebuild_client(self) -> bool:
         return (self.errors_in_a_row >= max(1, self.settings.rebuild_threshold)

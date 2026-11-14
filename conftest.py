@@ -20,6 +20,7 @@ _TMP = tempfile.mkdtemp(prefix="deepbot-tests-")
 os.environ["MARKOUT_LOG_FILE"] = os.path.join(_TMP, "markout_log.jsonl")
 os.environ["GATES_LOG_FILE"] = os.path.join(_TMP, "gates_log.jsonl")
 os.environ["PAPER_STATE_FILE"] = os.path.join(_TMP, "paper_state.json")
+os.environ["PAPER_POSITIONS_FILE"] = os.path.join(_TMP, "paper_positions.json")
 os.environ["SUPERBOT_LOCAL_DB_DIR"] = os.path.join(_TMP, "local_data")
 
 import config  # noqa: E402

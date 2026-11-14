@@ -160,6 +160,41 @@ WINDOW_EPSILON = 0.01
 
 SETTLEMENT_QUEUE_FILE = Path(__file__).resolve().parent / "settlement_queue.json"
 SETTLED_SINCE_FILE = Path(__file__).resolve().parent / "settled_since.json"
+PAPER_POSITIONS_FILE = Path(os.environ.get("PAPER_POSITIONS_FILE")
+                            or (Path(__file__).resolve().parent / "paper_positions.json"))
+
+
+def _load_paper_positions() -> dict:
+    """Paper positions survive a restart.
+
+    Positions used to live only in memory, so every restart dropped the open
+    fills of the current 15-minute window and their settlement P&L was never
+    booked — the dry-run curve silently lost trades. Live mode is unaffected:
+    it re-reads real positions from the exchange.
+    """
+    if not config.DRY_RUN:  # reviewed: live reads real positions from the exchange; only paper persists to disk
+        return {}
+    try:
+        data = json.loads(PAPER_POSITIONS_FILE.read_text())
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        log.warning("Could not read %s (%s) — starting with no paper positions",
+                    PAPER_POSITIONS_FILE, e)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_paper_positions(positions: dict) -> None:
+    """Persist paper positions atomically (no-op outside dry runs)."""
+    if not config.DRY_RUN:  # reviewed: live reads real positions from the exchange; only paper persists to disk
+        return
+    try:
+        tmp = PAPER_POSITIONS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(positions))
+        os.replace(tmp, PAPER_POSITIONS_FILE)
+    except Exception as e:
+        log.warning("Could not write %s: %s", PAPER_POSITIONS_FILE, e)
 
 
 def _load_settled_since() -> dict:
@@ -179,7 +214,7 @@ class BotState:
     """Encapsulates all mutable bot state."""
 
     def __init__(self):
-        self.positions: dict = {}          # ticker -> order_id or "dry"
+        self.positions: dict = _load_paper_positions()  # ticker -> order_id or "dry"
         self.resting_value: dict = {}      # order_id -> {"dollars": float, "ticker": str}
         self.resting_tickers: set = set()  # tickers with resting orders this cycle
         self.last_cash_log: float = -1.0
@@ -197,7 +232,11 @@ class BotState:
             "reserved_cash": 0.0,
             "entered": set(),
         }
-        self.position_risk: dict = {}
+        self.position_risk: dict = {
+            t: float(p.get("contracts", 0)) * float(p.get("entry_price", 0)) / 100.0
+            for t, p in self.positions.items()
+            if isinstance(p, dict)  # reviewed: only dict entries carry entry_price/contracts; legacy "dry" strings are skipped
+        }
         self.llm_trade_insights: dict = {}
         self.live_resting_orders: list = []  # raw resting orders seen this cycle
         self.last_order_time: float = 0.0
@@ -317,7 +356,8 @@ class BotState:
                 raise
             return None
 
-    def _record_filled_order(self, client, sig, oid, fill_count, status, fees_dollars, cycles):
+    def _record_filled_order(self, client, sig, oid, fill_count, status,
+                             fees_dollars, cycles, entry_taker: bool = False):
         ticker = sig.market.ticker
         # Record the ACTUAL filled contracts (int), not the intended size — a
         # partial fill would otherwise mis-book PnL at settlement and over-reserve
@@ -333,6 +373,7 @@ class BotState:
             "contracts": filled,
             "order_id": oid,
             "paper": config.DRY_RUN,
+            "entry_taker": bool(entry_taker),  # how THIS trade entered: taker pays fee, maker pays nothing
         }
         self.window["entered"].add(ticker)
         info = self.resting_value.pop(oid, None)
@@ -359,6 +400,7 @@ class BotState:
         # Track capital at risk per ticker — released on settlement, not booked as P&L.
         # Use filled_risk (actual fill) so partial fills don't over-reserve.
         self.position_risk[ticker] = filled_risk
+        _save_paper_positions(self.positions)
 
 
 # Global state
@@ -616,8 +658,11 @@ def _dry_run_fill_count(market, side: str, entry_price_cents: int,
     Depth is the COUNTERPARTY size at the ask, not our own side's bid size.
     Buying YES lifts the best NO bid (YES ask = 100 - NO bid), so the
     contracts available are ``no_liquidity``; buying NO lifts the best YES
-    bid, so they are ``yes_liquidity``. When the book reports no size, the
-    crossing ask still proves a counterparty exists, so our full size fills.
+    bid, so they are ``yes_liquidity``. A zero-depth ask is not a real
+    counterparty — it is a stale quote or a price with no size behind it —
+    so it must not fill a paper order. Only a quoted size (depth > 0) fills;
+    an unknown depth (None) is treated conservatively as no fill, never a
+    phantom full-size fill.
     """
     ask = market.yes_ask if side == "yes" else market.no_ask
     depth = market.no_liquidity if side == "yes" else market.yes_liquidity
@@ -625,41 +670,45 @@ def _dry_run_fill_count(market, side: str, entry_price_cents: int,
         return 0.0
     if not ask or ask > entry_price_cents:  # reviewed: book-based fill rule — no cross means no fill, so paper PnL tracks real quotes only
         return 0.0
-    if depth:  # reviewed: cap at quoted size; an empty book still fills our size because the ask proves a counterparty
-        return floor_contracts(min(contracts, float(depth)))
-    return floor_contracts(contracts)
+    if not depth or depth <= 0:  # reviewed: zero-depth ask is phantom liquidity — no fill; never assume full size
+        return 0.0
+    return floor_contracts(min(contracts, float(depth)))
 
 
-def _entry_fee_dollars(contracts: float, entry_price_cents: float) -> float:
+def _entry_fee_dollars(contracts: float, entry_price_cents: float,
+                       entry_taker: bool) -> float:
     """Fee paid to enter, in dollars.
 
-    A taker entry (AGGRESSIVE_FILL crosses the ask) pays Kalshi's fee; a
-    resting maker order pays nothing. The value is the *effective* fee: what
-    actually leaves the balance above the contract cost, including Kalshi's
-    rounding up to the account's cent grid. One definition so the order row,
-    the settlement math and the paper ledger cannot drift apart.
+    A taker entry (AGGRESSIVE_FILL crossed the ask at placement time) pays
+    Kalshi's fee; a resting maker order pays nothing. ``entry_taker`` records
+    how *this specific trade* was placed, so replay and exit-time fee math
+    cannot drift when the global config changes mid-session. The value is the
+    *effective* fee: what actually leaves the balance above the contract
+    cost, including Kalshi's rounding up to the account's cent grid. One
+    definition so the order row, the settlement math and the paper ledger
+    cannot drift apart.
     """
-    if not config.AGGRESSIVE_FILL:  # reviewed: only a taker entry pays the exchange fee; makers pay nothing
+    if not entry_taker:  # reviewed: entry_taker is an explicit param; maker entries pay nothing regardless of live AGGRESSIVE_FILL
         return 0.0
     price = entry_price_cents / 100.0
     return fees.buy_cash_out(contracts, price, taker=True) - contracts * price
 
 
 def _settle_pnl(contracts: float, entry_price_cents: float,
-                exit_price_dollars: float) -> tuple:
+                exit_price_dollars: float, entry_taker: bool) -> tuple:
     """(realized_pnl_dollars, entry_fee_dollars) for a position held to settlement.
 
-    The entry is a taker when AGGRESSIVE_FILL crosses the ask, and a taker pays
-    the fee; a resting maker order pays nothing. Settlement itself is not a
-    trade, so it is always fee-free. Live and paper both come through here so
-    the paper curve carries exactly the fee live does — previously the paper
-    path booked zero entry fee even while taking, which flattered the curve by
-    roughly the whole per-trade edge.
+    The entry is a taker when AGGRESSIVE_FILL crossed the ask at placement
+    time, and a taker pays the fee; a resting maker order pays nothing.
+    Settlement itself is not a trade, so it is always fee-free. Live and
+    paper both come through here so the paper curve carries exactly the fee
+    live does — previously the paper path booked zero entry fee even while
+    taking, which flattered the curve by roughly the whole per-trade edge.
     """
-    taker = bool(config.AGGRESSIVE_FILL)
-    buy_cost = fees.buy_cash_out(contracts, entry_price_cents / 100.0, taker=taker)
+    buy_cost = fees.buy_cash_out(contracts, entry_price_cents / 100.0,
+                                 taker=entry_taker)
     sell_revenue = fees.sell_cash_in(contracts, exit_price_dollars, taker=False)
-    entry_fee = _entry_fee_dollars(contracts, entry_price_cents)
+    entry_fee = _entry_fee_dollars(contracts, entry_price_cents, entry_taker)
     return sell_revenue - buy_cost, entry_fee
 
 
@@ -684,7 +733,10 @@ def _resolve_pending_settlement(client, payload):
         return None
     exit_price = (float(settled_yes) / 100.0 if side == "yes"
                   else float(100 - settled_yes) / 100.0)
-    pnl_dollars, _ = _settle_pnl(contracts, entry_price, exit_price)
+    entry_price_cents = payload.get("entry_price_cents",
+                                    payload.get("entry_price", 0))
+    pnl_dollars, _ = _settle_pnl(contracts, entry_price_cents, exit_price,
+                                 payload.get("entry_was_taker", False))
     return {
         **payload,
         "status": "settled",
@@ -756,7 +808,8 @@ def _replay_settlement_queue(client=None):
         # Use the same resolution logic as _resolve_pending_settlement
         side = payload.get("side", "")
         contracts = payload.get("contracts", 0)
-        entry_price = payload.get("entry_price", 0)
+        entry_price_cents = payload.get("entry_price_cents",
+                                        payload.get("entry_price", 0))
         if not ticker or side not in ("yes", "no") or not contracts:
             remaining.append(entry)
             continue
@@ -766,11 +819,14 @@ def _replay_settlement_queue(client=None):
             continue
         exit_price = (float(settled_yes) / 100.0 if side == "yes"
                       else float(100 - settled_yes) / 100.0)
-        pnl_dollars, _ = _settle_pnl(contracts, entry_price, exit_price)
+        pnl_dollars, _ = _settle_pnl(contracts, entry_price_cents, exit_price,
+                                     payload.get("entry_was_taker", False))
         resolved_payload = {
             **payload,
             "status": "settled",
             "fill_price_cents": int(exit_price * 100),
+            "entry_price_cents": entry_price_cents,
+            "entry_was_taker": payload.get("entry_was_taker", False),
             "outcome_won": pnl_dollars > 0,
             "pnl_dollars": pnl_dollars,
         }
@@ -794,7 +850,10 @@ def _replay_settlement_queue(client=None):
                 applied = get_local_db().apply_settlement_pnl(
                     settle_key, ticker, pnl,
                     fee_dollars=_entry_fee_dollars(
-                        payload.get("contracts", 0), payload.get("entry_price", 0)),
+                        payload.get("contracts", 0),
+                        payload.get("entry_price_cents",
+                                    payload.get("entry_price", 0)),
+                        payload.get("entry_was_taker", False)),
                     source="local")
                 # applied is True=new, False=duplicate, None=DB error.
                 # Never credit PnL when the ledger write failed (None).
@@ -893,7 +952,7 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     # taker fee only when we crossed the ask (AGGRESSIVE_FILL), and the exit
     # pays the taker fee because selling into the book is a taker action. A
     # dry run now matches that exactly instead of assuming a fee-free entry.
-    entry_taker = bool(config.AGGRESSIVE_FILL)
+    entry_taker = bool(pos.get("entry_taker", config.AGGRESSIVE_FILL))
     # reviewed: paper may keep the legacy free-exit model via PAPER_TAKER_EXIT_FEE; live exits always take
     exit_taker = bool(config.PAPER_TAKER_EXIT_FEE) if is_paper else True
     buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=entry_taker)
@@ -1072,9 +1131,11 @@ def _manage_exits(client):
         if remaining >= 0.01:
             pos["contracts"] = remaining
             state.position_risk[ticker] = remaining * entry / 100.0
+            _save_paper_positions(state.positions)
         else:
             state.positions.pop(ticker, None)
             state.position_risk.pop(ticker, None)
+            _save_paper_positions(state.positions)
         exit_oid = pos.get("exit_order_id", "")
         _book_exit(client, ticker, pos, int(bid), filled, reason, exit_oid)
         client.invalidate_markets(series_ticker=ticker.split("-")[0])
@@ -1416,20 +1477,25 @@ def cycle(client: KalshiClient):
                     "event_ticker": event_id,
                     "side": side,
                     "contracts": contracts,
-                    "entry_price": entry_price,
+                    "entry_price_cents": entry_price,
+                    "entry_was_taker": bool(pos_info.get("entry_taker",
+                                                         config.AGGRESSIVE_FILL)),
                 },
             })
             _save_settlement_queue(queue)
             state.positions.pop(t, None)
             state.position_risk.pop(t, None)
             state.settled_since.pop(t, None)
+            _save_paper_positions(state.positions)
             _save_settled_since(state.settled_since)
             continue
 
         # If settlement data available, book PnL and clear position.
         if exit_price is not None:
+            entry_taker = bool(pos_info.get("entry_taker",
+                                            config.AGGRESSIVE_FILL))
             realized_pnl, fees_dollars = _settle_pnl(
-                contracts, entry_price, exit_price)
+                contracts, entry_price, exit_price, entry_taker)
             won = realized_pnl > 0
 
             log.info(
@@ -1623,6 +1689,7 @@ def cycle(client: KalshiClient):
             state.positions.pop(t, {})
             state.position_risk.pop(t, 0.0)
             state.settled_since.pop(t, None)
+            _save_paper_positions(state.positions)
             _save_settled_since(state.settled_since)
         else:
             # No settlement data available — queue for retry without booking PnL.
@@ -1642,7 +1709,9 @@ def cycle(client: KalshiClient):
                     "event_ticker": event_ticker,
                     "side": side,
                     "contracts": contracts,
-                    "entry_price": entry_price,
+                    "entry_price_cents": entry_price,
+                    "entry_was_taker": bool(pos_info.get("entry_taker",
+                                                         config.AGGRESSIVE_FILL)),
                 },
             })
             _save_settlement_queue(queue)
@@ -2002,8 +2071,8 @@ def cycle(client: KalshiClient):
                         if config.AGGRESSIVE_FILL  # reviewed: taker entry pays the fee, maker entry does not
                         else 0.0)
                     state._record_filled_order(
-                        client, sig, oid, fill_count, "executed", fees_dollars, state.cycles
-                    )
+                        client, sig, oid, fill_count, "executed", fees_dollars,
+                        state.cycles, entry_taker=config.AGGRESSIVE_FILL)
                     current_exposure += fill_count * sig.entry_price / 100.0
                 else:
                     fill_count = 0.0
@@ -2041,8 +2110,9 @@ def cycle(client: KalshiClient):
                         if config.AGGRESSIVE_FILL  # reviewed: taker entry pays the fee, maker entry does not
                         else 0.0)
                     state._record_filled_order(
-                        client, sig, oid, confirmed_fill_count, "executed", fees_dollars, state.cycles
-                    )
+                        client, sig, oid, confirmed_fill_count, "executed",
+                        fees_dollars, state.cycles,
+                        entry_taker=config.AGGRESSIVE_FILL)
                     state.resting_value.pop(oid, None)
                     state.resting_tickers.discard(sig.market.ticker)
                     # Invalidate market cache so subsequent find_active_markets() calls
