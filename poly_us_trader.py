@@ -313,13 +313,49 @@ class PolyUSPaperTrader:
         market_map = {m["slug"]: m for m in markets if "slug" in m}
         self.check_settlements(market_map)
 
-        # Compute mark-to-market portfolio value
-        positions_cost = sum(p.get("cost", 0.0) for p in self.state.get("positions", []))
-        total_equity = round(self.state["cash"] + positions_cost, 2)
+        # Compute mark-to-market valuation and unrealized P&L per position
+        total_mtm = 0.0
+        total_unrealized = 0.0
+        for pos in self.state.get("positions", []):
+            slug = pos["slug"]
+            m_info = market_map.get(slug)
+            cur_price = pos["price"]
+            if m_info:
+                outcome_raw = m_info.get("outcomePrices") or []
+                if isinstance(outcome_raw, str):
+                    try:
+                        outcome_raw = json.loads(outcome_raw)
+                    except Exception:
+                        outcome_raw = []
+                if len(outcome_raw) == 1:
+                    try:
+                        long_p = float(outcome_raw[0])
+                        cur_price = long_p if pos["side"] == "yes" else round(1.0 - long_p, 4)
+                    except Exception:
+                        pass
+                elif len(outcome_raw) >= 2:
+                    try:
+                        cur_price = float(outcome_raw[0]) if pos["side"] == "yes" else float(outcome_raw[1])
+                    except Exception:
+                        pass
+            pos_mtm = round(cur_price * pos["qty"], 4)
+            pos_unrealized = round(pos_mtm - pos["cost"], 4)
+            pos["current_price"] = cur_price
+            pos["mtm_value"] = pos_mtm
+            pos["unrealized_pnl"] = pos_unrealized
+            total_mtm += pos_mtm
+            total_unrealized += pos_unrealized
+
+        realized_pnl = float(self.state.get("realized_pnl", 0.0))
+        total_pnl = round(realized_pnl + total_unrealized, 4)
+        total_equity = round(self.state["cash"] + total_mtm, 2)
+        self.state["unrealized_pnl"] = round(total_unrealized, 4)
+        self.state["total_pnl"] = total_pnl
+        self._save_state(self.state)
 
         log.info(
-            "── PolyUS Cycle ── Equity: $%.2f (Cash: $%.2f, Open: $%.2f) | Positions: %d | Realized P&L: %+.2f | Markets: %d",
-            total_equity, self.state["cash"], positions_cost, len(self.state["positions"]), self.state["realized_pnl"], len(markets)
+            "── PolyUS Cycle ── Equity: $%.2f (Cash: $%.2f, MTM: $%.2f) | Realized P&L: %+.2f | Unrealized P&L: %+.2f | Total P&L: %+.2f | Positions: %d | Markets: %d",
+            total_equity, self.state["cash"], total_mtm, realized_pnl, total_unrealized, total_pnl, len(self.state["positions"]), len(markets)
         )
 
         opportunities = []
@@ -345,18 +381,25 @@ def main():
     if args.status:
         state = trader.state
         positions = state.get("positions", [])
-        pos_cost = sum(p.get("cost", 0.0) for p in positions)
-        total_equity = round(state.get("cash", 100.0) + pos_cost, 2)
+        total_mtm = sum(p.get("mtm_value", p.get("cost", 0.0)) for p in positions)
+        total_equity = round(state.get("cash", 100.0) + total_mtm, 2)
+        realized = state.get("realized_pnl", 0.0)
+        unrealized = state.get("unrealized_pnl", 0.0)
+        total_pnl = state.get("total_pnl", round(realized + unrealized, 4))
         print(f"=== Polymarket US Paper Trader ===")
-        print(f"Start Balance: ${state.get('start_balance', 100.0):.2f}")
-        print(f"Total Equity:  ${total_equity:.2f}")
-        print(f"Available Cash:${state.get('cash', 100.0):.2f}")
-        print(f"Realized P&L:  ${state.get('realized_pnl', 0.0):+.2f}")
-        print(f"Trades Count:  {state.get('trades_count', 0)}")
-        print(f"Open Positions: {len(positions)}")
+        print(f"Start Balance:  ${state.get('start_balance', 100.0):.2f}")
+        print(f"Total Equity:   ${total_equity:.2f}")
+        print(f"Available Cash: ${state.get('cash', 100.0):.2f}")
+        print(f"Open Positions: {len(positions)} (${total_mtm:.2f} MTM)")
+        print(f"Realized P&L:   ${realized:+.2f}")
+        print(f"Unrealized P&L: ${unrealized:+.2f}")
+        print(f"Total Net P&L:  ${total_pnl:+.2f}")
+        print(f"Trades Count:   {state.get('trades_count', 0)}")
         for p in positions:
             cat = f"[{p['category']}] " if p.get("category") else ""
-            print(f"  - {cat}{p['slug']} | {p['side'].upper()} {p['qty']}x @ ${p['price']:.2f} (cost: ${p['cost']:.2f})")
+            cur_p = p.get("current_price", p["price"])
+            u_pnl = p.get("unrealized_pnl", 0.0)
+            print(f"  - {cat}{p['slug']} | {p['side'].upper()} {p['qty']}x @ ${p['price']:.2f} -> Cur: ${cur_p:.2f} (cost: ${p['cost']:.2f}, MTM: ${p.get('mtm_value', p['cost']):.2f}, Unrealized: ${u_pnl:+.2f})")
         return
 
     log.info("Starting Polymarket US Paper Trader with $%.2f Bankroll", trader.state["start_balance"])

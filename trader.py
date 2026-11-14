@@ -230,6 +230,9 @@ class BotState:
         self.resting_tickers: set = set()  # tickers with resting orders this cycle
         self.last_cash_log: float = -1.0
         self.session_pnl: float = 0.0
+        self.realized_pnl: float = 0.0
+        self.unrealized_pnl: float = 0.0
+        self.total_pnl: float = 0.0
         self.cycles: int = 0
         self.trades_placed: int = 0
         self.running: bool = True
@@ -2123,10 +2126,19 @@ def cycle(client: KalshiClient):
     if not cash_available:
         log.warning("Balance unknown — skipping balance-dependent risk checks")
 
+    cost_exposure = sum(state.position_risk.values())
+    unrealized_pnl = round(mark_to_market_exposure - cost_exposure, 4)
+    total_pnl = round(state.session_pnl + unrealized_pnl, 4)
+    state.realized_pnl = state.session_pnl
+    state.unrealized_pnl = unrealized_pnl
+    state.total_pnl = total_pnl
+
     log.info(
-        "%s | pnl=$%+.2f | window $%.2f/%.2f | available_markets=%d tradable_brackets=%d | trades=%d no_trade_cycles=%d | cycles=%d",
+        "%s | Realized P&L=$%+.2f | Unrealized P&L=$%+.2f | Total P&L=$%+.2f | window $%.2f/%.2f | available_markets=%d tradable_brackets=%d | trades=%d no_trade_cycles=%d | cycles=%d",
         state.risk.summary(cash if cash_available else 0.0, mark_to_market_exposure, total_balance=total_account_cash),
-        state.session_pnl,
+        state.realized_pnl,
+        state.unrealized_pnl,
+        state.total_pnl,
         state.window["used"], state.window["budget"],
         state.available_active_markets, state.tradeable_brackets,
         state.trades_placed, state.consecutive_no_trade_cycles, state.cycles,
@@ -2139,7 +2151,7 @@ def cycle(client: KalshiClient):
         pct = (display_cash - start) / start * 100 if start else 0.0
         log.info(
             "📈 paper: start=$%.2f pnl=$%+.2f open=$%.2f cash=$%.2f (%+.1f%%)",
-            start, pnl_val, sum(state.position_risk.values()), display_cash, pct,
+            start, pnl_val, cost_exposure, display_cash, pct,
         )
 
     # Record bot state to Supabase only when something changed (avoid unnecessary writes)
@@ -2149,6 +2161,9 @@ def cycle(client: KalshiClient):
         "cash": cash if cash_available else None,
         "exposure": mark_to_market_exposure,
         "session_pnl": state.session_pnl,
+        "realized_pnl": state.realized_pnl,
+        "unrealized_pnl": state.unrealized_pnl,
+        "total_pnl": state.total_pnl,
         "cycle_outcome": state.cycle_outcome,
         "tradeable_markets_count": state.tradeable_markets_count,
         "available_markets_count": state.available_markets_count,

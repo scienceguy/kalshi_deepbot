@@ -47,6 +47,8 @@ dry_state.json
 settlement_queue.json
 paper_state.json
 .lock
+.lock_*
+*.lock
 *.log
 markout_log.jsonl
 gates_log.jsonl
