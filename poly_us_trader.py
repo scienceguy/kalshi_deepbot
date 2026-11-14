@@ -178,17 +178,22 @@ class PolyUSPaperTrader:
             slug = pos["slug"]
             m_info = market_map.get(slug)
 
-            # Check if market has closed or passed its endDate
+            # Check if market has closed, resolved, or passed its windowEnd/endDate
             is_closed = m_info.get("closed", False) if m_info else False
             if m_info and not is_closed:
-                end_date_str = m_info.get("endDate") or m_info.get("gameStartTime")
-                if end_date_str:
-                    try:
-                        end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-                        if now >= end_dt:
-                            is_closed = True
-                    except Exception:
-                        pass
+                status = str(m_info.get("status") or "").upper()
+                if status in ("RESOLVED", "RESOLVING", "CLOSED"):
+                    is_closed = True
+                else:
+                    terms = m_info.get("assetPriceTerms") or {}
+                    end_date_str = terms.get("windowEnd") or m_info.get("endDate") or m_info.get("gameStartTime")
+                    if end_date_str:
+                        try:
+                            end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                            if now >= end_dt:
+                                is_closed = True
+                        except Exception:
+                            pass
 
             # If market is still actively trading and not past end date, keep holding
             if not is_closed and m_info is not None:
@@ -233,7 +238,8 @@ class PolyUSPaperTrader:
         if not slug:
             return None
 
-        end_date = market.get("endDate") or market.get("gameStartTime") or ""
+        terms = market.get("assetPriceTerms") or {}
+        end_date = terms.get("windowEnd") or market.get("endDate") or market.get("gameStartTime") or ""
         hours_left = None
         if end_date:
             try:
@@ -334,6 +340,38 @@ class PolyUSPaperTrader:
             return None
 
         side, price = candidates[0]
+
+        # Enforce directional strike cushion hurdle: spot must be safely away from strike (>2.0% distance)
+        strike_val = None
+        strike_dict = terms.get("strike") or terms.get("priceToBeat")
+        if strike_dict and isinstance(strike_dict, dict):
+            try:
+                strike_val = float(strike_dict.get("value", 0))
+            except Exception:
+                pass
+
+        symbol = (terms.get("asset") or {}).get("symbol", "").upper()
+        if not symbol:
+            slug_lower = slug.lower()
+            if "btc" in slug_lower:
+                symbol = "BTC"
+            elif "eth" in slug_lower:
+                symbol = "ETH"
+            elif "sol" in slug_lower:
+                symbol = "SOL"
+
+        spot = crossvenue_edge.get_cached_spot(symbol) if symbol else None
+        if strike_val and spot and spot > 0:
+            pct_distance = abs(spot - strike_val) / spot
+            is_above_below = "above" in slug.lower() or terms.get("marketType") == "ASSET_PRICE_MARKET_TYPE_ABOVE_BELOW"
+            if is_above_below:
+                # If betting NO on "BTC above K", spot must be at least 2.0% BELOW strike
+                if side == "no" and (spot >= strike_val or pct_distance < 0.020):
+                    return None
+                # If betting YES on "BTC above K", spot must be at least 2.0% ABOVE strike
+                if side == "yes" and (spot <= strike_val or pct_distance < 0.020):
+                    return None
+
         return {
             "slug": slug,
             "question": market.get("question", slug),
