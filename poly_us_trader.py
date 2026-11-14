@@ -416,10 +416,18 @@ class PolyUSPaperTrader:
         if self.state["cash"] <= min_cash_floor:
             return False
 
-        # Sizing: strictly limited to 3% of total balance, capped by available cash
+        # Enforce 3% max per window budget
+        window_budget = self.state.get("window_budget", round(total_balance * 0.03, 2))
+        window_spent = self.state.get("window_spent", 0.0)
+        available_window_budget = max(0.0, window_budget - window_spent)
+        if available_window_budget < 0.90:
+            log.debug("Window budget exhausted ($%.2f / $%.2f spent)", window_spent, window_budget)
+            return False
+
+        # Sizing: strictly limited to remaining window budget and available cash
         available_cash = max(0.0, self.state["cash"] - min_cash_floor)
         max_trade_dollars = self.compute_tier_size(total_balance)
-        max_trade_dollars = min(max_trade_dollars, available_cash, round(total_balance * 0.03, 2))
+        max_trade_dollars = min(max_trade_dollars, available_window_budget, available_cash, round(total_balance * 0.03, 2))
         if max_trade_dollars < 0.90:  # Allow 1 contract at 92-99c on starting $35 bankrolls
             return False
 
@@ -428,7 +436,7 @@ class PolyUSPaperTrader:
             return False
 
         cost = round(qty * price, 4)
-        if cost > available_cash:
+        if cost > available_window_budget or cost > available_cash:
             return False
 
         # Validate order syntax with Polymarket US production API
@@ -438,6 +446,7 @@ class PolyUSPaperTrader:
 
         # Execute simulated fill
         self.state["cash"] = round(self.state["cash"] - cost, 4)
+        self.state["window_spent"] = round(window_spent + cost, 4)
         self.state["trades_count"] += 1
         pos = {
             "slug": slug,
@@ -604,11 +613,29 @@ class PolyUSPaperTrader:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
 
+        # Check 15-minute window transition (900 seconds)
+        window_interval = getattr(self, "window_seconds", 900)
+        current_window_ts = int(time.time() // window_interval) * window_interval
+        window_dt = datetime.fromtimestamp(current_window_ts, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        if self.state.get("current_window_ts") != current_window_ts:
+            self.state["current_window_ts"] = current_window_ts
+            self.state["current_window_name"] = window_dt
+            self.state["window_budget"] = round(total_equity * 0.03, 2)
+            self.state["window_spent"] = 0.0
+            log.info(
+                "── New Window [%s] ── Total Equity: $%.2f | Window Budget (3%%): $%.2f | Spent: $0.00",
+                window_dt, total_equity, self.state["window_budget"]
+            )
+
         self._save_state(self.state)
 
         log.info(
-            "── PolyUS Cycle ── Equity: $%.2f (Cash: $%.2f, MTM: $%.2f) | Realized P&L: %+.2f | Unrealized P&L: %+.2f | Total P&L: %+.2f | Positions: %d | Markets: %d",
-            total_equity, self.state["cash"], total_mtm, realized_pnl, total_unrealized, total_pnl, len(self.state["positions"]), len(markets)
+            "── PolyUS Cycle ── Equity: $%.2f (Cash: $%.2f, MTM: $%.2f) | Realized P&L: %+.2f | Unrealized P&L: %+.2f | Total P&L: %+.2f | Window Budget: $%.2f ($%.2f spent) | Positions: %d | Markets: %d",
+            total_equity, self.state["cash"], total_mtm, realized_pnl, total_unrealized, total_pnl,
+            self.state.get("window_budget", round(total_equity * 0.03, 2)),
+            self.state.get("window_spent", 0.0),
+            len(self.state["positions"]), len(markets)
         )
 
         opportunities = []
@@ -676,6 +703,9 @@ def main():
         print(f"Total Equity:   ${total_equity:.2f}")
         print(f"Available Cash: ${state.get('cash', init_cash):.2f}")
         print(f"Open Positions: {len(positions)} (${total_mtm:.2f} MTM)")
+        w_budget = state.get('window_budget', round(total_equity * 0.03, 2))
+        w_spent = state.get('window_spent', 0.0)
+        print(f"Window Budget:  ${w_budget:.2f} (Spent: ${w_spent:.2f}, Left: ${max(0.0, w_budget - w_spent):.2f})")
         print(f"Realized P&L:   ${realized:+.2f}")
         print(f"Unrealized P&L: ${unrealized:+.2f}")
         print(f"Total Net P&L:  ${total_pnl:+.2f}")

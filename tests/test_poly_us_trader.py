@@ -256,3 +256,24 @@ def test_cycle_rotates_stale_long_dated_positions(temp_trader):
     assert len(temp_trader.state["positions"]) == 0
     assert temp_trader.state["cash"] == 50.0 + 4.95
 
+
+def test_window_budget_blocks_overtrade_in_same_window(temp_trader):
+    # Total equity = $35.00 -> 3% window budget = $1.05
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+
+    opp1 = {"slug": "opp1", "question": "Q1", "side": "yes", "price": 0.95}
+    temp_trader.preview_order = MagicMock(return_value=True)
+
+    # First trade: 1 contract @ 0.95 = $0.95 -> fits in $1.05 budget
+    ok1 = temp_trader.execute_paper_trade(opp1)
+    assert ok1 is True
+    assert temp_trader.state["window_spent"] == 0.95
+
+    # Second trade in the same window: remaining budget is $1.05 - $0.95 = $0.10 < $0.90 -> BLOCKED!
+    opp2 = {"slug": "opp2", "question": "Q2", "side": "yes", "price": 0.95}
+    ok2 = temp_trader.execute_paper_trade(opp2)
+    assert ok2 is False
+    assert len(temp_trader.state["positions"]) == 1
+
