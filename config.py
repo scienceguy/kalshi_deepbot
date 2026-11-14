@@ -167,7 +167,7 @@ SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
 # strike edge exists whenever spot is meaningfully ITM vs strike, not just in
 # the final 60 seconds.
 ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 1.5)
-ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 6.5)
+ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 13.0)
 # Optimal favourite criteria price band: ask 85-99c
 MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 85)
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
