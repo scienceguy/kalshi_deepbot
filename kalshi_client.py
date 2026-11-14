@@ -390,6 +390,19 @@ class KalshiClient:
             log.warning("Auto-rebalance shards error: %s", e)
         return False
 
+    def get_target_balance_allocation(self) -> dict:
+        """Fetch active target balance allocations across exchange shards."""
+        return self._request("GET", "/portfolio/target_balance_allocation")
+
+    def set_target_balance_allocation(self, crypto_percent: int = 100) -> dict:
+        """Set automatic balance allocation across exchange shards (e.g. 100% on crypto shard 2)."""
+        payload = {
+            "allocations": [
+                {"exchange_index": 2, "percent": crypto_percent}
+            ]
+        }
+        return self._request("POST", "/portfolio/target_balance_allocation", json=payload)
+
     def get_positions(self) -> list:
         """Return list of open market positions."""
         data = self._request("GET", "/portfolio/positions")

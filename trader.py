@@ -2001,7 +2001,7 @@ def cycle(client: KalshiClient):
 
     log.info(
         "%s | pnl=$%+.2f | window $%.2f/%.2f | available_markets=%d tradable_brackets=%d | trades=%d no_trade_cycles=%d | cycles=%d",
-        state.risk.summary(cash if cash_available else 0.0, mark_to_market_exposure),
+        state.risk.summary(cash if cash_available else 0.0, mark_to_market_exposure, total_balance=total_account_cash),
         state.session_pnl,
         state.window["used"], state.window["budget"],
         state.available_active_markets, state.tradeable_brackets,

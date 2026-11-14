@@ -18,8 +18,20 @@ def _make_mock_private_key():
 class TestKalshiClientInit:
     """Tests for KalshiClient initialization."""
 
-    def test_init_sets_attributes(self, monkeypatch):
-        """Client stores key_id, base_url, and creates session."""
+    def test_target_balance_allocation(self, monkeypatch):
+        """set_target_balance_allocation sends percent field matching Kalshi schema."""
+        monkeypatch.setattr(config, "KALSHI_KEY_ID", "test_key_id")
+        monkeypatch.setattr(config, "REQUEST_MIN_GAP_SECONDS", 0.0)
+
+        with patch.object(KalshiClient, "_load_private_key") as mock_load, \
+             patch.object(KalshiClient, "_verify_key"):
+            mock_load.return_value = MagicMock()
+            client = KalshiClient()
+            with patch.object(client, "_request") as mock_req:
+                mock_req.return_value = {"allocations": [{"exchange_index": 2, "percent": 100}]}
+                res = client.set_target_balance_allocation(100)
+                mock_req.assert_called_with("POST", "/portfolio/target_balance_allocation", json={"allocations": [{"exchange_index": 2, "percent": 100}]})
+                assert res["allocations"][0]["percent"] == 100
         monkeypatch.setattr(config, "KALSHI_KEY_ID", "test_key_id")
         monkeypatch.setattr(config, "KALSHI_BASE_URL", "https://external-api.kalshi.com/trade-api/v2")
         monkeypatch.setattr(config, "REQUEST_TIMEOUT_SECONDS", 10)

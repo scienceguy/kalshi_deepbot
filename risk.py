@@ -259,26 +259,27 @@ class RiskManager:
                 f"portfolio=${portfolio:.2f})"
             )
 
-        # On micro-balances (<$10.00) with no open exposure, allow $0.02 cash floor for microstructure bootstrap
-        # reviewed: microstructure bootstrap cash floor of $0.02 allows buying a single contract on accounts under $10
+        # On micro-balances (<$10.00) with no open exposure, allow $0.00 cash floor for microstructure bootstrap
+        # reviewed: microstructure bootstrap allows deploying 100% of cash on accounts under $10
         if not paper and (cash + exposure) < 10.0 and exposure == 0.0:
-            min_cash = config.PAPER_MIN_CASH_ABSOLUTE
+            min_cash = 0.00
         else:
             min_cash = config.PAPER_MIN_CASH_ABSOLUTE if paper else config.MIN_CASH_ABSOLUTE
-        if cash - trade_cost < min_cash:
+        # reviewed: enforce minimum cash buffer after trade cost
+        if cash - trade_cost < min_cash - 1e-6:
             return False, f"cash floor: ${cash:.2f} - ${trade_cost:.2f} < ${min_cash:.2f}"
 
         return True, "ok"
 
-    def summary(self, cash: float, exposure: float) -> str:
-        portfolio = cash + exposure
-        cash_pct = cash / portfolio * 100 if portfolio else 100
-        exp_pct = exposure / portfolio * 100 if portfolio else 0
+    def summary(self, cash: float, exposure: float, total_balance: float | None = None) -> str:
+        total = total_balance if total_balance is not None else (cash + exposure)
+        cash_pct = cash / total * 100 if total else 100
+        exp_pct = exposure / total * 100 if total else 0
         status = "🛑HALT" if self.state.halted else "✅"
         return (
             f"{status} cash=${cash:.2f}({cash_pct:.0f}%) "
             f"exp=${exposure:.2f}({exp_pct:.0f}%) "
-            f"total=${portfolio:.2f}"
+            f"total=${total:.2f}"
         )
 
     def reset_daily(self):
