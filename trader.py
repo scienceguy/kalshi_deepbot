@@ -2088,21 +2088,33 @@ def cycle(client: KalshiClient):
             minutes_in = 15.0 - sig.market.minutes_left
             if config.ENTRY_WINDOW_START_MIN <= minutes_in <= config.ENTRY_WINDOW_END_MIN:
                 total_value = (cash if cash is not None else 0.0) + mark_to_market_exposure
+                series = sig.market.ticker.split("-")[0] if "-" in sig.market.ticker else sig.market.ticker
+                asset = series[2:-3] if series.startswith("KX") and series.endswith("15M") else (series[2:] if series.startswith("KX") else series)
+                spot = gates.spot_for(asset)
+                strike = float(sig.market.strike) if sig.market.strike else None
+                spot_diff = (spot - strike) if (spot is not None and strike is not None) else None
+                mid_side = sig.market.mid_yes if sig.side == "yes" else (sig.market.mid_no or (100 - (sig.market.mid_yes or 50)))
+
                 signal_info = {
                     "ticker": sig.market.ticker,
                     "direction": sig.direction,
+                    "side": sig.side,
                     "entry_price": sig.entry_price,
                     "contracts": sig.contracts,
                     "dollar_risk": sig.dollar_risk,
                     "cash": cash if cash is not None else 0.0,
                     "exposure": mark_to_market_exposure,
                     "total_value": total_value,
+                    "mid_side": mid_side,
                     "mid": sig.market.mid_yes,
+                    "spot_price": spot,
+                    "strike_price": strike,
+                    "spot_diff": spot_diff,
                     "skew": sig.market.skew,
-                    "trend": sig.market.mid_yes - 50.0,
                     "minutes_left": sig.market.minutes_left,
                     "source": getattr(sig, 'source', 'unknown'),
                     "strength": sig.strength,
+                    "signal_reason": getattr(sig, 'reason', ''),
                 }
                 should_block, eval_result = should_block_trade(
                     signal_info, min_probability=config.LLM_EVAL_MIN_PROBABILITY,

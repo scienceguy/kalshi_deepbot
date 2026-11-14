@@ -470,11 +470,9 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
     system_prompt = (
         "You are a disciplined Kalshi 15-minute binary crypto market trading analyst. "
         "The strategy being evaluated is a GATED FAVOURITE: take liquidity on the favourite side "
-        "(YES or NO at 75-99c) only when spot momentum and the fair-value model confirm positive EV "
-        "after Kalshi's taker fee (0.07 x price x (1-price)). The position is held to settlement. "
-        "Grade the SPECIFIC candidate signal: analyze its entry price, skew, trend, underlying spot momentum, "
-        "and time left in the 15-minute window. Evaluate whether the favourite's momentum is genuine or an "
-        "exhaustion/mean-reversion trap that will fail before expiry. "
+        "(YES or NO at 75-99c) to hold to settlement when cross-venue spot price, strike, and momentum "
+        "confirm positive EV after fees. "
+        "Evaluate whether the candidate trade's spot position relative to strike is strong and genuine. "
         "Return ONLY valid JSON with exactly these keys: "
         "\"probability_of_net_profit\" (number 0-1) and "
         "\"confidence_hold_to_expiry\" (number 0-1). "
@@ -483,19 +481,17 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
 
     user_prompt = json.dumps({
         "ticker": signal_info.get("ticker", ""),
-        "direction": signal_info.get("direction", ""),
+        "target_side": (signal_info.get("side") or signal_info.get("direction", "")).upper(),
         "entry_price_cents": signal_info.get("entry_price", 0),
+        "target_side_mid_cents": signal_info.get("mid_side", signal_info.get("mid", 50)),
+        "spot_price": signal_info.get("spot_price"),
+        "strike_price": signal_info.get("strike_price"),
+        "spot_vs_strike_diff": signal_info.get("spot_diff"),
+        "minutes_left": signal_info.get("minutes_left", 0),
+        "signal_reason": signal_info.get("signal_reason", ""),
         "contracts": signal_info.get("contracts", 0),
         "dollar_risk": signal_info.get("dollar_risk", 0.0),
-        "cash": signal_info.get("cash", 0.0),
-        "exposure": signal_info.get("exposure", 0.0),
-        "total_value": signal_info.get("total_value", 0.0),
-        "mid_cents": signal_info.get("mid", 50),
         "skew_cents": signal_info.get("skew", 0),
-        "trend_cents": signal_info.get("trend", 0),
-        "minutes_left": signal_info.get("minutes_left", 0),
-        "signal_source": signal_info.get("source", ""),
-        "signal_strength": signal_info.get("strength", 0),
     })
 
     messages = _build_messages(system_prompt, user_prompt)
