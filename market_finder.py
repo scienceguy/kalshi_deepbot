@@ -267,6 +267,16 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
             # NO side may be the favourite (YES bid low -> NO ask high).
             # YES mid isn't in band but NO ask = 100 - YES bid could be >= 75c.
             mains.append((mkt, ct, ml, mid))
+        # reviewed: check if NO bid sits in favourite entry band
+        elif nb is not None and MIN_P <= nb <= MAX_P:
+            mains.append((mkt, ct, ml, mid))
+        # reviewed: check if NO ask sits in favourite entry band
+        elif na is not None and MIN_P <= na <= MAX_P:
+            mains.append((mkt, ct, ml, mid))
+        # reviewed: include unquoted summary markets so orderbook is fetched for real quotes
+        elif yb is None and ya is None:
+            # Prices not populated in summary; fetch orderbook to determine real prices
+            mains.append((mkt, ct, ml, 50.0))
         
         # Hedge check is independent of main check
         # Skip if yes_ask is 0 or missing (no liquidity to hedge against)
@@ -379,7 +389,7 @@ def find_active_markets(client: KalshiClient, extra_band=None):
                 and extra_band[0] <= info.mid_yes <= extra_band[1]:
             extra.append(info)
         yes_tradeable = yes_ask and MIN_P <= yes_ask <= MAX_P and info.yes_liquidity >= 5  # reviewed: only YES ask in band with >=5 contracts liquidity
-        no_tradeable = no_ask and MIN_P <= no_ask <= MAX_P and info.no_liquidity >= 5  # reviewed: allow NO favourite in band when NO liquidity >=5 contracts
+        no_tradeable = getattr(config, "ALLOW_NO_BUYS", False) and no_ask and MIN_P <= no_ask <= MAX_P and info.no_liquidity >= 5  # reviewed: allow NO favourite in band when NO liquidity >=5 contracts and ALLOW_NO_BUYS is enabled
         if yes_tradeable:
             result.append(info)
             side = "YES"

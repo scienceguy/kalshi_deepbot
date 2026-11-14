@@ -163,8 +163,8 @@ SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
 # selects only those with positive edge after fees. Research shows GBM spot-vs-
 # strike edge exists whenever spot is meaningfully ITM vs strike, not just in
 # the final 60 seconds.
-ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 4.0)
-ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.0)
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 3.0)
+ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.5)
 # Final-minute taker price bands: pay the ask on the favourite (75-99c)
 MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 75)
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
@@ -306,9 +306,9 @@ MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
 # band above is meaningful only on the YES leg the measurement was taken from.
 # min 75 is a wide guard, not a claim -- see tests/test_gates.py::measured_band_sides.
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 75)
-# Both YES and NO favourites enabled; entry is gated by high-confidence LLM consensus + GBM + ML models
+# YES favourites enabled; NO favourites disabled by default to prevent mean-reversion short traps (opt-in via ALLOW_NO_BUYS=true)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
-ALLOW_NO_BUYS = _env_bool("ALLOW_NO_BUYS", True)
+ALLOW_NO_BUYS = _env_bool("ALLOW_NO_BUYS", False)
 
 # NO *market data* format only: Kalshi returns NO prices directly (not
 # complemented), so this stays False. It does NOT affect order pricing —
