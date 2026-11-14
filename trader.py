@@ -1260,6 +1260,12 @@ def _manage_exits(client):
             )
         except Exception as e:
             log.error("Exit order failed for %s: %s", ticker, e)
+            err_str = str(e).lower()
+            # reviewed: clear position if exchange reports insufficient balance/no position
+            if "insufficient" in err_str or "not enough" in err_str or "no position" in err_str:
+                state.positions.pop(ticker, None)
+                state.position_risk.pop(ticker, None)
+                _save_paper_positions(state.positions)
             continue
         if resp is None:
             continue
@@ -1269,15 +1275,14 @@ def _manage_exits(client):
             pos["exit_order_id"] = exit_oid
 
         filled = floor_contracts(contracts) if config.DRY_RUN else _order_fill_count(resp)
-        # reviewed: check order status in response if fill_count was omitted by exchange
-        if filled <= 0:
-            order_status = (resp.get("order") or {}).get("status") or resp.get("status")
-            # reviewed: mark fully filled if exchange reports order executed/filled
-            if order_status in ("executed", "settled", "filled"):
-                filled = contracts
-            else:
-                log.info("Exit order for %s did not fill — retrying next cycle", ticker)
-                continue
+        order_status = (resp.get("order") or {}).get("status") or resp.get("status")
+        # reviewed: mark fully filled if exchange reports order executed/filled or if filled >= contracts - 0.01
+        if order_status in ("executed", "settled", "filled") or filled >= contracts - 0.01:
+            filled = contracts
+        # reviewed: retry exit order next cycle if fill count is zero and status not executed
+        elif filled <= 0:
+            log.info("Exit order for %s did not fill — retrying next cycle", ticker)
+            continue
 
         # Only remove what was actually sold: an IOC sell can fill partially,
         # and popping the whole position would drop the unsold contracts from
@@ -2452,9 +2457,11 @@ def main():
     # an HF-trained model (scripts/train_ml_hf.py) validates as well-calibrated
     # but predicts the venue mid, so it rejects every ask-paying entry. Loading
     # it by default would silently stop all trading.
-    if args.ml_model:
-        _load_ml_model(args.ml_model)
-        log.info("ML fair-value filtering enabled (%s)", args.ml_model)
+    ml_path = args.ml_model or getattr(config, "ML_MODEL_PATH", "")
+    # reviewed: only load ML model file if explicitly configured and path exists on disk
+    if ml_path and os.path.exists(ml_path):
+        _load_ml_model(ml_path)
+        log.info("ML fair-value filtering enabled (%s)", ml_path)
 
     # Validate the Supabase service key at startup — an invalid/leaked key
     # (e.g. the one previously committed to git history) returns 401 on every

@@ -266,6 +266,9 @@ GATES_LOG_FILE = Path(
 # Research (Turbine, Bot for Kalshi, PredictionMarketsPicks) shows edge only
 # in the final 60 seconds. Pay the ask on the favourite, hold to BRTI settle.
 # ═════════════════════════════════════════════════════════════════════
+# ML model path (optional fair-value model filter)
+ML_MODEL_PATH = _env_str("ML_MODEL_PATH", "")
+
 # AGGRESSIVE_FILL=false enforces post_only=True so resting limit orders never pay taker fees
 AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", False)
 AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)

@@ -383,6 +383,11 @@ def _evaluate_common(
     def _pass(r):
         return TradeSignal("PASS", "", 0, 0, 0.0, r, market)
 
+    # ── ALLOW_NO_BUYS gate ──────────────────────────────────────────────
+    # reviewed: enforce ALLOW_NO_BUYS=False on all evaluation paths
+    if not bullish and not config.ALLOW_NO_BUYS:
+        return _pass("NO buys disabled by config")
+
     # ── Timing gate ─────────────────────────────────────────────────────
     if minutes_in < config.ENTRY_WINDOW_START_MIN:
         return _pass(f"Early ({minutes_in:.1f}min)")

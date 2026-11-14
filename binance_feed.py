@@ -302,12 +302,13 @@ def _fallback_sources(base: str):
     return (
         ("okx", f"https://www.okx.com/api/v5/market/ticker?instId={base}-USDT",
          lambda d: float(d["data"][0]["last"])),
+        ("gateio", f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={base}_USDT",
+         lambda d: float((d[0] if isinstance(d, list) else d)["last"])),
         ("coinbase", f"https://api.exchange.coinbase.com/products/{base}-USD/ticker",
          lambda d: float(d["price"])),
-        # RedStone oracle cache — third non-exchange reference. Skipped when the
-        # configured gateway is unreachable (the legacy host is decommissioned).
+        # RedStone oracle cache — non-exchange reference. Skipped when unreachable.
         ("redstone", REDSTONE_CACHE_URL.format(base=base),
-         lambda d: float((d[0] if isinstance(d, list) else d)["value"])),
+         lambda d: float((d[0] if isinstance(d, list) else d).get("value", (d[0] if isinstance(d, list) else d).get("price", 0)))),
         *kraken,
     )
 
