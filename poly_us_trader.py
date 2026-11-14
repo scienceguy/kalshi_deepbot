@@ -201,6 +201,7 @@ class PolyUSPaperTrader:
                 continue
 
             try:
+                time.sleep(0.05)
                 settle_res = polymarket_us_client.get_market_settlement(slug)
                 if settle_res is not None and "settlement" in settle_res:
                     settlement = settle_res["settlement"]
@@ -595,6 +596,33 @@ class PolyUSPaperTrader:
         realized_pnl = float(self.state.get("realized_pnl", 0.0))
         total_pnl = round(realized_pnl + total_unrealized, 4)
         total_equity = round(self.state["cash"] + total_mtm, 2)
+
+        # Auto-reset rule: if post-settlement equity drops to <= 34.95, reset bankroll to $35.00 while preserving history
+        if total_equity <= 34.95:
+            prior_eq = total_equity
+            log.info("Post-settlement equity $%.2f <= $34.95 — resetting bankroll to $35.00 while preserving ledger history", prior_eq)
+            self.state["cash"] = 35.0
+            self.state["start_balance"] = 35.0
+            self.state["positions"] = []
+            self.state["realized_pnl"] = 0.0
+            self.state["unrealized_pnl"] = 0.0
+            self.state["total_pnl"] = 0.0
+            self.state["window_budget"] = 1.05
+            self.state["window_spent"] = 0.0
+            total_equity = 35.0
+            total_mtm = 0.0
+            total_unrealized = 0.0
+            realized_pnl = 0.0
+            total_pnl = 0.0
+            self._save_state(self.state)
+            self._append_ledger({
+                "event": "auto_reset_threshold",
+                "prior_equity": prior_eq,
+                "threshold": 34.95,
+                "cash": 35.0,
+                "timestamp": now.isoformat(),
+            })
+
         self.state["unrealized_pnl"] = round(total_unrealized, 4)
         self.state["total_pnl"] = total_pnl
 

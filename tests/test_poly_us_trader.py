@@ -277,3 +277,26 @@ def test_window_budget_blocks_overtrade_in_same_window(temp_trader):
     assert ok2 is False
     assert len(temp_trader.state["positions"]) == 1
 
+
+def test_auto_reset_threshold_preserves_history(temp_trader):
+    # Simulate prior trade history in ledger
+    temp_trader._append_ledger({"event": "prior_trade", "slug": "t1", "pnl": 0.05})
+
+    # Set state equity to 34.90 (<= 34.95 threshold)
+    temp_trader.state["cash"] = 34.90
+    temp_trader.state["positions"] = []
+
+    with patch.object(temp_trader, "scan_markets", return_value=[]):
+        temp_trader.cycle()
+
+    # Cash reset to $35.00
+    assert temp_trader.state["cash"] == 35.0
+    assert temp_trader.state["start_balance"] == 35.0
+    assert temp_trader.state["positions"] == []
+
+    # Ledger history preserved
+    lines = temp_trader.ledger_file.read_text().splitlines()
+    assert len(lines) >= 2
+    assert any("prior_trade" in l for l in lines)
+    assert any("auto_reset_threshold" in l for l in lines)
+
