@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from unittest.mock import MagicMock
 
 import polymarket_us_client
 from polymarket_us import PolymarketUS
@@ -295,3 +296,36 @@ def test_public_market_call_without_creds(monkeypatch, tmp_path):
         assert "bbo" in book
     finally:
         PolymarketUS.get = original_get
+
+
+def test_cancel_order_auto_resolves_slug(monkeypatch):
+    """cancel_order() auto-resolves marketSlug from open orders when slug is omitted."""
+    monkeypatch.setenv("POLYMARKET_KEY_ID", "dummy-key-id")
+    monkeypatch.setenv("POLYMARKET_SECRET_KEY", "dummy-secret-key")
+
+    mock_client = MagicMock()
+    mock_client.orders.list.return_value = {
+        "orders": [{"id": "ORD-123", "marketSlug": "test-slug-vwh"}]
+    }
+    monkeypatch.setattr(polymarket_us_client, "_get_authenticated_client", lambda: mock_client)
+
+    # Cancel without market_slug
+    ok = polymarket_us_client.cancel_order("ORD-123")
+    assert ok is True
+    mock_client.orders.cancel.assert_called_once_with("ORD-123", {"marketSlug": "test-slug-vwh"})
+
+
+def test_place_maker_order_preview_and_create(monkeypatch):
+    """place_maker_order() previews then creates with participateDontInitiate."""
+    monkeypatch.setenv("POLYMARKET_KEY_ID", "dummy-key-id")
+    monkeypatch.setenv("POLYMARKET_SECRET_KEY", "dummy-secret-key")
+
+    mock_client = MagicMock()
+    mock_client.orders.preview.return_value = {"order": {"state": "ORDER_STATE_PENDING_NEW"}}
+    mock_client.orders.create.return_value = {"id": "ORD-999"}
+    monkeypatch.setattr(polymarket_us_client, "_get_authenticated_client", lambda: mock_client)
+
+    resp = polymarket_us_client.place_maker_order("test-slug", "yes", 0.05, 10)
+    assert resp == {"id": "ORD-999"}
+    assert mock_client.orders.preview.called
+    assert mock_client.orders.create.called

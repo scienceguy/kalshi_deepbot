@@ -246,8 +246,20 @@ def get_open_orders() -> list:
 
 
 def cancel_order(order_id: str, market_slug: str = "") -> bool:
-    """Cancel a Polymarket US order by id and market slug."""
+    """Cancel a Polymarket US order by id and market slug.
+
+    If market_slug is not provided, looks up the order's marketSlug from
+    get_open_orders() so callers don't fail with BadRequestError.
+    """
     client = _get_authenticated_client()
+    if not market_slug:
+        for o in get_open_orders():
+            if o.get("id") == order_id:
+                market_slug = o.get("marketSlug", "")
+                break
+    if not market_slug:
+        log.warning("Poly cancel_order %s failed: market_slug required and not found in open orders", order_id)
+        return False
     try:
         client.orders.cancel(order_id, {"marketSlug": market_slug})
         return True
