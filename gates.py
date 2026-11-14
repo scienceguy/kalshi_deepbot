@@ -235,7 +235,8 @@ def entry_fee(p: float) -> float:
     """
     if not 0.0 < p < 1.0:
         return 0.0
-    return fees.taker_fee_dollars(1.0, p) if config.GATES_FEE_TAKER else 0.0
+    # reviewed: charge taker fee when GATES_FEE_TAKER or AGGRESSIVE_FILL is active
+    return fees.taker_fee_dollars(1.0, p) if (config.GATES_FEE_TAKER or getattr(config, "AGGRESSIVE_FILL", False)) else 0.0
 
 
 def cushion_z(spot: float, strike: float, sigma: float, minutes: float,
@@ -443,6 +444,12 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
             if z is None:
                 block_reasons.append("gate3: cushion undefined (fail closed)")
             else:
+                min_z = float(getattr(config, "GATES_MIN_CUSHION_Z", 1.80))
+                # reviewed: enforce minimum distance from strike in standard deviations to eliminate pin risk and false breakouts
+                if z < min_z:
+                    block_reasons.append(
+                        f"gate3: cushion_z {z:.2f} < min {min_z:.2f} (pin risk / spot too close to strike)"
+                    )
                 q = normal_cdf(z)
                 # The Brownian model has no drift, so at a tail price it
                 # reproduces the venue quote and EV lands on ~0 by construction.

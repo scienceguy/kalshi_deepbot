@@ -166,7 +166,7 @@ SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
 # selects only those with positive edge after fees. Research shows GBM spot-vs-
 # strike edge exists whenever spot is meaningfully ITM vs strike, not just in
 # the final 60 seconds.
-ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 1.5)
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 6.0)
 ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.5)
 # Optimal favourite criteria price band: ask 92-99c
 MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", _env_int("ENTRY_BAND_MIN", 92))
@@ -234,6 +234,7 @@ GATES_FEE_TAKER = _env_bool("GATES_FEE_TAKER", True)
 GATES_TIME_DECAY_ENABLED = _env_bool("GATES_TIME_DECAY_ENABLED", True)
 GATES_HIGH_GAMMA_MINUTES = _env_float("GATES_HIGH_GAMMA_MINUTES", 2.0)
 GATES_DENY_HIGH_GAMMA = _env_bool("GATES_DENY_HIGH_GAMMA", False)
+GATES_MIN_CUSHION_Z = _env_float("GATES_MIN_CUSHION_Z", 1.80)
 
 # Feed cache + per-candidate JSONL diagnostics
 GATES_SPOT_CACHE_SECONDS = _env_int("GATES_SPOT_CACHE_SECONDS", 30)

@@ -99,15 +99,15 @@ def test_model_probability_from_market_returns_default():
     assert model.model_probability_from_market(FakeMarket()) == 0.5
 
 
-def test_model_probability_gbm_falls_back_to_momentum():
-    """GBM without spot/strike falls back to momentum model."""
+def test_model_probability_gbm_falls_back_to_raw_mid():
+    """GBM without spot/strike falls back to raw mid probability without phantom edge."""
     class FakeMarket:
         mid_yes = 80.0
     p = model.model_probability_from_market(
         FakeMarket(), model_type="gbm", minutes_left=1.0, momentum_cents_per_min=1.0,
     )
-    # Should use momentum fallback: 80% + momentum push
-    assert p > 0.8
+    # Should use raw mid fallback: 80% (0.80)
+    assert p == 0.80
 
 
 def test_raw_mid_returns_mid():

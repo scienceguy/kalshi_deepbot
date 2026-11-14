@@ -188,12 +188,10 @@ def model_probability_from_market(market, model_type: str = "gbm",
         if spot_price is not None and strike is not None and minutes_left > 0:
             return gbm_probability_yes_wins(
                 spot_price, strike, minutes_left, volatility)
-        # Fall back to momentum model if no spot data (logged so a silent
-        # model swap in the trade record is visible in the run log).
-        log.debug("gbm fallback to momentum: %s spot=%s strike=%s",
-                  getattr(market, "ticker", "?"), spot_price, strike)
-        return momentum_adjusted_probability(
-            base_prob * 100.0, minutes_left, momentum_cents_per_min)
+        # If spot or strike is unavailable, return base_prob (market mid) so no phantom edge is minted
+        log.warning("gbm missing spot/strike for %s (spot=%s, strike=%s) — returning raw mid probability",
+                    getattr(market, "ticker", "?"), spot_price, strike)
+        return base_prob
 
     elif model_type == "momentum":
         return momentum_adjusted_probability(
