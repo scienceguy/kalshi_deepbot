@@ -380,8 +380,13 @@ def _evaluate_common(
     """
     Shared evaluation logic. Returns TradeSignal or None.
     """
-    def _pass(r):
-        return TradeSignal("PASS", "", 0, 0, 0.0, r, market)
+    eval_side = "yes" if bullish else "no"
+    ep_val = _maker_price(market, bullish)
+    ep = max(1, min(99, int(ep_val))) if ep_val else 0
+    n = _size(ep, max_dollars, max_contracts) if ep > 0 else 0
+
+    def _pass(r, p=ep, count=n, s=eval_side):
+        return TradeSignal("PASS", s, p, count, 0.0, r, market)
 
     # ── ALLOW_NO_BUYS gate ──────────────────────────────────────────────
     # reviewed: enforce ALLOW_NO_BUYS=False on all evaluation paths
@@ -636,8 +641,9 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
             "NET-POSITIVE" if edge >= config.MODEL_MIN_EDGE_CENTS else "NEGATIVE-EDGE"
         )
         if edge < config.MODEL_MIN_EDGE_CENTS:
+            n_cands = _size(entry_c, max_dollars, max_contracts)
             results.append(TradeSignal(
-                "PASS", "", 0, 0, 0.0,
+                "PASS", side, entry_c, n_cands, 0.0,
                 f"Edge {edge:+.1f}c below min {config.MODEL_MIN_EDGE_CENTS}c "
                 f"(prob={trade_prob*100:.0f}% ask={entry_c}c fee={fee_cents:.1f}c)",
                 market,
@@ -675,6 +681,9 @@ def evaluate(market: MarketInfo, cash: float = 10.0,
                      if max_trade_override is not None else cash
 
     _track_bid(market.ticker, int(round(market.yes_bid or 0)), now)
+    # reviewed: track NO bid history when available for stability checking
+    if market.no_bid:
+        _track_bid(f"{market.ticker}:no", int(round(market.no_bid or 0)), now)
 
     if market.bracket_role == "HEDGE_NO":
         result = _evaluate_hedge(market, max_dollars)
