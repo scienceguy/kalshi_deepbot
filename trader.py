@@ -26,6 +26,7 @@ import argparse, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
 import logging.handlers  # noqa: E402  — needed for RotatingFileHandler (submodule)
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import config  # noqa: E402
 
@@ -637,6 +638,34 @@ def _order_fill_count(resp):
         return 0.0
 
 
+def _ticker_close_time(ticker: str) -> Optional[datetime]:
+    """Parse close time directly from 15M ticker string (e.g. KXBTC15M-26NOV140000-00).
+
+    Zero network latency, zero blocking I/O on the hot mark-to-market path.
+    """
+    try:
+        parts = ticker.split("-")
+        # reviewed: ensure ticker string has series and date components
+        if len(parts) >= 2:
+            date_str = parts[1]
+            month_map = {
+                "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+                "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12
+            }
+            year = 2000 + int(date_str[0:2])
+            mon_str = date_str[2:5].upper()
+            month = month_map.get(mon_str)
+            day = int(date_str[5:7])
+            hour = int(date_str[7:9])
+            minute = int(date_str[9:11])
+            # reviewed: validate month parsed correctly before constructing datetime
+            if month:
+                return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+    except Exception:
+        pass
+    return None
+
+
 def _mark_to_market_exposure(positions, markets, client=None):
     """Mark-to-market exposure in dollars across all 15M positions.
 
@@ -664,15 +693,8 @@ def _mark_to_market_exposure(positions, markets, client=None):
             if no_pos:
                 exposure += no_pos * mkt_info.mid_no / 100.0
         else:
-            mkt = None
-            # reviewed: query market status when client is available
-            if client:
-                try:
-                    mkt = client.get_market(ticker)
-                except Exception:
-                    pass
-            ct = _parse_api_time(mkt.get("close_time")) if mkt else None
-            is_closed = (mkt and mkt.get("status") in ("closed", "finalized", "settled")) or (ct and ct <= now)
+            ct = _ticker_close_time(ticker)
+            is_closed = ct and ct <= now
             # reviewed: open unexpired positions retain cost basis exposure
             if not is_closed:
                 exposure += _pos_cost_basis(p)
