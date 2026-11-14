@@ -628,11 +628,15 @@ def _order_price_dollars(o):
 
 def _order_fill_count(resp):
     """Filled contract count from an order response (new + legacy)."""
-    v = resp.get("fill_count_fp")
+    # reviewed: validate response is a dict before reading nested order object
+    if not isinstance(resp, dict):
+        return 0.0
+    order = resp.get("order") if isinstance(resp.get("order"), dict) else resp
+    v = order.get("fill_count_fp")
     if v is None:
-        v = resp.get("fill_count")
+        v = order.get("fill_count")
     if v is None:
-        v = resp.get("filledCount", 0)
+        v = order.get("filledCount", 0)
     try:
         return float(v or 0)
     except (TypeError, ValueError):
@@ -1224,8 +1228,18 @@ def _manage_exits(client):
         except Exception:
             pass
 
+        # reviewed: retrieve LLM hold confidence to decide whether to scalp at +3c or hold to expiry
+        llm_insight = state.llm_trade_insights.get(ticker.upper(), {})
+        hold_conf = llm_insight.get("hold_confidence", 0.0)
+        high_hold_confidence = hold_conf >= 0.80
+
         delta = bid - entry
+        # reviewed: sell immediately when profitable by +3c unless LLM confirms with high confidence to hold to expiry
         if delta >= config.EXIT_TAKE_PROFIT_CENTS:
+            # reviewed: check if LLM high hold confidence overrides immediate take profit
+            if high_hold_confidence:
+                log.info("Holding %s to expiry: LLM high hold confidence (%.2f >= 0.80)", ticker, hold_conf)
+                continue
             reason = f"take profit +{delta}c"
         # reviewed: only trigger stop loss if delta dropped past stop threshold AND spot confirms loss
         elif -delta >= config.EXIT_STOP_LOSS_CENTS and is_losing_spot:
