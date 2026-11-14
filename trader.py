@@ -648,19 +648,8 @@ def _ticker_close_time(ticker: str) -> Optional[datetime]:
         # reviewed: ensure ticker string has series and date components
         if len(parts) >= 2:
             date_str = parts[1]
-            month_map = {
-                "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
-                "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12
-            }
-            year = 2000 + int(date_str[0:2])
-            mon_str = date_str[2:5].upper()
-            month = month_map.get(mon_str)
-            day = int(date_str[5:7])
-            hour = int(date_str[7:9])
-            minute = int(date_str[9:11])
-            # reviewed: validate month parsed correctly before constructing datetime
-            if month:
-                return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+            # reviewed: robust strptime parsing with UTC timezone
+            return datetime.strptime(date_str, "%y%b%d%H%M").replace(tzinfo=timezone.utc)
     except Exception:
         pass
     return None
@@ -688,10 +677,18 @@ def _mark_to_market_exposure(positions, markets, client=None):
             continue
         mkt_info = mkt_by_ticker.get(ticker)
         if mkt_info and (yes_pos or no_pos):
-            if yes_pos:
-                exposure += yes_pos * mkt_info.mid_yes / 100.0
-            if no_pos:
-                exposure += no_pos * mkt_info.mid_no / 100.0
+            val = 0.0
+            # reviewed: validate mid_yes is not None before calculating MTM value
+            if yes_pos and mkt_info.mid_yes is not None:
+                val += yes_pos * mkt_info.mid_yes / 100.0
+            # reviewed: validate mid_no is not None before calculating MTM value
+            if no_pos and mkt_info.mid_no is not None:
+                val += no_pos * mkt_info.mid_no / 100.0
+            # reviewed: fall back to cost basis if mid value is zero or missing
+            if val > 0:
+                exposure += val
+            else:
+                exposure += _pos_cost_basis(p)
         else:
             ct = _ticker_close_time(ticker)
             is_closed = ct and ct <= now

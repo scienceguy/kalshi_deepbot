@@ -194,8 +194,11 @@ class LocalDB:
 
     def insert_signal(self, signal_data: Dict[str, Any]) -> bool:
         """Insert a new trade signal locally."""
+        data = dict(signal_data)
+        if not data.get("type"):
+            data["type"] = "taker"
         required = ("ts", "ticker", "side", "price_cents", "contracts")
-        missing = [f for f in required if f not in signal_data]
+        missing = [f for f in required if f not in data]
         if missing:
             log.warning("insert_signal: missing required fields %s", ", ".join(missing))
             return False
@@ -203,9 +206,9 @@ class LocalDB:
         conn = self._get_conn()
         with self._lock:
             try:
-                columns = list(signal_data.keys())
+                columns = list(data.keys())
                 placeholders = ", ".join(["?" for _ in columns])
-                values = [signal_data.get(c) for c in columns]
+                values = [data.get(c) for c in columns]
                 # Add synced=0
                 columns.append("synced")
                 placeholders += ", ?"
@@ -227,11 +230,14 @@ class LocalDB:
         required = ("ts", "ticker", "side", "price_cents", "contracts")
         clean = []
         for s in signals:
-            missing = [f for f in required if f not in s]
+            item = dict(s)
+            if not item.get("type"):
+                item["type"] = "taker"
+            missing = [f for f in required if f not in item]
             if missing:
                 log.warning("insert_signals_batch: skipping signal missing %s", ", ".join(missing))
                 continue
-            clean.append(s)
+            clean.append(item)
         
         if not clean:
             return False
@@ -469,6 +475,9 @@ class LocalDB:
             except Exception as e:
                 log.warning("get_unsynced_pnl_rows error: %s", e)
                 return []
+
+    # Alias for API consistency
+    get_unsynced_pnl_ledger = get_unsynced_pnl_rows
 
     def get_unsynced_bot_state(self) -> list:
         """Get unsynced bot_state rows for cloud sync."""

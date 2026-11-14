@@ -655,6 +655,7 @@ def evaluate(market: MarketInfo, cash: float = 10.0,
     Evaluate a market and return a list of TradeSignal (0 or 1 per market).
     """
     now = time.time()
+    _ensure_bid_hist_loaded()
     _maybe_save_bid_hist(now)
     max_dollars = max_trade_override if max_trade_override is not None \
                   else cash * config.BALANCE_PCT_PER_TRADE

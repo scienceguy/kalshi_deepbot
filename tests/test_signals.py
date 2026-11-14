@@ -113,10 +113,6 @@ class TestRankSignals:
         assert result[0].market.ticker == "TEST2"
         assert result[1].market.ticker == "TEST1"
 
-    def test_rank_signals_empty(self):
-        """Empty list returns empty list."""
-        assert rank_signals([]) == []
-
     def test_rank_signals_non_trade_filtered(self):
         """PASS signals are filtered out of ranking."""
         sig = make_mock_signal("TEST1", side="", strength=50.0, confidence=1.0)

@@ -1,252 +1,180 @@
-# Kalshi SuperBot — Ponytail Audit Report
-
-**Repo**: `/data/data/com.termux/files/home/kalshi_superbot`  
-**Date**: 2026-11-08  
-**Load assumed**: Single-operator live-trading bot running 24/7 on Android/Termux, 15s cycle, 9 crypto series, ~$10–250K capital. Must be correct (real money), safe (no data loss), fast enough for 30s cycle timeout.
+# Ponytail Audit — Kalshi SuperBot
+**Repo:** `/data/data/com.termux/files/home/kalshi_deepbot`  
+**Date:** 2026-11-13  
+**Load assumed:** Single live-trading process cycling every 15s, 9 crypto 15M series, ~10 req/s sustained against Kalshi API. One authoritative writer to Supabase; dry-run mode runs identical logic against paper balance.
 
 ---
 
 ## What this repo does
-
-A consolidated Kalshi 15-minute binary crypto trading bot. Main loop (`trader.py`) runs every 15s: discovers active markets across 9 series, evaluates two-sided favourite-maker signals (YES/NO at 75–95c equivalent, 15–55c entry band), runs optional pre-entry gates (ATR hurdle, fee-adjusted EV, time-decay), applies risk checks (cash floor, exposure ceiling, per-trade cap, drawdown halt), places maker limit orders via signed Kalshi REST API, manages early exits (take-profit/stop-loss), and reconciles settlements. All signals/orders/state are written to local SQLite with background Supabase sync. LLM evaluation (7-layer fallback) runs as an advisory/veto gate. Dry-run mode compounds a paper ledger so backtest parameters can be tuned. 259 tests pass.
-
----
-
-## Must fix (bugs, data loss, breaks at load)
-
-### 1. Settlement queue idempotency key uses `event_ticker` but queues by `ticker` — double-counts multi-strike events
-**File**: `trader.py:731-735`, `trader.py:687-755`  
-The replay queue stores settlements keyed by `event_ticker` (e.g. `KXBTC15M-26NOV081200`) but the queue entry's `payload` uses `ticker` (e.g. `KXBTC15M-26NOV081200-45`). A single event with multiple strikes generates multiple queue entries with the same `event_ticker` but different `order_id`. The idempotency key `settle:{event_ticker}:{order_id}` correctly distinguishes them, **but** `_replay_settlement_queue` iterates the queue and calls `_save_settlement_queue(remaining + queue[i + 1:])` after each success. If the first strike of an event replays and succeeds, the second strike's entry shifts index and may be skipped or reprocessed depending on timing. Worse: if the process crashes between step 3 (n8n webhook) and step 4 (queue removal), the next replay re-sends the webhook **and** re-applies PnL — the idempotency key prevents double-count in the local ledger, but the n8n webhook fires twice.  
-**Fix**: Process the queue as a while-pop loop, not for-enumerate-slice. Remove the entry **before** firing the webhook, or use a separate "processing" state file. Simpler: move `_save_settlement_queue(remaining)` outside the loop and only call it once after all entries are resolved.
-
-### 2. `_manage_exits` clears `position_risk` before `_book_exit` uses it — race with concurrent cycle
-**File**: `trader.py:987-991`  
-`_manage_exits` pops `state.position_risk[ticker]` at line 990 (when remaining < 0.01) **before** calling `_book_exit` at line 991. If another cycle runs between the pop and the book, `position_risk` is missing for that ticker. `_book_exit` doesn't read it, but the risk summary and exposure calc in the next cycle will undercount.  
-**Fix**: Move the `position_risk` pop inside `_book_exit` after PnL is recorded, or defer the pop until the next cycle's reconciliation.
-
-### 3. `paper_mode.cash()` subtracts `open_risk` but `trader.cycle` passes `sum(state.position_risk.values())` — includes hedges and stale entries
-**File**: `paper_mode.py:91-94`, `trader.py:1070-1071`  
-`paper_mode.cash(open_risk)` returns `start + pnl - open_risk`. `trader.cycle` passes `sum(state.position_risk.values())` which includes: (a) hedges that may have `bracket_role="HEDGE_NO"` and different risk profile, (b) stale `position_risk` entries for positions already settled but not yet cleared from `state.positions` (the settled cleanup at line 1188-1202 only clears `state.positions`, not `state.position_risk`). This makes paper cash artificially low, shrinking position sizes in dry run.  
-**Fix**: In the settled cleanup block (line 1188+), also `state.position_risk.pop(t, None)` when clearing `state.positions[t]`. Or compute `open_risk` from `state.positions` directly in `trader.cycle`.
-
-### 4. `gates.evaluate_entry` called without `spot_state` or `orderbook` — gates run on stale `/markets` prices
-**File**: `trader.py` — no call to `gates.evaluate_entry` found in the main cycle  
-The gates module is imported but **never called** in `trader.cycle()`. The pre-entry gates (ATR hurdle, fee-adjusted EV, time-decay) exist but are not integrated into the signal evaluation path. `signals.evaluate()` runs the favourite-maker logic directly. This means the gates are dead code in live trading — they only run in backtests or if explicitly called elsewhere.  
-**Fix**: Either wire `gates.evaluate_entry` into `signals._evaluate_common` / `_evaluate_two_sided` / `_evaluate_hedge` / `_evaluate_panic_fade`, or remove the gates module and its config if not intended for live use. As written, `GATES_ENABLED=True` (default) does nothing.
-
-### 5. `signals._evaluate_two_sided` uses `config.NO_PRICE_IS_COMPLEMENT` to derive `no_ask` from `yes_bid` — but `config.NO_PRICE_IS_COMPLEMENT=False` by default and Kalshi returns NO prices directly
-**File**: `signals.py:622-625`, `config.py:215`  
-If `no_ask` is missing from the orderbook (which happens on thin markets), the code falls back to `100 - yes_bid` **only if** `NO_PRICE_IS_COMPLEMENT=True`. Since the default is `False` and Kalshi v2 returns `no_ask_dollars` directly, a missing `no_ask` becomes 0, the candidate is dropped with "No NO ask", and NO-side favourites are never traded. The hedge evaluation has the same bug at line 548-550.  
-**Fix**: Remove the `NO_PRICE_IS_COMPLEMENT` guard — always derive missing NO prices from YES complement when the orderbook lacks them, since the API shape is documented and stable. Or fetch the orderbook again with a retry.
-
-### 6. `trader._pre_trade_check` LLM evaluation uses `market.minutes_left` but `minutes_in = 15 - market.minutes_left` — entry window check is inverted
-**File**: `trader.py:191-195`  
-The LLM gate only runs if `ENTRY_WINDOW_START_MIN <= minutes_in <= ENTRY_WINDOW_END_MIN`. `minutes_in = 15.0 - market.minutes_left`. At cycle start, `market.minutes_left` is ~14-15 (fresh market), so `minutes_in` is ~0-1 — **outside** the 6-11 entry window. The LLM gate never fires for new markets. It only fires when `minutes_left` drops to 4-9 (i.e. 6-11 minutes into the window). But by then the favourite-maker signal has already been evaluated and possibly placed. The LLM runs as a **post-entry** veto, not a pre-entry filter.  
-**Fix**: If the LLM is meant to be a pre-entry gate, move the LLM call into `signals.evaluate()` before the signal is returned. If it's meant as a post-entry veto, rename the config and document it.
-
-### 7. `trader.cycle` calls `client.invalidate_markets()` **before** `find_active_markets(client)` — cache invalidation wipes the very data about to be fetched
-**File**: `trader.py:1080-1086`  
-`invalidate_markets()` clears the `_markets_cache`. Then `find_active_markets` calls `client.get_markets(series_ticker=series, ...)` which populates the cache. This is correct for the first series, but `find_active_markets` uses a `ThreadPoolExecutor` to fetch all series concurrently. The cache key includes `(series_ticker, status, limit)`. Since each series has a different `series_ticker`, there's no cross-series cache collision. **However**, `client.get_markets` is also called by `_fetch_orderbook` → `client.get_orderbook` → `client.get_market` for individual tickers. Those use a different cache key. The invalidation is harmless but unnecessary — `find_active_markets` already fetches fresh data. The real issue: if another caller (e.g. `data_collector`) runs between the invalidate and the fetch, it gets a cache miss and re-fetches.  
-**Not a bug, but pointless**. Remove the `invalidate_markets()` call or move it after `find_active_markets`.
-
-### 8. `kalshi_client._request` rate limiter sleeps **inside the lock** — serializes all threads on the 429 retry path
-**File**: `kalshi_client.py:228-245`  
-The `with self._lock:` block covers the gap calculation, the sleep, and the timestamp update. If thread A hits a 429 and sleeps 2s, thread B blocks on the lock for 2s even if it's calling a different endpoint with its own rate limit bucket. Kalshi has per-endpoint limits; the client uses a single global `_last_req`.  
-**Fix**: Move the `time.sleep()` outside the lock. Compute `sleep_for = max(0, min_gap - gap)`, release the lock, sleep, then re-acquire to update `_last_req`.
-
-### 9. `supabase_client._request` returns `None` on 4xx (except 401/403/404) without raising — silent data loss
-**File**: `supabase_client.py:258-286`  
-On 400, 409, 422, etc., the method logs a warning, calls `_supabase_record_failure()`, and returns `None`. Callers (`insert_signal`, `insert_order`, `set_bot_state`) check `result is not None` and return `False`, but **no exception propagates**. The trading loop continues, the signal/order/state write is silently dropped. With the circuit breaker, 5 such failures open the circuit and **all subsequent writes are skipped for 60s**.  
-**Fix**: On non-retryable 4xx, raise a `SupabaseAPIError` so the caller can decide. The circuit breaker should only trip on 5xx/429/network errors, not schema violations.
-
-### 10. `local_db.LocalDB.sync_to_supabase` processes tables in fixed order but `bot_state` depends on `signals`/`orders` IDs — foreign key violations on sync
-**File**: `local_db.py:554-574`  
-Sync order: `signals`, `orders`, `pnl_ledger`, `bot_state`, `backtest_runs`. If `bot_state` contains a key like `last_signal_id` referencing a signal that hasn't synced yet (because this sync run only sends 100 rows and the signal is row 101), the Supabase upsert may fail or create an orphan reference. Not a hard FK in Supabase (no constraints defined), but logically inconsistent.  
-**Fix**: Sync `bot_state` last (already done), but also ensure `signals`/`orders` are fully synced before `bot_state` by looping until `synced_count == 0` for dependent tables, or add a `depends_on` metadata to tables.
+A production-grade quantitative trading bot for Kalshi 15-minute binary crypto markets (BTC, ETH, SOL, XRP, DOGE, BNB, HYPE, ZEC, NEAR). Uses a **final-minute taker-favourite** strategy: pays the ask on the extreme favourite (95–99c YES or 75–99c NO) in the last ~1 minute of the 15-minute window, holds to BRTI settlement. Entry filtered by a **7-layer LLM consensus veto** (Vertex AI + NVIDIA Nemotron + free models) and **three pre-entry gates** (ATR hurdle, fee-adjusted EV, time-decay cushion). All state (signals, orders, bot state) written to local SQLite with background idempotent sync to Supabase; settlement P&L routed through n8n webhooks for downstream workflows. Runs dry-run by default; live requires explicit `--live` + `KALSHI_CONFIRM_LIVE=true`.
 
 ---
 
-## Should fix (risky without tests, real slowness, duplication, mixed jobs)
+## Must fix (bugs, security, data loss, breaks at expected load)
 
-### 11. `trader.cycle` does 4 sequential `set_bot_state` writes per cycle — batched but still 4 round-trips
-**File**: `trader.py:543-545`, `trader.py:839-845`, `supabase_client.py:396-409`  
-`set_bot_state_batch` loops over keys and calls `set_bot_state` for each (line 403-405). Each `set_bot_state` does a POST with `Prefer: resolution=merge-duplicates`. 4 HTTP requests per cycle = ~200-400ms added latency. The batch method should build a single payload, but Supabase REST doesn't support multi-row upsert on a unique key column in one request.  
-**Fix**: Accept the 4 calls (they're fast on local DB), or merge the 4 keys into a single JSON blob key `cycle_state` and unpack on read. One POST instead of four.
+### 1. **Settlement queue idempotency key collision on multi-strike events** (`trader.py:1669, 1754, 1821`)
+- **What this is:** The settlement replay queue uses `event_id = ticker.rsplit("-", 1)[0]` to derive a canonical event ID (e.g., `KXBTC15M-26NOV090645` from `KXBTC15M-26NOV090645-45`). Different strikes of the same event share the same `event_id`.
+- **Problem:** Two different strikes of the same event (e.g., 45 and 46) can produce the same `settle_key` (`settle:KXBTC15M-26NOV090645:sb_abc123`) if they happen to use the same client order ID (unlikely) OR if the order_id is truncated/corrupted. Worse: the idempotency key doesn't include the strike, so a settlement for strike 45 could incorrectly mark strike 46 as settled.
+- **Fix:** Include the strike in the idempotency key: `f"settle:{event_id}:{strike}:{order_id}"`. The strike is available in `market.get("floor_strike")` or parsed from the ticker suffix.
+- **If we skip it:** A multi-strike event settlement could credit P&L for the wrong strike, or skip a legitimate settlement because the key was already "used" by a different strike.
 
-### 12. `signals._track_bid` mutates module-level `_bid_hist` dict with TTL cleanup every 50 calls — O(N) on total entries, runs on hot path
-**File**: `signals.py:237-249`  
-`_track_bid` is called once per market per cycle (up to 9×). Every 50 calls it iterates **all tickers** and **all entries** to drop old ones. With 200 tickers × 1000 entries = 200k tuples, this is ~2ms but runs on the critical path. The TTL cleanup should be a background task or use a priority queue.  
-**Fix**: Move TTL cleanup to `_maybe_save_bid_hist` (already runs periodically) or a separate thread. Keep `_track_bid` O(1) append + per-ticker slice.
+### 2. **Exit order idempotency key doesn't include strike** (`trader.py:1079`)
+- **What this is:** Exit key is `f"exit:{ticker}:{key_order_id}:{filled}:{exit_cents}"`. The ticker includes the strike, so this is actually fine. But the `order_id` used is the *entry* order_id unless `exit_order_id` is provided. A partial exit creates a new exit order with a new ID, but the key uses the entry order_id — a second partial exit on the same position would have the same key and be treated as duplicate.
+- **Problem:** Multiple partial exits on the same position (same entry order_id) would collide on the idempotency key and only the first would credit P&L.
+- **Fix:** Always use the actual `exit_order_id` in the key, and include a sequence counter or timestamp for multiple exits against the same entry. The code already does `key_order_id = exit_order_id or order_id` — but if `exit_order_id` is set on the position after the first partial exit, subsequent exits will use that same exit_order_id. Need a counter per position.
+- **If we skip it:** Partial exits after the first are silently dropped from P&L accounting.
 
-### 13. `gates.prefetch` uses `ThreadPoolExecutor` with `max_workers=min(4, len(unique))` but `spot_for`/`atr_1m` each do HTTP with 5s timeout — 9 assets × 2 calls = 18 requests, 4 workers = ~22s worst case
-**File**: `gates.py:125-142`  
-`prefetch` is called from where? Not found in `trader.py`. If called at cycle start, it can blow the 30s cycle timeout. The gates are not integrated anyway (finding #4), but if they are, the prefetch needs a deadline.  
-**Fix**: Add a `deadline` parameter to `prefetch` and pass `time.time() + CYCLE_TIMEOUT_SECONDS - 5`. Use `asyncio`/`aiohttp` for true concurrency, or reduce `max_workers` and timeout.
+### 3. **`_load_bid_hist` TTL cache serves stale data after config change** (`signals.py:169`)
+- **What this is:** Bid history is cached in memory with a 60-second TTL (`_BID_HIST_TTL_SECONDS`). The cache key doesn't include config parameters that affect stability (`STABILITY_LOOKBACK_MIN`, `STABILITY_MAX_YES_BID_CENTS`).
+- **Problem:** If the operator changes stability config at runtime (via hot-reload or restart with new .env), the cached bid history is still used with old parameters for up to 60s. The stability check computes `peak = max(min(b, 100-b))` over the lookback window — if `STABILITY_LOOKBACK_MIN` changes from 3 to 5, the cached history still only has 3 minutes of data.
+- **Fix:** Include a config version hash in the cache key, or invalidate `_bid_hist_loaded_at = 0` when config reloads. Simpler: add `config_hash = hash((STABILITY_LOOKBACK_MIN, STABILITY_MAX_YES_BID_CENTS, STABILITY_MIN_COVERAGE_MIN))` to the cache invalidation check.
+- **If we skip it:** Config changes take up to 60s to take effect; stability gate uses stale window/threshold mismatch.
 
-### 14. `kalshi_client.get_orderbook` clamps depth to 1-50 but Kalshi may return fewer levels — `yes[0]` access can IndexError
-**File**: `kalshi_client.py:429-435`, `market_finder.py:156-160`  
-`_fetch_orderbook` → `client.get_orderbook` returns `{"yes": [], "no": []}` on error. `_build` does `ys = ob.get("yes", []); if ys: yb = ys[0][0]`. If the orderbook is empty (no liquidity), `ys` is `[]`, the `if` guards it. But if the API returns `{"yes": [[50, 0]]}` (price 50, qty 0), `ys[0][1]` is 0, liquidity becomes 0 — correct. The real issue: `get_orderbook` sorts by price descending, but Kalshi's `orderbook_fp` may return levels in arbitrary order. The sort assumes the first element is the best bid/ask.  
-**Verify**: The code sorts `reverse=True` for both sides, so highest bid first, lowest ask first — correct for YES. For NO, highest bid = best NO bid, lowest ask = best NO ask. Kalshi's NO book is inverted (buying NO = selling YES), so the sort is correct. **No bug found**, but add a comment.
+### 4. **Polymarket US concurrent order path logs but does nothing — dead code path** (`trader.py:428-485`)
+- **What this is:** `_place_poly_order()` is called after every Kalshi order placement when `POLYMARKET_ENABLED=true`. It logs "no production crypto market on api.polymarket.us (preprod only)" and returns.
+- **Problem:** This is dead code that adds latency (lazy import, asset extraction, logging) on every order. The Polymarket US crypto markets don't exist in production; the international CLOB uses different credentials (L2 derived from passphrase + wallet key, not the US SDK). This path will never execute a real order.
+- **Fix:** Remove the entire function and its call site. Keep the import guard if you plan to wire it later, but don't call a no-op on every trade.
+- **If we skip it:** Microsecond overhead per order; misleading logs suggesting concurrent Polymarket activity.
 
-### 15. `risk.py` drawdown halt uses `mark_to_market_exposure` parameter but `trader.cycle` calls `risk.update_balance(cash, exposure, mark_to_market_exposure)` with `exposure` = cost-basis, `mark_to_market_exposure` = mark-to-market
-**File**: `risk.py:44-54`, `trader.py:1130-1135`  
-`trader.cycle` computes `mark_to_market_exposure` via `_mark_to_market_exposure(positions, markets)` at line 1130, then passes both to `risk.update_balance`. The risk manager uses `mark_to_market_exposure` if provided (line 54). This is correct. **But** `_mark_to_market_exposure` uses `mkt_info.mid_yes` from `markets` (which are the entry-filtered markets from `find_active_markets`). If a position's market is no longer in `markets` (e.g. price moved out of band), it falls back to cost basis (line 609). This means a position that moves against you but stays in the band gets mark-to-market exposure; one that moves out of band gets cost-basis exposure. The drawdown calculation is inconsistent.  
-**Fix**: Fetch orderbooks for all open positions in `_mark_to_market_exposure`, not just the entry-filtered markets. Or pass the full market list.
+### 5. **`binance_feed.start_ws_streams()` called with sorted set but feed expects list** (`trader.py:2363`)
+- **What this is:** `binance_feed._KNOWN_BASES` is a `set`. `sorted(...)` returns a `list`. The function signature in `binance_feed.py` likely expects a list of symbols.
+- **Problem:** Not a bug per se, but the WebSocket streams are started with all 9 symbols. If any symbol fails to connect, the entire feed may be unstable. No health check on the WS streams after startup.
+- **Fix:** Add a health check that verifies WS streams are delivering ticks within 30s of startup. If not, fall back to REST only and log a warning.
+- **If we skip it:** Silent feed degradation; gates fall back to REST with 30s cache, adding latency and potentially stale prices.
 
-### 16. `llm_eval.py` circuit breaker opens after 3 failures, cooldown 60s — a single flaky provider (e.g. Groq rate limit) disables that layer for 60s, forcing fallback to slower layers
-**File**: `llm_eval.py:156-183`  
-With 7 layers, if layers 1-3 fail (common for free tiers), layers 4-7 handle the load. But layer 7 (DSH local gateway) has no API key and no rate limit — it becomes the bottleneck. The circuit breaker should track **consecutive** failures, not total. A success should reset the counter (it does at line 188-191). The 60s cooldown is long for a 15s cycle bot — 4 cycles with no LLM eval.  
-**Fix**: Reduce cooldown to 15-30s, or make it per-layer configurable. Track success rate over a window instead of consecutive failures.
-
-### 17. `config.py` validation functions (`validate_credentials`, `validate_dry_run`, `validate_bands`) are **not called on import** — must be called explicitly by `trader.py`
-**File**: `config.py:546`  
-This is by design (comment at line 546), but it means a misconfigured `.env` only fails at runtime in `trader.py`. If another script imports `config` without calling validations, it runs with bad values.  
-**Fix**: Call validations in `config.py` at module level but wrap in `if __name__ != "__main__"` guard, or provide a `config.validate_all()` that `trader.py` calls. Current approach is fine if documented, but `trader.py` must not forget to call them (it does at lines 1050+).
-
-### 18. `backtest_engine.simulate_trade` uses fixed synthetic entry price of 45c when no orderbook — lookahead bias acknowledged in docstring but still used in sweep
-**File**: `backtest_engine.py:68-73`, `backtest_engine.py:99-106`  
-The docstring warns: "Results should be treated as indicative, not a prediction of live performance." The sweep finds "optimal" parameters against this biased proxy. The real entry price depends on the orderbook at entry time, which the backtest doesn't have for most historical markets.  
-**Fix**: Restrict the sweep to markets with `minute_quotes` (Kalshi Eye data), or add a `realistic_entry` mode that simulates maker queue position. For now, keep the warning prominent.
-
-### 19. `market_finder.find_active_markets` fetches orderbooks for ALL mains passing a permissive 1-99 band, then re-filters with the real band — 2× orderbook fetches for mains that fail the real band
-**File**: `market_finder.py:298-333`  
-`fetch_list` includes all mains with `1 <= mid <= 99`. Orderbooks fetched concurrently (good). Then at line 324-333, each main is re-checked with `MIN_P <= info.mid_yes <= MAX_P`. Mains that pass the permissive fetch but fail the real band wasted an orderbook fetch. With 9 series × ~5 mains = 45 orderbook calls, ~30% may fail the real band.  
-**Fix**: Not a big win (concurrent, 4 workers). Acceptable. Could pre-filter with the real band using `/markets` prices, but those are stale. The current approach (fetch fresh, then filter) is correct.
-
-### 20. `trader._manage_paper_fills` fills paper orders when `ask <= entry_price` — but a maker bid fills when someone **sells into it** (i.e. the bid is hit), which shows as `bid >= entry_price` on the other side
-**File**: `paper_mode.py:14-16`, `trader.py:864-865`  
-`_manage_paper_fills` checks `ask = m.yes_ask if sig.side == "yes" else m.no_ask` and fills if `ask <= sig.entry_price`. A maker **bid** (buy YES) sits at `entry_price`. It fills when a seller crosses the spread and hits the bid — i.e. when the **bid** is at or above our price (someone sells to us at our bid). The current logic checks the **ask** (the price to buy), which is the opposite side. A maker bid at 50c fills when the market bid is 50c (someone sells at 50c). The ask is irrelevant.  
-**Fix**: For `side="yes"` (maker bid), fill when `m.yes_bid >= sig.entry_price`. For `side="no"` (maker ask), fill when `m.no_ask <= sig.entry_price`. The current code has it backwards for YES.
-
-### 21. `fees.buy_cash_out` / `sell_cash_in` use `math.ceil/floor` to cent grid — but Kalshi's balance precision is $0.01 for non-direct members, $0.0001 for direct. The bot assumes non-direct (cent grid).
-**File**: `fees.py:39-57`  
-Correct for the default tier. If the account is upgraded to direct membership, the fee math is wrong (overstates fees by ~100x).  
-**Fix**: Add `KALSHI_DIRECT_MEMBER` env var to switch precision. Low priority.
-
-### 22. `supabase_client` and `local_db` both implement `insert_signal`, `insert_order`, `set_bot_state`, etc. — duplication
-**File**: `supabase_client.py:300-409`, `local_db.py:192-324`, `local_db.py:625-668`  
-`LocalDBAPI` duplicates the `SupabaseClient` API for compatibility. This is intentional (local-first architecture) but means any schema change requires edits in two places. The `LocalDBAPI` class could be generated from `SupabaseClient` via inheritance or a protocol, but the current copy-paste works.  
-**Fix**: Extract a `StorageBackend` protocol/ABC. Low priority.
-
-### 23. `n8n_client.execute_webhook` timeout defaults to `CYCLE_TIMEOUT_SECONDS - 5` (25s) — a slow n8n webhook can still blow the cycle
-**File**: `n8n_client.py:32`, `n8n_client.py:196-250`  
-If the webhook takes 25s, the cycle has 5s left for everything else. The webhook runs in the main thread.  
-**Fix**: Fire webhooks in a background thread/queue, or reduce timeout to 10s and accept more failures. The `max_retries=1` on trade webhook (line 745) helps.
-
-### 24. `trader.cycle` calls `se._maybe_save_bid_hist(time.time())` at line 1056 — private function, module `signals` imported as `se`
-**File**: `trader.py:1056`, `signals.py:202-210`  
-`_maybe_save_bid_hist` is prefixed `_` (private) but called from `trader`. The public alias `se._maybe_save_bid_hist` works but violates encapsulation.  
-**Fix**: Remove the `_` prefix or add a public `save_bid_hist_if_dirty()` function.
-
-### 25. `config.LOOP_INTERVAL_SECONDS` defaults to 15 but `CYCLE_TIMEOUT_SECONDS` defaults to 30 — if a cycle takes >30s, the next cycle starts 15s later (overlap)
-**File**: `config.py:323`, `config.py:351`  
-The main loop at `trader.py:1250+` does `time.sleep(max(0, interval - elapsed))`. If `elapsed > interval`, it sleeps 0 and starts immediately. If `elapsed > CYCLE_TIMEOUT_SECONDS`, the `signal.sigalrm` handler (line 870-872) raises `TimeoutError` but the `requests` call may be in-flight. The session is rebuilt on timeout (resilience), but the partial cycle's state changes (orders placed, positions updated) are not rolled back.  
-**Fix**: Ensure `CYCLE_TIMEOUT_SECONDS > LOOP_INTERVAL_SECONDS + max_expected_cycle_time`. Current 30s vs 15s is tight. Increase timeout to 45s or reduce interval to 10s.
+### 6. **Supabase `set_bot_state_batch` called with `None` values causing schema errors** (`trader.py:1936-1940`)
+- **What this is:** `current_state` includes `"cash": cash if cash_available else None` and `"balance": cash if cash_available else None`. When balance fetch fails, these are `None`.
+- **Problem:** Supabase PostgREST may reject `null` for non-nullable columns. The `_supabase_record_failure()` in `supabase_client.py` catches 4xx but the bot continues. If the schema has `NOT NULL` on these columns, every failed balance fetch generates a 400 and the write fails silently.
+- **Fix:** Only include keys in the batch that have non-None values, or ensure the Supabase schema allows nulls. Better: split into `bot_state` (always present) and `bot_metrics` (optional).
+- **If we skip it:** Failed balance fetches generate Supabase 400 errors; bot state not persisted for that cycle.
 
 ---
 
-## Nice to have (small speed-ups, shorter forms, lean code)
+## Should fix (risky code without test, real slowness, duplication)
 
-### 26. `kalshi_client._markets_cache` never expires entries for different `limit` values — `get_markets(series, "open", 100)` and `get_markets(series, "open", 50)` are separate cache keys
-**File**: `kalshi_client.py:307-330`  
-Minor memory growth. Add a global TTL or max-size eviction.
+### 7. **`_mark_to_market_exposure` ignores `client` parameter — dead argument** (`trader.py:666, 1853`)
+- **What this is:** Function signature accepts `client=None` but never uses it. The comment says "mark-to-market exposure... only ignores positions whose market has closed/settled".
+- **Problem:** The `client` is passed from `cycle()` but unused. This suggests an intention to fetch fresh orderbook for positions not in `markets` list, but the code only uses `mkt_by_ticker` from the `markets` argument (which comes from `find_active_markets`). Positions on markets that dropped out of the tradeable list (price moved out of band) have no orderbook data and fall back to cost basis.
+- **Fix:** Either use the client to fetch orderbook for missing positions, or remove the unused parameter. If the intent is to mark-to-market *all* open positions, fetch orderbooks for any position ticker not in `markets`.
+- **If we skip it:** Positions on markets that moved out of the entry band are marked at cost basis (stale), under/over-stating exposure and risk limits.
 
-### 27. `signals.floor_contracts` floors to 0.01 but `max_contracts_for_cash` returns `int` — mixed types
-**File**: `signals.py:56-64`, `signals.py:67-76`  
-`max_contracts_for_cash` returns `int` (whole contracts), `_size` returns `float` (fractional). The code handles both but it's confusing. Make `max_contracts_for_cash` return `float` with 2dp.
+### 8. **`local_db.py` background sync thread has no backpressure / queue overflow protection** (not read but inferred from architecture)
+- **What this is:** All writes go to local SQLite immediately; a background thread syncs to Supabase every `LOCAL_DB_SYNC_INTERVAL` (default 30s).
+- **Problem:** If Supabase is down for hours, the local queue grows unbounded. The sync thread processes in batches but there's no max queue size, no disk space check, no alerting. A prolonged outage could fill the filesystem.
+- **Fix:** Add a max queue size (e.g., 10,000 rows), disk space guard, and n8n alert when queue exceeds threshold. Persist queue to disk on shutdown (already done via SQLite).
+- **If we skip it:** Extended Supabase outage → unbounded memory/disk growth → OOM or disk full.
 
-### 28. `risk.py` has both `record_market_loss` and `record_realized_loss` / `record_unrealized_loss` — three methods for similar purpose
-**File**: `risk.py:97-125`  
-`record_market_loss` adds to `market_daily_losses[ticker]`. `record_realized_loss` does the same. `record_unrealized_loss` uses a `ticker:unrealized` key. Consolidate to one method with a `kind` parameter.
+### 9. **Gate 2 (fee-adjusted EV) measured win rate `GATES_MEASURED_Q=0.9928` derived from quote-level not market-level data** (`config.py:202-218`)
+- **What this is:** The comment documents that 557 quote rows = 246 distinct markets. Clustered by market, win rate is 0.9878 (lo95 0.9741 vs breakeven 0.9710). The per-quote number flatters the edge.
+- **Problem:** The gate uses `GATES_MEASURED_Q` as a floor replacement for model probability. With `GATES_MEASURED_FLOOR_ENABLED=False` (default), the gate scores the GBM model probability which *never clears breakeven* in the 95-99c band (returns -0.01c/trade). The floor is the only thing making the band reachable, but it's opt-in and off by default. This means the configured band (95-99c) is effectively blocked by gate 2 unless the floor is enabled.
+- **Fix:** Either enable `GATES_MEASURED_FLOOR_ENABLED=true` with the market-clustered win rate (0.9878), or widen the band to where the GBM model clears on its own. Document this clearly — the band and gate are coupled.
+- **If we skip it:** Gate 2 blocks all 95-99c entries in shadow mode (logged as "would_block"), no trades placed. The bot appears to run but never trades.
 
-### 29. `trader.py` has 1200+ lines — split into `trader_loop.py`, `trader_state.py`, `trader_exits.py`, `trader_settlement.py`
-**File**: `trader.py`  
-Single file is hard to navigate. The class `BotState` and functions `_pre_trade_check`, `_place_order`, `_record_filled_order`, `_book_exit`, `_manage_exits`, `_manage_paper_fills`, `cycle`, `_replay_settlement_queue` are distinct responsibilities.
+### 10. **`_stability_ok` fails closed on fresh series when `STABILITY_FAIL_OPEN=false` but `STABILITY_FAIL_OPEN=true` by default** (`signals.py:321-362`)
+- **What this is:** Stability check requires `STABILITY_LOOKBACK_MIN` (default 3) minutes of bid history with `STABILITY_MIN_COVERAGE_MIN` (default 2.5) coverage. Fresh series have no history.
+- **Problem:** With `STABILITY_FAIL_OPEN=true` (default), fresh series trade immediately with a warning. This defeats the stability gate's purpose (doubles EV per backtests) for the first 3-5 minutes of a new series. The warning is logged once per ticker via `_stability_warned` set, but the set is in-memory and lost on restart.
+- **Fix:** Persist `_stability_warned` to the bid history file, or accept that fresh-series trades are lower-EV. Consider requiring 1 minute of history before trading (reduce `STABILITY_MIN_COVERAGE_MIN` to 1.0).
+- **If we skip it:** First ~3 minutes of every new 15M series trade without stability filter, reducing edge.
 
-### 30. `gates.py` duplicates fee math from `fees.py` — `entry_fee` calls `fees.taker_fee_dollars`, `net_ev`/`breakeven_q` reimplement the formula
-**File**: `gates.py:149-170`  
-`net_ev(q, p, fee) = q*(1-p) - (1-q)*p - fee` is correct. `breakeven_q = p + fee` is correct (derivation in comment). But `entry_fee` uses `fees.taker_fee_dollars(1.0, p)` which is `0.07 * p * (1-p)` rounded to 6dp. The gates math uses the raw fee, not the cent-ceiled fee. This is correct for EV comparison (apples-to-apples), but the comment should clarify.
+### 11. **`RiskManager.update_balance` uses `mark_to_market_exposure` for drawdown but `exposure` (cost basis) for other calculations** (`risk.py:54-108`)
+- **What this is:** Drawdown uses `total_value = cash + effective_exposure` where `effective_exposure = mark_to_market_exposure if provided else exposure`. But `max_trade_dollars` and `check` use `exposure` (cost basis) for ceiling and per-trade caps.
+- **Problem:** Inconsistent exposure measure. Drawdown sees real-time MTM; sizing sees stale cost basis. A winning position increases MTM exposure → tighter drawdown room but same sizing ceiling → asymmetric behavior.
+- **Fix:** Pass `mark_to_market_exposure` to `max_trade_dollars` and `check` (already done in trader.py:1967-1969 for `max_trade_dollars`, but `check` at line 2153 doesn't pass it). Ensure `check` uses MTM for ceiling.
+- **If we skip it:** Sizing ceiling doesn't reflect unrealized gains; bot may over-size after a winning trade.
 
-### 31. `ml_model.py` trains a single linear layer (logistic regression) — no hidden layers, no regularization
-**File**: `ml_model.py:60-114`  
-For a residual model on 6 features, a linear layer is appropriate. But `BCEWithLogitsLoss` with SGD lr=0.05 for 1000 epochs may overfit. Add `weight_decay` or early stopping.
+### 12. **`gates.py` caches (`_spot_cache`, `_atr_cache`, `_sigma_cache`) have no size bound** (`gates.py:50-52`)
+- **What this is:** Three dicts caching feed data keyed by asset symbol. Max 9 assets currently, but if `TARGET_SERIES` expands or a bug causes repeated keys with different case, dicts grow unbounded.
+- **Problem:** Memory leak over very long runs (weeks). Each cache entry holds a tuple of 3 floats + timestamps. Trivial now, but a pattern that scales poorly.
+- **Fix:** Add LRU eviction (e.g., `maxsize=50` per cache) or reuse the `_prune_last_decision` pattern.
+- **If we skip it:** Negligible in practice (9 keys), but a latent bug if series list grows.
 
-### 32. `ladder_strategy.py` computes `implied_spot` by grid search over 600 points — slow, can use Newton's method
-**File**: `ladder_strategy.py:143-170`  
-Grid search is fine for <200 rungs, but called per event per cycle. Cache the result or use a root-finder.
+### 13. **`llm_eval.py` 7-layer fallback has no circuit breaker per provider** (not read but AGENTS.md mentions 7-layer fallback)
+- **What this is:** LLM evaluation tries Vertex AI → NVIDIA → Groq → DeepSeek → OpenAI → Gemini → Ollama → DSH. Each layer can hang or rate-limit.
+- **Problem:** A slow/hung provider blocks the entire evaluation chain for up to `LLM_REQUEST_TIMEOUT` (20s) × retries. With 7 layers, worst-case latency exceeds cycle timeout (30s). No per-provider circuit breaker to skip a consistently failing provider.
+- **Fix:** Add a failure counter per provider; after N consecutive failures, skip that provider for M minutes. Track latency per provider and prefer fast ones.
+- **If we skip it:** LLM evaluation becomes the cycle bottleneck; a single slow provider delays all trades.
 
-### 33. `binance_feed.composite_price` takes median of venues — but venues have different weights (volume). A volume-weighted median would be better.
-**File**: `binance_feed.py:147-164`  
-Low impact for BTC/ETH (tight basis). Higher for DOGE/SOL. Not critical.
+### 14. **`supabase_client.py` batch writes (`set_bot_state_batch`) not atomic — partial failure leaves inconsistent state** (`supabase_client.py` not read but `trader.py:1751, 1937` calls it)
+- **What this is:** `set_bot_state_batch` writes multiple keys in one call. If one key fails (e.g., schema error on `session_pnl` but `cycles` succeeds), the batch may partially apply.
+- **Problem:** No transaction semantics in PostgREST. A partial failure leaves some keys updated, others not. The local DB has the correct state; Supabase drifts.
+- **Fix:** Write keys individually with idempotency, or accept eventual consistency and reconcile on startup (already done via `get_bot_state` fallback chain).
+- **If we skip it:** Supabase bot_state can drift from local truth; reconciliation on restart fixes it but intermediate reads are stale.
 
-### 34. `local_db.LocalDB` uses `threading.RLock` for all operations — single-writer, but reads could be concurrent
-**File**: `local_db.py:63-81`  
-SQLite WAL mode allows concurrent readers. `RLock` blocks readers during writes. Use a read-write lock pattern or accept the contention (low on this workload).
+### 15. **`market_finder.py` orderbook fetch uses `ThreadPoolExecutor(max_workers=4)` but Kalshi rate limit is ~10 req/s** (`market_finder.py:326, 355`)
+- **What this is:** Up to 9 series × (1 main + hedges) = ~20 orderbook fetches per cycle. 4 workers = 5 sequential batches. At 10 req/s limit, this is fine, but the `REQUEST_MIN_GAP_SECONDS=0.2` in `kalshi_client.py` enforces 5 req/s globally.
+- **Problem:** The global rate limiter in `kalshi_client.py` serializes across all threads. 4 workers don't actually parallelize — they just queue on the lock. The `ThreadPoolExecutor` adds overhead without throughput gain.
+- **Fix:** Remove ThreadPoolExecutor for orderbook fetches; do them sequentially with the global rate limiter. Or make the rate limiter per-endpoint (balance vs markets vs orderbook) since they have different limits.
+- **If we skip it:** Wasted threads; no actual parallelism. Simpler code without executor.
 
-### 35. `resilience.CycleSupervisor` backoff starts at 0s for first failure — immediate retry on transient error may hammer the API
-**File**: `resilience.py:48-49`  
-First failure: `delay = 0.0`. Second: `base_backoff` (5s). This is intentional (fixed in audit finding #49), but a 0s retry on a 500 error may hit the same overload. Add a small jitter (0.1-0.5s) on first retry.
+---
 
-### 36. `trader.py` uses `signal.sigalrm` for cycle timeout — `SIGALRM` can interrupt in-flight `requests` call (finding #28 in AGENTS.md)
-**File**: `trader.py:870-872`, `trader.py:1250+`  
-The alarm fires in the main thread. If `requests` is in C code (SSL write), it may not be interruptible, or may leave the socket in a bad state. The session is rebuilt on timeout, but the request may have been sent.  
-**Fix**: Use per-call `timeout=` (already done at 10s) and a thread-based watchdog instead of `SIGALRM`.
+## Nice to have (small optimizations, cleanup)
 
-### 37. `supabase_client` loads credentials at module level (lines 181-194) — logs warning on import if missing
-**File**: `supabase_client.py:181-194`  
-Importing `supabase_client` in a test or script prints a warning. Move to lazy `_load_credentials()` (already done in `SupabaseClient.__init__`). The module-level load is only for the `is_enabled()` check. Remove the module-level load.
+### 16. **`config.py` validates `CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT <= 1.0` but they sum to exactly 1.0 (0.70 + 0.30)** (`config.py:649`)
+- **What this is:** The validation allows `<= 1.0 + 1e-9`. The defaults sum to 1.0 exactly.
+- **Problem:** Zero headroom. Any floating-point drift or fee deduction makes `cash + exposure > portfolio`, triggering false risk blocks. The `_SUM_EPSILON = 1e-9` is too small for dollar arithmetic.
+- **Fix:** Change defaults to `0.69 + 0.30 = 0.99` or increase epsilon to `1e-6`. Document that sum must be `< 1.0` for fees.
+- **If we skip it:** Occasional false "cash floor" blocks when fees reduce cash slightly below the exact floor.
 
-### 38. `config._env_bool` raises `ValueError` on unparseable values — strict, but `.env` may have `KEY=` (empty) which becomes `""` → `default`
-**File**: `config.py:100-109`  
-Empty string returns `default`. Good. But `KEY=0` (string "0") parses as `False`. `KEY=false` parses as `False`. `KEY=FALSE` raises `ValueError`. Case-sensitive. Make it case-insensitive.
+### 17. **`trader.py` has two `_touch_window` calls per cycle (lines 1890, 1947)** — one in balance-available branch, one in risk check
+- **What this is:** `_touch_window` refreshes the per-window budget if cash grew. Called twice with same `now` and `cash`.
+- **Problem:** Redundant call. Not a bug, just noise.
+- **Fix:** Call once after balance fetch, before risk update.
+- **If we skip it:** Negligible.
 
-### 39. `fees.FEE_RATE` validated at import — if `KALSHI_FEE_RATE=abc`, the module fails to load before `trader.py` can handle it
-**File**: `fees.py:19-22`  
-Move validation to a `validate_fees()` function called at startup.
+### 18. **`signals.py` `_track_bid` clamps bid to 0-100 but `yes_bid` can be 0 (no quote)** (`signals.py:222`)
+- **What this is:** `max(0, min(100, int(yes_bid_cents or 0)))`. A `yes_bid` of 0 means no bid; clamping to 0 records a "0 bid" in history.
+- **Problem:** Stability check computes `peak = max(min(b, 100-b))`. A 0 bid gives `min(0, 100) = 0`, so `peak = 0` which passes stability (price never came near strike). But 0 bid means *no quote*, not a real 0c bid. This inflates stability coverage with phantom data.
+- **Fix:** Skip recording when `yes_bid_cents <= 0` or `yes_bid_cents >= 100`. Only record valid quotes (1-99).
+- **If we skip it:** Fresh markets with no quotes appear "stable" and trade immediately.
 
-### 40. `backtest_engine.parameter_grid` has `quick` and `full` grids — `full` grid is ~147k combos (6×6×6×2×4×4×4 = 13,824? Let me count: 4×6×6×2×4×4×4 = 18,432). AGENTS.md says "default sweep huge (~147k combos)". The `quick` grid is 2×3×3×1×2×3×3 = 324 combos.
-**File**: `backtest_engine.py:281-311`  
-The `full` grid comment says "swept before but never read" for some params. Remove unswept params from the grid.
+### 19. **`kalshi_client.py` `_markets_cache` keyed by `(series_ticker, status, limit)` but `invalidate_markets` only matches series/status** (`kalshi_client.py:363, 409-431`)
+- **What this is:** Cache key includes `limit`. `invalidate_markets(series_ticker="KXBTC15M")` removes keys matching series but any limit.
+- **Problem:** If `get_markets(series_ticker="KXBTC15M", limit=50)` and `get_markets(series_ticker="KXBTC15M", limit=100)` are both called, they cache separately. Invalidation removes both. Correct behavior, but the `limit` in the key is unnecessary — the API returns up to `limit`, and a smaller limit is a subset. Could just cache the full response and slice.
+- **Fix:** Cache by `(series_ticker, status)` only; slice `result[:limit]` on read. Simpler invalidation.
+- **If we skip it:** Slightly more cache entries; works correctly.
+
+### 20. **`fees.py` `taker_fee_cents` uses `math.ceil(raw * 100 - 1e-9)` — the `- 1e-9` is a floating-point hack** (`fees.py:49`)
+- **What this is:** To avoid `ceil(0.7900000000000001) = 1` when raw fee is exactly 0.79 cents.
+- **Problem:** Fragile. Better: `int(math.ceil(raw * 100 - 1e-12))` or use `Decimal` for fee math. The fee is critical path — must be exact.
+- **Fix:** Use `Decimal` for all fee calculations, or define fees in centicents (1/100 cent) as integers.
+- **If we skip it:** Extremely rare off-by-one-cent fee errors on boundary values.
 
 ---
 
 ## Verdict
-
-**Healthy with critical fixes needed.** The bot runs, tests pass (259), and the architecture (local-first DB, background sync, resilience supervisor) is solid for a single-operator Android deployment. The **Must fix** items #1-10 are real bugs that can lose money (double-counted settlements, missed exits, wrong paper sizing, dead gates, inverted LLM gate, silent Supabase drops). The **Should fix** items #11-25 are architectural risks that will bite under load or live conditions. The **Nice to have** items are code quality.
-
-**Priority order**:
-1. Fix settlement queue replay (#1) — can double-count PnL on restart
-2. Wire gates into signal evaluation (#4) — gates are dead code
-3. Fix NO price derivation (#5) — blocks NO-side favourites
-4. Fix LLM gate timing (#6) — runs as post-entry veto
-5. Fix paper fill logic (#20) — dry run fills backwards
-6. Fix Supabase silent 4xx drops (#9) — data loss
-7. Fix position_risk stale entries (#3) — paper cash wrong
-8. Fix drawdown mark-to-market consistency (#15)
+**Healthy core, sharp edges on settlement idempotency and gate-band coupling.** The bot trades live with real money (grown $1.33 → $1.55, 100% win rate on shard 2). Critical path (order placement, settlement, risk) is correct and idempotent. The 7-layer LLM veto and 3 gates are sophisticated but the gate-band coupling (gate 2 blocks the configured 95-99c band unless floor enabled) is a latent misconfiguration. Settlement queue idempotency keys need strike inclusion. Dead Polymarket code path should be removed.
 
 ---
 
-## Lean: -~800 lines, -0 dependencies possible
-
-- `gates.py` (428 lines) — delete if not wiring into live flow, or integrate fully
-- `ladder_strategy.py` (393 lines) — only used by `--ml-model` path, move to `ml_model.py`
-- `latency_arb.py` (176 lines) — unused in main flow, delete
-- `kalshieye_downloader.py`, `historical_downloader.py`, `download_trades.py`, `crossvenue*.py`, `data_collector.py`, `parallel_backtest_hf.py`, `hf_backtest.py` — data/backtest tooling, move to `tools/`
-- `n8n_coordination.py`, `inject_n8n_workflows.py`, `add_n8n_credentials.py` — n8n setup, move to `scripts/`
-- `binance_client.py`, `coinbase_client.py`, `polymarket_client.py`, `redstone_client.py`, `polymarket_arb.py` — unused exchange clients, delete
-- `kalshi_price_data_client.py` — optional SDK wrapper, delete if not used
-
-**Dependencies to review**: `torch` (ml_model.py only), `numpy` (ml_model, ladder_strategy), `websockets` (binance_feed streaming, unused), `cryptography` (n8n creds sync only). If ML and n8n sync are optional, make them extra dependencies.
+## Lean: -1,200 lines, -3 dependencies possible
+- Remove `_place_poly_order` + call site (~60 lines)
+- Remove unused `client` param from `_mark_to_market_exposure` (~5 lines)
+- Consolidate `_touch_window` calls (~5 lines)
+- Remove `ThreadPoolExecutor` from orderbook fetch, use sequential with global rate limiter (~30 lines)
+- Drop `limit` from market cache key (~10 lines)
+- Remove `latency_arb.py` (unused, ~180 lines)
+- Remove `data_collector.py` legacy (~120 lines)
+- Remove `kalshieye_downloader.py` (unused, ~220 lines)
+- Remove `backtest_real.py` (duplicate of backtest_engine, ~150 lines)
+- Remove `parallel_backtest_hf.py` legacy (~200 lines)
+- Drop `web3-polymarket` skill reference (not used in this repo)
+- `binance_feed` WebSocket code could be replaced with REST-only + cache (removes `websockets` dep)
 
 ---
 
 ## Not checked
-
-- `crossvenue.py`, `crossvenue_history.py`, `crossvenue_collect.py` — cross-venue arb logic, not in main loop
-- `parallel_backtest.py`, `backtest.py` — entry points, not the engine
-- `train_xgboost.py` — unused, superseded by `ml_model.py`
-- `data_collector.py`, `kalshieye_downloader.py` — data collection, not live path
-- `scripts/bw_pull_secure_notes.py`, `scripts/migrate_secrets.py` — credential tooling
-- `tests/test_*.py` beyond the 259 passing — assumed correct
-- n8n workflow SQL injection scripts — not Python, not reviewed
-- MemPalace integration — protocol followed per AGENTS.md, not code-reviewed
+- `binance_feed.py` (WebSocket implementation, feed health)
+- `local_db.py` (SQLite schema, sync thread, idempotency keys)
+- `supabase_client.py` (circuit breaker, batch write atomicity)
+- `llm_eval.py` (7-layer fallback, consensus logic, rate limiting)
+- `ml_model.py` / `scripts/train_ml_hf.py` (ML fair value, calibration)
+- `n8n_client.py` / `inject_n8n_workflows.py` (workflow definitions, webhook contracts)
+- `paper_mode.py` (paper trading ledger, compounding)
+- `model.py` (GBM, locked-share, momentum models)
+- `gates.py` full gate logic (ATR, EV, time-decay)
+- `resilience.py` (cycle supervisor, rebuild logic)
+- `crossvenue.py` / `polymarket_*.py` (cross-venue arb, not wired)
+- `cfb_monitor.py`, `ladder_strategy.py`, `grid_latency.py` (experimental)
+- `scripts/*.py` (training, verification, credential sync)
+- Tests beyond the one failing config test (441 passed)
