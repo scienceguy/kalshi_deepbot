@@ -37,19 +37,14 @@ try:
 except Exception:  # torch or ml_model unavailable -> ML gate disabled
     MLFairValue = None
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("poly_us_dry.log", mode="a"),
-    ],
-)
-log = logging.getLogger("poly_us_trader")
+# One anchor for every runtime path: the repo's local_data/ directory. Launching
+# from any CWD writes the same files (R13).
+DATA_DIR = Path(__file__).resolve().parent / "local_data"
+STATE_FILE = DATA_DIR / "poly_us_state.json"
+LEDGER_FILE = DATA_DIR / "poly_us_paper_ledger.jsonl"
+POLY_US_LOG_FILE = DATA_DIR / "poly_us_dry.log"
 
-STATE_FILE = Path(__file__).resolve().parent / "local_data" / "poly_us_state.json"
-LEDGER_FILE = Path(__file__).resolve().parent / "local_data" / "poly_us_paper_ledger.jsonl"
+log = logging.getLogger("poly_us_trader")
 
 
 class PolyUSPaperTrader:
@@ -77,7 +72,7 @@ class PolyUSPaperTrader:
 
         # Task 2: continuous Brier calibration + adaptive volatility scaling.
         self.cal_monitor = RollingCalibrationMonitor(
-            ledger_path="local_data/bs_calibration_ledger.jsonl")
+            ledger_path=str(DATA_DIR / "bs_calibration_ledger.jsonl"))
         self.vol_scaler = AdaptiveVolatilityScaler(
             base_sigma=float(getattr(config, "MODEL_VOLATILITY", 0.80)),
             base_min_z=float(getattr(config, "GATES_MIN_CUSHION_Z", 1.80)),
@@ -127,8 +122,18 @@ class PolyUSPaperTrader:
                 data = json.loads(self.state_file.read_text())
                 if "cash" in data and "positions" in data:
                     return data
+                raise ValueError("state file missing required keys (cash/positions)")
             except Exception as e:
-                log.warning("Failed to load paper state, starting fresh: %s", e)
+                # Quarantine the unreadable file instead of silently discarding
+                # the bankroll history (R13).
+                log.error("Paper state file %s unreadable (%s) — renaming aside, starting fresh",
+                          self.state_file, e)
+                try:
+                    quarantine = self.state_file.with_name(
+                        f"{self.state_file.name}.corrupt-{int(time.time())}")
+                    self.state_file.replace(quarantine)
+                except OSError as re:
+                    log.error("Could not quarantine corrupt state file %s: %s", self.state_file, re)
         state = {
             "start_balance": initial_cash,
             "cash": initial_cash,
@@ -957,6 +962,15 @@ class PolyUSPaperTrader:
 
 
 def main():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(POLY_US_LOG_FILE, mode="a"),
+        ],
+    )
     parser = argparse.ArgumentParser(description="Polymarket US Paper Trader ($35 Bankroll)")
     parser.add_argument("--once", action="store_true", help="Run single cycle and exit")
     parser.add_argument("--interval", type=int, default=15, help="Seconds between cycles (default 15)")

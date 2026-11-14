@@ -417,6 +417,35 @@ def test_preview_order_returns_false_on_api_failure(temp_trader):
         assert ok is False
 
 
+def test_import_creates_no_files(tmp_path):
+    """Importing poly_us_trader must not print, read argv, or create files (R13)."""
+    import os
+    import subprocess
+    import sys
+    repo_root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, PYTHONPATH=str(repo_root))
+    r = subprocess.run(
+        [sys.executable, "-c", "import poly_us_trader"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "", r.stdout
+    assert list(tmp_path.iterdir()) == [], list(tmp_path.iterdir())
+
+
+def test_corrupt_state_file_is_quarantined(tmp_path):
+    """A corrupt state file is renamed *.corrupt-<ts> and a fresh bankroll starts."""
+    state_file = tmp_path / "state.json"
+    state_file.write_text("{not valid json")
+    ledger_file = tmp_path / "ledger.jsonl"
+    with patch("poly_us_trader.STATE_FILE", state_file), patch("poly_us_trader.LEDGER_FILE", ledger_file):
+        trader = PolyUSPaperTrader(initial_cash=35.0)
+    assert trader.state["cash"] == 35.0
+    quarantined = list(tmp_path.glob("state.json.corrupt-*"))
+    assert len(quarantined) == 1, list(tmp_path.iterdir())
+    assert quarantined[0].read_text() == "{not valid json"
+
+
 def test_check_settlements_tracks_stuck_position_fail_count(temp_trader):
     """A position whose market never settles accumulates settle_fail_count instead
     of silently stranding."""
