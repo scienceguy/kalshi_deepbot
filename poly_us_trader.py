@@ -269,33 +269,57 @@ class PolyUSPaperTrader:
                 "hours_left": hours_left,
             }
 
-        outcome_raw = market.get("outcomePrices")
-        if not outcome_raw:
-            return None
+        long_p = None
+        short_p = None
 
-        prices = []
-        if isinstance(outcome_raw, str):
-            try:
-                prices = json.loads(outcome_raw)
-            except Exception:
-                return None
-        elif isinstance(outcome_raw, list):
-            prices = outcome_raw
+        # Check marketSides first for unambiguous side assignment
+        market_sides = market.get("marketSides") or []
+        for side_info in market_sides:
+            p_val = side_info.get("price")
+            if p_val is not None:
+                try:
+                    price_float = float(p_val)
+                    is_long = side_info.get("long") is True or str(side_info.get("description")).lower() in ("yes", "long")
+                    if is_long:
+                        long_p = price_float
+                        if short_p is None:
+                            short_p = round(1.0 - long_p, 4)
+                    else:
+                        short_p = price_float
+                        if long_p is None:
+                            long_p = round(1.0 - short_p, 4)
+                except (ValueError, TypeError):
+                    pass
 
-        if len(prices) == 1:
-            try:
-                long_p = float(prices[0])
-                short_p = round(1.0 - long_p, 4)
-            except (ValueError, TypeError):
+        # Fall back to outcomePrices if marketSides gave no quote
+        if long_p is None or short_p is None:
+            outcome_raw = market.get("outcomePrices")
+            if not outcome_raw:
                 return None
-        elif len(prices) >= 2:
-            try:
-                long_p = float(prices[0])
-                short_p = float(prices[1])
-            except (ValueError, TypeError):
+            prices = []
+            if isinstance(outcome_raw, str):
+                try:
+                    prices = json.loads(outcome_raw)
+                except Exception:
+                    return None
+            elif isinstance(outcome_raw, list):
+                prices = outcome_raw
+
+            if len(prices) == 1:
+                try:
+                    p0 = float(prices[0])
+                    long_p = p0
+                    short_p = round(1.0 - p0, 4)
+                except (ValueError, TypeError):
+                    return None
+            elif len(prices) >= 2:
+                try:
+                    long_p = float(prices[0])
+                    short_p = float(prices[1])
+                except (ValueError, TypeError):
+                    return None
+            else:
                 return None
-        else:
-            return None
 
         candidates = []
         # Check Long (Yes) favorite
@@ -476,23 +500,43 @@ class PolyUSPaperTrader:
             m_info = market_map.get(slug)
             cur_price = pos["price"]
             if m_info:
-                outcome_raw = m_info.get("outcomePrices") or []
-                if isinstance(outcome_raw, str):
-                    try:
-                        outcome_raw = json.loads(outcome_raw)
-                    except Exception:
-                        outcome_raw = []
-                if len(outcome_raw) == 1:
-                    try:
-                        long_p = float(outcome_raw[0])
-                        cur_price = long_p if pos["side"] == "yes" else round(1.0 - long_p, 4)
-                    except Exception:
-                        pass
-                elif len(outcome_raw) >= 2:
-                    try:
-                        cur_price = float(outcome_raw[0]) if pos["side"] == "yes" else float(outcome_raw[1])
-                    except Exception:
-                        pass
+                # Check marketSides first for unambiguous side quote
+                market_sides = m_info.get("marketSides") or []
+                found_quote = False
+                for s in market_sides:
+                    p_val = s.get("price")
+                    if p_val is not None:
+                        try:
+                            px = float(p_val)
+                            is_long = s.get("long") is True or str(s.get("description")).lower() in ("yes", "long")
+                            if is_long:
+                                cur_price = px if pos["side"] == "yes" else round(1.0 - px, 4)
+                                found_quote = True
+                                break
+                            else:
+                                cur_price = px if pos["side"] == "no" else round(1.0 - px, 4)
+                                found_quote = True
+                                break
+                        except Exception:
+                            pass
+                if not found_quote:
+                    outcome_raw = m_info.get("outcomePrices") or []
+                    if isinstance(outcome_raw, str):
+                        try:
+                            outcome_raw = json.loads(outcome_raw)
+                        except Exception:
+                            outcome_raw = []
+                    if len(outcome_raw) == 1:
+                        try:
+                            long_p = float(outcome_raw[0])
+                            cur_price = long_p if pos["side"] == "yes" else round(1.0 - long_p, 4)
+                        except Exception:
+                            pass
+                    elif len(outcome_raw) >= 2:
+                        try:
+                            cur_price = float(outcome_raw[0]) if pos["side"] == "yes" else float(outcome_raw[1])
+                        except Exception:
+                            pass
             pos_mtm = round(cur_price * pos["qty"], 4)
             pos_unrealized = round(pos_mtm - pos["cost"], 4)
             pos["current_price"] = cur_price
