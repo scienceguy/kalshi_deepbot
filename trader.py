@@ -1463,10 +1463,10 @@ def cycle(client: KalshiClient):
     try:
         positions = client.get_positions()
     except Exception as e:
-        log.warning("Positions fetch failed: %s", e)
-        positions = []
+        log.warning("Positions fetch failed: %s — treating positions as unknown", e)
+        positions = None
 
-# Fetch active markets for mark-to-market exposure computation.
+    # Fetch active markets for mark-to-market exposure computation.
     # find_active_markets fetches fresh data, so invalidation is not needed here.
     # Trend maker archived (operator decision 2026-11-10): engine kept on disk
     # but unreachable from the loop; `git revert <archive-sha>` restores the call.
@@ -1479,10 +1479,8 @@ def cycle(client: KalshiClient):
                  cash, config.BOOTSTRAP_THRESHOLD_DOLLARS, config.TARGET_SERIES_MAJOR)
     else:
         bootstrap_series = config.TARGET_SERIES
-    try:
-        markets = find_active_markets(client, target_series=bootstrap_series)
-    except TypeError:
-        markets = find_active_markets(client)
+    # reviewed: propagate TypeError rather than silently catching and widening series
+    markets = find_active_markets(client, target_series=bootstrap_series)
     state.tradeable_brackets = len(markets)
     state.available_active_markets = getattr(markets, "total_available", len(markets))
     state.available_markets_count = state.available_active_markets
@@ -1622,9 +1620,10 @@ def cycle(client: KalshiClient):
         # reviewed: look up bot order_id from local DB if missing in V2 positions API
         if not order_id:
             order_id = get_local_db().get_latest_order_id(tk)
-            # reviewed: default order_id if local DB lookup returned empty
+            # reviewed: skip adoption if local DB lookup returned empty — never adopt foreign positions
             if not order_id:
-                order_id = f"sb_live_{tk}"
+                log.info("Position %s has no matching local order record — skipping adoption", tk)
+                continue
 
         # reviewed: ensure adopted positions belong to the bot
         if not order_id.startswith("sb_") and not order_id.startswith("01a1"):
@@ -1636,8 +1635,12 @@ def cycle(client: KalshiClient):
         }
 
     # Sync positions from Kalshi API — clear settled tickers from state
-    api_tickers = {p.get("ticker", "") for p in positions if "15M" in p.get("ticker", "").upper()}
-    settled = [t for t in list(state.positions.keys()) if t not in api_tickers]
+    # reviewed: skip settled sync when positions fetch failed so open positions are not wiped
+    if positions is not None:
+        api_tickers = {p.get("ticker", "") for p in positions if "15M" in p.get("ticker", "").upper()}
+        settled = [t for t in list(state.positions.keys()) if t not in api_tickers]
+    else:
+        settled = []
     now_ts = time.time()
     # Track when positions were first detected as settled (for timeout)
     if not hasattr(state, "settled_since"):
@@ -1977,7 +1980,7 @@ def cycle(client: KalshiClient):
     # Track unrealized losses per market for per-market daily loss limit.
     # Unrealized loss = cost basis - mark-to-market value (when position is losing).
     # This ensures the per-market daily loss limit accounts for open losing positions.
-    if cash is not None:
+    if cash is not None and positions is not None:  # reviewed: ensure cash and positions are available before computing unrealized loss
         mkt_by_ticker = {m.ticker: m for m in markets}
         for p in positions:
             tk = p.get("ticker", "")
@@ -1990,7 +1993,8 @@ def cycle(client: KalshiClient):
             contracts = yes_pos or no_pos
             cost_basis = _pos_cost_basis(p)
             mkt_info = mkt_by_ticker.get(tk)
-            if mkt_info and (yes_pos or no_pos):
+            # reviewed: ensure mid_yes is not None before computing MTM value
+            if mkt_info and (yes_pos or no_pos) and mkt_info.mid_yes is not None:
                 mid = mkt_info.mid_yes
                 if yes_pos:
                     mtm_value = yes_pos * mid / 100.0
@@ -2005,10 +2009,16 @@ def cycle(client: KalshiClient):
     # Balance may be unknown if the fetch failed (cash is None) — skip the
     # balance-dependent risk/window updates instead of crashing on None.
     cash_available = cash is not None
+    total_account_cash = None
     # reviewed: dry-run risk update uses paper_cash reflecting MTM exposure
     if cash_available:
         effective_cash = paper_cash if config.DRY_RUN else cash
-        total_account_cash = client.get_balance() if (client and not config.DRY_RUN) else effective_cash
+        total_account_cash = effective_cash
+        if client and not config.DRY_RUN:  # reviewed: query live balance from broker on live runs
+            try:
+                total_account_cash = client.get_balance()
+            except Exception:
+                total_account_cash = effective_cash
         live_exposure = mark_to_market_exposure
         # reviewed: if position MTM is 0 during settlement window, use exchange portfolio_value
         if not config.DRY_RUN and client and live_exposure <= 0.0:
@@ -2267,6 +2277,11 @@ def cycle(client: KalshiClient):
     ranked = se.rank_signals(signals)
     if not ranked:
         log.info("No signals this cycle.")
+        return
+
+    # reviewed: skip order placement if positions fetch failed to avoid bypassing position limits
+    if positions is None:
+        log.warning("Positions unknown — skipping order placement this cycle")
         return
 
     slots = min(config.MAX_OPEN_POSITIONS - open_count, config.MAX_ORDERS_PER_CYCLE)
@@ -2658,43 +2673,49 @@ def main():
     except Exception as e:
         log.warning("Could not seed resting orders from Kalshi: %s", e)
 
-    # Seed positions from Kalshi exchange so the bot knows about existing
-    # positions and doesn't try to re-enter them on restart.
-    try:
-        positions = client.get_positions()
-        for p in positions:
-            ticker = p.get("ticker", "")
-            if "15M" not in ticker.upper():
-                continue
-            yes_pos = _pos_yes(p)
-            no_pos = _pos_no(p)
-            if not yes_pos and not no_pos:
-                continue
-            side = "yes" if yes_pos else "no"
-            contracts = floor_contracts(yes_pos or no_pos)
-            # Entry price from the position's cost basis (market_exposure_dollars),
-            # falling back to the legacy average-price fields.
-            exposure = _pos_cost_basis(p)
-            # Guard: an adopted position with contracts but zero/negative cost
-            # basis can't produce a valid entry price and would corrupt PnL math.
-            if contracts > 0 and exposure <= 0:
-                log.warning("Skipping position %s: %.2f contracts but $%.2f cost basis (invalid entry price)",
-                            ticker, contracts, exposure)
-                continue
-            entry_price = int(round(exposure * 100 / contracts)) if contracts else 0
-            order_id = p.get("order_id", ticker)
-            state.positions[ticker] = {
-                "side": side,
-                "entry_price": entry_price,
-                "contracts": contracts,
-                "order_id": order_id,
-            }
-            state.position_risk[ticker] = contracts * entry_price / 100.0
-        if state.positions:
-            log.info("Seeded %d existing positions from exchange",
-                     len(state.positions))
-    except Exception as e:
-        log.warning("Could not seed positions from Kalshi: %s", e)
+    # reviewed: only seed live exchange positions on live mode, never dry-run
+    if not config.DRY_RUN:
+        try:
+            positions = client.get_positions()
+            for p in positions:
+                ticker = p.get("ticker", "")
+                if "15M" not in ticker.upper():  # reviewed: only track 15-minute crypto markets
+                    continue
+                yes_pos = _pos_yes(p)
+                no_pos = _pos_no(p)
+                if not yes_pos and not no_pos:  # reviewed: skip entries with no contracts open
+                    continue
+                side = "yes" if yes_pos else "no"
+                contracts = floor_contracts(yes_pos or no_pos)
+                # Entry price from the position's cost basis (market_exposure_dollars),
+                # falling back to the legacy average-price fields.
+                exposure = _pos_cost_basis(p)
+                # Guard: an adopted position with contracts but zero/negative cost
+                # basis can't produce a valid entry price and would corrupt PnL math.
+                if contracts > 0 and exposure <= 0:  # reviewed: skip positions with invalid cost basis
+                    log.warning("Skipping position %s: %.2f contracts but $%.2f cost basis (invalid entry price)",
+                                ticker, contracts, exposure)
+                    continue
+                entry_price = int(round(exposure * 100 / contracts)) if contracts else 0
+                order_id = p.get("order_id", "")
+                if not order_id:  # reviewed: look up bot order id from local database
+                    order_id = get_local_db().get_latest_order_id(ticker)
+                # reviewed: verify bot ownership before seeding position on startup
+                if not order_id or (not order_id.startswith("sb_") and not order_id.startswith("01a1")):
+                    log.info("Startup position %s has no matching local order record — skipping seed", ticker)
+                    continue
+                state.positions[ticker] = {
+                    "side": side,
+                    "entry_price": entry_price,
+                    "contracts": contracts,
+                    "order_id": order_id,
+                }
+                state.position_risk[ticker] = contracts * entry_price / 100.0
+            if state.positions:  # reviewed: log seeded bot-owned positions if any
+                log.info("Seeded %d existing positions from exchange",
+                         len(state.positions))
+        except Exception as e:
+            log.warning("Could not seed positions from Kalshi: %s", e)
 
     # Reconcile session_pnl on startup — pnl_ledger is the true transaction source of truth.
     try:
