@@ -473,8 +473,11 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
     """
     results = []
 
-    def _pass(r):
-        results.append(TradeSignal("PASS", "", 0, 0, 0.0, r, market))
+    p_hedge = market.no_ask or (100 - market.yes_bid if market.yes_bid else 0)
+    n_hedge = _size(p_hedge, max_dollars, max_contracts) if p_hedge > 0 else 0
+
+    def _pass(r, s="no", p=p_hedge, count=n_hedge):
+        results.append(TradeSignal("PASS", s, p, count, 0.0, r, market))
 
     minutes_in = 15.0 - market.minutes_left
     if minutes_in < config.ENTRY_WINDOW_START_MIN:
@@ -545,8 +548,14 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
     """
     results = []
 
-    def _pass(r):
-        results.append(TradeSignal("PASS", "", 0, 0, 0.0, r, market))
+    ya_cand = market.yes_ask or (100 - market.no_bid if market.no_bid else 0)
+    na_cand = market.no_ask or (100 - market.yes_bid if market.yes_bid else 0)
+    fav_side = "yes" if ya_cand >= na_cand else "no"
+    fav_price = max(ya_cand, na_cand)
+    fav_n = _size(fav_price, max_dollars, max_contracts) if fav_price > 0 else 0
+
+    def _pass(r, s=fav_side, p=fav_price, count=fav_n):
+        results.append(TradeSignal("PASS", s, p, count, 0.0, r, market))
 
     minutes_in = 15.0 - market.minutes_left
     if minutes_in < config.ENTRY_WINDOW_START_MIN:
