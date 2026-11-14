@@ -1219,7 +1219,13 @@ def _sizing_cash(client) -> float:
     every paper trade on whatever cents happen to sit there.
     """
     if config.DRY_RUN:
-        return client.get_balance()
+        # Dry run sizes against the paper bankroll, never the live balance.
+        # Sizing against the live shard balance (~$1-2) while initialize() set
+        # session_high to the paper start (~$100) would report a ~-99% drawdown
+        # and trip the drawdown halt, blocking every paper trade.
+        # reviewed: dry-run sizing must use the paper bankroll so drawdown and
+        # compounding track the paper curve, not the live account cents.
+        return paper_mode.cash(0.0, None)
     return client.get_shard_balance(CRYPTO_EXCHANGE_INDEX)
 
 

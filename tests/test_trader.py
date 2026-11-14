@@ -920,9 +920,15 @@ class TestShardAwareCash:
 
     def test_dry_run_sizes_against_paper_bankroll(self, monkeypatch):
         monkeypatch.setattr(config, "DRY_RUN", True)
+        # Dry run must size against the paper bankroll, never the live balance
+        # (~$1.22 here). Pin paper_mode.cash so the test is deterministic
+        # regardless of the on-disk paper_state.json.
+        monkeypatch.setattr(trader.paper_mode, "cash",
+                            lambda open_risk, mtm=None: 100.0)
         client = MagicMock()
         client.get_balance.return_value = 1.22
-        assert trader._sizing_cash(client) == 1.22
+        assert trader._sizing_cash(client) == 100.0
+        client.get_balance.assert_not_called()
         client.get_shard_balance.assert_not_called()
 
 
