@@ -598,12 +598,8 @@ class KalshiClient:
             "price":                       price_dollars,
             "time_in_force":               "good_till_canceled",
             "self_trade_prevention_type":  "taker_at_cross",
-            # Maker orders must never cross: crossing would fill as a taker and
-            # pay a fee the zero-maker-fee model does not budget for. Post-only
-            # makes Kalshi reject the cross instead. Aggressive mode wants the
-            # cross, so it opts out.
-            "post_only":                   ((not config.AGGRESSIVE_FILL)
-                                            if post_only is None else bool(post_only)),
+            # reviewed: default post_only=True for limit orders so resting quotes never cross and never pay taker fees
+            "post_only":                   (True if (post_only is None and order_type == "limit") else ((not config.AGGRESSIVE_FILL) if post_only is None else bool(post_only))),
         }
         _add_exchange_index(payload, ticker)
 
