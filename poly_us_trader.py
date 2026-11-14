@@ -181,7 +181,7 @@ class PolyUSPaperTrader:
                     self.state["cash"] = round(self.state["cash"] + total_payout, 4)
                     self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
                     log.info(
-                        "🏆 SETTLED %s %s: outcome=%.2f payout=$%.2f cost=$%.2f PnL=%+$.2f | Cash=$%.2f",
+                        "🏆 SETTLED %s %s: outcome=%.2f payout=$%.2f cost=$%.2f PnL=$%+.2f | Cash=$%.2f",
                         slug, pos["side"].upper(), payout_per_contract, total_payout, cost, pnl, self.state["cash"]
                     )
                     self._append_ledger({
@@ -421,7 +421,7 @@ class PolyUSPaperTrader:
                 self.state["cash"] = round(self.state["cash"] + payout, 4)
                 self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
                 log.info(
-                    "🔄 ROTATED long-dated position %s (>24h) | Payout=$%.2f PnL=%+$.2f -> Freed cash=$%.2f",
+                    "🔄 ROTATED long-dated position %s (>24h) | Payout=$%.2f PnL=$%+.2f -> Freed cash=$%.2f",
                     slug, payout, pnl, self.state["cash"]
                 )
                 self._append_ledger({
