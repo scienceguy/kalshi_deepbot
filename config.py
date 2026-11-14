@@ -163,10 +163,10 @@ SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
 # selects only those with positive edge after fees. Research shows GBM spot-vs-
 # strike edge exists whenever spot is meaningfully ITM vs strike, not just in
 # the final 60 seconds.
-ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 12.0)
-ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.5)
-# Maker only favourite criteria price band: ask 90-99c
-MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 90)
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 13.5)
+ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.8)
+# Maker only favourite criteria price band: ask 95-99c
+MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 95)
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
 MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 50)
 MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
@@ -305,7 +305,7 @@ MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
 # of the time, so the measured YES win rate must never be applied to it; the
 # band above is meaningful only on the YES leg the measurement was taken from.
 # min 75 is a wide guard, not a claim -- see tests/test_gates.py::measured_band_sides.
-MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 90)
+MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 95)
 # YES favourites enabled; NO favourites disabled by default to prevent mean-reversion short traps (opt-in via ALLOW_NO_BUYS=true)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 ALLOW_NO_BUYS = _env_bool("ALLOW_NO_BUYS", False)

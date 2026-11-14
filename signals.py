@@ -411,10 +411,12 @@ def _evaluate_common(
     ep = _maker_price(market, bullish)
     ep = max(1, min(99, int(ep)))
 
-    # Entry band check
-    if ep < entry_min or ep > entry_max:
+    # Entry band check (allow 1c inside spread for maker orders resting below ask)
+    min_allowed = (entry_min - 1) if not config.AGGRESSIVE_FILL else entry_min
+    # reviewed: allow maker price within band including 1c spread buffer
+    if ep < min_allowed or ep > entry_max:
         direction = "YES" if bullish else "NO"
-        return _pass(f"{direction} price {ep}c outside band {entry_min}-{entry_max}c")
+        return _pass(f"{direction} price {ep}c outside band {min_allowed}-{entry_max}c")
 
     # ── Size ────────────────────────────────────────────────────────────
     n = _size(ep, max_dollars, max_contracts)
