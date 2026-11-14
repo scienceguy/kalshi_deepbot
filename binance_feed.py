@@ -38,6 +38,7 @@ import time
 from typing import AsyncIterator, Dict, List, Optional
 
 import requests
+import config
 
 log = logging.getLogger("binance_feed")
 
@@ -100,12 +101,10 @@ def _ws_set(symbol: str, price: float) -> None:
 
 
 def _binance_ws_loop(symbols: list[str]) -> None:
-    """Background thread: Binance combined !miniTicker@arr stream (all symbols, 1s cadence).
-
-    Falls back to REST composite_price if the combined-stream endpoint is
-    unreachable (geo-blocked or not supported on the data domain). Non-fatal.
-    """
+    """Background thread: Binance.US combined @ticker stream (all symbols, subsecond cadence)."""
     import websockets  # lazy import — optional dep
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     # Format stream names for Binance.US: btcusd@ticker, ethusd@ticker, etc.
     sym_streams = [
@@ -114,22 +113,12 @@ def _binance_ws_loop(symbols: list[str]) -> None:
     ]
     streams = "/".join(f"{s}@ticker" for s in sym_streams)
     url = f"{BINANCE_WS}?streams={streams}"
-    tried_once = False
     while True:
         try:
-            asyncio.run(_binance_ws_async(url))
-            tried_once = True
+            loop.run_until_complete(_binance_ws_async(url))
         except Exception as e:
-            # Persistent 404 means the endpoint is wrong for this host — stop
-            # retrying and fall back to REST (non-fatal).
-            if "404" in str(e) and tried_once:
-                log.warning(
-                    "binance WS combined-stream endpoint unreachable (404) — "
-                    "falling back to REST composite_price for spot input")
-                return
             log.warning("binance WS disconnected: %s — reconnecting in 2s", e)
             time.sleep(2)
-            tried_once = True
 
 
 async def _binance_ws_async(url: str) -> None:
@@ -150,6 +139,8 @@ async def _binance_ws_async(url: str) -> None:
 def _coinbase_ws_loop(symbols: list[str]) -> None:
     """Background thread: Coinbase Advanced Trade ticker channel."""
     import websockets  # lazy import — optional dep
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     url = "wss://advanced-trade-ws.coinbase.com"
     products = [f"{s}-USD" for s in symbols]
@@ -160,7 +151,7 @@ def _coinbase_ws_loop(symbols: list[str]) -> None:
     }
     while True:
         try:
-            asyncio.run(_coinbase_ws_async(url, subscribe))
+            loop.run_until_complete(_coinbase_ws_async(url, subscribe))
         except Exception as e:
             log.warning("coinbase WS disconnected: %s — reconnecting in 2s", e)
             time.sleep(2)
@@ -260,9 +251,11 @@ def start_ws_streams(symbols: list[str] | None = None) -> None:
         _ws_started = True
         return
     _ws_started = True
-    for name, fn in (("binance", _binance_ws_loop),
-                     ("coinbase", _coinbase_ws_loop),
-                     ("redstone", _redstone_ws_loop)):
+    feeds = [("binance", _binance_ws_loop),
+             ("coinbase", _coinbase_ws_loop)]
+    if getattr(config, "REDSTONE_ENABLED", False):
+        feeds.append(("redstone", _redstone_ws_loop))
+    for name, fn in feeds:
         t = threading.Thread(target=fn, args=(symbols,),
                              daemon=True, name=f"ws-{name}")
         t.start()
@@ -285,11 +278,12 @@ def spot_price(symbol: str = "BTCUSDT") -> Optional[float]:
 
 
 def _base_asset(symbol: str) -> Optional[str]:
-    """Strip USDT/USDC suffix and validate against known bases.
-
-    Avoids lossy parsing like KXBUSDT → KXBU (truncation of HYPE).
-    """
-    base = symbol.replace("USDT", "").replace("USDC", "").upper()
+    """Strip USDT/USDC/USD/-USD suffix and validate against known bases."""
+    base = symbol.upper()
+    for suffix in ("USDT", "USDC", "-USD", "USD"):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
     return base if base in _KNOWN_BASES else None
 
 
