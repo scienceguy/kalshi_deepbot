@@ -74,11 +74,46 @@ def test_execute_paper_trade_updates_bankroll(temp_trader):
 
 def test_compute_tier_size():
     from poly_us_trader import PolyUSPaperTrader
-    assert PolyUSPaperTrader.compute_tier_size(100.0) == 5.0
-    assert PolyUSPaperTrader.compute_tier_size(500.0) == 25.0
-    assert PolyUSPaperTrader.compute_tier_size(2000.0) == 80.0
+    assert PolyUSPaperTrader.compute_tier_size(20.0) == 0.60
+    assert PolyUSPaperTrader.compute_tier_size(100.0) == 3.0
+    assert PolyUSPaperTrader.compute_tier_size(500.0) == 15.0
+    assert PolyUSPaperTrader.compute_tier_size(2000.0) == 60.0
     assert PolyUSPaperTrader.compute_tier_size(20000.0) == 600.0
     assert PolyUSPaperTrader.compute_tier_size(200000.0) == 4000.0
+
+
+def test_opp_sorting_prioritizes_soonest_active():
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    future_10m = (now + timedelta(minutes=10)).isoformat()
+    future_60m = (now + timedelta(minutes=60)).isoformat()
+    expired_5m = (now - timedelta(minutes=5)).isoformat()
+
+    opps = [
+        {"slug": "future-60m", "end_date": future_60m},
+        {"slug": "expired-5m", "end_date": expired_5m},
+        {"slug": "future-10m", "end_date": future_10m},
+    ]
+
+    now_ts = now.timestamp()
+
+    def _key(opp):
+        ed = opp.get("end_date") or ""
+        if not ed:
+            return float("inf")
+        try:
+            dt = datetime.fromisoformat(ed.replace("Z", "+00:00"))
+            ts = dt.timestamp()
+            if ts <= now_ts:
+                return float("inf")
+            return ts
+        except Exception:
+            return float("inf")
+
+    sorted_opps = sorted(opps, key=_key)
+    assert sorted_opps[0]["slug"] == "future-10m"
+    assert sorted_opps[1]["slug"] == "future-60m"
+    assert sorted_opps[2]["slug"] == "expired-5m"
 
 
 def test_cash_reserve_floor_blocks_overtrade(temp_trader):

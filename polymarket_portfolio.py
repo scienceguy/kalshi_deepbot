@@ -51,7 +51,6 @@ def _print_positions(client):
                 avg_price = 0.0
 
             # Current price / PnL: try to derive from position data
-            entry_price = avg_price
             current_price = pos.get("current_price", pos.get("mid_price", pos.get("price", None)))
             pnl = pos.get("pnl", pos.get("unrealized_pnl", None))
 

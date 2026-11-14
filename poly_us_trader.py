@@ -44,6 +44,7 @@ class PolyUSPaperTrader:
     def __init__(self, initial_cash: float = 100.0):
         self.state_file = STATE_FILE
         self.ledger_file = LEDGER_FILE
+        self.max_open_positions = 25
         self.state = self._load_state(initial_cash)
         self.client = polymarket_us_client._get_client()
         self.auth_client = None
@@ -51,6 +52,12 @@ class PolyUSPaperTrader:
             self.auth_client = polymarket_us_client._get_authenticated_client()
         except Exception as e:
             log.warning("Polymarket US authenticated client not available: %s", e)
+
+        # Wire in gateway health check at startup
+        if polymarket_us_client.health_check():
+            log.info("Polymarket US gateway health check: OK")
+        else:
+            log.warning("Polymarket US gateway health check: FAILED or unreachable")
 
     def _load_state(self, initial_cash: float) -> dict:
         if self.state_file.exists():
@@ -257,27 +264,28 @@ class PolyUSPaperTrader:
             return None
 
         side, price = candidates[0]
+        end_date = market.get("endDate") or market.get("gameStartTime") or ""
         return {
             "slug": slug,
             "question": market.get("question", slug),
             "side": side,
             "price": price,
             "category": market.get("category", ""),
+            "end_date": end_date,
         }
 
     @staticmethod
-    def compute_tier_size(cash: float) -> float:
-        """Dynamic Kelly position sizing across compounding milestones ($100 -> $1M)."""
-        if cash < 100.0:
-            return max(1.0, round(cash * 0.05, 2))
-        elif cash < 1_000.0:
-            return min(50.0, round(cash * 0.05, 2))
-        elif cash < 10_000.0:
-            return min(400.0, round(cash * 0.04, 2))
-        elif cash < 100_000.0:
-            return min(3000.0, round(cash * 0.03, 2))
+    def compute_tier_size(total_balance: float) -> float:
+        """Dynamic position sizing strictly capped at 3% of total balance."""
+        pct_3 = round(total_balance * 0.03, 2)
+        if total_balance < 1_000.0:
+            return min(30.0, pct_3)
+        elif total_balance < 10_000.0:
+            return min(300.0, pct_3)
+        elif total_balance < 100_000.0:
+            return min(3000.0, pct_3)
         else:
-            return min(20000.0, round(cash * 0.02, 2))
+            return min(20000.0, round(total_balance * 0.02, 2))
 
     def execute_paper_trade(self, opp: dict) -> bool:
         """Size and execute a paper trade from the bankroll."""
@@ -289,20 +297,21 @@ class PolyUSPaperTrader:
         if any(p["slug"] == slug for p in self.state["positions"]):
             return False
 
-        # Cap max concurrent open positions (default 10)
-        if len(self.state["positions"]) >= getattr(self, "max_open_positions", 10):
+        # Cap max concurrent open positions (default 25)
+        if len(self.state["positions"]) >= getattr(self, "max_open_positions", 25):
             return False
 
         # Enforce 30% cash reserve floor
-        total_equity = self.state["cash"] + sum(p.get("cost", 0.0) for p in self.state["positions"])
-        min_cash_floor = total_equity * 0.30
+        total_mtm = sum(p.get("mtm_value", p.get("cost", 0.0)) for p in self.state["positions"])
+        total_balance = round(self.state["cash"] + total_mtm, 2)
+        min_cash_floor = total_balance * 0.30
         if self.state["cash"] <= min_cash_floor:
             return False
 
-        # Sizing: Dynamic Kelly scaling across milestones ($100 -> $1M)
+        # Sizing: strictly limited to 3% of total balance, capped by available cash
         available_cash = max(0.0, self.state["cash"] - min_cash_floor)
-        max_trade_dollars = self.compute_tier_size(self.state["cash"])
-        max_trade_dollars = min(max_trade_dollars, available_cash)
+        max_trade_dollars = self.compute_tier_size(total_balance)
+        max_trade_dollars = min(max_trade_dollars, available_cash, round(total_balance * 0.03, 2))
         if max_trade_dollars < 1.00:
             return False
 
@@ -427,6 +436,25 @@ class PolyUSPaperTrader:
 
         current_slugs = {p["slug"] for p in self.state.get("positions", [])}
         new_opps = [opp for opp in opportunities if opp["slug"] not in current_slugs]
+
+        # Prioritize opportunities closing soonest so settlements compound in real-time
+        now_ts = time.time()
+
+        def _opp_sort_key(opp):
+            ed = opp.get("end_date") or ""
+            if not ed:
+                return float("inf")
+            try:
+                dt = datetime.fromisoformat(ed.replace("Z", "+00:00"))
+                ts = dt.timestamp()
+                # Deprioritize already-expired markets so active markets trade first
+                if ts <= now_ts:
+                    return float("inf")
+                return ts
+            except Exception:
+                return float("inf")
+
+        new_opps.sort(key=_opp_sort_key)
         log.info(
             "Found %d high-certainty (92-99c) opportunity brackets (%d unheld)",
             len(opportunities), len(new_opps)
@@ -458,7 +486,7 @@ def main():
         realized = state.get("realized_pnl", 0.0)
         unrealized = state.get("unrealized_pnl", 0.0)
         total_pnl = state.get("total_pnl", round(realized + unrealized, 4))
-        print(f"=== Polymarket US Paper Trader ===")
+        print("=== Polymarket US Paper Trader ===")
         print(f"Start Balance:  ${state.get('start_balance', 100.0):.2f}")
         print(f"Total Equity:   ${total_equity:.2f}")
         print(f"Available Cash: ${state.get('cash', 100.0):.2f}")

@@ -57,7 +57,6 @@ if args.debug:
     config.LOG_LEVEL = "DEBUG"  # noqa: E402
 
 import fees  # noqa: E402
-from supabase_client import get_supabase  # noqa: E402
 
 
 class _LazyModule:
@@ -85,11 +84,10 @@ from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E
 from kalshi_client import KalshiClient, CRYPTO_EXCHANGE_INDEX  # noqa: E402
 from market_finder import find_active_markets, _parse_api_time, _dollars_to_cents, _parse_market_prices, _settle_yes_cents  # noqa: E402
 from risk import RiskManager  # noqa: E402
-from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
-from signals import floor_contracts, TradeSignal  # noqa: E402
+from signals import floor_contracts  # noqa: E402
 import signals as se  # noqa: E402
 from resilience import CycleSupervisor, systemd_notify  # noqa: E402
-from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
+from llm_eval import should_block_trade  # noqa: E402
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
 import binance_feed  # noqa: E402  — WebSocket spot streams (start_ws_streams)

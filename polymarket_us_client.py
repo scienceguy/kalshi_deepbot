@@ -13,13 +13,17 @@ Never logs or prints credential values.
 import json
 import logging
 import os
-import warnings
 from pathlib import Path
 
 from polymarket_us import PolymarketUS
 from config import POLYMARKET_KEY_ID, POLYMARKET_SECRET_KEY
 
 log = logging.getLogger(__name__)
+
+
+class PolymarketAPIError(Exception):
+    """Raised when a Polymarket US API call fails."""
+    pass
 
 
 # ── Credential loading (reads from config, then env, then BW mirror) ───────────
@@ -229,6 +233,22 @@ def usd_cash_balance(data: dict) -> float:
             except (TypeError, ValueError):
                 return 0.0
     return 0.0
+
+
+def health_check() -> bool:
+    """Check connectivity to Polymarket US gateway."""
+    try:
+        client = _get_client() or PolymarketUS(key_id="", secret_key="")
+        res = client.get("/v1/markets?limit=1", authenticated=False)
+        return bool(res and isinstance(res, dict))
+    except Exception as e:
+        log.warning("Polymarket US health check failed: %s", e)
+        return False
+
+
+# Public aliases
+get_client = _get_client
+get_authenticated_client = _get_authenticated_client
 
 
 def close() -> None:

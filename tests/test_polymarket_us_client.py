@@ -329,3 +329,22 @@ def test_place_maker_order_preview_and_create(monkeypatch):
     assert resp == {"id": "ORD-999"}
     assert mock_client.orders.preview.called
     assert mock_client.orders.create.called
+
+
+def test_health_check(monkeypatch):
+    """health_check returns True on success and False on error."""
+    mock_client = MagicMock()
+    mock_client.get.return_value = {"markets": [{"slug": "m1"}]}
+    monkeypatch.setattr(polymarket_us_client, "_get_client", lambda: mock_client)
+
+    assert polymarket_us_client.health_check() is True
+
+    mock_client.get.side_effect = Exception("Network error")
+    assert polymarket_us_client.health_check() is False
+
+
+def test_public_aliases_and_exceptions():
+    """Verify public aliases and custom exception classes."""
+    assert polymarket_us_client.get_client is polymarket_us_client._get_client
+    assert polymarket_us_client.get_authenticated_client is polymarket_us_client._get_authenticated_client
+    assert issubclass(polymarket_us_client.PolymarketAPIError, Exception)
