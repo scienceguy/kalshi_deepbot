@@ -1199,7 +1199,7 @@ def clear_resting_orders(client, ticker: str):
             continue
         if not config.DRY_RUN:
             try:
-                client.cancel_order(oid)
+                client.cancel_order(oid, market_ticker=ticker)
             except Exception as e:
                 log.debug("Could not cancel resting order %s: %s", oid, e)
         state.resting_value.pop(oid, None)
@@ -1552,7 +1552,7 @@ def cycle(client: KalshiClient):
                 try:
                     created_ts = _parse_api_time(created)
                     if created_ts and (now - created_ts.timestamp()) > config.STALE_ORDER_MINS * 60:
-                        client.cancel_order(oid)
+                        client.cancel_order(oid, market_ticker=ticker)
                         state.resting_value.pop(oid, None)
                         if ticker:
                             state.resting_tickers.discard(ticker)

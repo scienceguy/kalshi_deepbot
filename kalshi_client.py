@@ -710,13 +710,23 @@ class KalshiClient:
             resp["order_id"] = resp["order"].get("order_id", "")
         return resp
 
-    def cancel_order(self, order_id: str) -> dict:
+    def cancel_order(self, order_id: str, market_ticker: str = "", exchange_index: int | None = None) -> dict:
         """Cancel an open order by order_id."""
         if config.DRY_RUN:
             log.info("[DRY RUN] Would cancel order: %s", order_id)
             return {"dry_run": True}
+        params = {}
+        # reviewed: pass exchange_index or market_ticker to route cancellation to correct exchange shard
+        if exchange_index is not None:
+            params["exchange_index"] = exchange_index
+        # reviewed: auto-route cancel request by market ticker when provided
+        elif market_ticker:
+            params["market_ticker"] = market_ticker
+            params["exchange_index"] = -1
+        else:
+            params["exchange_index"] = 2
         try:
-            return self._request("DELETE", f"/portfolio/events/orders/{order_id}")
+            return self._request("DELETE", f"/portfolio/events/orders/{order_id}", params=params)
         except KalshiAPIError as e:
             if "404" in str(e):
                 log.debug("cancel_order %s: order not found (already filled/cancelled)", order_id)

@@ -33,6 +33,14 @@ class RiskState:
     consecutive_losses: int = 0
     market_daily_losses: dict = field(default_factory=dict)
 
+    @property
+    def peak(self) -> float:
+        return self.session_high
+
+    @peak.setter
+    def peak(self, val: float):
+        self.session_high = val
+
 
 class RiskManager:
     def __init__(self):
