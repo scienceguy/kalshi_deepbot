@@ -500,7 +500,7 @@ class LocalDB:
         with self._lock:
             try:
                 row = conn.execute(
-                    "SELECT COALESCE(SUM(realized_pnl_dollars - fee_dollars), 0.0) "
+                    "SELECT COALESCE(SUM(realized_pnl_dollars), 0.0) "
                     "FROM pnl_ledger"
                 ).fetchone()
                 return float(row[0]) if row else 0.0

@@ -5,6 +5,7 @@ Unit tests for poly_us_trader.py.
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import json
 import pytest
 from poly_us_trader import PolyUSPaperTrader
 
@@ -185,6 +186,44 @@ def test_check_settlements_no_win(temp_trader):
     assert len(temp_trader.state["positions"]) == 0
     assert temp_trader.state["cash"] == 90.20 + 10.00  # Payout is $10.00
     assert temp_trader.state["realized_pnl"] == round(10.00 - 9.80, 4)  # +$0.20
+
+
+def test_settlement_auto_close_credits_payout_once(temp_trader):
+    """Settled market credits payout exactly once; re-run is idempotent."""
+    temp_trader.state["positions"] = [{
+        "slug": "settle-once-slug",
+        "side": "yes",
+        "price": 0.95,
+        "qty": 5,
+        "cost": 4.75,
+        "unrealized_pnl": 0.25,
+    }]
+    temp_trader.state["cash"] = 95.25
+    temp_trader.state["realized_pnl"] = 0.0
+    temp_trader.state["unrealized_pnl"] = 0.25
+    temp_trader.state["total_pnl"] = 0.25
+
+    with patch("poly_us_trader.polymarket_us_client.get_market_settlement",
+               return_value={"slug": "settle-once-slug", "settlement": 1.0}):
+        temp_trader.check_settlements({"settle-once-slug": {"closed": True}})
+        cash_after_first = temp_trader.state["cash"]
+        # Idempotency: position already removed — a second pass must not credit again.
+        temp_trader.check_settlements({"settle-once-slug": {"closed": True}})
+
+    assert len(temp_trader.state["positions"]) == 0
+    assert cash_after_first == 100.25          # 95.25 + 5 x $1.00
+    assert temp_trader.state["cash"] == 100.25  # no double credit
+    assert temp_trader.state["realized_pnl"] == round(5.00 - 4.75, 4)
+    assert temp_trader.state["total_pnl"] == round(5.00 - 4.75, 4)
+
+    events = [json.loads(l) for l in temp_trader.ledger_file.read_text().splitlines()]
+    settle_events = [e for e in events if e.get("event") == "settlement"]
+    assert len(settle_events) == 1
+    ev = settle_events[0]
+    assert ev["slug"] == "settle-once-slug"
+    assert ev["payout"] == 5.00
+    assert ev["pnl"] == round(5.00 - 4.75, 4)
+    assert ev["cash_after"] == 100.25
 
 
 def test_polymarket_us_client_module_attributes():

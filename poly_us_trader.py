@@ -190,10 +190,62 @@ class PolyUSPaperTrader:
             return False
 
     def check_settlements(self, market_map: dict):
-        """Check settlement status for closed paper positions."""
+        """Check settlement status for closed paper positions.
+
+        Paper mode only: when a held position's market settles (venue returns a
+        settlement price), the position is closed at that price and the payout is
+        credited exactly once — win pays 1.0 per contract, loss 0.0. The position
+        is removed from state, a "settlement" event is appended to the paper
+        ledger (payout, pnl, cash_after), and realized_pnl / total_pnl are
+        updated. Missing or malformed settlement prices keep the position open
+        for retry next cycle; any live resting order on the settled market is
+        cancelled first; credited positions are persisted before the ledger is
+        appended so a crash cannot re-credit.
+        """
         remaining_positions = []
         now = datetime.now(timezone.utc)
-        for pos in self.state.get("positions", []):
+        # Per-slug caches: all positions in a settled market share one outcome,
+        # so fetch settlement once and cancel resting orders once per slug.
+        settle_cache = {}
+        orders_by_slug: dict | None = None  # None = not fetched yet (live mode only)
+
+        def _settlement(slug: str):
+            if slug not in settle_cache:
+                try:
+                    time.sleep(0.05)
+                    settle_cache[slug] = polymarket_us_client.get_market_settlement(slug)
+                except Exception as e:
+                    log.debug("Error checking settlement for %s: %s", slug, e)
+                    settle_cache[slug] = None
+            return settle_cache[slug]
+
+        def _cancel_resting_orders(slug: str):
+            nonlocal orders_by_slug
+            if not self.live_mode:
+                return
+            if orders_by_slug is None:
+                orders_by_slug = {}
+                try:
+                    for o in polymarket_us_client.get_open_orders():
+                        oslug = o.get("marketSlug") or o.get("slug")
+                        if oslug:
+                            orders_by_slug.setdefault(oslug, []).append(o)
+                except Exception as e:
+                    log.warning("Could not list open orders for settlement cancel: %s", e)
+                    orders_by_slug = {}
+            for o in orders_by_slug.pop(slug, []):
+                oid = o.get("id")
+                if not oid:
+                    continue
+                try:
+                    if polymarket_us_client.cancel_order(oid, slug):
+                        log.info("Cancelled resting order %s on settled market %s", oid, slug)
+                    else:
+                        log.warning("cancel_order returned False for %s on %s", oid, slug)
+                except Exception as e:
+                    log.warning("Failed to cancel resting order %s on %s: %s", oid, slug, e)
+
+        for pos in list(self.state.get("positions", [])):
             slug = pos["slug"]
             m_info = market_map.get(slug)
 
@@ -219,42 +271,62 @@ class PolyUSPaperTrader:
                 remaining_positions.append(pos)
                 continue
 
+            settle_res = _settlement(slug)
+            settlement = None
+            if isinstance(settle_res, dict):
+                settlement = settle_res.get("settlement")
+            if settlement is None:
+                # Not settled yet (or not found): skip, retry next cycle.
+                remaining_positions.append(pos)
+                continue
             try:
-                time.sleep(0.05)
-                settle_res = polymarket_us_client.get_market_settlement(slug)
-                if settle_res is not None and "settlement" in settle_res:
-                    settlement = settle_res["settlement"]
-                    payout_per_contract = float(settlement) if pos["side"] == "yes" else (1.0 - float(settlement))
-                    total_payout = round(payout_per_contract * pos["qty"], 4)
-                    cost = pos["cost"]
-                    pnl = round(total_payout - cost, 4)
-                    # Task 2: reconcile settlement for rolling Brier calibration.
-                    outcome = 1 if float(settlement) >= 0.5 else 0  # 1 = Yes won
-                    try:
-                        self.cal_monitor.reconcile_settlement(slug, outcome)
-                    except Exception:
-                        pass
-                    self.state["cash"] = round(self.state["cash"] + total_payout, 4)
-                    self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
-                    log.info(
-                        "🏆 SETTLED %s %s: outcome=%.2f payout=$%.2f cost=$%.2f PnL=$%+.2f | Cash=$%.2f",
-                        slug, pos["side"].upper(), payout_per_contract, total_payout, cost, pnl, self.state["cash"]
-                    )
-                    self._append_ledger({
-                        "event": "settlement",
-                        "slug": slug,
-                        "side": pos["side"],
-                        "qty": pos["qty"],
-                        "entry_price": pos["price"],
-                        "payout": total_payout,
-                        "pnl": pnl,
-                        "cash_after": self.state["cash"],
-                        "timestamp": now.isoformat(),
-                    })
-                    continue
-            except Exception as e:
-                log.debug("Error checking settlement for %s: %s", slug, e)
-            remaining_positions.append(pos)
+                settlement = float(settlement)
+            except (TypeError, ValueError):
+                log.debug("Malformed settlement price for %s: %r — retrying next cycle", slug, settle_res.get("settlement"))
+                remaining_positions.append(pos)
+                continue
+
+            # Live resting order on a market that just settled: cancel it first.
+            _cancel_resting_orders(slug)
+
+            payout_per_contract = settlement if pos["side"] == "yes" else (1.0 - settlement)
+            total_payout = round(payout_per_contract * pos["qty"], 4)
+            cost = pos["cost"]
+            pnl = round(total_payout - cost, 4)
+            # Task 2: reconcile settlement for rolling Brier calibration.
+            outcome = 1 if settlement >= 0.5 else 0  # 1 = Yes won
+            try:
+                self.cal_monitor.reconcile_settlement(slug, outcome)
+            except Exception:
+                pass
+            self.state["cash"] = round(self.state["cash"] + total_payout, 4)
+            self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
+            # Move this position's unrealized into realized so total_pnl stays consistent.
+            pos_unreal = float(pos.get("unrealized_pnl", 0.0) or 0.0)
+            self.state["unrealized_pnl"] = round(self.state.get("unrealized_pnl", 0.0) - pos_unreal, 4)
+            self.state["total_pnl"] = round(self.state["realized_pnl"] + self.state["unrealized_pnl"], 4)
+            log.info(
+                "🏆 SETTLED %s %s: outcome=%.2f payout=$%.2f cost=$%.2f PnL=$%+.2f | Cash=$%.2f",
+                slug, pos["side"].upper(), payout_per_contract, total_payout, cost, pnl, self.state["cash"]
+            )
+            # Detach the position and persist BEFORE the ledger append so a crash
+            # between the two cannot double-credit on the next cycle.
+            self.state["positions"] = [p for p in self.state.get("positions", []) if p is not pos]
+            self._save_state(self.state)
+            self._append_ledger({
+                "event": "settlement",
+                "slug": slug,
+                "side": pos["side"],
+                "qty": pos["qty"],
+                "entry_price": pos["price"],
+                "settlement": settlement,
+                "payout": total_payout,
+                "pnl": pnl,
+                "cash_after": self.state["cash"],
+                "timestamp": now.isoformat(),
+            })
+            continue
+
         self.state["positions"] = remaining_positions
         self._save_state(self.state)
 
