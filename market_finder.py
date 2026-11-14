@@ -424,7 +424,7 @@ def find_active_markets(client: KalshiClient, extra_band=None, target_series=Non
                       yes_ask or 0, info.yes_liquidity, no_ask or 0, info.no_liquidity, mkt["ticker"])
 
     # Process HEDGE_NO
-    for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
+    for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(series_list)]:
         ob, hedge_ya = ob_map.get(mkt["ticker"], ({}, ya))
         series = mkt.get("series_ticker", "")
         info = _build(mkt, series, ct, ml, ob, "HEDGE_NO")

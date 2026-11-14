@@ -71,9 +71,9 @@ def test_env_bool_unset_uses_default(monkeypatch):
 
 
 def test_log_rotation_defaults(monkeypatch):
-    """LOG_MAX_BYTES/LOG_BACKUP_COUNT default to 1GB / 3 backups (user-requested headroom)."""
+    """LOG_MAX_BYTES/LOG_BACKUP_COUNT default to 50MB / 3 backups (safe reliable headroom)."""
     cfg = _reload_with(monkeypatch, LOG_MAX_BYTES="", LOG_BACKUP_COUNT="")
-    assert cfg.LOG_MAX_BYTES == 1024 * 1024 * 1024
+    assert cfg.LOG_MAX_BYTES == 50 * 1024 * 1024
     assert cfg.LOG_BACKUP_COUNT == 3
 
 

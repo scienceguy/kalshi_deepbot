@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional, List
@@ -210,8 +211,8 @@ def _ensure_bid_hist_loaded():
 def _save_bid_hist():
     try:
         hist_file = _bid_hist_file()
-        # Atomic write: write to temp file then rename
-        tmp_file = hist_file.with_suffix(hist_file.suffix + ".tmp")
+        # Atomic write: unique temp file per writer prevents race conditions and torn files
+        tmp_file = hist_file.with_name(f"{hist_file.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
         with open(tmp_file, "w") as f:
             import fcntl
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)

@@ -75,6 +75,13 @@ class LocalDB:
             log.error("Local SQLite DB image corrupted (%s) — backing up and recreating clean database", e)
             corrupt_path = f"{self.db_path}.corrupt.{int(time.time())}"
             try:
+                # Close connection before renaming files so file locks are released
+                if hasattr(self._local, "conn") and self._local.conn is not None:
+                    try:
+                        self._local.conn.close()
+                    except Exception:
+                        pass
+                    self._local.conn = None
                 if os.path.exists(self.db_path):
                     os.rename(self.db_path, corrupt_path)
                 for ext in ("-wal", "-shm"):
@@ -115,7 +122,7 @@ class LocalDB:
                     price_cents INTEGER NOT NULL,
                     edge REAL,
                     model_prob REAL,
-                    contracts INTEGER NOT NULL,
+                    contracts REAL NOT NULL,
                     reason TEXT,
                     executed INTEGER DEFAULT 0,
                     blocked_reason TEXT,
@@ -134,7 +141,7 @@ class LocalDB:
                     ts TEXT NOT NULL,
                     ticker TEXT NOT NULL,
                     side TEXT NOT NULL,
-                    contracts INTEGER NOT NULL,
+                    contracts REAL NOT NULL,
                     price_cents INTEGER NOT NULL,
                     order_id TEXT,
                     status TEXT,

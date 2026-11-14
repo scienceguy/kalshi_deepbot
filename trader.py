@@ -396,19 +396,24 @@ class BotState:
         log.info("✓ %s order_id=%s (fills=%.2f)", ticker, oid, fill_count)
         self.window["used"] += filled_risk
         self.trades_placed += 1
-        # Record to Supabase
+        # Record locally first, then to Supabase
+        order_payload = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "ticker": ticker,
+            "side": sig.side,
+            "contracts": filled,
+            "price_cents": sig.entry_price,
+            "order_id": oid,
+            "status": status,
+            "fees_dollars": fees_dollars or 0.0,
+            "cycles": cycles,
+        }
         try:
-            get_supabase_client().insert_order({
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "ticker": ticker,
-                "side": sig.side,
-                "contracts": filled,
-                "price_cents": sig.entry_price,
-                "order_id": oid,
-                "status": status,
-                "fees_dollars": fees_dollars or 0.0,
-                "cycles": cycles,
-            })
+            get_local_db().insert_order(order_payload)
+        except Exception as e:
+            log.warning("LocalDB insert_order failed for %s: %s", ticker, e)
+        try:
+            get_supabase_client().insert_order(order_payload)
         except Exception:
             log.warning("Supabase insert_order failed for %s — order audit trail incomplete", ticker)
         # Track capital at risk per ticker — released on settlement, not booked as P&L.
@@ -1010,7 +1015,7 @@ def _replay_settlement_queue(client=None):
                             state.session_pnl = new_session_pnl
                             log.debug("Replayed settlement PnL $%.2f persisted to Supabase", new_session_pnl)
                     except Exception:
-                        log.warning("Supabase session_pnl write failed — local state credited, will sync later", ticker)
+                        log.warning("Supabase session_pnl write failed for %s — local state credited, will sync later", ticker)
                         state.session_pnl = new_session_pnl
                 elif applied is False:
                     log.info("Settlement P&L already recorded for %s — skipping duplicate", order_id)
