@@ -113,12 +113,16 @@ def _binance_ws_loop(symbols: list[str]) -> None:
     ]
     streams = "/".join(f"{s}@ticker" for s in sym_streams)
     url = f"{BINANCE_WS}?streams={streams}"
+    backoff = 2.0
     while True:
         try:
             loop.run_until_complete(_binance_ws_async(url))
+            backoff = 2.0
         except Exception as e:
-            log.warning("binance WS disconnected: %s — reconnecting in 2s", e)
-            time.sleep(2)
+            sleep_sec = min(backoff * (0.8 + 0.4 * (time.time() % 1.0)), 60.0)
+            log.warning("binance WS disconnected: %s — reconnecting in %.1fs", e, sleep_sec)
+            time.sleep(sleep_sec)
+            backoff = min(backoff * 2.0, 60.0)
 
 
 async def _binance_ws_async(url: str) -> None:
@@ -149,12 +153,16 @@ def _coinbase_ws_loop(symbols: list[str]) -> None:
         "channel": "ticker",
         "product_ids": products,
     }
+    backoff = 2.0
     while True:
         try:
             loop.run_until_complete(_coinbase_ws_async(url, subscribe))
+            backoff = 2.0
         except Exception as e:
-            log.warning("coinbase WS disconnected: %s — reconnecting in 2s", e)
-            time.sleep(2)
+            sleep_sec = min(backoff * (0.8 + 0.4 * (time.time() % 1.0)), 60.0)
+            log.warning("coinbase WS disconnected: %s — reconnecting in %.1fs", e, sleep_sec)
+            time.sleep(sleep_sec)
+            backoff = min(backoff * 2.0, 60.0)
 
 
 async def _coinbase_ws_async(url: str, subscribe: dict) -> None:

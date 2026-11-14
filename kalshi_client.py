@@ -232,7 +232,6 @@ class KalshiClient:
                 if self._balance_cache and (now_m - self._balance_cache_ts < 5.0):  # reviewed: check 5s cache window
                     return self._balance_cache
         url       = self.base_url + full_path
-        headers   = self._auth_header(method, full_path)
 
         # Default timeout: 10s connect/read; overridable per call
         if timeout is None:
@@ -262,6 +261,8 @@ class KalshiClient:
             if sleep_for > 0:
                 time.sleep(sleep_for)
 
+            # Re-generate auth header on each attempt so RSA timestamp remains fresh across backoff sleeps
+            headers = self._auth_header(method, full_path)
             try:
                 resp = self.session.request(method, url, headers=headers, **kwargs)
             except requests.RequestException as e:

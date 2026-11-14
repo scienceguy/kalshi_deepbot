@@ -9,6 +9,20 @@ from kalshi_client import KalshiClient, KalshiAPIError
 
 log = logging.getLogger(__name__)
 
+_FINDER_POOL = None
+_FINDER_LOCK = threading.Lock()
+
+
+def _get_finder_pool() -> ThreadPoolExecutor:
+    global _FINDER_POOL
+    # reviewed: lazy initialize singleton thread pool for market discovery
+    if _FINDER_POOL is None:
+        with _FINDER_LOCK:
+            # reviewed: double-check lock pattern for thread pool singleton
+            if _FINDER_POOL is None:
+                _FINDER_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mkt_finder")
+    return _FINDER_POOL
+
 
 def _settle_yes_cents(market: dict) -> int | None:
     """YES payout in cents (0 or 100) from a market record, or None if unknown.
@@ -347,16 +361,16 @@ def find_active_markets(client: KalshiClient, extra_band=None, target_series=Non
                                                   FETCH_MIN_P, FETCH_MAX_P, HMAX, seen, seen_lock)
         return mains, hedges, n
 
-    # Fetch markets for all series concurrently (bounded pool), then
+    # Fetch markets for all series concurrently using persistent pool, then
     # fetch orderbooks concurrently below. This avoids spending several
     # seconds on sequential per-series fetches inside the 30s cycle timeout.
-    with ThreadPoolExecutor(max_workers=min(len(series_list), 4)) as ex:
-        futs = {ex.submit(_fetch_one, s): s for s in series_list}
-        for fut in as_completed(futs):
-            mains, hedges, n = fut.result()
-            total_available += n
-            all_mains.extend(mains)
-            all_hedges.extend(hedges)
+    pool = _get_finder_pool()
+    futs = {pool.submit(_fetch_one, s): s for s in series_list}
+    for fut in as_completed(futs):
+        mains, hedges, n = fut.result()
+        total_available += n
+        all_mains.extend(mains)
+        all_hedges.extend(hedges)
 
     # Fetch orderbooks for ALL mains from the /markets fetch (not just those
     # passing the stale band filter). Stale prices from /markets can mis-filter:
@@ -379,15 +393,14 @@ def find_active_markets(client: KalshiClient, extra_band=None, target_series=Non
     # Cap workers so we don't burst past Kalshi's ~10 req/s rate limit.
     ob_map = {}
     if fetch_list:
-        with ThreadPoolExecutor(max_workers=min(len(fetch_list), 4)) as ex:
-            futs = {ex.submit(_fetch_orderbook, client, m["ticker"]): (m, ct, ml, role, ya)
-                    for m, ct, ml, role, ya in fetch_list}
-            for fut in as_completed(futs):
-                m, ct, ml, role, ya = futs[fut]
-                try:
-                    ob_map[m["ticker"]] = (fut.result(), ya)
-                except Exception:
-                    ob_map[m["ticker"]] = ({}, ya)
+        ob_futs = {pool.submit(_fetch_orderbook, client, m["ticker"]): (m, ct, ml, role, ya)
+                   for m, ct, ml, role, ya in fetch_list}
+        for fut in as_completed(ob_futs):
+            m, ct, ml, role, ya = ob_futs[fut]
+            try:
+                ob_map[m["ticker"]] = (fut.result(), ya)
+            except Exception:
+                ob_map[m["ticker"]] = ({}, ya)
 
     extra = []
     # Process ALL mains passing the REAL entry band (using fresh orderbook prices).

@@ -401,6 +401,7 @@ class BotState:
             "ts": datetime.now(timezone.utc).isoformat(),
             "ticker": ticker,
             "side": sig.side,
+            "action": "buy",
             "contracts": filled,
             "price_cents": sig.entry_price,
             "order_id": oid,
@@ -445,13 +446,10 @@ def _place_poly_order(sig) -> None:
     so this is currently a no-op with a clear log message. When crypto markets
     launch on production, this path places a fee-free maker limit order
     (participateDontInitiate=True) at the same edge as the Kalshi entry.
-
-    Guards:
-    - Skipped entirely unless config.POLYMARKET_ENABLED is true.
-    - Skipped if Polymarket credentials are not configured.
-    - Skipped if no matching Polymarket market is found for the asset.
-    - On any failure: logs a warning and continues (never blocks the Kalshi leg).
     """
+    # reviewed: skip concurrent order when polymarket execution is disabled in config
+    if not getattr(config, "POLYMARKET_ENABLED", False):
+        return
     global _poly_client
     # Lazy import so the bot starts without Polymarket credentials present; this
     # avoids importing polymarket_us on every cycle.

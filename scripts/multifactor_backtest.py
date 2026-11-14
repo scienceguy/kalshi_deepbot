@@ -7,7 +7,6 @@ import glob
 import json
 import math
 import os
-import sys
 import time
 import polars as pl
 

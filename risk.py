@@ -204,10 +204,11 @@ class RiskManager:
         # Microstructure bootstrap: on bankrolls under $10.00, allow exposure and window budget to be 100% until $10 is reached
         # reviewed: microstructure bootstrap allows 100% exposure and cash deployment under $10.00
         if portfolio < 10.0 and resting_orders_value == 0.0:
-            exposure_room = max(0.0, cash)
-            cash_room = max(0.0, cash)
             # reviewed: Half-Kelly sizing above $0.50 prevents single-trade wipeouts while allowing micro-trades below $0.50
-            per_trade_cap = max(0.0, cash * 0.50 if cash >= 0.50 else cash)
+            cap = max(0.0, cash * 0.50 if cash >= 0.50 else cash)
+            exposure_room = cap
+            cash_room = cap
+            per_trade_cap = cap
         else:
             # reviewed: use mark-to-market ceiling when present on standard sizing
             if mark_to_market_exposure is not None:
@@ -244,13 +245,14 @@ class RiskManager:
             # total portfolio value (cash + exposure), so it scales with the full
             # account. Using cash alone makes the limit artificially tight when
             # exposure is high (cash << total_value).
-            # reviewed: prefer total_value (mark-to-market) with start_balance floor for robust micro-balance sizing
-            portfolio_value = max(total_value or (cash + exposure), self.state.start_balance, 1.0)
+            # reviewed: base market daily limit on actual mark-to-market equity so limits tighten during drawdowns
+            portfolio_value = max(total_value or (cash + exposure), 1.0)
             market_limit = portfolio_value * config.MARKET_DAILY_LOSS_PCT
             if self.market_loss_exceeded(ticker, market_limit):  # reviewed: live per-market realized+unrealized loss cap
                 return False, f"market daily loss limit reached: {self.state.market_daily_losses.get(ticker, 0.0):.2f} >= {market_limit:.2f}"
 
-        max_trade = self.max_trade_dollars(cash, exposure, resting_orders_value, paper=paper)
+        mtm_exp = (total_value - cash) if (total_value is not None and cash is not None) else None
+        max_trade = self.max_trade_dollars(cash, exposure, resting_orders_value, paper=paper, mark_to_market_exposure=mtm_exp)
 
         if trade_cost > max_trade:
             portfolio = cash + exposure

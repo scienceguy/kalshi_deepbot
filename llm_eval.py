@@ -247,8 +247,13 @@ _layer_failures: dict[str, int] = {}
 _layer_skip_until: dict[str, float] = {}
 
 
+_VALID_LAYER_NAMES = {l["name"] for l in LAYERS}
+
+
 def _is_circuit_open(layer_name: str) -> bool:
     """Return True if the layer is currently skipped due to repeated failures."""
+    if layer_name not in _VALID_LAYER_NAMES:
+        return False
     skip_until = _layer_skip_until.get(layer_name, 0.0)
     if skip_until <= 0:
         return False
@@ -262,6 +267,8 @@ def _is_circuit_open(layer_name: str) -> bool:
 
 def _record_layer_failure(layer_name: str) -> None:
     """Increment failure count; open circuit if threshold reached."""
+    if layer_name not in _VALID_LAYER_NAMES:
+        return
     _layer_failures[layer_name] = _layer_failures.get(layer_name, 0) + 1
     if _layer_failures[layer_name] >= CIRCUIT_BREAKER_THRESHOLD:
         _layer_skip_until[layer_name] = time.time() + CIRCUIT_BREAKER_COOLDOWN
@@ -273,6 +280,8 @@ def _record_layer_failure(layer_name: str) -> None:
 
 def _record_layer_success(layer_name: str) -> None:
     """Reset failure count on a successful call."""
+    if layer_name not in _VALID_LAYER_NAMES:
+        return
     if layer_name in _layer_failures:
         _layer_failures.pop(layer_name, None)
     if layer_name in _layer_skip_until:
