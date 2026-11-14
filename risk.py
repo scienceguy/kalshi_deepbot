@@ -201,12 +201,12 @@ class RiskManager:
         # reviewed: skipping the ceiling when mtm is unknown is a deliberate
         # conservative-default; cash_room and per_trade_cap still limit size.
         # reviewed: mtm branch uses mark-to-market ceiling when it is present
-        # Microstructure bootstrap: on bankrolls under $10.00 with no open exposure, allow buying 1 single contract
-        # reviewed: microstructure bootstrap allows 1 single contract when bankroll is under $10.00
-        if portfolio < 10.0 and exposure == 0.0 and resting_orders_value == 0.0:
-            exposure_room = min(cash, 1.00)
-            cash_room = cash
-            per_trade_cap = min(cash, 1.00)
+        # Microstructure bootstrap: on bankrolls under $10.00, allow exposure and window budget to be 100% until $10 is reached
+        # reviewed: microstructure bootstrap allows 100% exposure and cash deployment under $10.00
+        if portfolio < 10.0 and resting_orders_value == 0.0:
+            exposure_room = max(0.0, cash)
+            cash_room = max(0.0, cash)
+            per_trade_cap = max(0.0, cash)
         else:
             # reviewed: use mark-to-market ceiling when present on standard sizing
             if mark_to_market_exposure is not None:

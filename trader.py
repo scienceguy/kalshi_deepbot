@@ -330,8 +330,8 @@ class BotState:
                 )
                 return False
 
-        # reviewed: on micro-balances under $10 with zero open exposure, allow full cash for single contract bootstrap
-        tradable_balance = cash if (cash < 10.0 and exposure == 0.0 and pending == 0.0) else (cash * config.TOTAL_CASH_TRADABLE_PCT)
+        # reviewed: on bankrolls under $10 allow 100% cash tradable balance until $10 is reached
+        tradable_balance = cash if (cash < 10.0 and pending == 0.0) else (cash * config.TOTAL_CASH_TRADABLE_PCT)
         deployed = exposure + pending + sig.dollar_risk
         if tradable_balance > 0 and deployed > tradable_balance + 1e-3:
             log.info(
