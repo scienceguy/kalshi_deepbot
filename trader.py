@@ -1718,7 +1718,24 @@ def cycle(client: KalshiClient):
     # reviewed: iterate over positions safely when positions is None on API fetch failure
     for p in (positions or []):
         tk = p.get("ticker", "")
-        if "15M" not in tk.upper() or tk in state.positions:
+        if "15M" not in tk.upper():  # reviewed: only track 15M binary crypto contract positions
+            continue
+        if tk in state.positions:  # reviewed: check if existing position needs partial fill top-up
+            # reviewed: top up partial fills when exchange contract count exceeds stored count
+            existing = state.positions[tk]
+            yes_pos = _pos_yes(p)
+            no_pos = _pos_no(p)
+            exch_contracts = floor_contracts(yes_pos or no_pos)
+            if exch_contracts > existing.get("contracts", 0):  # reviewed: update contract count and risk on additional exchange fills
+                exposure = _pos_cost_basis(p)
+                new_entry_price = int(round(exposure * 100 / exch_contracts)) if exch_contracts else existing.get("entry_price", 0)
+                log.info(
+                    "Top-up %s: exchange contracts %d > stored %d (exposure $%.2f)",
+                    tk, exch_contracts, existing.get("contracts", 0), exposure
+                )
+                existing["contracts"] = exch_contracts
+                existing["entry_price"] = new_entry_price
+                state.position_risk[tk] = exposure
             continue
         # If there's a settlement queue entry for this ticker, skip adoption.
         # The replay will handle the P&L using the queue entry's order_id.

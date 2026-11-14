@@ -191,3 +191,59 @@ def test_polymarket_us_client_module_attributes():
     for attr in expected_attrs:
         assert hasattr(polymarket_us_client, attr), f"Missing attribute {attr} on polymarket_us_client"
 
+
+def test_evaluate_opportunity_filters_long_dated(temp_trader):
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    # Market expiring in 48 hours should be rejected
+    market_48h = {
+        "slug": "mkt-48h",
+        "question": "Will BTC reach strike?",
+        "outcomePrices": ["0.95", "0.05"],
+        "endDate": (now + timedelta(hours=48)).isoformat(),
+    }
+    assert temp_trader.evaluate_opportunity(market_48h) is None
+
+    # Market expiring in 2 hours should be accepted
+    market_2h = {
+        "slug": "mkt-2h",
+        "question": "Will BTC reach strike?",
+        "outcomePrices": ["0.95", "0.05"],
+        "endDate": (now + timedelta(hours=2)).isoformat(),
+    }
+    opp = temp_trader.evaluate_opportunity(market_2h)
+    assert opp is not None
+    assert opp["slug"] == "mkt-2h"
+    assert opp["hours_left"] is not None
+    assert 1.9 <= opp["hours_left"] <= 2.1
+
+
+def test_cycle_rotates_stale_long_dated_positions(temp_trader):
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    # Open position with endDate 30 days in future
+    future_30d = (now + timedelta(days=30)).isoformat()
+    temp_trader.state["positions"] = [{
+        "slug": "stale-dec-pos",
+        "side": "no",
+        "price": 0.99,
+        "qty": 5,
+        "cost": 4.95,
+        "current_price": 0.99,
+    }]
+    temp_trader.state["cash"] = 50.0
+
+    market_map = {
+        "stale-dec-pos": {
+            "slug": "stale-dec-pos",
+            "endDate": future_30d,
+            "outcomePrices": ["0.01", "0.99"],
+        }
+    }
+    with patch.object(temp_trader, "scan_markets", return_value=list(market_map.values())):
+        temp_trader.cycle()
+
+    # Stale position rotated out, cash credited back
+    assert len(temp_trader.state["positions"]) == 0
+    assert temp_trader.state["cash"] == 50.0 + 4.95
+

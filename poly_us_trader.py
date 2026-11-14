@@ -208,6 +208,21 @@ class PolyUSPaperTrader:
         if not slug:
             return None
 
+        end_date = market.get("endDate") or market.get("gameStartTime") or ""
+        hours_left = None
+        if end_date:
+            try:
+                end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                hours_left = (end_dt - datetime.now(timezone.utc)).total_seconds() / 3600.0
+            except Exception:
+                pass
+
+        # Only trade markets expiring within max_hours_to_expiry (default 24h) and not already expired
+        max_h = getattr(self, "max_hours_to_expiry", 24.0)
+        if hours_left is not None:
+            if hours_left <= 0.0 or hours_left > max_h:
+                return None
+
         # 1. Evaluate cross-venue spot price & distributional fair value edge
         cv_edge = crossvenue_edge.evaluate_crossvenue_edge(market)
         if cv_edge and cv_edge["best_edge_cents"] >= 0.5 and 0.92 <= cv_edge["best_price"] <= 0.99:
@@ -221,6 +236,8 @@ class PolyUSPaperTrader:
                 "ref_prob": cv_edge["ref_prob"],
                 "spot": cv_edge["spot"],
                 "strike": cv_edge["strike"],
+                "end_date": end_date,
+                "hours_left": hours_left,
             }
 
         outcome_raw = market.get("outcomePrices")
@@ -264,7 +281,6 @@ class PolyUSPaperTrader:
             return None
 
         side, price = candidates[0]
-        end_date = market.get("endDate") or market.get("gameStartTime") or ""
         return {
             "slug": slug,
             "question": market.get("question", slug),
@@ -272,6 +288,7 @@ class PolyUSPaperTrader:
             "price": price,
             "category": market.get("category", ""),
             "end_date": end_date,
+            "hours_left": hours_left,
         }
 
     @staticmethod
@@ -365,7 +382,62 @@ class PolyUSPaperTrader:
         """Run one full cycle."""
         markets = self.scan_markets()
         market_map = {m["slug"]: m for m in markets if "slug" in m}
+
+        # Ensure market data is available for all open positions
+        for pos in self.state.get("positions", []):
+            slug = pos["slug"]
+            if slug not in market_map:
+                try:
+                    fresh_m = polymarket_us_client.get_market_by_slug(slug)
+                    if fresh_m and isinstance(fresh_m, dict):
+                        m_data = fresh_m.get("market") or fresh_m
+                        if m_data and "slug" in m_data:
+                            market_map[slug] = m_data
+                except Exception:
+                    pass
+
         self.check_settlements(market_map)
+
+        # In paper mode, rotate out any stale long-dated positions (>24h) to free cash for active intraday compounding
+        now = datetime.now(timezone.utc)
+        active_positions = []
+        for pos in self.state.get("positions", []):
+            slug = pos["slug"]
+            m_info = market_map.get(slug)
+            end_date_str = (m_info.get("endDate") or m_info.get("gameStartTime")) if m_info else None
+            is_stale_long_dated = False
+            if end_date_str:
+                try:
+                    end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                    h_left = (end_dt - now).total_seconds() / 3600.0
+                    if h_left > getattr(self, "max_hours_to_expiry", 24.0):
+                        is_stale_long_dated = True
+                except Exception:
+                    pass
+            if is_stale_long_dated:
+                exit_price = pos.get("current_price", pos["price"])
+                payout = round(exit_price * pos["qty"], 4)
+                pnl = round(payout - pos["cost"], 4)
+                self.state["cash"] = round(self.state["cash"] + payout, 4)
+                self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
+                log.info(
+                    "🔄 ROTATED long-dated position %s (>24h) | Payout=$%.2f PnL=%+$.2f -> Freed cash=$%.2f",
+                    slug, payout, pnl, self.state["cash"]
+                )
+                self._append_ledger({
+                    "event": "rotate_exit",
+                    "slug": slug,
+                    "side": pos["side"],
+                    "qty": pos["qty"],
+                    "exit_price": exit_price,
+                    "payout": payout,
+                    "pnl": pnl,
+                    "cash_after": self.state["cash"],
+                    "timestamp": now.isoformat(),
+                })
+            else:
+                active_positions.append(pos)
+        self.state["positions"] = active_positions
 
         # Compute mark-to-market valuation and unrealized P&L per position
         total_mtm = 0.0

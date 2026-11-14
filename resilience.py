@@ -36,6 +36,13 @@ class CycleSupervisor:
 
     def mark_success(self):
         self.errors_in_a_row = 0
+        if self.rebuilds > 0:
+            self._consecutive_successes = getattr(self, "_consecutive_successes", 0) + 1
+            if self._consecutive_successes >= 10:
+                self.rebuilds = max(0, self.rebuilds - 1)
+                self._consecutive_successes = 0
+        else:
+            self._consecutive_successes = 0
 
     def mark_failure(self, exc: Exception) -> float:
         self.errors_in_a_row += 1

@@ -108,12 +108,12 @@ class LocalDB:
     def _get_conn(self) -> sqlite3.Connection:
         """Get or create a dedicated connection per thread for true isolation."""
         if not hasattr(self._local, "conn") or self._local.conn is None:
-            conn = sqlite3.connect(self.db_path, timeout=10.0)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             conn.row_factory = sqlite3.Row
-            # Enable WAL mode and 10s busy timeout for rock-solid concurrency
+            # Enable WAL mode and 30s busy timeout for rock-solid concurrency
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA busy_timeout=30000")
             self._local.conn = conn
         return self._local.conn
 

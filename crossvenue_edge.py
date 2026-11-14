@@ -84,12 +84,21 @@ def evaluate_crossvenue_edge(market: dict, spot_override: Optional[float] = None
     if spot is None or spot <= 0:
         return None
 
+    # Derive live annualized volatility from composite 1m sigma, falling back to 0.60
+    vol = 0.60
+    try:
+        sigma_1m = binance_feed.composite_sigma(f"{symbol}USDT")
+        if sigma_1m and sigma_1m > 0:
+            vol = max(0.20, min(1.50, sigma_1m * (525600.0 ** 0.5)))
+    except Exception:
+        vol = 0.60
+
     # Reference Black-Scholes lognormal probability P(S_T >= K)
     ref_prob = gbm_probability_yes_wins(
         spot_price=spot,
         strike=strike,
         minutes_left=minutes_left,
-        volatility_annualized=0.60,
+        volatility_annualized=vol,
     )
 
     # Extract Polymarket outcome prices
