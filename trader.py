@@ -2632,7 +2632,13 @@ def main():
     _replay_settlement_queue(client)
 
     if args.once:
+        trades_before = state.trades_placed
         cycle(client)
+        # reviewed: update consecutive no trade cycles counter based on whether trades were placed
+        if state.trades_placed > trades_before:
+            state.consecutive_no_trade_cycles = 0
+        else:
+            state.consecutive_no_trade_cycles += 1
         client.close()
         return
 
@@ -2670,7 +2676,13 @@ def main():
         except Exception as e:
             log.debug("MemPalace task sweep failed: %s", e)
         try:
+            trades_before = state.trades_placed
             cycle(client)
+            # reviewed: update consecutive no trade cycles counter based on whether trades were placed
+            if state.trades_placed > trades_before:
+                state.consecutive_no_trade_cycles = 0
+            else:
+                state.consecutive_no_trade_cycles += 1
             cycle_count += 1
             # Checkpoint to MemPalace every N cycles for continuity.
             if cycle_count % MEM_PALACE_CHECKPOINT_EVERY == 0:
