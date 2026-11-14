@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import fcntl
 import json
 import logging
 import math
@@ -43,6 +44,7 @@ DATA_DIR = Path(__file__).resolve().parent / "local_data"
 STATE_FILE = DATA_DIR / "poly_us_state.json"
 LEDGER_FILE = DATA_DIR / "poly_us_paper_ledger.jsonl"
 POLY_US_LOG_FILE = DATA_DIR / "poly_us_dry.log"
+LOCK_FILE = Path(__file__).resolve().parent / ".lock_poly"
 
 log = logging.getLogger("poly_us_trader")
 
@@ -961,6 +963,40 @@ class PolyUSPaperTrader:
         systemd_notify("WATCHDOG=1")
 
 
+def acquire_instance_lock(lock_path: Path, attempts: int = 5, retry_delay: float = 1.0):
+    """Take the single-instance lock (.lock_poly). Returns an fd that must stay
+    open, or None when flock itself is unusable (non-fatal, logged).
+
+    Contention after `attempts` retries exits non-zero: two traders sharing the
+    state file and bankroll would double-book fills.
+    """
+    for attempt in range(attempts):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY)
+        except OSError as e:
+            log.warning("Instance lock %s unusable (%s) — proceeding without it", lock_path, e)
+            return None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            os.close(fd)
+            if attempt < attempts - 1:
+                log.warning("Lock %s held by another process — retrying in %.0fs (attempt %d/%d)",
+                            lock_path, retry_delay, attempt + 2, attempts)
+                time.sleep(retry_delay)
+                continue
+            log.error("Could not acquire lock %s after %d attempts — another instance running",
+                      lock_path, attempts)
+            raise SystemExit(1)
+        except OSError as e:
+            # flock unsupported on this filesystem (FUSE/overlay): non-fatal.
+            log.warning("flock failed on %s (%s) — proceeding without instance lock", lock_path, e)
+            os.close(fd)
+            return None
+    return None
+
+
 def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -1012,20 +1048,31 @@ def main():
             print(f"  - {cat}{p['slug']} | {p['side'].upper()} {p['qty']}x @ ${p['price']:.2f} -> Cur: ${cur_p:.2f} (cost: ${p['cost']:.2f}, MTM: ${p.get('mtm_value', p['cost']):.2f}, Unrealized: ${u_pnl:+.2f})")
         return
 
-    log.info("Starting Polymarket US Paper Trader with $%.2f Bankroll", trader.state["start_balance"])
-    if args.once:
-        trader.cycle()
-        return
-
-    while True:
-        try:
+    lock_fd = acquire_instance_lock(LOCK_FILE)
+    try:
+        log.info("Starting Polymarket US Paper Trader with $%.2f Bankroll", trader.state["start_balance"])
+        if args.once:
             trader.cycle()
-        except KeyboardInterrupt:
-            log.info("Polymarket US paper trader stopped by user.")
-            break
-        except Exception as e:
-            log.error("Cycle error: %s", e)
-        time.sleep(args.interval)
+            return
+
+        while True:
+            try:
+                trader.cycle()
+            except KeyboardInterrupt:
+                log.info("Polymarket US paper trader stopped by user.")
+                break
+            except Exception as e:
+                log.error("Cycle error: %s", e)
+            time.sleep(args.interval)
+    finally:
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+                # Not unlinked: unlinking lets a waiter lock the old inode while
+                # a newcomer creates and locks a fresh one — two bots, two locks.
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

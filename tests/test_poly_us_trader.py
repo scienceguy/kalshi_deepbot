@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone, timedelta
 
 import json
+import os
 import pytest
 
 # poly_us_trader imports polymarket_us_client, which imports the polymarket_us
@@ -444,6 +445,33 @@ def test_corrupt_state_file_is_quarantined(tmp_path):
     quarantined = list(tmp_path.glob("state.json.corrupt-*"))
     assert len(quarantined) == 1, list(tmp_path.iterdir())
     assert quarantined[0].read_text() == "{not valid json"
+
+
+def test_instance_lock_second_instance_exits(tmp_path):
+    """A second instance against a held lock exits non-zero (R12)."""
+    import fcntl
+    from poly_us_trader import acquire_instance_lock
+    lock = tmp_path / ".lock_poly"
+    fd1 = acquire_instance_lock(lock, attempts=1)
+    assert fd1 is not None
+    try:
+        with pytest.raises(SystemExit) as exc:
+            acquire_instance_lock(lock, attempts=1)
+        assert exc.value.code != 0
+    finally:
+        fcntl.flock(fd1, fcntl.LOCK_UN)
+        os.close(fd1)
+
+
+def test_instance_lock_flock_failure_is_nonfatal(tmp_path, monkeypatch):
+    """flock unsupported (FUSE/overlay) → warn and proceed, never crash (R12)."""
+    from poly_us_trader import acquire_instance_lock
+    import poly_us_trader
+
+    def _boom(*a, **k):
+        raise OSError("flock not supported here")
+    monkeypatch.setattr(poly_us_trader.fcntl, "flock", _boom)
+    assert acquire_instance_lock(tmp_path / ".lock_poly", attempts=1) is None
 
 
 def test_check_settlements_tracks_stuck_position_fail_count(temp_trader):
