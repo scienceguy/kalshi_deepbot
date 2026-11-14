@@ -27,8 +27,9 @@ log = logging.getLogger("capacity_test")
 
 def inspect_kalshi():
     client = KalshiClient()
+    import config
     series_by_cadence = {
-        "15M": ["KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M", "KXBNB15M", "KXHYPE15M", "KXNEAR15M", "KXZEC15M", "KXADA15M"],
+        "15M": config.TARGET_SERIES,
         "1H/W": ["KXZECH", "KXNEARH", "KXTONH", "KXNEARW", "KXTONW"],
         "1D":  ["KXBTCD", "KXETHD", "KXSOLD", "KXDOGED", "KXBNBD", "KXNEARD", "KXZECD", "KXBCHD"],
     }

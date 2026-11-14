@@ -108,6 +108,10 @@ def _cached(cache: dict, key: str, ttl: float, fn):
             # that could be long gone.
             log.warning("gate feed stale %s for %.0fs — failing closed", key, now - hit[0])
         value = None
+    # reviewed: prune oldest cached feed values when cache exceeds 64 items to prevent unbounded memory growth
+    if len(cache) > 64:
+        for k in sorted(cache.keys(), key=lambda k: cache[k][1])[:16]:
+            cache.pop(k, None)
     cache[key] = (now, now, value)
     return value
 
