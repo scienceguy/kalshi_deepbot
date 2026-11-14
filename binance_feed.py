@@ -96,18 +96,31 @@ def _ws_set(symbol: str, price: float) -> None:
 
 
 def _binance_ws_loop(symbols: list[str]) -> None:
-    """Background thread: Binance !miniTicker@arr stream (all symbols, 1s cadence)."""
+    """Background thread: Binance combined !miniTicker@arr stream (all symbols, 1s cadence).
+
+    Falls back to REST composite_price if the combined-stream endpoint is
+    unreachable (geo-blocked or not supported on the data domain). Non-fatal.
+    """
     import websockets  # lazy import — optional dep
 
     streams = "/".join(f"{s.lower()}@miniTicker" for s in symbols)
-    url = f"{BINANCE_WS}/streams?streams={streams}"
+    url = f"{BINANCE_WS}/stream?streams={streams}"
+    tried_once = False
     while True:
         try:
-            # websockets.connect supports async only; run a small async runner.
             asyncio.run(_binance_ws_async(url))
+            tried_once = True
         except Exception as e:
+            # Persistent 404 means the endpoint is wrong for this host — stop
+            # retrying and fall back to REST (non-fatal).
+            if "404" in str(e) and tried_once:
+                log.warning(
+                    "binance WS combined-stream endpoint unreachable (404) — "
+                    "falling back to REST composite_price for spot input")
+                return
             log.warning("binance WS disconnected: %s — reconnecting in 2s", e)
             time.sleep(2)
+            tried_once = True
 
 
 async def _binance_ws_async(url: str) -> None:
@@ -185,9 +198,11 @@ def _redstone_ws_loop(symbols: list[str]) -> None:
 
 async def _redstone_ws_async(url: str, headers: dict, subscribe: dict) -> None:
     import websockets
-    async with websockets.connect(url, open_timeout=10, close_timeout=10,
-                                  extra_headers=headers or None,
-                                  ping_interval=20) as ws:
+    connect_kwargs = dict(open_timeout=10, close_timeout=10, ping_interval=20)
+    # websockets >= 13 uses additional_headers; older versions use extra_headers.
+    if headers:
+        connect_kwargs["additional_headers"] = headers
+    async with websockets.connect(url, **connect_kwargs) as ws:
         await ws.send(json.dumps(subscribe))
         async for raw in ws:
             try:
@@ -196,12 +211,8 @@ async def _redstone_ws_async(url: str, headers: dict, subscribe: dict) -> None:
                     continue
                 sym = msg.get("dataPackageId")
                 px = msg.get("value")
-                ts = msg.get("timestamp")
                 if sym and px is not None:
-                    price = float(px)
-                    # RedStone timestamp is ms; compare against our monotonic clock
-                    # by treating "now" as the reference — we only use it when fresh.
-                    _ws_set(sym, price)
+                    _ws_set(sym, float(px))
             except Exception:
                 continue
 
