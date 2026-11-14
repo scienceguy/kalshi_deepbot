@@ -637,28 +637,45 @@ def _order_fill_count(resp):
         return 0.0
 
 
-def _mark_to_market_exposure(positions, markets):
+def _mark_to_market_exposure(positions, markets, client=None):
     """Mark-to-market exposure in dollars across all 15M positions.
 
     Uses the current orderbook mid when available; falls back to the
-    position's cost basis (market_exposure_dollars) when the market is not in
-    the current book. One pass — the two previous loops were duplicates.
+    position's cost basis (market_exposure_dollars) when the market is still open.
+    Only ignores positions whose market has closed/settled to avoid double-counting
+    with settlement cash payout.
     """
     mkt_by_ticker = {m.ticker: m for m in markets}
     exposure = 0.0
+    now = datetime.now(timezone.utc)
     for p in positions:
         if "15M" not in p.get("ticker", "").upper():
             continue
         ticker = p.get("ticker", "")
         yes_pos = _pos_yes(p)
         no_pos = _pos_no(p)
+        # reviewed: skip entries with no contracts open
+        if not yes_pos and not no_pos:
+            continue
         mkt_info = mkt_by_ticker.get(ticker)
         if mkt_info and (yes_pos or no_pos):
             if yes_pos:
                 exposure += yes_pos * mkt_info.mid_yes / 100.0
             if no_pos:
                 exposure += no_pos * mkt_info.mid_no / 100.0
-        # reviewed: ignore unquoted or expired positions to avoid settlement cash double-count
+        else:
+            mkt = None
+            # reviewed: query market status when client is available
+            if client:
+                try:
+                    mkt = client.get_market(ticker)
+                except Exception:
+                    pass
+            ct = _parse_api_time(mkt.get("close_time")) if mkt else None
+            is_closed = (mkt and mkt.get("status") in ("closed", "finalized", "settled")) or (ct and ct <= now)
+            # reviewed: open unexpired positions retain cost basis exposure
+            if not is_closed:
+                exposure += _pos_cost_basis(p)
     return exposure
 
 
@@ -1814,7 +1831,7 @@ def cycle(client: KalshiClient):
     if config.DRY_RUN:
         mark_to_market_exposure = paper_mtm_exposure
     else:
-        mark_to_market_exposure = _mark_to_market_exposure(positions, markets)
+        mark_to_market_exposure = _mark_to_market_exposure(positions, markets, client=client)
 
     # Track unrealized losses per market for per-market daily loss limit.
     # Unrealized loss = cost basis - mark-to-market value (when position is losing).
