@@ -3,6 +3,7 @@ import logging
 import subprocess
 import os
 import shutil
+import sys
 from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
@@ -16,6 +17,12 @@ _MP = ""
 _candidate = shutil.which("mempalace")
 if _candidate and os.path.isfile(_candidate) and os.access(_candidate, os.X_OK):
     _MP = _candidate
+# Also check next to the running python (venv bin), e.g. VPS where PATH may
+# not include the venv directory.
+if not _MP:
+    _venv_mp = os.path.join(os.path.dirname(sys.executable), "mempalace")
+    if os.path.isfile(_venv_mp) and os.access(_venv_mp, os.X_OK):
+        _MP = _venv_mp
 # Explicit candidates for restricted-PATH environments
 if not _MP:
     for _p in (
@@ -25,7 +32,21 @@ if not _MP:
         if os.path.isfile(_p) and os.access(_p, os.X_OK):
             _MP = _p
             break
-_MP_TMP = "/data/data/com.termux/files/usr/tmp/opencode"
+_MP_TMP = os.environ.get("TMPDIR") or "/data/data/com.termux/files/usr/tmp/opencode"
+# Ensure a writable temp dir exists on both android and VPS.
+try:
+    os.makedirs(_MP_TMP, exist_ok=True)
+    # Probe writability; fall back to android tmp dir if the opencode dir isn't
+    # usable (e.g. a restricted mount).
+    probe = os.path.join(_MP_TMP, ".wtest")
+    try:
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.remove(probe)
+    except OSError:
+        _MP_TMP = "/data/data/com.termux/files/home/tmp/opencode"
+except Exception:
+    _MP_TMP = "/data/data/com.termux/files/home/tmp/opencode"
 
 def _mp_available() -> bool:
     """True when the MemPalace CLI binary is resolvable."""
