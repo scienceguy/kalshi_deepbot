@@ -66,6 +66,18 @@ def _resolve_api_key(env_key: str) -> str:
             return open(path).read().strip()
         except OSError as e:
             log.debug("Could not read %s_FILE (%s): %s", env_key, path, e)
+    from pathlib import Path
+    bw_file = Path.home() / ".secrets" / "bw" / f"{env_key.lower()}.json"
+    if bw_file.exists():
+        try:
+            mode = stat.S_IMODE(os.stat(bw_file).st_mode)
+            if not (mode & 0o077):
+                data = json.loads(bw_file.read_text())
+                val = data.get("value", "").strip()
+                if val:
+                    return val
+        except (OSError, ValueError):
+            pass
     return ""
 
 
@@ -493,14 +505,13 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
         reasoning, layer, model — or None if the API call fails.
     """
     system_prompt = (
-        "You are a disciplined Kalshi 15-minute crypto market trading analyst. "
-        "The strategy you are grading is a FAVOURITE MAKER: post a maker limit order on the favourite side, "
-        "roughly 1c inside the spread, 6-11 minutes into the 15-minute window, in a 15-55c entry band. "
-        "Maker orders pay no fee on these series; a taker order pays 7% x price x (1-price). "
-        "The position is held to settlement unless an early exit fires at +20c take-profit or -8c stop. "
-        "Grade the SPECIFIC signal you are given, using its own price, skew, trend, source and minutes_left. "
-        "Note there is no edge in simply buying a favourite: an entry at 52c needs a win rate above 52% to break even. "
-        "Weigh whether the signal's trend and skew justify a win rate above its own entry price, and be sceptical of weak trends. "
+        "You are a disciplined Kalshi 15-minute binary crypto market trading analyst. "
+        "The strategy being evaluated is a GATED FAVOURITE: take liquidity on the favourite side "
+        "(YES or NO at 75-99c) only when spot momentum and the fair-value model confirm positive EV "
+        "after Kalshi's taker fee (0.07 x price x (1-price)). The position is held to settlement. "
+        "Grade the SPECIFIC candidate signal: analyze its entry price, skew, trend, underlying spot momentum, "
+        "and time left in the 15-minute window. Evaluate whether the favourite's momentum is genuine or an "
+        "exhaustion/mean-reversion trap that will fail before expiry. "
         "Return ONLY valid JSON with exactly these keys: "
         "\"probability_of_net_profit\" (number 0-1) and "
         "\"confidence_hold_to_expiry\" (number 0-1). "
