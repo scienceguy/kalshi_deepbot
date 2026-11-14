@@ -266,7 +266,8 @@ GATES_LOG_FILE = Path(
 # Research (Turbine, Bot for Kalshi, PredictionMarketsPicks) shows edge only
 # in the final 60 seconds. Pay the ask on the favourite, hold to BRTI settle.
 # ═════════════════════════════════════════════════════════════════════
-AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", True)
+# AGGRESSIVE_FILL=false enforces post_only=True so resting limit orders never pay taker fees
+AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", False)
 AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
 ORDER_TIME_IN_FORCE = "immediate_or_cancel"
 # Final-minute favourite taker band, YES side only.
@@ -487,8 +488,8 @@ VERTEX_MODEL = os.environ.get("VERTEX_MODEL", "google/gemini-3.6-flash")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 NVIDIA_MODEL = os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
 LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", True)
-LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.65)
-LLM_EVAL_MIN_CONFIDENCE = _env_float("LLM_EVAL_MIN_CONFIDENCE", 0.45)
+LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.70)
+LLM_EVAL_MIN_CONFIDENCE = _env_float("LLM_EVAL_MIN_CONFIDENCE", 0.80)  # high confidence (>=0.80) required from LLM consensus to hold to expiry
 # Fail OPEN by default: the LLM is an optional extra check, so a provider
 # outage must not silently stop the bot from trading. Fail-closed turned a
 # single unreachable endpoint into "no orders ever placed".

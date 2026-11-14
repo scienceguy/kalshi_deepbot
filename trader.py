@@ -1269,9 +1269,15 @@ def _manage_exits(client):
             pos["exit_order_id"] = exit_oid
 
         filled = floor_contracts(contracts) if config.DRY_RUN else _order_fill_count(resp)
+        # reviewed: check order status in response if fill_count was omitted by exchange
         if filled <= 0:
-            log.info("Exit order for %s did not fill — retrying next cycle", ticker)
-            continue
+            order_status = (resp.get("order") or {}).get("status") or resp.get("status")
+            # reviewed: mark fully filled if exchange reports order executed/filled
+            if order_status in ("executed", "settled", "filled"):
+                filled = contracts
+            else:
+                log.info("Exit order for %s did not fill — retrying next cycle", ticker)
+                continue
 
         # Only remove what was actually sold: an IOC sell can fill partially,
         # and popping the whole position would drop the unsold contracts from

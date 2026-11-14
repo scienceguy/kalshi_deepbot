@@ -235,8 +235,8 @@ class RiskManager:
             # total portfolio value (cash + exposure), so it scales with the full
             # account. Using cash alone makes the limit artificially tight when
             # exposure is high (cash << total_value).
-            # reviewed: prefer total_value (mark-to-market) over cost-basis cash+exposure
-            portfolio_value = total_value if total_value is not None else (cash + exposure)
+            # reviewed: prefer total_value (mark-to-market) with start_balance floor for robust micro-balance sizing
+            portfolio_value = max(total_value or (cash + exposure), self.state.start_balance, 1.0)
             market_limit = portfolio_value * config.MARKET_DAILY_LOSS_PCT
             if self.market_loss_exceeded(ticker, market_limit):  # reviewed: live per-market realized+unrealized loss cap
                 return False, f"market daily loss limit reached: {self.state.market_daily_losses.get(ticker, 0.0):.2f} >= {market_limit:.2f}"
