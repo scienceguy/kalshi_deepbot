@@ -1033,11 +1033,17 @@ def _already_ordered(ticker: str) -> bool:
 
     _coid() mints a fresh uuid per call, so without this check every cycle
     re-posts the same bid: the exposure multiplies and each copy can fill.
-    Checks the per-cycle resting_tickers set which is updated immediately
-    when orders are placed/filled, avoiding the race where live_resting_orders
-    is only refreshed once per cycle.
+    Checks both the per-cycle resting_tickers set and the live resting orders
+    cache (populated at cycle start from client.get_orders()) to avoid the
+    race where a fill between cycles leaves the ticker in resting_tickers
+    until the next reconciliation.
     """
-    return ticker in state.resting_tickers
+    if ticker in state.resting_tickers:  # reviewed: per-cycle resting tickers — immediate block on orders placed this cycle
+        return True
+    for o in state.live_resting_orders:  # reviewed: live resting orders cache — catches fills between cycles before reconciliation
+        if o.get("ticker") == ticker:
+            return True
+    return False
 
 
 def clear_resting_orders(client, ticker: str):
@@ -1288,7 +1294,7 @@ def cycle(client: KalshiClient):
             else:
                 paper_mtm_exposure += pos.get("entry_price", 0) * contracts / 100.0
         # Use mark-to-market exposure for paper cash calculation
-        cash = paper_mode.cash(sum(state.position_risk.values()), paper_mtm_exposure)
+        paper_cash = paper_mode.cash(sum(state.position_risk.values()), paper_mtm_exposure)
 
     # Extended outage guard: if balance fetch failed, we can still process
     # settlements and evaluate signals, just skip order placement.
@@ -1789,10 +1795,12 @@ def cycle(client: KalshiClient):
     if config.DRY_RUN and cash_available:
         start = paper_mode.start_balance()
         pnl_val = paper_mode.pnl()
-        pct = (cash - start) / start * 100 if start else 0.0
+        # Use paper_cash for dry-run P&L display (includes MTM)
+        display_cash = paper_cash if 'paper_cash' in locals() else cash
+        pct = (display_cash - start) / start * 100 if start else 0.0
         log.info(
             "📈 paper: start=$%.2f pnl=$%+.2f open=$%.2f cash=$%.2f (%+.1f%%)",
-            start, pnl_val, sum(state.position_risk.values()), cash, pct,
+            start, pnl_val, sum(state.position_risk.values()), display_cash, pct,
         )
 
     # Record bot state to Supabase only when something changed (avoid unnecessary writes)
