@@ -2647,7 +2647,28 @@ def main():
     except Exception as e:
         log.warning("Could not reconcile session_pnl: %s", e)
 
-    # Reconcile trades_placed from local database or exchange fills so the counter survives restarts
+    # Reconcile cycles, no-trade cycles, and trades_placed so state continuously increments across restarts
+    try:
+        local_db = get_local_db()
+        saved_cycles = local_db.get_bot_state("cycles")
+        # reviewed: restore continuous cycles counter across restarts
+        if saved_cycles is not None and int(saved_cycles) > 0:
+            state.cycles = int(saved_cycles)
+            log.info("Reconciled cycles from bot_state: %d cycles", state.cycles)
+    except Exception as e:
+        log.debug("cycles reconciliation failed: %s", e)
+
+    try:
+        local_db = get_local_db()
+        saved_no_trades = local_db.get_bot_state("consecutive_no_trade_cycles")
+        # reviewed: restore continuous no_trade_cycles counter across restarts
+        if saved_no_trades is not None and int(saved_no_trades) > 0:
+            state.consecutive_no_trade_cycles = int(saved_no_trades)
+            log.info("Reconciled consecutive_no_trade_cycles from bot_state: %d", state.consecutive_no_trade_cycles)
+    except Exception as e:
+        log.debug("consecutive_no_trade_cycles reconciliation failed: %s", e)
+
+    # Reconcile trades_placed from local database or today's exchange fills so the counter survives restarts
     try:
         local_db = get_local_db()
         conn = local_db._get_conn()
@@ -2655,24 +2676,27 @@ def main():
             trades_count = conn.execute(
                 "SELECT count(*) FROM orders WHERE status in ('settled', 'executed', 'filled')"
             ).fetchone()[0]
-        # reviewed: check orders table, then bot_state, then exchange fills
+        # reviewed: check orders table, then bot_state, then today's exchange fills
         if trades_count > 0:
             state.trades_placed = int(trades_count)
             log.info("Reconciled trades_placed from LOCAL DB orders: %d trades", state.trades_placed)
         else:
-            saved_trades = local_db.get_bot_state("trades_placed")
-            # reviewed: check if bot_state has saved trades count
-            if saved_trades is not None and int(saved_trades) > 0:
-                state.trades_placed = int(saved_trades)
-                log.info("Reconciled trades_placed from bot_state: %d trades", state.trades_placed)
-            # reviewed: only query exchange fills when running in live mode
-            elif not config.DRY_RUN:
+            # Check today's buy fills from exchange
+            if not config.DRY_RUN:  # reviewed: only query exchange fills when running in live mode
+                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 fills = client._request("GET", "/portfolio/fills", params={"limit": 100})
-                fill_list = fills.get("fills", [])
-                # reviewed: backfill trades_placed from exchange fills when local DB was reset
-                if fill_list:
-                    state.trades_placed = len(fill_list)
-                    log.info("Reconciled trades_placed from exchange fills: %d trades", state.trades_placed)
+                today_buys = [f for f in fills.get("fills", [])
+                              if f.get("action") == "buy" and today_str in f.get("created_time", "")]  # reviewed: filter fills to buy entry orders executed today
+                # reviewed: backfill trades_placed from today's exchange buy fills when local DB was reset
+                if today_buys:
+                    state.trades_placed = len(today_buys)
+                    log.info("Reconciled trades_placed from today's exchange buy fills: %d trades", state.trades_placed)
+                else:
+                    saved_trades = local_db.get_bot_state("trades_placed")
+                    # reviewed: check if bot_state has saved trades count
+                    if saved_trades is not None and int(saved_trades) > 0:
+                        state.trades_placed = int(saved_trades)
+                        log.info("Reconciled trades_placed from bot_state: %d trades", state.trades_placed)
     except Exception as e:
         log.debug("trades_placed reconciliation failed: %s", e)
 
