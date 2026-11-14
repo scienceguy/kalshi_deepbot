@@ -31,6 +31,12 @@ import crossvenue_edge
 import config
 from resilience import systemd_notify
 
+# Optional ML fair-value model (torch may not be installed everywhere).
+try:
+    from ml_model import MLFairValue
+except Exception:  # torch or ml_model unavailable -> ML gate disabled
+    MLFairValue = None
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +86,18 @@ class PolyUSPaperTrader:
         self.adjusted_min_z = self.vol_scaler.base_min_z
         self.calibration_halted = False
         self.calibration_reason = "not started"
+
+        # Optional ML fair-value model filter (opt-in via ML_MODEL_PATH).
+        self.ml_model = None
+        ml_path = getattr(config, "ML_MODEL_PATH", "")
+        if ml_path and MLFairValue is not None:
+            try:
+                self.ml_model = MLFairValue.load(ml_path)
+                log.info("ML fair-value model loaded from %s", ml_path)
+            except Exception as e:
+                log.warning("Failed to load ML model from %s: %s", ml_path, e)
+        elif ml_path and MLFairValue is None:
+            log.warning("ML_MODEL_PATH set but ml_model/torch unavailable; ML gate disabled")
 
     def reset_state(self, initial_cash: float = 35.0) -> dict:
         """Reset paper bankroll to starting balance with clean position ledger."""
@@ -502,6 +520,31 @@ class PolyUSPaperTrader:
                         log.debug("Cushion z %.2f < min_z %.2f for %s — denying entry",
                                   z, self.adjusted_min_z, slug)
                         return None
+
+        # ML fair-value confirmatory gate (opt-in via ML_MODEL_PATH).
+        # Denies the entry when the ML model assigns too little probability
+        # to the chosen side. Skipped when the model is not loaded or when
+        # spot/strike/minutes are unavailable (graceful degradation).
+        if (self.ml_model is not None and cv_edge is not None and long_p is not None
+                and spot and strike_val and hours_left is not None):
+            try:
+                minutes_left = hours_left * 60.0
+                sigma_min = self.adjusted_sigma / math.sqrt(525600.0)
+                row = {
+                    "strike": strike_val,
+                    "kalshi": long_p,        # venue YES mid price (Polymarket)
+                    "fair": cv_edge["ref_prob"],  # GBM fair value
+                    "spread": 0.0,
+                }
+                ml_p = self.ml_model.predict_proba(row, spot, sigma_min, minutes_left)
+                ml_side_p = ml_p if side == "yes" else (1.0 - ml_p)
+                ml_min = getattr(config, "ML_PROB_MIN", 0.50)
+                if ml_side_p < ml_min:
+                    log.debug("ML gate denies %s: side_prob=%.3f < min=%.2f (ml_p=%.3f)",
+                              slug, ml_side_p, ml_min, ml_p)
+                    return None
+            except Exception as e:
+                log.debug("ML gate skipped for %s: %s", slug, e)
 
         return {
             "slug": slug,

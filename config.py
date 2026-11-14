@@ -284,7 +284,11 @@ GATES_LOG_FILE = Path(
 # in the final 60 seconds. Pay the ask on the favourite, hold to BRTI settle.
 # ═════════════════════════════════════════════════════════════════════
 # ML model path (optional fair-value model filter)
+# Opt-in: set to a trained checkpoint (e.g. data/ml_model.pt). Empty = ML gate disabled.
 ML_MODEL_PATH = _env_str("ML_MODEL_PATH", "")
+# Minimum ML probability required for the chosen side to pass the entry gate.
+# 0.50 = ML must at least agree with direction; raise (e.g. 0.80) for a stricter filter.
+ML_PROB_MIN = _env_float("ML_PROB_MIN", 0.50)
 
 # AGGRESSIVE_FILL=false enforces post_only=True so resting limit orders never pay taker fees
 AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", False)

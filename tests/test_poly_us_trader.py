@@ -4,10 +4,22 @@ Unit tests for poly_us_trader.py.
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from datetime import datetime, timezone, timedelta
 
 import json
 import pytest
+
+# poly_us_trader imports polymarket_us_client, which imports the polymarket_us
+# SDK at module level; the SDK is optional, so skip instead of erroring.
+pytest.importorskip("polymarket_us")
+
 from poly_us_trader import PolyUSPaperTrader
+
+# ML model is optional (torch may not be installed everywhere).
+try:
+    from ml_model import MLFairValue
+except Exception:  # pragma: no cover
+    MLFairValue = None
 
 
 @pytest.fixture
@@ -424,5 +436,91 @@ def test_check_settlements_tracks_stuck_position_fail_count(temp_trader):
     assert len(temp_trader.state["positions"]) == 1
     assert temp_trader.state["positions"][0]["settle_fail_count"] == 1
     assert temp_trader.state["realized_pnl"] == 0.0  # nothing credited
+
+
+# ── ML gate tests (opt-in via config.ML_MODEL_PATH) ──────────────────────────
+
+def _ml_market():
+    """A market with strike+spot data that reaches the candidate entry path."""
+    end = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "slug": "test-ml-candidate",
+        "question": "Will BTC exceed strike?",
+        "outcomePrices": ["0.95", "0.05"],
+        "assetPriceTerms": {
+            "asset": {"symbol": "BTC"},
+            "strike": {"value": 90000},
+            "windowEnd": end,
+        },
+    }
+
+
+def _fake_cv_edge():
+    """Cross-venue edge that is present but fails the edge hurdle (< 0.5c),
+    so evaluate_opportunity falls through to the candidate path with cv_edge set."""
+    return {
+        "best_edge_cents": 0.1,   # below the 0.5c crossvenue hurdle
+        "ref_prob": 0.97,         # >= MODEL_PROB_MIN (0.96)
+        "best_price": 0.95,       # inside the 92-99c band
+        "best_side": "yes",
+        "spot": 100000.0,
+        "strike": 90000,
+    }
+
+
+def test_ml_gate_denies_low_probability(temp_trader):
+    """ML gate denies entry when ML probability for the chosen side is below ML_PROB_MIN."""
+    temp_trader.ml_model = MagicMock()
+    temp_trader.ml_model.predict_proba.return_value = 0.40
+    temp_trader.adjusted_min_z = 0.0  # bypass cushion-z to isolate the ML gate
+    market = _ml_market()
+    with patch("poly_us_trader.crossvenue_edge.evaluate_crossvenue_edge",
+               return_value=_fake_cv_edge()), \
+         patch("poly_us_trader.crossvenue_edge.get_cached_spot", return_value=100000.0):
+        opp = temp_trader.evaluate_opportunity(market)
+    assert opp is None
+
+
+def test_ml_gate_allows_high_probability(temp_trader):
+    """ML gate allows entry when ML probability for the chosen side is above ML_PROB_MIN."""
+    temp_trader.ml_model = MagicMock()
+    temp_trader.ml_model.predict_proba.return_value = 0.80
+    temp_trader.adjusted_min_z = 0.0
+    market = _ml_market()
+    with patch("poly_us_trader.crossvenue_edge.evaluate_crossvenue_edge",
+               return_value=_fake_cv_edge()), \
+         patch("poly_us_trader.crossvenue_edge.get_cached_spot", return_value=100000.0):
+        opp = temp_trader.evaluate_opportunity(market)
+    assert opp is not None
+    assert opp["side"] == "yes"
+    assert opp["price"] == 0.95
+
+
+def test_ml_gate_skipped_when_no_model(temp_trader):
+    """With no ML model loaded, candidate-path entries proceed as before (graceful degradation)."""
+    temp_trader.ml_model = None
+    temp_trader.adjusted_min_z = 0.0
+    market = _ml_market()
+    with patch("poly_us_trader.crossvenue_edge.evaluate_crossvenue_edge",
+               return_value=_fake_cv_edge()), \
+         patch("poly_us_trader.crossvenue_edge.get_cached_spot", return_value=100000.0):
+        opp = temp_trader.evaluate_opportunity(market)
+    assert opp is not None
+    assert opp["side"] == "yes"
+
+
+def test_ml_model_loads_from_checkpoint():
+    """The trained checkpoint loads via MLFairValue.load (opt-in ML_MODEL_PATH)."""
+    if MLFairValue is None:
+        pytest.skip("ml_model/torch unavailable")
+    path = Path(__file__).resolve().parent.parent / "data" / "ml_model.pt"
+    if not path.exists():
+        pytest.skip("data/ml_model.pt not present")
+    model = MLFairValue.load(str(path))
+    assert model is not None
+    # Output is a valid probability.
+    row = {"strike": 90000.0, "kalshi": 0.95, "fair": 0.97, "spread": 0.0}
+    p = model.predict_proba(row, 100000.0, 0.0007, 120.0)
+    assert 0.0 <= p <= 1.0
 
 
