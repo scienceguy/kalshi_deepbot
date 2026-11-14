@@ -1508,3 +1508,163 @@ def test_p4_foreign_position_not_adopted(monkeypatch):
 
     trader.cycle(client)
     assert "KXBTC15M-FOREIGN" not in test_state.positions
+
+
+# ── P9: Paper/Live parity — trades_placed single increment ──────────────────
+
+def test_p9_dry_run_fill_increments_trades_placed_once(monkeypatch):
+    """P9: A dry-run order that fills increments trades_placed exactly once.
+
+    Regression: trades_placed was incremented both when the order was placed
+    (order loop) and again when the fill was recorded (_record_filled_order), so
+    a dry-run place+fill in the same cycle double-counted (2 per fill). The
+    fill increment is the single source of truth — reconciliation rebuilds this
+    counter from filled/settled orders — so placement must not add a second
+    count, keeping paper/live parity.
+    """
+    import config as _cfg
+    from signals import TradeSignal
+    from market_finder import MarketInfo
+    from gates import GateResult
+
+    monkeypatch.setattr(_cfg, "DRY_RUN", True)
+    monkeypatch.setattr(_cfg, "LLM_EVALUATION_ENABLED", False, raising=False)
+    monkeypatch.setattr(_cfg, "GATES_ENABLED", False, raising=False)
+    # Keep the dry-run paper ledger hermetic and deterministic.
+    monkeypatch.setattr(trader.paper_mode, "cash", lambda open_risk, mtm=None: 100.0)
+    monkeypatch.setattr(trader.paper_mode, "start_balance", lambda: 10.0)
+    monkeypatch.setattr(trader.paper_mode, "pnl", lambda: 0.0)
+    monkeypatch.setattr(trader, "get_local_db", lambda: MagicMock())
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
+    monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
+    monkeypatch.setattr(trader.gates, "prefetch", lambda assets: None)
+    monkeypatch.setattr(
+        trader.gates, "evaluate_entry", lambda *a, **k: GateResult(True, [], {})
+    )
+
+    client = MagicMock()
+    client.get_balance.return_value = 100.0
+    client.get_positions.return_value = []
+    client.get_orders.return_value = []
+    client.place_order.return_value = {"order": {"order_id": "oid-1"}}
+    client.invalidate_markets.return_value = None
+
+    market = MarketInfo(
+        ticker="KXBTC15M-TEST", series="KXBTC15M",
+        close_time=datetime.now(timezone.utc), strike=78000, strike_type="",
+        yes_bid=94, yes_ask=95, no_bid=4, no_ask=5,
+        yes_liquidity=100, no_liquidity=100, minutes_left=8.0,
+        bracket_role="MAIN",
+    )
+    sig = TradeSignal(
+        direction="YES", side="yes", entry_price=95,
+        contracts=2.0, dollar_risk=1.9, reason="test",
+        market=market, strength=10,
+    )
+
+    monkeypatch.setattr(
+        trader.se, "evaluate",
+        lambda m, cash=None, max_trade_override=None: [sig],
+    )
+    monkeypatch.setattr(trader, "find_active_markets", lambda c: [market])
+
+    _reset_cycle_state(monkeypatch)
+    trader.state.window["budget"] = 100.0
+    trader.state.window["used"] = 0.0
+
+    trader.cycle(client)
+
+    monkeypatch.setattr(trader.se, "evaluate",
+        lambda m, cash=None, max_trade_override=None: [sig],
+    )
+    monkeypatch.setattr(trader, "find_active_markets", lambda c: [market])
+
+    _reset_cycle_state(monkeypatch)
+    # Isolate module-level caches that prior tests may have mutated without
+    # monkeypatch (e.g. TestMLModelLoading sets trader._ml_model directly).
+    trader._ml_model = None
+    trader._ladder_strategy = None
+    trader.state.window["budget"] = 100.0
+    trader.state.window["used"] = 0.0
+
+    trader.cycle(client)
+
+    # Exactly one fill was recorded → trades_placed == 1, not 2.
+    assert trader.state.trades_placed == 1, (
+        f"expected trades_placed==1 (fill only), got {trader.state.trades_placed}"
+    )
+    assert trader.state.window["trades_placed_in_window"] == 1
+
+
+def test_p9_record_filled_order_increments_once_per_fill(
+    fresh_state, mock_client, monkeypatch
+):
+    """P9: _record_filled_order is the single trades_placed increment site —
+    exactly +1 per recorded fill, never more."""
+    monkeypatch.setattr(trader, "get_local_db", lambda: MagicMock())
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
+
+    fresh_state.trades_placed = 0
+    sig = MagicMock()
+    sig.dollar_risk = 10.0
+    sig.entry_price = 70
+    sig.side = "yes"
+    sig.market = MagicMock()
+    sig.market.ticker = "TEST"
+    sig.market.series = "TEST"
+    sig.market.strike = 0
+
+    fresh_state._record_filled_order(
+        mock_client, sig, "oid-a", fill_count=10.0, status="executed",
+        fees_dollars=0.0, cycles=1, entry_taker=False,
+    )
+    assert fresh_state.trades_placed == 1
+
+    fresh_state._record_filled_order(
+        mock_client, sig, "oid-b", fill_count=10.0, status="executed",
+        fees_dollars=0.0, cycles=1, entry_taker=False,
+    )
+    assert fresh_state.trades_placed == 2
+
+
+# ── P11: Exposure cliff — _touch_window uses tradable_balance_limit under $10
+
+def test_p11_touch_window_under_ten_uses_tradable_balance_limit(monkeypatch):
+    """P11: Under $10 equity the window budget is capped at 60% of equity
+    (tradable_balance_limit), leaving a 40% cash reserve, instead of 100% —
+    the exposure cliff that let a micro-account deploy its whole bankroll."""
+    now = datetime.now(timezone.utc)
+    wid = trader._window_id(now)
+
+    test_state = trader.BotState()
+    test_state.window["id"] = wid - 1          # force a new window
+    test_state.window["start_cash"] = 0.0
+    test_state.window["budget"] = 0.0
+    monkeypatch.setattr(trader, "state", test_state)
+
+    # cash=$6, exposure=$2 → equity=$8 < $10 → budget = 8 * 0.60 = $4.80
+    trader._touch_window(now, cash=6.0, exposure=2.0)
+
+    assert test_state.window["budget"] == pytest.approx(4.8)
+    assert test_state.window["reserved_cash"] == 0.0
+    assert test_state.window["start_cash"] == 6.0
+
+
+def test_p11_touch_window_over_ten_unchanged(monkeypatch):
+    """P11: Above $10 the WINDOW_TRADE_PCT rule is unchanged (no behavior
+    change outside the micro-balance cliff)."""
+    now = datetime.now(timezone.utc)
+    wid = trader._window_id(now)
+
+    test_state = trader.BotState()
+    test_state.window["id"] = wid - 1
+    monkeypatch.setattr(trader, "state", test_state)
+
+    trader._touch_window(now, cash=100.0, exposure=0.0)
+
+    assert test_state.window["budget"] == pytest.approx(
+        100.0 * config.WINDOW_TRADE_PCT
+    )
+    assert test_state.window["reserved_cash"] == pytest.approx(
+        100.0 * config.CASH_RESERVED_PCT
+    )

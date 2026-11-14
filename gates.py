@@ -241,10 +241,20 @@ def entry_fee(p: float) -> float:
 
 def cushion_z(spot: float, strike: float, sigma: float, minutes: float,
               side: str) -> float | None:
-    """Signed Brownian cushion in standard deviations, or None if undefined.
+    """Signed GBM/log strike cushion in standard deviations, or None if undefined.
 
-    YES wins when spot > strike, so z = (spot-strike)/(sigma*sqrt(t)); NO is
-    the mirror. sigma is dollars per sqrt-minute.
+    z = |ln(S / K)| / (sigma * sqrt(t)) is the cushion magnitude; the sign is
+    positive when the chosen side is in-the-money (cushion in our favour) and
+    negative when out-of-the-money. ``sigma`` is a per-sqrt-minute LOG
+    volatility (dimensionless, e.g. the per-minute std of spot log returns),
+    and ``t`` is minutes to expiry. This is the Black-Scholes d2 denominator
+    without the drift term, matching model.gbm_probability_yes_wins and
+    binance_feed.prob_above.
+
+    Pass gates.sigma_per_min() (per-minute log-vol) or convert ATR via
+    sigma = (atr / spot) * sqrt(pi/2). Do NOT pass a dollar-denominated sigma:
+    that made the old arithmetic form dimensionally wrong and produced huge z
+    values that never blocked.
     """
     if spot <= 0 or strike <= 0 or sigma <= 0:
         return None
@@ -253,7 +263,8 @@ def cushion_z(spot: float, strike: float, sigma: float, minutes: float,
     denom = sigma * math.sqrt(minutes)
     if denom <= 0:
         return None
-    z = (spot - strike) / denom
+    # ln(S/K) > 0 means YES is ITM; for NO the cushion is the mirror.
+    z = math.log(spot / strike) / denom
     return z if side.lower() == "yes" else -z
 
 
@@ -346,6 +357,7 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
         "net_ev": None,
         "breakeven_q": None,
         "high_gamma_zone": False,
+        "pin_risk_denied": False,
         "shadow_mode": bool(config.GATES_SHADOW_MODE),
     }
     block_reasons: list[str] = []
@@ -423,14 +435,16 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
         if minutes <= 0:
             block_reasons.append("gate3: no time remaining")
         elif sigma is None:
-            # atr_1m is an average *true range* (E|X| over one candle, ~0.798*sigma),
-            # not a standard deviation, so scale by sqrt(pi/2)=1.2533 to make it one.
-            # NOTE: this widens the cone, and a wider sigma LOWERS q, so the gate
-            # rejects MORE. Measured: ETH q 0.8502 -> 0.7961 (EV -0.066 -> -0.120);
-            # all three logged favourites still blocked. The band, not this factor,
-            # is what decides whether a trade is admissible.
-            sigma = (atr * math.sqrt(math.pi / 2) if atr is not None
-                     else (spot * 0.0007 if spot else None))
+            # atr_1m is an average *true range* in DOLLARS (E|dS| over one candle,
+            # ~0.798*sigma_dollar), not a log-vol. Convert to per-minute log-vol:
+            # sigma_log ~ E|d ln S| ~ E|dS| / S = atr / spot, scaled by
+            # sqrt(pi/2)=1.2533 to turn E|X| into a standard deviation. The old
+            # code passed raw dollars as sigma, which made cushion_z dimensionally
+            # wrong (z in dollars, not standard deviations) and never blocked.
+            # A wider sigma LOWERS q, so the gate rejects MORE.
+            sigma = ((atr / spot) * math.sqrt(math.pi / 2)
+                     if (atr is not None and spot)  # reviewed: gate0 sigma resolution requires both atr and spot to derive log-vol
+                     else (0.0007 if spot else None))
         if minutes <= config.GATES_HIGH_GAMMA_MINUTES:
             metrics["high_gamma_zone"] = True
             if config.GATES_DENY_HIGH_GAMMA:
@@ -438,6 +452,16 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
                     f"gate3: high-gamma zone ({minutes:.2f} <= "
                     f"{config.GATES_HIGH_GAMMA_MINUTES:.1f} min)"
                 )
+        # Pin-risk guard: entries too close to expiry settle on a single print
+        # near the strike, so even a wide cushion does not remove the pin risk.
+        if (config.GATES_DENY_PIN_RISK  # reviewed: deny entries <=6 min from expiry where win rate drops below 98%
+                and 0 < minutes <= config.GATES_PIN_RISK_MINUTES):
+            metrics["pin_risk_denied"] = True
+            block_reasons.append(
+                f"gate3: pin risk ({minutes:.2f} min left <= "
+                f"{config.GATES_PIN_RISK_MINUTES:.1f} min; settle prints near "
+                f"the strike)"
+            )
         if minutes > 0 and sigma is not None and spot is not None and strike > 0:
             z = cushion_z(spot, strike, sigma, minutes, side)
             metrics["cushion_z"] = z

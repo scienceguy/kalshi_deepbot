@@ -235,6 +235,18 @@ GATES_TIME_DECAY_ENABLED = _env_bool("GATES_TIME_DECAY_ENABLED", True)
 GATES_HIGH_GAMMA_MINUTES = _env_float("GATES_HIGH_GAMMA_MINUTES", 2.0)
 GATES_DENY_HIGH_GAMMA = _env_bool("GATES_DENY_HIGH_GAMMA", False)
 GATES_MIN_CUSHION_Z = _env_float("GATES_MIN_CUSHION_Z", 1.80)
+# Pin-risk guard: deny entries this close to expiry. Empirically (settled
+# 15M history, 92c-99c band, minutes 6-11) the realized win rate at
+# minutes_left <= 6 falls below 98% (~97-98%) while entries with 7-11 min
+# left win ~100%, so entries at or below this floor carry pin risk near the
+# strike at expiration. z >= GATES_MIN_CUSHION_Z already spaces spot from
+# strike; this floor catches the residual time risk. Set 0 to disable.
+GATES_PIN_RISK_MINUTES = _env_float("GATES_PIN_RISK_MINUTES", 6.0)
+# Opt-in: the z >= GATES_MIN_CUSHION_Z gate already spaces spot from strike
+# (the core pin-risk defence). This floor adds a time-based belt-and-suspenders
+# for entries within ~6 min of expiry, where the realized win rate drops below
+# 98%. Enable with GATES_DENY_PIN_RISK=true for live trading.
+GATES_DENY_PIN_RISK = _env_bool("GATES_DENY_PIN_RISK", False)
 
 # Feed cache + per-candidate JSONL diagnostics
 GATES_SPOT_CACHE_SECONDS = _env_int("GATES_SPOT_CACHE_SECONDS", 30)
@@ -340,6 +352,16 @@ MODEL_VOLATILITY = _env_float("MODEL_VOLATILITY", 0.80)
 MODEL_VOL_DYNAMIC = _env_bool("MODEL_VOL_DYNAMIC", True)
 MODEL_VOL_MIN = _env_float("MODEL_VOL_MIN", 0.20)
 MODEL_VOL_MAX = _env_float("MODEL_VOL_MAX", 5.00)
+
+# ═════════════════════════════════════════════════════════════════════
+# HIGH-EV HURDLE (HF backtest, 1,890-combo sweep, papylove/kalshi-15m-data)
+# Top regime: model_prob_min=0.96, entry_ask_max=65c, avg_entry=63c,
+# ev_per_trade=+$0.3537, win_rate=100%, n_trades=2 (highly selective).
+# model_prob_min below 0.96 collapses EV ($0.1903 at 0.90, win 83.3%).
+# Widening entry_max beyond 65c adds trades but cuts EV/trade (85c -> $0.2169).
+# ═════════════════════════════════════════════════════════════════════
+MODEL_PROB_MIN = _env_float("MODEL_PROB_MIN", 0.96)
+ENTRY_ASK_MAX_CENTS = _env_int("ENTRY_ASK_MAX_CENTS", 65)
 
 # ═════════════════════════════════════════════════════════════════════
 # HEDGE SETTINGS
@@ -700,6 +722,14 @@ def validate_bands():
     if GATES_HIGH_GAMMA_MINUTES < 0:
         errors.append(
             f"GATES_HIGH_GAMMA_MINUTES ({GATES_HIGH_GAMMA_MINUTES}) must be >= 0."
+        )
+    if not 0.0 <= MODEL_PROB_MIN <= 1.0:
+        errors.append(
+            f"MODEL_PROB_MIN ({MODEL_PROB_MIN}) must be in [0, 1]."
+        )
+    if not 1 <= ENTRY_ASK_MAX_CENTS <= 99:
+        errors.append(
+            f"ENTRY_ASK_MAX_CENTS ({ENTRY_ASK_MAX_CENTS}) must be in [1, 99]."
         )
     if errors:
         raise ValueError("Configuration invalid:\n" + "\n".join(errors))

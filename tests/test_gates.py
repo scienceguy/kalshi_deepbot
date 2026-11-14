@@ -267,22 +267,36 @@ class TestGatesMath:
         assert abs(be - 0.783) < 0.001
 
     def test_cushion_z_formula(self):
-        """cushion_z should compute (spot-strike)/(sigma*sqrt(t)) for YES."""
-        # spot=96000, strike=95000, sigma=100, t=4 min
-        # z = 1000/(100*2) = 5.0
-        z = gates.cushion_z(96000, 95000, 100, 4, "yes")
-        assert abs(z - 5.0) < 0.01
+        """cushion_z should compute |ln(S/K)|/(sigma*sqrt(t)) for YES.
+
+        S=100, K=100*e^-0.1 => ln(S/K)=0.1, sigma=0.1, t=1 => z=1.0.
+        sigma is per-sqrt-minute LOG vol (dimensionless), not dollars.
+        """
+        strike = 100.0 * math.exp(-0.1)
+        z = gates.cushion_z(100.0, strike, 0.1, 1.0, "yes")
+        assert abs(z - 1.0) < 1e-6
 
     def test_cushion_z_no_side(self):
-        """cushion_z should negate for NO side."""
-        z_yes = gates.cushion_z(96000, 95000, 100, 4, "yes")
-        z_no = gates.cushion_z(96000, 95000, 100, 4, "no")
-        assert z_no == -z_yes
+        """cushion_z should negate for NO side (mirror cushion)."""
+        strike = 100.0 * math.exp(-0.1)
+        z_yes = gates.cushion_z(100.0, strike, 0.1, 1.0, "yes")
+        z_no = gates.cushion_z(100.0, strike, 0.1, 1.0, "no")
+        assert abs(z_no - (-z_yes)) < 1e-12
+
+    def test_cushion_z_sign_itm(self):
+        """Positive z means the chosen side is in-the-money (cushion in our favour)."""
+        strike = 100.0 * math.exp(-0.1)  # spot 100 > strike: YES ITM
+        assert gates.cushion_z(100.0, strike, 0.1, 1.0, "yes") > 0
+        assert gates.cushion_z(100.0, strike, 0.1, 1.0, "no") < 0
+        # Mirror: spot < strike -> NO ITM.
+        assert gates.cushion_z(strike, 100.0, 0.1, 1.0, "no") > 0
+        assert gates.cushion_z(strike, 100.0, 0.1, 1.0, "yes") < 0
 
     def test_cushion_z_scales_with_sqrt_minutes(self):
         """Quadrupling the time left halves z: denom is sigma*sqrt(t)."""
-        z1 = gates.cushion_z(96000, 95000, 100, 1, "yes")
-        z4 = gates.cushion_z(96000, 95000, 100, 4, "yes")
+        strike = 100.0 * math.exp(-0.1)
+        z1 = gates.cushion_z(100.0, strike, 0.1, 1.0, "yes")
+        z4 = gates.cushion_z(100.0, strike, 0.1, 4.0, "yes")
         assert abs(z4 - z1 / 2.0) < 1e-9
 
     def test_cushion_z_undefined_inputs(self):
@@ -372,6 +386,25 @@ class TestMeasuredFloorSide:
         """The YES-equivalent of a NO@3c fill is 97c: inside the band."""
         res = self._run("no", 3, 0.50)
         assert res.metrics.get("yes_equiv_price_cents") == 97
+
+    def test_pin_risk_gate_blocks_when_enabled(self):
+        """GATES_DENY_PIN_RISK=True blocks entries with minutes <= GATES_PIN_RISK_MINUTES."""
+        market = MockMarket()
+        market.minutes_left = 5.0
+        book = Mock()
+        with patch.object(gates, "normal_cdf", return_value=0.99), \
+             patch.object(gates, "spot_for", return_value=market.strike + 500.0), \
+             patch.object(gates, "atr_1m", return_value=10.0), \
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_DENY_PIN_RISK", True), \
+             patch.object(config, "GATES_PIN_RISK_MINUTES", 6.0):
+            res = gates.evaluate_entry(
+                market, spot_state={}, orderbook=book,
+                side="yes", entry_price_cents=95)
+        assert res.metrics.get("pin_risk_denied") is True
+        assert res.allowed is False
+        assert any("pin risk" in r for r in res.reasons)
+
 
 
 if __name__ == "__main__":

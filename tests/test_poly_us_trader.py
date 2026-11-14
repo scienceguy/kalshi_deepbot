@@ -45,11 +45,12 @@ def test_evaluate_opportunity_finds_favorites(temp_trader):
     assert opp["price"] == 0.95
 
 
-def test_evaluate_opportunity_ignores_mid_band(temp_trader):
+def test_evaluate_opportunity_ignores_unpriceable(temp_trader):
+    # No parseable prices -> no bracket, regardless of entry cap.
     market = {
-        "slug": "test-crypto-mid",
+        "slug": "test-crypto-unpriceable",
         "question": "Will ETH reach strike?",
-        "outcomePrices": ["0.50", "0.50"],
+        "outcomePrices": ["not-a-price", "also-bad"],
     }
     opp = temp_trader.evaluate_opportunity(market)
     assert opp is None
@@ -88,7 +89,14 @@ def test_compute_tier_size():
     assert PolyUSPaperTrader.compute_tier_size(500.0) == 15.0
     assert PolyUSPaperTrader.compute_tier_size(2000.0) == 60.0
     assert PolyUSPaperTrader.compute_tier_size(20000.0) == 600.0
-    assert PolyUSPaperTrader.compute_tier_size(200000.0) == 4000.0
+
+    # Compound ladder milestones: 3% of equity at each tier (Task 3 spec).
+    assert PolyUSPaperTrader.compute_tier_size(35.0) == 1.05      # start tier: 1 contract @~95c
+    assert PolyUSPaperTrader.compute_tier_size(100.0) == 3.00     # milestone 1: 3 contracts
+    assert PolyUSPaperTrader.compute_tier_size(1_000.0) == 30.00  # milestone 2: 30 contracts
+    assert PolyUSPaperTrader.compute_tier_size(10_000.0) == 300.00  # milestone 3
+    assert PolyUSPaperTrader.compute_tier_size(100_000.0) == 3_000.00  # milestone 4 (was $2,000 under old 2% branch)
+    assert PolyUSPaperTrader.compute_tier_size(200_000.0) == 6_000.00
 
 
 def test_opp_sorting_prioritizes_soonest_active():
@@ -306,7 +314,10 @@ def test_available_markets_and_tradeable_brackets_tracked_separately(temp_trader
     now = datetime.now(timezone.utc)
     future_2h = (now + timedelta(hours=2)).isoformat()
 
-    # 3 available markets: 2 qualify as high-certainty brackets, 1 is mid-band
+    # 3 available markets, all priceable. Under the 65c entry cap (HF top regime)
+    # every binary market yields at least one bracket: the cheaper side is always
+    # <= 50c <= 65c. m1=0.95/0.05 -> NO@0.05; m2=0.50/0.50 -> YES@0.50;
+    # m3=0.98/0.02 -> NO@0.02. So all 3 qualify as tradeable brackets.
     mock_markets = [
         {"slug": "m1", "question": "Q1", "outcomePrices": ["0.95", "0.05"], "endDate": future_2h},
         {"slug": "m2", "question": "Q2", "outcomePrices": ["0.50", "0.50"], "endDate": future_2h},
@@ -318,4 +329,20 @@ def test_available_markets_and_tradeable_brackets_tracked_separately(temp_trader
 
     assert temp_trader.state["available_markets_count"] == 3
     assert temp_trader.state["tradeable_brackets_count"] == 2
+
+
+def test_live_mode_places_real_order(temp_trader):
+    temp_trader.live_mode = True
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+
+    opp = {"slug": "test-live-slug", "question": "Live Q", "side": "no", "price": 0.99}
+    with patch("polymarket_us_client.place_maker_order", return_value={"id": "ORDER123"}) as mock_place:
+        ok = temp_trader.execute_paper_trade(opp)
+        assert ok is True
+        mock_place.assert_called_once_with("test-live-slug", "no", 0.99, 1)
+        assert temp_trader.state["positions"][-1]["order_id"] == "ORDER123"
+
 

@@ -673,6 +673,18 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
         )
         # model_prob is P(YES wins); for NO side we need P(NO wins)
         trade_prob = model_prob if direction == "YES" else (1.0 - model_prob)
+        # High-EV hurdle: model/ref_prob >= 0.96. Below this threshold EV
+        # collapses ($0.1903 at 0.90 vs $0.3537 at 0.96, win 100%->83.3%).
+        # reviewed: gate trades below 96% model probability to prevent EV collapse
+        if trade_prob < config.MODEL_PROB_MIN:
+            n_cands = _size(entry_c, max_dollars, max_contracts)
+            results.append(TradeSignal(
+                "PASS", side, entry_c, n_cands, 0.0,
+                f"Model prob {trade_prob*100:.0f}% below high-EV hurdle "
+                f"{config.MODEL_PROB_MIN*100:.0f}% (ask={entry_c}c)",
+                market,
+            ))
+            continue
         edge = edge_cents(trade_prob, entry_c, fee_cents)
         log.info(
             "Bracket eval %s [%s %dc]: Model P(win)=%.1f%% fee=%.1fc -> Net Edge=%+.2fc (min=%+.2fc) => %s",

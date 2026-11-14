@@ -15,14 +15,20 @@ Usage:
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Make scripts/ importable for bs_calibration (Task 2: Brier calibration + vol scaling).
+sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
+from bs_calibration import RollingCalibrationMonitor, AdaptiveVolatilityScaler
+
 import polymarket_us_client
 import crossvenue_edge
+import config
 from resilience import systemd_notify
 
 # Logging setup
@@ -41,10 +47,11 @@ LEDGER_FILE = Path("local_data/poly_us_paper_ledger.jsonl")
 
 
 class PolyUSPaperTrader:
-    def __init__(self, initial_cash: float = 35.0, reset: bool = False):
+    def __init__(self, initial_cash: float = 35.0, reset: bool = False, live_mode: bool = False):
         self.state_file = STATE_FILE
         self.ledger_file = LEDGER_FILE
         self.max_open_positions = 25
+        self.live_mode = live_mode
         if reset:
             self.state = self.reset_state(initial_cash)
         else:
@@ -61,6 +68,18 @@ class PolyUSPaperTrader:
             log.info("Polymarket US gateway health check: OK")
         else:
             log.warning("Polymarket US gateway health check: FAILED or unreachable")
+
+        # Task 2: continuous Brier calibration + adaptive volatility scaling.
+        self.cal_monitor = RollingCalibrationMonitor(
+            ledger_path="local_data/bs_calibration_ledger.jsonl")
+        self.vol_scaler = AdaptiveVolatilityScaler(
+            base_sigma=float(getattr(config, "MODEL_VOLATILITY", 0.80)),
+            base_min_z=float(getattr(config, "GATES_MIN_CUSHION_Z", 1.80)),
+        )
+        self.adjusted_sigma = self.vol_scaler.base_sigma
+        self.adjusted_min_z = self.vol_scaler.base_min_z
+        self.calibration_halted = False
+        self.calibration_reason = "not started"
 
     def reset_state(self, initial_cash: float = 35.0) -> dict:
         """Reset paper bankroll to starting balance with clean position ledger."""
@@ -209,6 +228,12 @@ class PolyUSPaperTrader:
                     total_payout = round(payout_per_contract * pos["qty"], 4)
                     cost = pos["cost"]
                     pnl = round(total_payout - cost, 4)
+                    # Task 2: reconcile settlement for rolling Brier calibration.
+                    outcome = 1 if float(settlement) >= 0.5 else 0  # 1 = Yes won
+                    try:
+                        self.cal_monitor.reconcile_settlement(slug, outcome)
+                    except Exception:
+                        pass
                     self.state["cash"] = round(self.state["cash"] + total_payout, 4)
                     self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
                     log.info(
@@ -261,7 +286,11 @@ class PolyUSPaperTrader:
 
         # 1. Evaluate cross-venue spot price & distributional fair value edge
         cv_edge = crossvenue_edge.evaluate_crossvenue_edge(market)
-        if cv_edge and cv_edge["best_edge_cents"] >= 0.5 and 0.92 <= cv_edge["best_price"] <= 0.99:
+        # High-EV favorite hurdle: ref_prob >= MODEL_PROB_MIN (0.96) and favorite band (92c-99c)
+        if (cv_edge
+                and cv_edge["best_edge_cents"] >= 0.5
+                and cv_edge["ref_prob"] >= getattr(config, "MODEL_PROB_MIN", 0.96)
+                and 0.92 <= cv_edge["best_price"] <= 0.99):
             return {
                 "slug": slug,
                 "question": market.get("question", slug),
@@ -329,11 +358,11 @@ class PolyUSPaperTrader:
                 return None
 
         candidates = []
-        # Check Long (Yes) favorite
+        # Check Long (Yes) favorite in high-certainty favorite band (92c-99c)
         if 0.92 <= long_p <= 0.99:
             candidates.append(("yes", long_p))
 
-        # Check Short (No) favorite
+        # Check Short (No) favorite in high-certainty favorite band (92c-99c)
         if 0.92 <= short_p <= 0.99:
             candidates.append(("no", short_p))
 
@@ -373,28 +402,46 @@ class PolyUSPaperTrader:
                 if side == "yes" and (spot <= strike_val or pct_distance < 0.020):
                     return None
 
+        # Task 2: adaptive strike-cushion hurdle (vol-scaled z).
+        # z = |ln(S/K)| / (sigma_per_sqrt_min * sqrt(minutes_left)); require z >= adjusted_min_z.
+        # When Brier drifts up (calibration degrading), vol_scaler raises sigma and
+        # min_z, so fewer entries clear the hurdle -> more conservative. When Brier
+        # improves, sigma falls and the hurdle narrows.
+        if strike_val and spot and spot > 0 and hours_left is not None:
+            minutes_left = hours_left * 60.0
+            if minutes_left > 0:
+                sigma_per_sqrt_min = self.adjusted_sigma / math.sqrt(525600.0)
+                denom = sigma_per_sqrt_min * math.sqrt(minutes_left)
+                if denom > 0:
+                    z = abs(math.log(spot / strike_val)) / denom
+                    if z < self.adjusted_min_z:
+                        log.debug("Cushion z %.2f < min_z %.2f for %s — denying entry",
+                                  z, self.adjusted_min_z, slug)
+                        return None
+
         return {
             "slug": slug,
             "question": market.get("question", slug),
             "side": side,
             "price": price,
             "category": market.get("category", ""),
+            "spot": spot,
+            "strike": strike_val,
             "end_date": end_date,
             "hours_left": hours_left,
         }
 
     @staticmethod
     def compute_tier_size(total_balance: float) -> float:
-        """Dynamic position sizing strictly capped at 3% of total balance."""
-        pct_3 = round(total_balance * 0.03, 2)
-        if total_balance < 1_000.0:
-            return min(30.0, pct_3)
-        elif total_balance < 10_000.0:
-            return min(300.0, pct_3)
-        elif total_balance < 100_000.0:
-            return min(3000.0, pct_3)
-        else:
-            return min(20000.0, round(total_balance * 0.02, 2))
+        """Dynamic position sizing: 3% of total equity per window, re-anchored at each milestone.
+
+        Implements the compounding ladder: per-window budget = 3% of total equity,
+        which scales 100x at every milestone ($35->$100: $1.05; $100->$1K: $3.00;
+        $1K->$10K: $30.00; $10K->$100K: $300.00; $100K->$1M: $3,000.00). The number
+        of contracts is floor(budget / entry_price). No per-tier caps: the 3% rule is
+        applied uniformly so milestone 4 sizes at $3,000 (not $2,000).
+        """
+        return round(total_balance * 0.03, 2)
 
     def execute_paper_trade(self, opp: dict) -> bool:
         """Size and execute a paper trade from the bankroll."""
@@ -445,7 +492,16 @@ class PolyUSPaperTrader:
         if not valid:
             return False
 
-        # Execute simulated fill
+        order_id = None
+        if getattr(self, "live_mode", False):
+            resp = polymarket_us_client.place_maker_order(slug, side, price, qty)
+            if not resp or not resp.get("id"):
+                log.warning("Live order placement failed for %s %s @ %.2f", slug, side, price)
+                return False
+            order_id = resp.get("id")
+            log.info("Live maker order placed: %s (id=%s)", slug, order_id)
+
+        # Execute simulated or live fill
         self.state["cash"] = round(self.state["cash"] - cost, 4)
         self.state["window_spent"] = round(window_spent + cost, 4)
         self.state["trades_count"] += 1
@@ -456,10 +512,33 @@ class PolyUSPaperTrader:
             "price": price,
             "qty": qty,
             "cost": cost,
+            "order_id": order_id,
             "category": opp.get("category", ""),
             "opened_at": datetime.now(timezone.utc).isoformat(),
         }
         self.state["positions"].append(pos)
+        # Task 2: record entry for rolling Brier calibration (model p, z, price band).
+        try:
+            minutes_left = opp.get("hours_left")
+            minutes_left = minutes_left * 60.0 if minutes_left is not None else None
+            sigma_per_sqrt_min = self.adjusted_sigma / math.sqrt(525600.0)
+            denom = sigma_per_sqrt_min * math.sqrt(minutes_left) if minutes_left else 0.0
+            spot = opp.get("spot")
+            strike = opp.get("strike")
+            z = (abs(math.log(spot / strike)) / denom
+                 if (spot and strike and denom > 0) else None)
+            self.cal_monitor.record_entry(
+                slug=slug,
+                side=side,
+                price_dollars=price,
+                predicted_p=opp.get("ref_prob"),
+                z=z,
+                strike=strike,
+                minutes_left=minutes_left,
+                sigma=self.adjusted_sigma,
+            )
+        except Exception as e:
+            log.debug("Calibration record_entry failed for %s: %s", slug, e)
         self._save_state(self.state)
 
         edge_tag = f" [CrossEdge: {opp['cross_edge_cents']:+.1f}c]" if "cross_edge_cents" in opp else ""
@@ -677,6 +756,23 @@ class PolyUSPaperTrader:
 
         self._save_state(self.state)
 
+        # ── Task 2: continuous calibration monitor + circuit breaker ──
+        snap = self.cal_monitor.snapshot_rolling()
+        scale, self.adjusted_sigma, self.adjusted_min_z, drift = self.vol_scaler.scale(
+            snap.get("rolling_brier"))
+        halted, reason = self.cal_monitor.circuit_breaker()
+        self.calibration_halted = halted
+        self.calibration_reason = reason
+        band_gap = None
+        if snap.get("price_band_92_99c"):
+            band_gap = snap["price_band_92_99c"].get("calibration_gap_pp")
+        log.info(
+            "CALIBRATION rolling_brier=%s ece=%s trailing10_wr=%s "
+            "band92_99_gap_pp=%s vol_scale=%s adj_sigma=%.4f adj_min_z=%.2f drift=%s -> %s",
+            snap.get("rolling_brier"), snap.get("ece"),
+            snap.get("trailing_10_win_rate"), band_gap,
+            scale, self.adjusted_sigma, self.adjusted_min_z, drift, reason)
+
         opportunities = []
         for m in markets:
             opp = self.evaluate_opportunity(m)
@@ -721,11 +817,14 @@ class PolyUSPaperTrader:
             len(opportunities), len(new_opps)
         )
         trades_placed = 0
-        for opp in new_opps:
-            if trades_placed >= 2:
-                break
-            if self.execute_paper_trade(opp):
-                trades_placed += 1
+        if self.calibration_halted:
+            log.info("CALIBRATION HALTED: %s — no new entries this cycle", self.calibration_reason)
+        else:
+            for opp in new_opps:
+                if trades_placed >= 2:
+                    break
+                if self.execute_paper_trade(opp):
+                    trades_placed += 1
 
         systemd_notify("WATCHDOG=1")
 
@@ -736,10 +835,11 @@ def main():
     parser.add_argument("--interval", type=int, default=15, help="Seconds between cycles (default 15)")
     parser.add_argument("--status", action="store_true", help="Show current paper state and exit")
     parser.add_argument("--reset", nargs="?", const=35.0, type=float, default=None, help="Reset paper bankroll to starting balance (default: 35.0)")
+    parser.add_argument("--live", action="store_true", help="Enable live trading mode (places real maker orders via Polymarket US API)")
     args = parser.parse_args()
 
     init_cash = args.reset if args.reset is not None else 35.0
-    trader = PolyUSPaperTrader(initial_cash=init_cash, reset=args.reset is not None)
+    trader = PolyUSPaperTrader(initial_cash=init_cash, reset=args.reset is not None, live_mode=args.live)
 
     if args.status:
         state = trader.state

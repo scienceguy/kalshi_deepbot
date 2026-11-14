@@ -50,3 +50,53 @@ def test_evaluate_crossvenue_edge_missing_terms():
     }
     res = crossvenue_edge.evaluate_crossvenue_edge(market)
     assert res is None
+
+
+def test_kalshi_implied_prob_at_strike_interpolates():
+    cdf = [(90.0, 0.80), (100.0, 0.50), (110.0, 0.20)]
+    assert crossvenue_edge.kalshi_implied_prob_at_strike(cdf, 100.0) == 0.50
+    assert crossvenue_edge.kalshi_implied_prob_at_strike(cdf, 95.0) == 0.65
+    assert crossvenue_edge.kalshi_implied_prob_at_strike(cdf, 105.0) == 0.35
+    assert crossvenue_edge.kalshi_implied_prob_at_strike(cdf, 80.0) is None  # below range
+    assert crossvenue_edge.kalshi_implied_prob_at_strike(cdf, 120.0) is None  # above range
+    assert crossvenue_edge.kalshi_implied_prob_at_strike([], 100.0) is None
+
+
+def test_evaluate_crossvenue_edge_cdf_poly_underprices_favorite():
+    end_time = datetime.now(timezone.utc) + timedelta(minutes=10)
+    market = {
+        "slug": "cpc-btc-updown-15m-favorite",
+        "assetPriceTerms": {
+            "asset": {"symbol": "btc"},
+            "strike": {"value": "100000.00"},
+            "windowEnd": end_time.isoformat(),
+        },
+        "outcomePrices": ["0.90", "0.10"],
+    }
+    # Kalshi's CDF says P(BTC > 100k) = 0.97; Polymarket prices YES at 0.90.
+    # edge = (0.97 - 0.90) * 100 = +7c -> Polymarket underprices the favorite.
+    kalshi_cdf = [(99000.0, 0.98), (100000.0, 0.97), (101000.0, 0.95)]
+    res = crossvenue_edge.evaluate_crossvenue_edge_cdf(market, kalshi_cdf,
+                                                       spot_override=101000.0)
+    assert res is not None
+    assert res["edge_source"] == "kalshi_cdf"
+    assert res["ref_prob"] == 0.97
+    assert res["best_side"] == "yes"
+    assert res["best_edge_cents"] == 7.0
+
+
+def test_evaluate_crossvenue_edge_cdf_outside_cdf_range():
+    end_time = datetime.now(timezone.utc) + timedelta(minutes=10)
+    market = {
+        "slug": "cpc-btc-updown-15m-wing",
+        "assetPriceTerms": {
+            "asset": {"symbol": "btc"},
+            "strike": {"value": "200000.00"},
+            "windowEnd": end_time.isoformat(),
+        },
+        "outcomePrices": ["0.01", "0.99"],
+    }
+    kalshi_cdf = [(99000.0, 0.98), (100000.0, 0.97), (101000.0, 0.95)]
+    # Strike 200k is outside the Kalshi CDF range -> refuse to extrapolate.
+    assert crossvenue_edge.evaluate_crossvenue_edge_cdf(market, kalshi_cdf,
+                                                        spot_override=101000.0) is None
