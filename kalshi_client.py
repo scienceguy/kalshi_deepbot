@@ -341,6 +341,11 @@ class KalshiClient:
         pos_val = float(data.get("portfolio_value", 0) or 0) / 100.0
         return cash + pos_val
 
+    def get_portfolio_value(self) -> float:
+        """Return open portfolio value in dollars from the balance response."""
+        data = self._request("GET", "/portfolio/balance")
+        return float(data.get("portfolio_value", 0) or 0) / 100.0
+
     def get_shard_balance(self, exchange_index: int) -> float:
         """Return the cash actually available on one exchange shard, in dollars.
 

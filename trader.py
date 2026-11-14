@@ -2008,10 +2008,16 @@ def cycle(client: KalshiClient):
     # reviewed: dry-run risk update uses paper_cash reflecting MTM exposure
     if cash_available:
         effective_cash = paper_cash if config.DRY_RUN else cash
-        # reviewed: use total account equity (cash + portfolio_value across shards) so in-flight settlements don't trigger false drawdown halt
-        total_account_cash = client.get_total_equity() if (client and not config.DRY_RUN and hasattr(client, "get_total_equity")) else (client.get_balance() if (client and not config.DRY_RUN) else effective_cash)
-        state.risk.update_balance(total_account_cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
-        _touch_window(datetime.now(timezone.utc), total_account_cash)
+        total_account_cash = client.get_balance() if (client and not config.DRY_RUN) else effective_cash
+        live_exposure = mark_to_market_exposure
+        # reviewed: if position MTM is 0 during settlement window, use exchange portfolio_value
+        if not config.DRY_RUN and client and live_exposure <= 0.0:
+            try:
+                live_exposure = client.get_portfolio_value()
+            except Exception:
+                live_exposure = 0.0
+        state.risk.update_balance(total_account_cash, live_exposure, mark_to_market_exposure=live_exposure)
+        _touch_window(datetime.now(timezone.utc), total_account_cash + live_exposure)
 
     # Reset daily order counter on new day
     today = datetime.now(timezone.utc).date().isoformat()
