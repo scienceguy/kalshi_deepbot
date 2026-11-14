@@ -300,3 +300,22 @@ def test_auto_reset_threshold_preserves_history(temp_trader):
     assert any("prior_trade" in l for l in lines)
     assert any("auto_reset_threshold" in l for l in lines)
 
+
+def test_available_markets_and_tradeable_brackets_tracked_separately(temp_trader):
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    future_2h = (now + timedelta(hours=2)).isoformat()
+
+    # 3 available markets: 2 qualify as high-certainty brackets, 1 is mid-band
+    mock_markets = [
+        {"slug": "m1", "question": "Q1", "outcomePrices": ["0.95", "0.05"], "endDate": future_2h},
+        {"slug": "m2", "question": "Q2", "outcomePrices": ["0.50", "0.50"], "endDate": future_2h},
+        {"slug": "m3", "question": "Q3", "outcomePrices": ["0.98", "0.02"], "endDate": future_2h},
+    ]
+
+    with patch.object(temp_trader, "scan_markets", return_value=mock_markets):
+        temp_trader.cycle()
+
+    assert temp_trader.state["available_markets_count"] == 3
+    assert temp_trader.state["tradeable_brackets_count"] == 2
+

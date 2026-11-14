@@ -484,18 +484,37 @@ class PolyUSPaperTrader:
         markets = self.scan_markets()
         market_map = {m["slug"]: m for m in markets if "slug" in m}
 
-        # Ensure market data is available for all open positions
-        for pos in self.state.get("positions", []):
-            slug = pos["slug"]
-            if slug not in market_map:
+        # Ensure market data is available for all open positions efficiently by batching through event parents
+        missing_slugs = [p["slug"] for p in self.state.get("positions", []) if p["slug"] not in market_map]
+        if missing_slugs:
+            events_to_fetch = set()
+            for s in missing_slugs:
+                parts = s.split("-")
+                # cpc-btc-above-hr-2026-11-14-1400z-66400 -> btc-above-hr-2026-11-14-1400z
+                if len(parts) >= 7 and parts[0].startswith("cpc"):
+                    ev_slug = "-".join(parts[1:-1])
+                    events_to_fetch.add(ev_slug)
+            for ev_slug in events_to_fetch:
                 try:
-                    fresh_m = polymarket_us_client.get_market_by_slug(slug)
-                    if fresh_m and isinstance(fresh_m, dict):
-                        m_data = fresh_m.get("market") or fresh_m
-                        if m_data and "slug" in m_data:
-                            market_map[slug] = m_data
+                    ev_full = polymarket_us_client.get_event_by_slug(ev_slug)
+                    for m in ev_full.get("event", {}).get("markets", []):
+                        m_slug = m.get("slug")
+                        if m_slug:
+                            market_map[m_slug] = m
                 except Exception:
                     pass
+            # For any still missing, fetch individually with spacing
+            for s in missing_slugs:
+                if s not in market_map:
+                    try:
+                        time.sleep(0.05)
+                        fresh_m = polymarket_us_client.get_market_by_slug(s)
+                        if fresh_m and isinstance(fresh_m, dict):
+                            m_data = fresh_m.get("market") or fresh_m
+                            if m_data and "slug" in m_data:
+                                market_map[s] = m_data
+                    except Exception:
+                        pass
 
         self.check_settlements(market_map)
 
@@ -658,19 +677,23 @@ class PolyUSPaperTrader:
 
         self._save_state(self.state)
 
-        log.info(
-            "── PolyUS Cycle ── Equity: $%.2f (Cash: $%.2f, MTM: $%.2f) | Realized P&L: %+.2f | Unrealized P&L: %+.2f | Total P&L: %+.2f | Window Budget: $%.2f ($%.2f spent) | Positions: %d | Markets: %d",
-            total_equity, self.state["cash"], total_mtm, realized_pnl, total_unrealized, total_pnl,
-            self.state.get("window_budget", round(total_equity * 0.03, 2)),
-            self.state.get("window_spent", 0.0),
-            len(self.state["positions"]), len(markets)
-        )
-
         opportunities = []
         for m in markets:
             opp = self.evaluate_opportunity(m)
             if opp:
                 opportunities.append(opp)
+
+        self.state["available_markets_count"] = len(markets)
+        self.state["tradeable_brackets_count"] = len(opportunities)
+        self._save_state(self.state)
+
+        log.info(
+            "── PolyUS Cycle ── Equity: $%.2f (Cash: $%.2f, MTM: $%.2f) | Realized P&L: %+.2f | Unrealized P&L: %+.2f | Total P&L: %+.2f | Window Budget: $%.2f ($%.2f spent) | Positions: %d | Available Markets: %d | Tradable Brackets: %d",
+            total_equity, self.state["cash"], total_mtm, realized_pnl, total_unrealized, total_pnl,
+            self.state.get("window_budget", round(total_equity * 0.03, 2)),
+            self.state.get("window_spent", 0.0),
+            len(self.state["positions"]), len(markets), len(opportunities)
+        )
 
         current_slugs = {p["slug"] for p in self.state.get("positions", [])}
         new_opps = [opp for opp in opportunities if opp["slug"] not in current_slugs]
@@ -731,6 +754,8 @@ def main():
         print(f"Total Equity:   ${total_equity:.2f}")
         print(f"Available Cash: ${state.get('cash', init_cash):.2f}")
         print(f"Open Positions: {len(positions)} (${total_mtm:.2f} MTM)")
+        print(f"Available Markets: {state.get('available_markets_count', 0)}")
+        print(f"Tradable Brackets: {state.get('tradeable_brackets_count', 0)}")
         w_budget = state.get('window_budget', round(total_equity * 0.03, 2))
         w_spent = state.get('window_spent', 0.0)
         print(f"Window Budget:  ${w_budget:.2f} (Spent: ${w_spent:.2f}, Left: ${max(0.0, w_budget - w_spent):.2f})")
