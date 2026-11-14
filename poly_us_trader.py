@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import polymarket_us_client
+import crossvenue_edge
 
 # Logging setup
 logging.basicConfig(
@@ -182,6 +183,21 @@ class PolyUSPaperTrader:
         if not slug:
             return None
 
+        # 1. Evaluate cross-venue spot price & distributional fair value edge
+        cv_edge = crossvenue_edge.evaluate_crossvenue_edge(market)
+        if cv_edge and cv_edge["best_edge_cents"] >= 0.5 and 0.92 <= cv_edge["best_price"] <= 0.99:
+            return {
+                "slug": slug,
+                "question": market.get("question", slug),
+                "side": cv_edge["best_side"],
+                "price": cv_edge["best_price"],
+                "category": "crypto",
+                "cross_edge_cents": cv_edge["best_edge_cents"],
+                "ref_prob": cv_edge["ref_prob"],
+                "spot": cv_edge["spot"],
+                "strike": cv_edge["strike"],
+            }
+
         outcome_raw = market.get("outcomePrices")
         if not outcome_raw:
             return None
@@ -275,9 +291,10 @@ class PolyUSPaperTrader:
         self.state["positions"].append(pos)
         self._save_state(self.state)
 
+        edge_tag = f" [CrossEdge: {opp['cross_edge_cents']:+.1f}c]" if "cross_edge_cents" in opp else ""
         log.info(
-            "⚡ PAPER BUY [%s] %s | %s %dx @ $%.2f = $%.2f | Cash Remaining: $%.2f",
-            opp.get("category", "gen"), slug, side.upper(), qty, price, cost, self.state["cash"]
+            "⚡ PAPER BUY [%s] %s | %s %dx @ $%.2f = $%.2f%s | Cash Remaining: $%.2f",
+            opp.get("category", "gen"), slug, side.upper(), qty, price, cost, edge_tag, self.state["cash"]
         )
         self._append_ledger({
             "event": "open",
