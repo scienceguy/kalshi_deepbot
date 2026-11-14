@@ -1984,7 +1984,7 @@ def cycle(client: KalshiClient):
         # reviewed: use total portfolio balance across all shards for drawdown halt so shard imbalance doesn't halt
         total_account_cash = client.get_balance() if (client and not config.DRY_RUN) else effective_cash
         state.risk.update_balance(total_account_cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
-        _touch_window(datetime.now(timezone.utc), effective_cash)
+        _touch_window(datetime.now(timezone.utc), total_account_cash)
 
     # Reset daily order counter on new day
     today = datetime.now(timezone.utc).date().isoformat()
