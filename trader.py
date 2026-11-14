@@ -251,6 +251,7 @@ class BotState:
         self.orders_today: int = 0
         self.today: str = ""
         self.consecutive_no_tradeable_cycles: int = 0
+        self.consecutive_no_trade_cycles: int = 0
         self.cycle_outcome: str = "pending"
         self.tradeable_markets_count: int = 0
         self.available_markets_count: int = 0
@@ -1436,6 +1437,7 @@ def cycle(client: KalshiClient):
         state.consecutive_no_tradeable_cycles = 0
         state.cycle_outcome = "evaluated"
     else:
+        state.consecutive_no_tradeable_cycles += 1
         state.cycle_outcome = "no-tradeable"
 
     # For dry-run: compute paper mark-to-market exposure from local paper positions
@@ -1968,11 +1970,11 @@ def cycle(client: KalshiClient):
         log.warning("Balance unknown — skipping balance-dependent risk checks")
 
     log.info(
-        "%s | window $%.2f/%.2f | active_markets=%d tradeable_brackets=%d | trades=%d cycles=%d",
+        "%s | window $%.2f/%.2f | active_markets=%d tradeable_brackets=%d | trades=%d no_trade_cycles=%d | cycles=%d",
         state.risk.summary(cash if cash_available else 0.0, mark_to_market_exposure),
         state.window["used"], state.window["budget"],
         state.available_active_markets, state.tradeable_brackets,
-        state.trades_placed, state.cycles,
+        state.trades_placed, state.consecutive_no_trade_cycles, state.cycles,
     )
     if config.DRY_RUN and cash_available:
         start = paper_mode.start_balance()
@@ -1997,6 +1999,8 @@ def cycle(client: KalshiClient):
         "available_markets_count": state.available_markets_count,
         "available_active_markets": state.available_active_markets,
         "tradeable_brackets": state.tradeable_brackets,
+        "consecutive_no_tradeable_cycles": state.consecutive_no_tradeable_cycles,
+        "consecutive_no_trade_cycles": state.consecutive_no_trade_cycles,
         "balance": cash if cash_available else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -2230,6 +2234,11 @@ def cycle(client: KalshiClient):
         if oid:
             placed += 1
             state.trades_placed += 1
+            log.info(
+                "🎯 PLACED TRADE: %s %s %.1fx @ %dc ($%.2f) order_id=%s (Signal: %s)",
+                sig.market.ticker, sig.side.upper(), sig.contracts, sig.entry_price,
+                sig.dollar_risk, oid, getattr(sig, "reason", "net-positive bracket")
+            )
             # Track reserved cash for this resting order so intra-cycle cash
             # tracking doesn't overspend on orders already placed this cycle.
             # NOTE: Do NOT decrement local `cash` here — max_trade_dollars()
@@ -2358,7 +2367,10 @@ def cycle(client: KalshiClient):
 
     if placed:
         state.cycle_outcome = "traded"
+        state.consecutive_no_trade_cycles = 0
         log.info("Placed %d order(s) this cycle.", placed)
+    else:
+        state.consecutive_no_trade_cycles += 1
 
 
 # ═════════════════════════════════════════════════════════════════════

@@ -630,6 +630,11 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
         # model_prob is P(YES wins); for NO side we need P(NO wins)
         trade_prob = model_prob if direction == "YES" else (1.0 - model_prob)
         edge = edge_cents(trade_prob, entry_c, fee_cents)
+        log.info(
+            "Bracket eval %s [%s %dc]: Model P(win)=%.1f%% fee=%.1fc -> Net Edge=%+.2fc (min=%+.2fc) => %s",
+            market.ticker, direction, entry_c, trade_prob * 100, fee_cents, edge, config.MODEL_MIN_EDGE_CENTS,
+            "NET-POSITIVE" if edge >= config.MODEL_MIN_EDGE_CENTS else "NEGATIVE-EDGE"
+        )
         if edge < config.MODEL_MIN_EDGE_CENTS:
             results.append(TradeSignal(
                 "PASS", "", 0, 0, 0.0,
