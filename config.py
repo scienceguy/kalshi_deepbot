@@ -163,7 +163,7 @@ SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
 # selects only those with positive edge after fees. Research shows GBM spot-vs-
 # strike edge exists whenever spot is meaningfully ITM vs strike, not just in
 # the final 60 seconds.
-ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 6.0)
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 13.5)
 ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.5)
 # Maker only favourite criteria price band: ask 95-99c
 MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 95)
@@ -389,7 +389,7 @@ TOTAL_CASH_TRADABLE_PCT = _env_float("TOTAL_CASH_TRADABLE_PCT", 0.70)
 CASH_FLOOR_PCT = _env_float("CASH_FLOOR_PCT", 0.70)
 EXPOSURE_CEILING_PCT = _env_float("EXPOSURE_CEILING_PCT", 0.30)
 PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.05)  # quarter-Kelly-ish, up to 5%
-MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 1.00)
+MIN_CASH_ABSOLUTE = _env_float("MIN_CASH_ABSOLUTE", 0.02)
 
 # Paper-mode sizing (dry runs only). Dry runs deploy the whole paper balance so
 # a favourite at 75-95c can actually be bought: with a 70% cash floor and a
