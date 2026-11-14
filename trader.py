@@ -331,8 +331,11 @@ class BotState:
                 return False
 
         # reviewed: on bankrolls under $10 allow 100% capital tradable balance until $10 is reached
-        total_cap = cash + exposure
-        tradable_balance = total_cap if (total_cap < 10.0 and pending == 0.0) else (cash * config.TOTAL_CASH_TRADABLE_PCT)
+        portfolio_equity = cash + exposure
+        if portfolio_equity < 10.0:  # reviewed: allow full portfolio deployment on micro accounts under $10
+            tradable_balance = portfolio_equity
+        else:
+            tradable_balance = cash * config.TOTAL_CASH_TRADABLE_PCT
         deployed = exposure + pending + sig.dollar_risk
         if tradable_balance > 0 and deployed > tradable_balance + 1e-3:
             log.info(
