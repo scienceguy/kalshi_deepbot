@@ -2409,17 +2409,36 @@ def cycle(client: KalshiClient):
                     # exposure too would double-count and over-restrict later trades.
                     current_exposure += confirmed_fill_count * sig.entry_price / 100.0
                     log.info(
-                        "✓ %s order_id=%s (confirmed fill_count=%.0f)",
+                        "✓ %s order_id=%s (confirmed fill_count=%.2f)",
                         sig.market.ticker, oid, confirmed_fill_count,
                     )
                 else:
-                    # Order is resting — keep in resting_value for future reconciliation.
-                    # The committed capital is already tracked in resting_value (lines 1907-1908).
-                    # Do not remove from resting_value or add to exposure yet.
-                    log.info(
-                        "↳ %s order_id=%s resting (fill_count=%.0f)",
-                        sig.market.ticker, oid, fill_count,
-                    )
+                    # reviewed: if immediate_or_cancel order didn't cross book, free cash reservation immediately
+                    is_ioc = (getattr(config, "ORDER_TIME_IN_FORCE", "") == "immediate_or_cancel"
+                              or getattr(config, "AGGRESSIVE_FILL", False))
+                    remaining = 0.0
+                    # reviewed: parse remaining count from placement response to detect uncrossed IOC
+                    if isinstance(resp, dict):
+                        try:
+                            remaining = float(resp.get("remaining_count") or resp.get("remaining_count_fp") or 0.0)
+                        except (TypeError, ValueError):
+                            remaining = 0.0
+                    # reviewed: uncrossed IOC cancels immediately on exchange so release resting reservation
+                    if is_ioc and remaining <= 0.0:
+                        state.resting_value.pop(oid, None)
+                        state.resting_tickers.discard(sig.market.ticker)
+                        log.info(
+                            "↳ %s order_id=%s IOC uncrossed/cancelled — cash reservation freed",
+                            sig.market.ticker, oid,
+                        )
+                    else:
+                        # Order is resting — keep in resting_value for future reconciliation.
+                        # The committed capital is already tracked in resting_value (lines 1907-1908).
+                        # Do not remove from resting_value or add to exposure yet.
+                        log.info(
+                            "↳ %s order_id=%s resting (fill_count=%.2f)",
+                            sig.market.ticker, oid, fill_count,
+                        )
                 state.last_order_time = time.time()
                 state.orders_today += 1
 

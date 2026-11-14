@@ -640,7 +640,7 @@ class KalshiClient:
             "count_fp":                    f"{contracts:.2f}",
             "price":                       price_dollars,
             "price_dollars":               price_dollars,
-            "time_in_force":               "good_till_canceled",
+            "time_in_force":               (getattr(config, "ORDER_TIME_IN_FORCE", "immediate_or_cancel") if config.AGGRESSIVE_FILL else "good_till_canceled"),
             "self_trade_prevention_type":  "taker_at_cross",
             # reviewed: taker aggressive fill crosses the book (post_only=False), maker rests (post_only=True)
             "post_only":                   (bool(post_only) if post_only is not None else (not config.AGGRESSIVE_FILL)),

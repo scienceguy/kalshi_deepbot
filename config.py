@@ -275,8 +275,8 @@ ML_MODEL_PATH = _env_str("ML_MODEL_PATH", "")
 
 # AGGRESSIVE_FILL=false enforces post_only=True so resting limit orders never pay taker fees
 AGGRESSIVE_FILL = _env_bool("AGGRESSIVE_FILL", False)
-AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
-ORDER_TIME_IN_FORCE = "immediate_or_cancel"
+AGGRESSIVE_ENTRY_BUFFER_CENTS = _env_int("AGGRESSIVE_ENTRY_BUFFER_CENTS", 1)
+ORDER_TIME_IN_FORCE = _env_str("ORDER_TIME_IN_FORCE", "immediate_or_cancel")
 # Final-minute favourite taker band, YES side only.
 #
 # THIS IS AN OVERRIDE, NOT A MARKET LAW. Measured on 1,992 settled markets /
