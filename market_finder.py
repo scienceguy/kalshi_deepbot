@@ -436,8 +436,8 @@ def find_active_markets(client: KalshiClient, extra_band=None):
             log.debug("Hedge filtered hedge_ya=%dc: %s", hedge_ya, mkt["ticker"])
 
     tradable_count = len(result)
-    log.info("Found %d tradeable brackets out of %d total available markets (Maker-only criteria: ask %d-%dc, liq>=5, window %.1f-%.1fmin)",
-             tradable_count, total_available, MIN_P, MAX_P, config.ENTRY_WINDOW_START_MIN, config.ENTRY_WINDOW_END_MIN)
+    log.info("Available markets: %d | Tradable brackets: %d (Maker-only criteria: ask %d-%dc, liq>=5, window %.1f-%.1fmin)",
+             total_available, tradable_count, MIN_P, MAX_P, config.ENTRY_WINDOW_START_MIN, config.ENTRY_WINDOW_END_MIN)
     try:
         import signals
         signals._maybe_save_bid_hist(now.timestamp())
