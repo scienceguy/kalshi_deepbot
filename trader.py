@@ -1432,14 +1432,7 @@ def cycle(client: KalshiClient):
     markets = find_active_markets(client)
     state.tradeable_brackets = len(markets)
     state.available_active_markets = getattr(markets, "total_available", len(markets))
-    state.tradeable_markets_count = state.tradeable_brackets
     state.available_markets_count = state.available_active_markets
-    if markets:  # reviewed: reset consecutive no-tradeable counter when tradeable markets exist
-        state.consecutive_no_tradeable_cycles = 0
-        state.cycle_outcome = "evaluated"
-    else:
-        state.consecutive_no_tradeable_cycles += 1
-        state.cycle_outcome = "no-tradeable"
 
     # For dry-run: compute paper mark-to-market exposure from local paper positions
     # and current market mids, so cash sizing reflects unrealized gains/losses.
@@ -1717,6 +1710,16 @@ def cycle(client: KalshiClient):
                 }
                 try:
                     mf_path = Path(config.MARKOUT_LOG_FILE)
+                    # reviewed: rotate markout log file when size reaches 1GB cap
+                    if mf_path.exists() and mf_path.stat().st_size >= config.LOG_MAX_BYTES:
+                        backup = mf_path.with_suffix(".jsonl.1")
+                        try:
+                            # reviewed: remove existing backup before rotating log file
+                            if backup.exists():
+                                backup.unlink()
+                            mf_path.rename(backup)
+                        except OSError:
+                            pass
                     # Locked append so concurrent bot processes can't interleave
                     # mid-line and corrupt the JSONL stream.
                     with open(mf_path, "a") as mf:
@@ -2081,6 +2084,17 @@ def cycle(client: KalshiClient):
                 signals.append(sig)
             elif sig.reason:
                 log.debug("Signal PASS %s — %s", ticker, sig.reason)
+
+    state.tradeable_markets_count = len(signals)
+    # reviewed: correctly update consecutive no-tradeable counter based on whether actionable signals exist
+    if not signals:
+        state.consecutive_no_tradeable_cycles += 1
+        state.cycle_outcome = "no-tradeable"
+        log.info("No actionable trade signals this cycle. (consecutive no-tradeable cycles: %d)",
+                 state.consecutive_no_tradeable_cycles)
+    else:
+        state.consecutive_no_tradeable_cycles = 0
+        state.cycle_outcome = "evaluated"
 
     # LLM evaluation as pre-entry filter (runs before gates so it can veto early).
     # Rank signals first by EV/strength and evaluate top candidate(s) to avoid multi-signal timeouts.
@@ -2583,36 +2597,28 @@ def main():
     except Exception as e:
         log.warning("Could not seed positions from Kalshi: %s", e)
 
-    # Reconcile session_pnl on startup — prevents P&L drift.
-    # Read from LOCAL DB first (may have newer data not yet synced to Supabase),
-    # then fall back to Supabase if local is missing/zero.
-    try:
-        local_db = get_local_db()
-        local_pnl = local_db.get_bot_state("session_pnl")
-        if local_pnl is not None and local_pnl != 0:
-            state.session_pnl = float(local_pnl)
-            log.info("Reconciled session_pnl from LOCAL DB: $%.2f", state.session_pnl)
-        else:
-            # Fall back to Supabase
-            saved_pnl = get_raw_supabase_client().get_bot_state("session_pnl")
-            if saved_pnl is not None:
-                state.session_pnl = float(saved_pnl)
-                log.info("Reconciled session_pnl from Supabase: $%.2f", state.session_pnl)
-    except Exception:
-        log.warning("Could not reconcile session_pnl from LOCAL DB or Supabase — trying pnl_ledger fallback")
-
-    # Final fallback: compute session_pnl from the local pnl_ledger total.
-    # The ledger is the source of truth (every settled trade has an entry),
-    # so this restores session_pnl even if both local DB bot_state and
-    # Supabase are stale from a crash between ledger-write and state-sync.
+    # Reconcile session_pnl on startup — pnl_ledger is the true transaction source of truth.
     try:
         local_db = get_local_db()
         ledger_total = local_db.get_total_realized_pnl()
-        if ledger_total != 0:
-            state.session_pnl = float(ledger_total)
-            log.info("Reconciled session_pnl from pnl_ledger total: $%.2f", state.session_pnl)
-    except Exception:
-        log.debug("pnl_ledger total unavailable for session_pnl reconciliation")
+        # reviewed: check if pnl ledger has non-zero realized total as source of truth
+        if ledger_total is not None and ledger_total != 0:
+            state.session_pnl = round(float(ledger_total), 4)
+            log.info("Reconciled session_pnl from pnl_ledger total (source of truth): $%.2f", state.session_pnl)
+        else:
+            local_pnl = local_db.get_bot_state("session_pnl")
+            # reviewed: fall back to local bot_state session_pnl when ledger total is zero
+            if local_pnl is not None:
+                state.session_pnl = float(local_pnl)
+                log.info("Reconciled session_pnl from LOCAL DB: $%.2f", state.session_pnl)
+            else:
+                saved_pnl = get_raw_supabase_client().get_bot_state("session_pnl")
+                # reviewed: fall back to remote Supabase session_pnl when local state is absent
+                if saved_pnl is not None:
+                    state.session_pnl = float(saved_pnl)
+                    log.info("Reconciled session_pnl from Supabase: $%.2f", state.session_pnl)
+    except Exception as e:
+        log.warning("Could not reconcile session_pnl: %s", e)
 
     # Reconcile trades_placed from local database so the counter survives restarts
     try:

@@ -289,6 +289,16 @@ def _write_log(rec: dict) -> None:
         return
     try:
         path = Path(config.GATES_LOG_FILE)
+        # reviewed: rotate gates log file when size reaches 1GB cap
+        if path.exists() and path.stat().st_size >= config.LOG_MAX_BYTES:
+            backup = path.with_suffix(".jsonl.1")
+            try:
+                # reviewed: remove existing backup before rotating log file
+                if backup.exists():
+                    backup.unlink()
+                path.rename(backup)
+            except OSError:
+                pass
         with open(path, "a") as f:
             f.write(json.dumps(rec) + "\n")
         _last_decision[key] = rec.get("decision")
