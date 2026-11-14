@@ -122,7 +122,7 @@ class PolyUSPaperTrader:
                 events = polymarket_us_client.search_events(symbol)
                 for ev in events[:4]:  # Top 4 events per symbol
                     ev_slug = ev.get("slug")
-                    if not ev_slug:
+                    if not ev_slug or "updown-5m" in ev_slug or "-5m-" in ev_slug:
                         continue
                     ev_full = polymarket_us_client.get_event_by_slug(ev_slug)
                     for m in ev_full.get("event", {}).get("markets", []):
@@ -222,6 +222,10 @@ class PolyUSPaperTrader:
         if hours_left is not None:
             if hours_left <= 0.0 or hours_left > max_h:
                 return None
+
+        # Filter out 5-minute micro-noise contracts (focus on 15m, hourly, and daily markets with strike cushion)
+        if "updown-5m" in slug or "-5m-" in slug:
+            return None
 
         # 1. Evaluate cross-venue spot price & distributional fair value edge
         cv_edge = crossvenue_edge.evaluate_crossvenue_edge(market)
