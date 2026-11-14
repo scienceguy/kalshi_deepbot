@@ -572,7 +572,8 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
     entry_min = getattr(config, "ENTRY_BAND_MIN", config.MIN_NO_ENTRY_CENTS)
     entry_max = getattr(config, "ENTRY_BAND_MAX", config.MAX_NO_ENTRY_CENTS)
 
-    if no_ask and entry_min <= no_ask <= entry_max:
+    # reviewed: check ALLOW_NO_BUYS flag to prevent mean-reversion short traps on crypto
+    if config.ALLOW_NO_BUYS and no_ask and entry_min <= no_ask <= entry_max:
         # NO is the favourite (NO ask >= 75c means YES is <= 25c)
         cands.append(("NO", "no", no_ask))
     if config.ALLOW_YES_BUYS and yes_ask and entry_min <= yes_ask <= entry_max:

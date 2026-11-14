@@ -301,7 +301,9 @@ MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
 # band above is meaningful only on the YES leg the measurement was taken from.
 # min 75 is a wide guard, not a claim -- see tests/test_gates.py::measured_band_sides.
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 75)
+# YES favourites enabled; NO favourites disabled by default to prevent mean-reversion short traps
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
+ALLOW_NO_BUYS = _env_bool("ALLOW_NO_BUYS", False)
 
 # NO *market data* format only: Kalshi returns NO prices directly (not
 # complemented), so this stays False. It does NOT affect order pricing —
@@ -350,9 +352,10 @@ HEDGE_MAX_NO_ENTRY_CENTS = _env_int("HEDGE_MAX_NO_ENTRY_CENTS", 88)
 # DISABLED for final-minute taker strategy: hold to BRTI settlement.
 # The 60-second BRTI average is the alpha source; exiting early loses it.
 # ═════════════════════════════════════════════════════════════════════
-EXIT_ENABLED = _env_bool("EXIT_ENABLED", False)
-EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 20)  # bid moved +20c vs entry
-EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 8)      # bid moved -8c vs entry
+# ENABLED: strict 8c stop-loss protects against catastrophic drawdown on reversals
+EXIT_ENABLED = _env_bool("EXIT_ENABLED", True)
+EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 12)  # bid moved +12c vs entry
+EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 8)      # bid moved -8c vs entry (stop loss)
 EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 1.0)  # don't dump into a dead book
 
 # ═════════════════════════════════════════════════════════════════════

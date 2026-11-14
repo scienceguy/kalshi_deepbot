@@ -43,8 +43,8 @@ log = logging.getLogger("binance_feed")
 
 _session = requests.Session()
 
-BINANCE_REST = "https://data-api.binance.vision/api/v3"
-BINANCE_WS = "wss://data-stream.binance.vision/ws"
+BINANCE_REST = os.environ.get("BINANCE_REST_URL", "https://api.binance.us/api/v3")
+BINANCE_WS = os.environ.get("BINANCE_WS_URL", "wss://stream.binance.us:9443/stream")
 
 _KRAKEN_PAIR = {
     "BTC": "XBTUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
@@ -107,12 +107,13 @@ def _binance_ws_loop(symbols: list[str]) -> None:
     """
     import websockets  # lazy import — optional dep
 
-    # Format stream names: btcusdt@miniTicker, ethusdt@miniTicker, etc.
-    # Base stream URL is wss://data-stream.binance.vision/stream?streams=...
-    # (without the trailing /ws prefix which causes 404 on combined streams).
-    sym_streams = [s.lower() if s.lower().endswith("usdt") else f"{s.lower()}usdt" for s in symbols]
-    streams = "/".join(f"{s}@miniTicker" for s in sym_streams)
-    url = f"wss://data-stream.binance.vision/stream?streams={streams}"
+    # Format stream names for Binance.US: btcusd@ticker, ethusd@ticker, etc.
+    sym_streams = [
+        s.lower() if (s.lower().endswith("usd") or s.lower().endswith("usdt")) else f"{s.lower()}usd"
+        for s in symbols
+    ]
+    streams = "/".join(f"{s}@ticker" for s in sym_streams)
+    url = f"{BINANCE_WS}?streams={streams}"
     tried_once = False
     while True:
         try:
@@ -363,8 +364,11 @@ def price_sources(symbol: str = "BTCUSDT", timeout: int = 10) -> Dict[str, float
     out: Dict[str, float] = {}
     deadline = time.monotonic() + timeout
     try:
+        bsym = symbol.upper()
+        if not (bsym.endswith("USD") or bsym.endswith("USDT")):
+            bsym = f"{bsym}USD"
         resp = _session.get(f"{BINANCE_REST}/ticker/price",
-                            params={"symbol": symbol}, timeout=_remaining(timeout, deadline))
+                            params={"symbol": bsym}, timeout=_remaining(timeout, deadline))
         resp.raise_for_status()
         out["binance"] = float(resp.json()["price"])
     except Exception as e:
