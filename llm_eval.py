@@ -180,30 +180,6 @@ def _vertex_base_url() -> str:
 
 LAYERS = [
     {
-        "name": "vertex_ai",
-        "env_key": None,  # OAuth2 ADC token via _resolve_vertex_token()
-        "auth_type": "vertex_adc",
-        "base_url": _vertex_base_url(),
-        "model": os.environ.get("VERTEX_MODEL", "google/gemini-3.6-flash"),
-        "chat_path": "/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "max_tokens": 512,
-        "extra_payload": {
-            "extra_body": {
-                "google": {
-                    "thinking_config": {
-                        "thinking_budget": 0,
-                    }
-                }
-            }
-        },
-        "free_models": [
-            "google/gemini-3.6-flash",
-            "google/gemini-3.5-flash",
-        ],
-    },
-    {
         "name": "nvidia_bolt",
         "env_key": "NVIDIA_API_KEY",
         "base_url": "https://integrate.api.nvidia.com/v1",
@@ -217,7 +193,7 @@ LAYERS = [
         ],
     },
     {
-        "name": "groq",
+        "name": "groq_qwen",
         "env_key": "GROQ_API_KEY",
         "base_url": "https://api.groq.com/openai/v1",
         "model": "qwen/qwen3.8-27b",
@@ -227,6 +203,19 @@ LAYERS = [
         "max_tokens": 256,
         "free_models": [
             "qwen/qwen3.8-27b",
+        ],
+    },
+    {
+        "name": "groq_allam",
+        "env_key": "GROQ_API_KEY",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "allam-2-7b",
+        "chat_path": "/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "max_tokens": 256,
+        "free_models": [
+            "allam-2-7b",
         ],
     },
     {

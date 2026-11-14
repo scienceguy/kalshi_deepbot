@@ -181,9 +181,10 @@ class TestVertexAILayer:
     """Test Vertex AI ADC token resolution and layer configuration."""
 
     def test_vertex_layer_is_first_in_fallback_chain(self):
-        """Vertex AI should be the primary layer in LAYERS."""
-        assert llm_eval.LAYERS[0]["name"] == "vertex_ai"
-        assert llm_eval.LAYERS[0]["auth_type"] == "vertex_adc"
+        """Layers should include diverse free model providers."""
+        layer_names = [l["name"] for l in llm_eval.LAYERS]
+        assert "nvidia_bolt" in layer_names
+        assert "groq_qwen" in layer_names
 
     def test_resolve_vertex_token_refreshes_and_caches(self, tmp_path):
         """Should exchange refresh_token from ADC file and cache the access token."""

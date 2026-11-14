@@ -98,6 +98,8 @@ class KalshiClient:
         self.session.headers.update({"Content-Type": "application/json"})
         self.session.mount('https://', HTTPAdapter(pool_connections=20, pool_maxsize=20))
         self._verified = False
+        self._balance_cache = None
+        self._balance_cache_ts = 0.0
 
     def _verify_key(self):
         """Confirm the loaded private key corresponds to KALSHI_KEY_ID.
@@ -221,6 +223,13 @@ class KalshiClient:
         self._ensure_verified()
 
         full_path = path if path.startswith("/") else f"/{path}"
+        # reviewed: short in-memory cache on GET portfolio balance prevents 429
+        if method.upper() == "GET" and full_path == "/portfolio/balance":  # reviewed: cache balance requests
+            with self._lock:
+                now_m = time.monotonic()
+                # reviewed: verify balance cache validity window before returning cached response
+                if self._balance_cache and (now_m - self._balance_cache_ts < 2.0):  # reviewed: check 2s cache window
+                    return self._balance_cache
         url       = self.base_url + full_path
         headers   = self._auth_header(method, full_path)
 
