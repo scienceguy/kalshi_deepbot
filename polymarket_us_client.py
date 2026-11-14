@@ -192,20 +192,16 @@ def _get_market_data(path: str, *, authenticated: bool = False) -> dict:
 # ── Authenticated API (portfolio & balances) ─────────────────────────────
 
 def _get_authenticated_client():
-    """Return a configured client for authenticated calls, or raise RuntimeError.
-
-    This reads creds fresh each time, so monkeypatching env vars works.
-    """
-    key_id = _load_key_id()
-    secret_key = _load_secret_key()
-    if not key_id or not secret_key:
+    """Return a configured client for authenticated calls, or raise RuntimeError."""
+    client = _get_client()
+    if client is None:
         raise RuntimeError(
             "Polymarket US client not configured: missing POLYMARKET_KEY_ID and/or "
             "POLYMARKET_SECRET_KEY (and no BW mirror files). "
             "Set env vars POLYMARKET_KEY_ID/POLYMARKET_SECRET_KEY or place "
             "Bitwarden mirror files at ~/.secrets/bw/polymarket_*.json."
         )
-    return PolymarketUS(key_id=key_id, secret_key=secret_key)
+    return client
 
 
 def get_portfolio_positions() -> dict:
