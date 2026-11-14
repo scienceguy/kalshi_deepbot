@@ -329,7 +329,7 @@ MODEL_TYPE = _env_str("MODEL_TYPE", "gbm")
 # At 87c ask, fee ≈ 0.79c; set min edge ≥ 0.5c to require model_prob > ask+fee+0.5c.
 # Started lenient so positive-edge trades can flow and compound; the model filter
 # still blocks any negative-edge trade.
-MODEL_MIN_EDGE_CENTS = _env_float("MODEL_MIN_EDGE_CENTS", 0.5)
+MODEL_MIN_EDGE_CENTS = _env_float("MODEL_MIN_EDGE_CENTS", 0.0)
 # Annualized volatility for GBM model (crypto ≈ 0.80 = 80%). Used only as the
 # fallback when MODEL_VOL_DYNAMIC is off or the feed is empty.
 MODEL_VOLATILITY = _env_float("MODEL_VOLATILITY", 0.80)
