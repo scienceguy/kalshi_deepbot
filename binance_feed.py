@@ -175,7 +175,11 @@ async def _coinbase_ws_async(url: str, subscribe: dict) -> None:
 
 
 def _redstone_ws_loop(symbols: list[str]) -> None:
-    """Background thread: RedStone price feed WebSocket (50 topic limit/conn)."""
+    """Background thread: RedStone price feed WebSocket (50 topic limit/conn).
+
+    Skipped entirely if the gateway is unreachable — REST composite_price
+    covers spot input. Non-fatal.
+    """
     import websockets  # lazy import — optional dep
 
     url = os.environ.get("REDSTONE_WS_URL", "wss://gateway.redstone.finance/ws")
@@ -188,12 +192,23 @@ def _redstone_ws_loop(symbols: list[str]) -> None:
     items = [{"feedId": s, "type": "price", "dataServiceId": "redstone-primary-prod"}
              for s in symbols[:50]]
     subscribe = {"op": "subscribe", "items": items}
+    tried_once = False
     while True:
         try:
             asyncio.run(_redstone_ws_async(url, headers, subscribe))
+            tried_once = True
         except Exception as e:
+            # Persistent DNS/connection failure means the gateway is wrong for
+            # this host — stop retrying and fall back to REST (non-fatal).
+            if tried_once and ("404" in str(e) or "Name or service not known"
+                               in str(e) or "Failed to resolve" in str(e)):
+                log.warning(
+                    "redstone WS gateway unreachable (%s) — falling back to "
+                    "REST composite_price for spot input", e)
+                return
             log.warning("redstone WS disconnected: %s — reconnecting in 2s", e)
             time.sleep(2)
+            tried_once = True
 
 
 async def _redstone_ws_async(url: str, headers: dict, subscribe: dict) -> None:
