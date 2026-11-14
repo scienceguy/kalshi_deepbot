@@ -352,11 +352,11 @@ HEDGE_MAX_NO_ENTRY_CENTS = _env_int("HEDGE_MAX_NO_ENTRY_CENTS", 88)
 # DISABLED for final-minute taker strategy: hold to BRTI settlement.
 # The 60-second BRTI average is the alpha source; exiting early loses it.
 # ═════════════════════════════════════════════════════════════════════
-# ENABLED: strict 8c stop-loss protects against catastrophic drawdown on reversals
+# ENABLED: sell immediately when profitable by +3c, cut loss at -8c
 EXIT_ENABLED = _env_bool("EXIT_ENABLED", True)
-EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 12)  # bid moved +12c vs entry
-EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 8)      # bid moved -8c vs entry (stop loss)
-EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 1.0)  # don't dump into a dead book
+EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 3)   # bid moved +3c vs entry (immediate take profit)
+EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 8)       # bid moved -8c vs entry (strict stop loss)
+EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 0.5)  # allow intra-window take profit down to 30s left
 
 # ═════════════════════════════════════════════════════════════════════
 # POSITION SIZING (Kelly criterion from kalshi_codex_bot momentum backtests)
