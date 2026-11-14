@@ -101,17 +101,18 @@ def get_market_by_slug(slug: str) -> dict:
 
 
 def get_market_book(slug: str) -> dict:
-    """Fetch order book / BBO for a market slug.
-
-    Tries the full order book path first (/book), then falls back to BBO (/bbo).
-    Market data is public — no auth credentials required.
-    """
+    """Fetch order book / BBO for a market slug."""
+    temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
     try:
-        data = _get_market_data(f"/v1/market/slug/{slug}/book", authenticated=False)
+        res = temp_client.markets.bbo(slug)
+        return res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else {})
     except Exception:
-        # Fall back to BBO endpoint
-        data = _get_market_data(f"/v1/market/slug/{slug}/bbo", authenticated=False)
-    return data
+        try:
+            res = temp_client.markets.book(slug)
+            return res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else {})
+        except Exception as e:
+            log.warning("Poly get_market_book %s failed: %s", slug, e)
+            return {}
 
 
 def _get_market_data(path: str, *, authenticated: bool = False) -> dict:
@@ -182,7 +183,7 @@ def close() -> None:
 
 def _poly_amount(value: float) -> dict:
     """Build an Amount dict for the Polymarket US SDK."""
-    return {"value": f"{value:.6f}", "currency": "USD"}
+    return {"value": f"{value:.2f}", "currency": "USD"}
 
 
 def place_maker_order(slug: str, side: str, price_dollars: float,
@@ -206,7 +207,6 @@ def place_maker_order(slug: str, side: str, price_dollars: float,
     client = _get_authenticated_client()
     intent = ("ORDER_INTENT_BUY_LONG" if side == "yes"
               else "ORDER_INTENT_BUY_SHORT")
-    cash = price_dollars * contracts
     params = {
         "marketSlug": slug,
         "intent": intent,
@@ -215,15 +215,7 @@ def place_maker_order(slug: str, side: str, price_dollars: float,
         "quantity": contracts,
         "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
         "participateDontInitiate": True,   # fee-free maker
-        "cashOrderQty": _poly_amount(cash),
         "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
-        "synchronousExecution": True,
-        "maxBlockTime": "PT0S",
-        "slippageTolerance": {
-            "currentPrice": _poly_amount(price_dollars),
-            "bips": 0,
-            "ticks": 0,
-        },
     }
     # Preview first: validates the order without placing it.
     try:
@@ -253,11 +245,11 @@ def get_open_orders() -> list:
         return []
 
 
-def cancel_order(order_id: str) -> bool:
-    """Cancel a Polymarket US order by id."""
+def cancel_order(order_id: str, market_slug: str = "") -> bool:
+    """Cancel a Polymarket US order by id and market slug."""
     client = _get_authenticated_client()
     try:
-        client.orders.cancel({"orderId": order_id})
+        client.orders.cancel(order_id, {"marketSlug": market_slug})
         return True
     except Exception as e:
         log.warning("Poly cancel_order %s failed: %s", order_id, e)

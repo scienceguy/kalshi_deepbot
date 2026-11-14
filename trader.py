@@ -1128,6 +1128,10 @@ def clear_resting_orders(client, ticker: str):
                 log.debug("Could not cancel resting order %s: %s", oid, e)
         state.resting_value.pop(oid, None)
         state.live_resting_orders.remove(o)
+    # Purge any remaining resting value reservations for this ticker
+    to_del = [k for k, v in state.resting_value.items() if v.get("ticker") == ticker]
+    for k in to_del:
+        state.resting_value.pop(k, None)
     state.resting_tickers.discard(ticker)
 
 
@@ -1347,6 +1351,7 @@ def cycle(client: KalshiClient):
     # For dry-run: compute paper mark-to-market exposure from local paper positions
     # and current market mids, so cash sizing reflects unrealized gains/losses.
     paper_mtm_exposure = 0.0
+    paper_cash = cash if cash is not None else 0.0
     if config.DRY_RUN and cash is not None:
         mkt_by_ticker = {m.ticker: m for m in markets}
         for ticker, pos in state.positions.items():
@@ -1806,8 +1811,9 @@ def cycle(client: KalshiClient):
     # Dry-run: paper fills never appear on the exchange account, so use the local
     # paper book (otherwise the ceiling and drawdown halt are inert). Live: fetch
     # from orderbook data.
+    # reviewed: dry-run mark-to-market exposure uses live orderbook mids of paper positions
     if config.DRY_RUN:
-        mark_to_market_exposure = sum(state.position_risk.values())
+        mark_to_market_exposure = paper_mtm_exposure
     else:
         mark_to_market_exposure = _mark_to_market_exposure(positions, markets)
 
@@ -1842,9 +1848,11 @@ def cycle(client: KalshiClient):
     # Balance may be unknown if the fetch failed (cash is None) — skip the
     # balance-dependent risk/window updates instead of crashing on None.
     cash_available = cash is not None
+    # reviewed: dry-run risk update uses paper_cash reflecting MTM exposure
     if cash_available:
-        state.risk.update_balance(cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
-        _touch_window(datetime.now(timezone.utc), cash)
+        effective_cash = paper_cash if config.DRY_RUN else cash
+        state.risk.update_balance(effective_cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
+        _touch_window(datetime.now(timezone.utc), effective_cash)
 
     # Reset daily order counter on new day
     today = datetime.now(timezone.utc).date().isoformat()
@@ -1917,11 +1925,14 @@ def cycle(client: KalshiClient):
         log.info("Position limit (%d/%d)", open_count, config.MAX_OPEN_POSITIONS)
         return
 
+    # reviewed: dry-run sizing uses paper_cash reflecting MTM exposure
+    effective_cash = paper_cash if (config.DRY_RUN and cash_available) else (cash if cash_available else 0.0)
     max_trade = state.risk.max_trade_dollars(
-        cash if cash_available else 0.0, mark_to_market_exposure,
+        effective_cash, mark_to_market_exposure,
         resting_orders_value=sum(v["dollars"] for v in state.resting_value.values()),
         paper=config.DRY_RUN,
     )
+    # reviewed: protect cash floor if effective cash is available but max trade is negligible
     if cash_available and max_trade < 0.01:
         log.info("Max trade $%.2f too small — protecting cash floor", max_trade)
         return
@@ -1954,7 +1965,7 @@ def cycle(client: KalshiClient):
         ticker = m.ticker
         if ticker in state.positions:
             continue
-        for sig in se.evaluate(m, cash, max_trade_override=max_trade):
+        for sig in se.evaluate(m, effective_cash, max_trade_override=max_trade):
             if sig.is_trade:
                 signals.append(sig)
             elif sig.reason:
@@ -2035,7 +2046,7 @@ def cycle(client: KalshiClient):
     # Shadow mode (default) logs would-block decisions without blocking.
     # Warm the feed caches concurrently first: a 9-series cycle would otherwise
     # serialise one spot + one klines fetch per candidate.
-    gates.prefetch({gates.asset_for(sig.market) for sig in signals})
+    gates.prefetch({a for sig in signals if (a := gates.asset_for(sig.market))})
     signals = [sig for sig in signals
                if gates.evaluate_entry(
                    sig.market, None, None,

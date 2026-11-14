@@ -357,11 +357,14 @@ class KalshiClient:
             return cached[1]
 
         # Periodic cleanup: remove expired entries (older than 60s)
-        # This prevents unbounded growth if different keys are queried over time
+        # and enforce maximum cache size to prevent unbounded growth.
         try:
             expired = [k for k, v in self._markets_cache.items() if now - v[0] > 60]
             for k in expired:
                 del self._markets_cache[k]
+            # reviewed: cap cache size to 100 entries to prevent unbounded memory growth
+            if len(self._markets_cache) > 100:
+                self._markets_cache.clear()
         except Exception:
             pass
 

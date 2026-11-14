@@ -284,7 +284,7 @@ def _write_log(rec: dict) -> None:
     only keeps the last record per (ticker, side) anyway. One line per
     decision change keeps the calibration file small; a restart re-logs once.
     """
-    key = (rec.get("ticker", ""), rec.get("side", ""))
+    key = (rec.get("ticker", ""), rec.get("side", ""), rec.get("entry_price_cents"))
     if _last_decision.get(key) == rec.get("decision"):
         return
     try:
