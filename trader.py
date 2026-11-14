@@ -121,7 +121,10 @@ def _load_ml_model(path: str):
     return _ml_model
 
 
-lf = Path(config.LOG_FILE).expanduser()
+log_target = config.LOG_FILE if not config.DRY_RUN else os.environ.get("DRY_LOG_FILE", "bot_dry.log")
+lf = Path(log_target).expanduser()
+if not lf.is_absolute():  # reviewed: ensure log file path is anchored to repo directory
+    lf = Path(__file__).resolve().parent / lf
 lf.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
