@@ -2488,6 +2488,24 @@ def cycle(client: KalshiClient):
 # MAIN
 # ═════════════════════════════════════════════════════════════════════
 
+def handle_task(task: dict) -> None:
+    """Log a delegated task.request so the operator is aware of it.
+
+    Security guarantee: This handler is strictly log-only and NEVER executes
+    or evaluates task bodies, shell commands, or arbitrary code.
+    """
+    log.info(
+        "MEMPALACE TASK id=%s corr=%s from=%s body=%s",
+        task.get("event_id", ""),
+        task.get("correlation_id", ""),
+        task.get("from_agent", ""),
+        (task.get("body") or "")[:200],
+    )
+
+
+_handle_task = handle_task
+
+
 def main():
     mode = "DRY RUN 🔵" if config.DRY_RUN else "LIVE ⚡"
     log.info("=" * 58)
@@ -2782,16 +2800,6 @@ def main():
     log.info("Loop every %ds. Ctrl+C to stop.", args.interval)
     cycle_count = 0
     MEM_PALACE_CHECKPOINT_EVERY = int(os.environ.get("MEMPALACE_CHECKPOINT_INTERVAL", 5))
-
-    def _handle_task(task: dict) -> None:
-        """Log a delegated task.request so the operator is aware of it."""
-        log.info(
-            "MEMPALACE TASK id=%s corr=%s from=%s body=%s",
-            task.get("event_id", ""),
-            task.get("correlation_id", ""),
-            task.get("from_agent", ""),
-            (task.get("body") or "")[:200],
-        )
 
     while state.running:
         cycle_start = time.time()

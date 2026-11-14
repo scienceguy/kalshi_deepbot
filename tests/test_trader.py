@@ -1418,3 +1418,24 @@ def test_live_fill_confirmation_full_fill_recorded(monkeypatch):
     )
     assert trader.state.positions.get("TEST", {}).get("contracts") == 5
     assert trader.state.position_risk.get("TEST", 0) == 5 * 80 / 100.0
+
+
+def test_handle_task_is_log_only(monkeypatch, caplog):
+    """P1: _handle_task must be strictly log-only and never execute task bodies."""
+    import logging
+    import trader
+
+    executed = []
+    fake_task = {
+        "event_id": "evt_123",
+        "correlation_id": "corr_456",
+        "from_agent": "termux:opencode:test",
+        "body": "rm -rf /; executed.append(True)",
+    }
+
+    with caplog.at_level(logging.INFO):
+        trader.handle_task(fake_task)
+
+    assert not executed
+    assert "MEMPALACE TASK" in caplog.text
+    assert "evt_123" in caplog.text

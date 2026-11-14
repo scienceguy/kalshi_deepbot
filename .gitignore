@@ -97,6 +97,7 @@ data/crossvenue/
 *.md
 !README.md
 !AGENTS.md
+!SECURITY_NOTES.md
 # Planning/audit docs: tracked deliberately. They were invisible to git AND to
 # the corruption scan, and kept being lost to worktree cleanups.
 !COMPREHENSIVE_TODO.md
