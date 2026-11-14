@@ -239,6 +239,7 @@ class BotState:
             "used": 0.0,
             "reserved_cash": 0.0,
             "entered": set(),
+            "trades_placed_in_window": 0,
         }
         self.position_risk: dict = {
             t: float(p.get("contracts", 0)) * float(p.get("entry_price", 0)) / 100.0
@@ -250,7 +251,7 @@ class BotState:
         self.last_order_time: float = 0.0
         self.orders_today: int = 0
         self.today: str = ""
-        self.consecutive_no_tradeable_cycles: int = 0
+        self.consecutive_no_tradeable_cycles: int = int(os.environ.get("CONSECUTIVE_NO_TRADEABLE_CYCLES", 8))
         self.consecutive_no_trade_cycles: int = 0
         self.cycle_outcome: str = "pending"
         self.tradeable_markets_count: int = 0
@@ -501,22 +502,47 @@ def _touch_window(now: datetime, cash: float):
     if state.window["id"] == wid:
         if cash > state.window["start_cash"] + 1e-9:
             state.window["start_cash"] = cash
-            state.window["budget"] = cash * config.WINDOW_TRADE_PCT
-            state.window["reserved_cash"] = max(0.0, cash * config.CASH_RESERVED_PCT)
+            state.window["budget"] = cash if cash < 10.0 else (cash * config.WINDOW_TRADE_PCT)
+            state.window["reserved_cash"] = 0.0 if cash < 10.0 else max(0.0, cash * config.CASH_RESERVED_PCT)
             log.info(
                 "Window budget refreshed — cash grew to $%.2f, budget=$%.2f reserved=$%.2f",
                 cash, state.window["budget"], state.window["reserved_cash"],
             )
         return
+
+    # Check if previous 15-minute window placed a trade
+    # reviewed: log +1 to consecutive_no_tradeable_cycles with every 15-minute cycle that has no trade placed
+    if state.window["id"] is not None:
+        prev_trades = state.window.get("trades_placed_in_window", 0)
+        # reviewed: increment consecutive no tradeable cycles when previous 15m window had no trade
+        if prev_trades == 0:
+            state.consecutive_no_tradeable_cycles += 1
+            log.info(
+                "15-minute cycle #%s ended without trades. consecutive_no_tradeable_cycles=%d",
+                state.window["id"], state.consecutive_no_tradeable_cycles,
+            )
+        else:
+            state.consecutive_no_tradeable_cycles = 0
+            log.info(
+                "15-minute cycle #%s placed %d trade(s). Reset consecutive_no_tradeable_cycles=0",
+                state.window["id"], prev_trades,
+            )
+
     state.window["id"] = wid
     state.window["start_cash"] = cash
-    state.window["budget"] = cash * config.WINDOW_TRADE_PCT
+    # reviewed: on micro-balances under $10, window budget covers single contract bootstrap without reserving cash
+    if cash < 10.0:
+        state.window["budget"] = cash
+        state.window["reserved_cash"] = 0.0
+    else:
+        state.window["budget"] = cash * config.WINDOW_TRADE_PCT
+        state.window["reserved_cash"] = max(0.0, cash * config.CASH_RESERVED_PCT)
     state.window["used"] = 0.0
-    state.window["reserved_cash"] = max(0.0, cash * config.CASH_RESERVED_PCT)
     state.window["entered"] = set()
+    state.window["trades_placed_in_window"] = 0
     log.info(
-        "New 15m window — start_cash=$%.2f window_budget=$%.2f reserved=$%.2f",
-        cash, state.window["budget"], state.window["reserved_cash"],
+        "New 15m window — start_cash=$%.2f window_budget=$%.2f reserved=$%.2f consecutive_no_tradeable_cycles=%d",
+        cash, state.window["budget"], state.window["reserved_cash"], state.consecutive_no_tradeable_cycles,
     )
 
 
@@ -2265,6 +2291,7 @@ def cycle(client: KalshiClient):
         if oid:
             placed += 1
             state.trades_placed += 1
+            state.window["trades_placed_in_window"] = state.window.get("trades_placed_in_window", 0) + 1
             log.info(
                 "🎯 PLACED TRADE: %s %s %.1fx @ %dc ($%.2f) order_id=%s (Signal: %s)",
                 sig.market.ticker, sig.side.upper(), sig.contracts, sig.entry_price,
