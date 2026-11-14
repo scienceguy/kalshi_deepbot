@@ -1479,8 +1479,14 @@ def cycle(client: KalshiClient):
                  cash, config.BOOTSTRAP_THRESHOLD_DOLLARS, config.TARGET_SERIES_MAJOR)
     else:
         bootstrap_series = config.TARGET_SERIES
-    # reviewed: propagate TypeError rather than silently catching and widening series
-    markets = find_active_markets(client, target_series=bootstrap_series)
+    try:
+        markets = find_active_markets(client, target_series=bootstrap_series)
+    except TypeError as e:
+        # reviewed: only fall back if the callable signature itself rejected target_series (e.g. 1-arg mock)
+        if "target_series" in str(e):
+            markets = find_active_markets(client)
+        else:
+            raise
     state.tradeable_brackets = len(markets)
     state.available_active_markets = getattr(markets, "total_available", len(markets))
     state.available_markets_count = state.available_active_markets
@@ -1595,7 +1601,8 @@ def cycle(client: KalshiClient):
         if qticker:
             queued_tickers.add(qticker)
 
-    for p in positions:
+    # reviewed: iterate over positions safely when positions is None on API fetch failure
+    for p in (positions or []):
         tk = p.get("ticker", "")
         if "15M" not in tk.upper() or tk in state.positions:
             continue

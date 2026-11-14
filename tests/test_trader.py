@@ -1439,3 +1439,72 @@ def test_handle_task_is_log_only(monkeypatch, caplog):
     assert not executed
     assert "MEMPALACE TASK" in caplog.text
     assert "evt_123" in caplog.text
+
+
+def test_p2_balance_unknown_does_not_crash_cycle(monkeypatch):
+    """P2: When cash is None, cycle() evaluates cleanly without UnboundLocalError."""
+    import trader
+
+    client = MagicMock()
+    monkeypatch.setattr(trader, "_sizing_cash", MagicMock(side_effect=Exception("network down")))
+    client.get_positions.return_value = []
+    client.get_orders.return_value = []
+    client.invalidate_markets.return_value = None
+
+    monkeypatch.setattr(trader, "find_active_markets", lambda c, target_series=None: [])
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
+    monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
+
+    test_state = trader.BotState()
+    monkeypatch.setattr(trader, "state", test_state)
+
+    # Should not raise UnboundLocalError
+    trader.cycle(client)
+    assert test_state.trades_placed == 0
+
+
+def test_p3_positions_failure_sentinel_blocks_order_placement(monkeypatch):
+    """P3: When positions fetch fails (None), adoption and order placement are skipped."""
+    import trader
+
+    client = MagicMock()
+    client.get_positions.side_effect = Exception("500 internal server error")
+    client.get_orders.return_value = []
+    client.invalidate_markets.return_value = None
+
+    test_state = trader.BotState()
+    test_state.positions["KXBTC15M-EXISTING"] = {"side": "yes", "contracts": 1, "order_id": "01a1_test"}
+    monkeypatch.setattr(trader, "state", test_state)
+    monkeypatch.setattr(trader, "_sizing_cash", lambda c: 100.0)
+    monkeypatch.setattr(trader, "find_active_markets", lambda c, target_series=None: [])
+    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
+    monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
+
+    trader.cycle(client)
+    # Existing positions must NOT be wiped/treated as settled
+    assert "KXBTC15M-EXISTING" in test_state.positions
+    assert test_state.trades_placed == 0
+
+
+def test_p4_foreign_position_not_adopted(monkeypatch):
+    """P4: Position with no local order ID is NOT adopted with sb_live_ fallback."""
+    import trader
+
+    client = MagicMock()
+    client.get_positions.return_value = [
+        {"ticker": "KXBTC15M-FOREIGN", "position": 1, "market_exposure_dollars": "1.00"}
+    ]
+    client.get_orders.return_value = []
+    client.invalidate_markets.return_value = None
+
+    mock_db = MagicMock()
+    mock_db.get_latest_order_id.return_value = None  # No local record
+    monkeypatch.setattr(trader, "get_local_db", lambda: mock_db)
+    monkeypatch.setattr(trader, "find_active_markets", lambda c, target_series=None: [])
+    monkeypatch.setattr(trader, "_sizing_cash", lambda c: 100.0)
+
+    test_state = trader.BotState()
+    monkeypatch.setattr(trader, "state", test_state)
+
+    trader.cycle(client)
+    assert "KXBTC15M-FOREIGN" not in test_state.positions
