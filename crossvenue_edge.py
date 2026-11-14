@@ -21,6 +21,7 @@ from model import gbm_probability_yes_wins
 log = logging.getLogger("crossvenue_edge")
 
 _spot_cache: dict[str, tuple[float, float]] = {}
+_vol_cache: dict[str, tuple[float, float]] = {}
 
 
 def get_cached_spot(symbol: str) -> Optional[float]:
@@ -37,6 +38,24 @@ def get_cached_spot(symbol: str) -> Optional[float]:
     except Exception:
         pass
     return cached[1] if cached else None
+
+
+def get_cached_vol(symbol: str) -> float:
+    """Fetch annualized composite volatility with a 60s cache to avoid kline REST thrashing."""
+    now = time.time()
+    cached = _vol_cache.get(symbol)
+    if cached and now - cached[0] < 60.0:
+        return cached[1]
+    vol = 0.60
+    try:
+        sigma_1m = binance_feed.composite_sigma(f"{symbol}USDT")
+        if sigma_1m and sigma_1m > 0:
+            vol = max(0.20, min(1.50, sigma_1m * (525600.0 ** 0.5)))
+            _vol_cache[symbol] = (now, vol)
+            return vol
+    except Exception:
+        pass
+    return cached[1] if cached else 0.60
 
 
 def extract_asset_and_strike(market: dict) -> tuple[Optional[str], Optional[float], Optional[datetime]]:
@@ -85,13 +104,7 @@ def evaluate_crossvenue_edge(market: dict, spot_override: Optional[float] = None
         return None
 
     # Derive live annualized volatility from composite 1m sigma, falling back to 0.60
-    vol = 0.60
-    try:
-        sigma_1m = binance_feed.composite_sigma(f"{symbol}USDT")
-        if sigma_1m and sigma_1m > 0:
-            vol = max(0.20, min(1.50, sigma_1m * (525600.0 ** 0.5)))
-    except Exception:
-        vol = 0.60
+    vol = get_cached_vol(symbol)
 
     # Reference Black-Scholes lognormal probability P(S_T >= K)
     ref_prob = gbm_probability_yes_wins(
