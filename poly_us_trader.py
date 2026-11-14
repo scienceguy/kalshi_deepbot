@@ -23,6 +23,7 @@ from pathlib import Path
 
 import polymarket_us_client
 import crossvenue_edge
+from resilience import systemd_notify
 
 # Logging setup
 logging.basicConfig(
@@ -409,6 +410,8 @@ class PolyUSPaperTrader:
         log.info("Found %d high-certainty (92-99c) opportunity brackets", len(opportunities))
         for opp in opportunities[:2]:  # Max 2 new orders per cycle
             self.execute_paper_trade(opp)
+
+        systemd_notify("WATCHDOG=1")
 
 
 def main():
