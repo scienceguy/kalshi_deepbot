@@ -651,8 +651,9 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
             momentum_cents_per_min=momentum,
             # How far into the final (settlement) minute: 0 at start, 60 at close.
             # Locked-share model uses this to collapse uncertainty as BRTI average locks in.
+            # reviewed: activate locked-share settlement model during the final 1.5 minutes (13.5-14.8m)
             seconds_into_final_minute=max(0, min(60, int((15.0 - market.minutes_left) * 60)))
-            if market.minutes_left <= 1.0 else 0,
+            if market.minutes_left <= 1.5 else 0,
         )
         # model_prob is P(YES wins); for NO side we need P(NO wins)
         trade_prob = model_prob if direction == "YES" else (1.0 - model_prob)
