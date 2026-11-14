@@ -201,11 +201,9 @@ class RiskManager:
         # reviewed: skipping the ceiling when mtm is unknown is a deliberate
         # conservative-default; cash_room and per_trade_cap still limit size.
         # reviewed: mtm branch uses mark-to-market ceiling when it is present
-        # Micro-balance bootstrap: on bankrolls under $2.00, reserving a 70% cash
-        # floor and 30% exposure ceiling leaves <$0.35, which cannot purchase a single
-        # contract (min 1x @ 80-95c). Allow buying 1 contract when bankroll < $2.00 and no exposure exists.
-        # reviewed: micro-balance bootstrap allows 1 single contract when bankroll is under $2.00
-        if portfolio < 2.0 and exposure == 0.0 and resting_orders_value == 0.0:
+        # Microstructure bootstrap: on bankrolls under $10.00 with no open exposure, allow buying 1 single contract
+        # reviewed: microstructure bootstrap allows 1 single contract when bankroll is under $10.00
+        if portfolio < 10.0 and exposure == 0.0 and resting_orders_value == 0.0:
             exposure_room = min(cash, 1.00)
             cash_room = cash
             per_trade_cap = min(cash, 1.00)
@@ -261,9 +259,9 @@ class RiskManager:
                 f"portfolio=${portfolio:.2f})"
             )
 
-        # On micro-balances (<$2.00) with no open exposure, allow $0.02 cash floor for single contract bootstrap
-        # reviewed: micro-balance bootstrap cash floor of $0.02 allows buying a single contract on accounts under $2
-        if not paper and (cash + exposure) < 2.0 and exposure == 0.0:
+        # On micro-balances (<$10.00) with no open exposure, allow $0.02 cash floor for microstructure bootstrap
+        # reviewed: microstructure bootstrap cash floor of $0.02 allows buying a single contract on accounts under $10
+        if not paper and (cash + exposure) < 10.0 and exposure == 0.0:
             min_cash = config.PAPER_MIN_CASH_ABSOLUTE
         else:
             min_cash = config.PAPER_MIN_CASH_ABSOLUTE if paper else config.MIN_CASH_ABSOLUTE
