@@ -262,7 +262,7 @@ class PolyUSPaperTrader:
         else:
             return min(20000.0, round(cash * 0.02, 2))
 
-    def execute_paper_trade(self, opp: dict):
+    def execute_paper_trade(self, opp: dict) -> bool:
         """Size and execute a paper trade from the bankroll."""
         slug = opp["slug"]
         side = opp["side"]
@@ -270,37 +270,37 @@ class PolyUSPaperTrader:
 
         # Check if already in this market
         if any(p["slug"] == slug for p in self.state["positions"]):
-            return
+            return False
 
         # Cap max concurrent open positions (default 10)
         if len(self.state["positions"]) >= getattr(self, "max_open_positions", 10):
-            return
+            return False
 
         # Enforce 30% cash reserve floor
         total_equity = self.state["cash"] + sum(p.get("cost", 0.0) for p in self.state["positions"])
         min_cash_floor = total_equity * 0.30
         if self.state["cash"] <= min_cash_floor:
-            return
+            return False
 
         # Sizing: Dynamic Kelly scaling across milestones ($100 -> $1M)
         available_cash = max(0.0, self.state["cash"] - min_cash_floor)
         max_trade_dollars = self.compute_tier_size(self.state["cash"])
         max_trade_dollars = min(max_trade_dollars, available_cash)
         if max_trade_dollars < 1.00:
-            return
+            return False
 
         qty = int(max_trade_dollars / price)
         if qty < 1:
-            return
+            return False
 
         cost = round(qty * price, 4)
         if cost > available_cash:
-            return
+            return False
 
         # Validate order syntax with Polymarket US production API
         valid = self.preview_order(slug, side, price, qty)
         if not valid:
-            return
+            return False
 
         # Execute simulated fill
         self.state["cash"] = round(self.state["cash"] - cost, 4)
@@ -333,6 +333,7 @@ class PolyUSPaperTrader:
             "cash_after": self.state["cash"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
+        return True
 
     def cycle(self):
         """Run one full cycle."""
@@ -407,9 +408,18 @@ class PolyUSPaperTrader:
             if opp:
                 opportunities.append(opp)
 
-        log.info("Found %d high-certainty (92-99c) opportunity brackets", len(opportunities))
-        for opp in opportunities[:2]:  # Max 2 new orders per cycle
-            self.execute_paper_trade(opp)
+        current_slugs = {p["slug"] for p in self.state.get("positions", [])}
+        new_opps = [opp for opp in opportunities if opp["slug"] not in current_slugs]
+        log.info(
+            "Found %d high-certainty (92-99c) opportunity brackets (%d unheld)",
+            len(opportunities), len(new_opps)
+        )
+        trades_placed = 0
+        for opp in new_opps:
+            if trades_placed >= 2:
+                break
+            if self.execute_paper_trade(opp):
+                trades_placed += 1
 
         systemd_notify("WATCHDOG=1")
 
