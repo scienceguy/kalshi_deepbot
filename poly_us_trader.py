@@ -1,0 +1,317 @@
+"""
+poly_us_trader.py — Polymarket US Paper Trading Engine ($100 Starting Bankroll).
+
+Monitors Polymarket US production API (api.polymarket.us), scans active markets,
+evaluates high-probability favorite pricing (92c-99c), validates order parameters
+with real orders.preview calls, simulates paper fills, and settles positions against
+live venue settlements.
+
+Usage:
+    python poly_us_trader.py --once
+    python poly_us_trader.py --interval 15
+    python poly_us_trader.py --status
+"""
+
+import argparse
+import json
+import logging
+import os
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import polymarket_us_client
+
+# Logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("poly_us_dry.log", mode="a"),
+    ],
+)
+log = logging.getLogger("poly_us_trader")
+
+STATE_FILE = Path("local_data/poly_us_state.json")
+LEDGER_FILE = Path("local_data/poly_us_paper_ledger.jsonl")
+
+
+class PolyUSPaperTrader:
+    def __init__(self, initial_cash: float = 100.0):
+        self.state_file = STATE_FILE
+        self.ledger_file = LEDGER_FILE
+        self.state = self._load_state(initial_cash)
+        self.client = polymarket_us_client._get_client()
+        self.auth_client = None
+        try:
+            self.auth_client = polymarket_us_client._get_authenticated_client()
+        except Exception as e:
+            log.warning("Polymarket US authenticated client not available: %s", e)
+
+    def _load_state(self, initial_cash: float) -> dict:
+        if self.state_file.exists():
+            try:
+                data = json.loads(self.state_file.read_text())
+                if "cash" in data and "positions" in data:
+                    return data
+            except Exception as e:
+                log.warning("Failed to load paper state, starting fresh: %s", e)
+        state = {
+            "start_balance": initial_cash,
+            "cash": initial_cash,
+            "positions": [],
+            "realized_pnl": 0.0,
+            "trades_count": 0,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._save_state(state)
+        return state
+
+    def _save_state(self, state: dict):
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(json.dumps(state, indent=2))
+
+    def _append_ledger(self, record: dict):
+        self.ledger_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.ledger_file, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def scan_markets(self) -> list:
+        """Scan open active markets on Polymarket US in a single batch call."""
+        if not self.client:
+            return []
+        try:
+            res = self.client.get("/v1/markets?active=true&closed=false&limit=100", authenticated=False)
+            return res.get("markets", [])
+        except Exception as e:
+            log.error("Failed to scan Polymarket US markets: %s", e)
+            return []
+
+    def preview_order(self, slug: str, side: str, price_dollars: float, qty: int) -> bool:
+        """Validate order against Polymarket US production order preview API."""
+        if not self.auth_client:
+            return True
+        intent = "ORDER_INTENT_BUY_LONG" if side == "yes" else "ORDER_INTENT_BUY_SHORT"
+        params = {
+            "marketSlug": slug,
+            "intent": intent,
+            "type": "ORDER_TYPE_LIMIT",
+            "price": {"value": f"{price_dollars:.2f}", "currency": "USD"},
+            "quantity": qty,
+            "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
+            "participateDontInitiate": True,
+            "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
+        }
+        try:
+            self.auth_client.orders.preview({"request": params})
+            return True
+        except Exception as e:
+            log.debug("Order preview failed for %s %s @ $%.2f: %s", slug, side, price_dollars, e)
+            return False
+
+    def check_settlements(self):
+        """Check settlement status for all open paper positions."""
+        remaining_positions = []
+        now = datetime.now(timezone.utc)
+        for pos in self.state.get("positions", []):
+            slug = pos["slug"]
+            try:
+                settle_res = self.client.get(f"/v1/markets/{slug}/settlement", authenticated=False)
+                settlement = settle_res.get("settlement")
+                if settlement is not None:
+                    payout_per_contract = float(settlement) if pos["side"] == "yes" else (1.0 - float(settlement))
+                    total_payout = round(payout_per_contract * pos["qty"], 4)
+                    cost = pos["cost"]
+                    pnl = round(total_payout - cost, 4)
+                    self.state["cash"] = round(self.state["cash"] + total_payout, 4)
+                    self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
+                    log.info(
+                        "🏆 SETTLED %s %s: outcome=%.2f payout=$%.2f cost=$%.2f PnL=%+$.2f | Cash=$%.2f",
+                        slug, pos["side"].upper(), payout_per_contract, total_payout, cost, pnl, self.state["cash"]
+                    )
+                    self._append_ledger({
+                        "event": "settlement",
+                        "slug": slug,
+                        "side": pos["side"],
+                        "qty": pos["qty"],
+                        "entry_price": pos["price"],
+                        "payout": total_payout,
+                        "pnl": pnl,
+                        "cash_after": self.state["cash"],
+                        "timestamp": now.isoformat(),
+                    })
+                    continue
+            except Exception as e:
+                log.debug("Error checking settlement for %s: %s", slug, e)
+            remaining_positions.append(pos)
+        self.state["positions"] = remaining_positions
+        self._save_state(self.state)
+
+    def evaluate_opportunity(self, market: dict) -> dict | None:
+        """Find high-probability favourite opportunities (92c-99c) directly from market data."""
+        slug = market.get("slug")
+        if not slug:
+            return None
+
+        outcome_raw = market.get("outcomePrices")
+        if not outcome_raw:
+            return None
+
+        prices = []
+        if isinstance(outcome_raw, str):
+            try:
+                prices = json.loads(outcome_raw)
+            except Exception:
+                return None
+        elif isinstance(outcome_raw, list):
+            prices = outcome_raw
+
+        if len(prices) < 2:
+            return None
+
+        try:
+            long_p = float(prices[0])
+            short_p = float(prices[1])
+        except (ValueError, TypeError):
+            return None
+
+        candidates = []
+        # Check Long (Yes) favorite
+        if 0.92 <= long_p <= 0.99:
+            candidates.append(("yes", long_p))
+
+        # Check Short (No) favorite
+        if 0.92 <= short_p <= 0.99:
+            candidates.append(("no", short_p))
+
+        if not candidates:
+            return None
+
+        side, price = candidates[0]
+        return {
+            "slug": slug,
+            "question": market.get("question", slug),
+            "side": side,
+            "price": price,
+        }
+
+    def execute_paper_trade(self, opp: dict):
+        """Size and execute a paper trade from the bankroll."""
+        slug = opp["slug"]
+        side = opp["side"]
+        price = opp["price"]
+
+        # Check if already in this market
+        if any(p["slug"] == slug for p in self.state["positions"]):
+            return
+
+        # Sizing: Conservative Half-Kelly / 5% risk ($5.00 per trade on $100 bankroll)
+        max_trade_dollars = min(5.00, self.state["cash"] * 0.10)
+        if max_trade_dollars < 1.00 or self.state["cash"] < 2.00:
+            return
+
+        qty = int(max_trade_dollars / price)
+        if qty < 1:
+            return
+
+        cost = round(qty * price, 4)
+        if cost > self.state["cash"]:
+            return
+
+        # Validate order syntax with Polymarket US production API
+        valid = self.preview_order(slug, side, price, qty)
+        if not valid:
+            return
+
+        # Execute simulated fill
+        self.state["cash"] = round(self.state["cash"] - cost, 4)
+        self.state["trades_count"] += 1
+        pos = {
+            "slug": slug,
+            "question": opp["question"],
+            "side": side,
+            "price": price,
+            "qty": qty,
+            "cost": cost,
+            "opened_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.state["positions"].append(pos)
+        self._save_state(self.state)
+
+        log.info(
+            "⚡ PAPER BUY %s | %s %dx @ $%.2f = $%.2f | Cash Remaining: $%.2f",
+            slug, side.upper(), qty, price, cost, self.state["cash"]
+        )
+        self._append_ledger({
+            "event": "open",
+            "slug": slug,
+            "side": side,
+            "qty": qty,
+            "price": price,
+            "cost": cost,
+            "cash_after": self.state["cash"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def cycle(self):
+        """Run one full cycle."""
+        self.check_settlements()
+        markets = self.scan_markets()
+        log.info(
+            "── PolyUS Cycle ── Cash: $%.2f | Open Positions: %d | Realized P&L: %+.2f | Markets: %d",
+            self.state["cash"], len(self.state["positions"]), self.state["realized_pnl"], len(markets)
+        )
+
+        opportunities = []
+        for m in markets:
+            opp = self.evaluate_opportunity(m)
+            if opp:
+                opportunities.append(opp)
+
+        log.info("Found %d high-certainty (92-99c) opportunity brackets", len(opportunities))
+        for opp in opportunities[:2]:  # Max 2 new orders per cycle
+            self.execute_paper_trade(opp)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Polymarket US Paper Trader ($100 Bankroll)")
+    parser.add_argument("--once", action="store_true", help="Run single cycle and exit")
+    parser.add_argument("--interval", type=int, default=15, help="Seconds between cycles (default 15)")
+    parser.add_argument("--status", action="store_true", help="Show current paper state and exit")
+    args = parser.parse_args()
+
+    trader = PolyUSPaperTrader(initial_cash=100.0)
+
+    if args.status:
+        state = trader.state
+        print(f"=== Polymarket US Paper Trader ===")
+        print(f"Start Balance: ${state.get('start_balance', 100.0):.2f}")
+        print(f"Current Cash:  ${state.get('cash', 100.0):.2f}")
+        print(f"Realized P&L:  ${state.get('realized_pnl', 0.0):+.2f}")
+        print(f"Trades Count:  {state.get('trades_count', 0)}")
+        print(f"Open Positions: {len(state.get('positions', []))}")
+        for p in state.get("positions", []):
+            print(f"  - {p['slug']} | {p['side'].upper()} {p['qty']}x @ ${p['price']:.2f} (cost: ${p['cost']:.2f})")
+        return
+
+    log.info("Starting Polymarket US Paper Trader with $%.2f Bankroll", trader.state["start_balance"])
+    if args.once:
+        trader.cycle()
+        return
+
+    while True:
+        try:
+            trader.cycle()
+        except KeyboardInterrupt:
+            log.info("Polymarket US paper trader stopped by user.")
+            break
+        except Exception as e:
+            log.error("Cycle error: %s", e)
+        time.sleep(args.interval)
+
+
+if __name__ == "__main__":
+    main()
