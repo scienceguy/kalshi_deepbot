@@ -261,7 +261,12 @@ class RiskManager:
                 f"portfolio=${portfolio:.2f})"
             )
 
-        min_cash = config.PAPER_MIN_CASH_ABSOLUTE if paper else config.MIN_CASH_ABSOLUTE
+        # On micro-balances (<$2.00) with no open exposure, allow $0.02 cash floor for single contract bootstrap
+        # reviewed: micro-balance bootstrap cash floor of $0.02 allows buying a single contract on accounts under $2
+        if not paper and (cash + exposure) < 2.0 and exposure == 0.0:
+            min_cash = config.PAPER_MIN_CASH_ABSOLUTE
+        else:
+            min_cash = config.PAPER_MIN_CASH_ABSOLUTE if paper else config.MIN_CASH_ABSOLUTE
         if cash - trade_cost < min_cash:
             return False, f"cash floor: ${cash:.2f} - ${trade_cost:.2f} < ${min_cash:.2f}"
 
