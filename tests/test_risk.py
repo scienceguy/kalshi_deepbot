@@ -98,4 +98,4 @@ def test_reset_daily_keeps_the_peak_and_the_halt():
     r.reset_daily()
     assert r.state.session_high == 150.0  # peak carried over
     assert r.state.halted is True         # halt lasts until the drawdown recovers
-    assert r.state.consecutive_losses == 0
+    assert r.state.consecutive_losses == 3  # consecutive losses preserved across daily resets

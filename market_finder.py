@@ -366,8 +366,8 @@ def find_active_markets(client: KalshiClient, extra_band=None):
     FETCH_BAND_MAX = 99
     fetch_list = []  # (mkt, ct, ml, role, ya)
     for mkt, ct, ml, mid in all_mains:
-        if mid is not None and FETCH_BAND_MIN <= mid <= FETCH_BAND_MAX:
-            fetch_list.append((mkt, ct, ml, "MAIN", None))
+        # reviewed: unconditionally fetch orderbook for all discovered active markets so bid history is 100% recorded
+        fetch_list.append((mkt, ct, ml, "MAIN", None))
 
     all_hedges.sort(key=lambda x: x[3])
     for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:

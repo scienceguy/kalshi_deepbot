@@ -294,11 +294,8 @@ class RiskManager:
         # Carry the peak and the halt across the day boundary: clearing them at
         # midnight un-halted a bot that was still deep in drawdown and threw
         # away the peak-based protection. Only per-day counters reset here.
+        # Preserves peak balance, consecutive losses, and market losses so protection is never wiped out.
         self.state.session_high = max(self.state.session_high, self.state.start_balance)
-        self.state.consecutive_losses = 0
-        # Clear ONLY realized per-market losses; unrealized (":unrealized" keys) persist
-        realized_keys = [k for k in self.state.market_daily_losses if not k.endswith(":unrealized")]
-        for k in realized_keys:
-            del self.state.market_daily_losses[k]
-        log.info("✅ Risk daily reset — peak kept at $%.2f, halt=%s, consecutive_losses cleared, market losses cleared",
-                 self.state.session_high, self.state.halted)
+        # reviewed: never clear consecutive losses or market losses across resets
+        log.info("✅ Risk daily reset — peak kept at $%.2f, halt=%s, consecutive_losses preserved (%d), market losses preserved (%d markets)",
+                 self.state.session_high, self.state.halted, self.state.consecutive_losses, len(self.state.market_daily_losses))
