@@ -623,7 +623,9 @@ class KalshiClient:
             "client_order_id":             client_order_id,
             "side":                        api_side,
             "count":                       f"{contracts:.2f}",
+            "count_fp":                    f"{contracts:.2f}",
             "price":                       price_dollars,
+            "price_dollars":               price_dollars,
             "time_in_force":               "good_till_canceled",
             "self_trade_prevention_type":  "taker_at_cross",
             # reviewed: default post_only=True for limit orders so resting quotes never cross and never pay taker fees
@@ -675,7 +677,9 @@ class KalshiClient:
             "client_order_id":             client_order_id or f"exit-{ticker}-{int(time.time())}",
             "side":                        api_side,
             "count":                       f"{contracts:.2f}",
+            "count_fp":                    f"{contracts:.2f}",
             "price":                       f"{yes_leg_cents / 100:.4f}",
+            "price_dollars":               f"{yes_leg_cents / 100:.4f}",
             "time_in_force":               time_in_force,
             "self_trade_prevention_type":  "taker_at_cross",
             # post_only only when it is genuinely resting; an exit crosses.
