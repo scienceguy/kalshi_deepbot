@@ -11,7 +11,7 @@ fair value after fees.
 """
 
 import logging
-import math
+import time
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
@@ -19,6 +19,24 @@ import binance_feed
 from model import gbm_probability_yes_wins
 
 log = logging.getLogger("crossvenue_edge")
+
+_spot_cache: dict[str, tuple[float, float]] = {}
+
+
+def get_cached_spot(symbol: str) -> Optional[float]:
+    """Fetch spot price for symbol with a 5s cache to avoid HTTP thrashing."""
+    now = time.time()
+    cached = _spot_cache.get(symbol)
+    if cached and now - cached[0] < 5.0:
+        return cached[1]
+    try:
+        spot = binance_feed.spot_price(f"{symbol}USDT")
+        if spot is not None and spot > 0:
+            _spot_cache[symbol] = (now, spot)
+            return spot
+    except Exception:
+        pass
+    return cached[1] if cached else None
 
 
 def extract_asset_and_strike(market: dict) -> tuple[Optional[str], Optional[float], Optional[datetime]]:
@@ -61,12 +79,7 @@ def evaluate_crossvenue_edge(market: dict, spot_override: Optional[float] = None
     minutes_left = seconds_left / 60.0
 
     # Get live composite spot price
-    spot = spot_override
-    if spot is None:
-        try:
-            spot = binance_feed.spot_price(f"{symbol}USDT")
-        except Exception:
-            spot = None
+    spot = spot_override if spot_override is not None else get_cached_spot(symbol)
 
     if spot is None or spot <= 0:
         return None
