@@ -1971,8 +1971,9 @@ def cycle(client: KalshiClient):
         log.warning("Balance unknown — skipping balance-dependent risk checks")
 
     log.info(
-        "%s | window $%.2f/%.2f | active_markets=%d tradeable_brackets=%d | trades=%d no_trade_cycles=%d | cycles=%d",
+        "%s | pnl=$%+.2f | window $%.2f/%.2f | active_markets=%d tradeable_brackets=%d | trades=%d no_trade_cycles=%d | cycles=%d",
         state.risk.summary(cash if cash_available else 0.0, mark_to_market_exposure),
+        state.session_pnl,
         state.window["used"], state.window["budget"],
         state.available_active_markets, state.tradeable_brackets,
         state.trades_placed, state.consecutive_no_trade_cycles, state.cycles,
