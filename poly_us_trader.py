@@ -247,6 +247,20 @@ class PolyUSPaperTrader:
             "category": market.get("category", ""),
         }
 
+    @staticmethod
+    def compute_tier_size(cash: float) -> float:
+        """Dynamic Kelly position sizing across compounding milestones ($100 -> $1M)."""
+        if cash < 100.0:
+            return max(1.0, round(cash * 0.05, 2))
+        elif cash < 1_000.0:
+            return min(50.0, round(cash * 0.05, 2))
+        elif cash < 10_000.0:
+            return min(400.0, round(cash * 0.04, 2))
+        elif cash < 100_000.0:
+            return min(3000.0, round(cash * 0.03, 2))
+        else:
+            return min(20000.0, round(cash * 0.02, 2))
+
     def execute_paper_trade(self, opp: dict):
         """Size and execute a paper trade from the bankroll."""
         slug = opp["slug"]
@@ -257,9 +271,21 @@ class PolyUSPaperTrader:
         if any(p["slug"] == slug for p in self.state["positions"]):
             return
 
-        # Sizing: Conservative Half-Kelly / 5% risk ($5.00 per trade on $100 bankroll)
-        max_trade_dollars = min(5.00, self.state["cash"] * 0.10)
-        if max_trade_dollars < 1.00 or self.state["cash"] < 2.00:
+        # Cap max concurrent open positions (default 10)
+        if len(self.state["positions"]) >= getattr(self, "max_open_positions", 10):
+            return
+
+        # Enforce 30% cash reserve floor
+        total_equity = self.state["cash"] + sum(p.get("cost", 0.0) for p in self.state["positions"])
+        min_cash_floor = total_equity * 0.30
+        if self.state["cash"] <= min_cash_floor:
+            return
+
+        # Sizing: Dynamic Kelly scaling across milestones ($100 -> $1M)
+        available_cash = max(0.0, self.state["cash"] - min_cash_floor)
+        max_trade_dollars = self.compute_tier_size(self.state["cash"])
+        max_trade_dollars = min(max_trade_dollars, available_cash)
+        if max_trade_dollars < 1.00:
             return
 
         qty = int(max_trade_dollars / price)
@@ -267,7 +293,7 @@ class PolyUSPaperTrader:
             return
 
         cost = round(qty * price, 4)
-        if cost > self.state["cash"]:
+        if cost > available_cash:
             return
 
         # Validate order syntax with Polymarket US production API
@@ -351,6 +377,22 @@ class PolyUSPaperTrader:
         total_equity = round(self.state["cash"] + total_mtm, 2)
         self.state["unrealized_pnl"] = round(total_unrealized, 4)
         self.state["total_pnl"] = total_pnl
+
+        # Track compounding milestones ($100, $1K, $10K, $100K, $1M)
+        milestones = [100.0, 1000.0, 10000.0, 100000.0, 1000000.0]
+        reached = self.state.setdefault("milestones_reached", [])
+        for m in milestones:
+            if total_equity >= m and m not in reached:
+                reached.append(m)
+                log.info("🎉 MILESTONE REACHED: Total Equity $%.2f crossed $%.2f milestone!", total_equity, m)
+                self._append_ledger({
+                    "event": "milestone",
+                    "milestone": m,
+                    "total_equity": total_equity,
+                    "cash": self.state["cash"],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+
         self._save_state(self.state)
 
         log.info(
@@ -395,6 +437,7 @@ def main():
         print(f"Unrealized P&L: ${unrealized:+.2f}")
         print(f"Total Net P&L:  ${total_pnl:+.2f}")
         print(f"Trades Count:   {state.get('trades_count', 0)}")
+        print(f"Milestones Reached: {state.get('milestones_reached', [100.0])}")
         for p in positions:
             cat = f"[{p['category']}] " if p.get("category") else ""
             cur_p = p.get("current_price", p["price"])

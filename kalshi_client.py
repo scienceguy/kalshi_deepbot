@@ -296,6 +296,8 @@ class KalshiClient:
                 log.error("HTTP %s %s %s — %s", resp.status_code, method, path, resp.text[:300])
                 resp.raise_for_status()
 
+        raise KalshiAPIError(f"429 rate limit exceeded after 5 retries on {method} {path}")
+
 
     # ── Account ───────────────────────────────────────────────────────────────
 
@@ -435,6 +437,7 @@ class KalshiClient:
     # ── Markets ───────────────────────────────────────────────────────────────
 
     _markets_cache: dict = {}  # (series_ticker, status, limit) -> (timestamp, data)
+    _markets_cache_lock = threading.Lock()
 
     def get_markets(self, series_ticker: str = "", status: str = "open",
                     limit: int = 100) -> list:
@@ -446,21 +449,22 @@ class KalshiClient:
         """
         key = (series_ticker, status, limit)
         now = time.time()
-        cached = self._markets_cache.get(key)
-        if cached and now - cached[0] < 30:
-            return cached[1]
+        with self._markets_cache_lock:
+            cached = self._markets_cache.get(key)
+            if cached and now - cached[0] < 30:  # reviewed: return unexpired 30s cached market data
+                return cached[1]
 
-        # Periodic cleanup: remove expired entries (older than 60s)
-        # and enforce maximum cache size to prevent unbounded growth.
-        try:
-            expired = [k for k, v in self._markets_cache.items() if now - v[0] > 60]
-            for k in expired:
-                del self._markets_cache[k]
-            # reviewed: cap cache size to 100 entries to prevent unbounded memory growth
-            if len(self._markets_cache) > 100:
-                self._markets_cache.clear()
-        except Exception:
-            pass
+            # Periodic cleanup: remove expired entries (older than 60s)
+            # and enforce maximum cache size to prevent unbounded growth.
+            try:
+                expired = [k for k, v in self._markets_cache.items() if now - v[0] > 60]
+                for k in expired:
+                    self._markets_cache.pop(k, None)
+                # reviewed: cap cache size to 100 entries to prevent unbounded memory growth
+                if len(self._markets_cache) > 100:
+                    self._markets_cache.clear()
+            except Exception:
+                pass
 
         params = {"status": status, "limit": limit}
         if series_ticker:
@@ -468,7 +472,8 @@ class KalshiClient:
             _add_exchange_index(params, series_ticker)
         data = self._request("GET", "/markets", params=params)
         result = data.get("markets", [])
-        self._markets_cache[key] = (now, result)
+        with self._markets_cache_lock:
+            self._markets_cache[key] = (now, result)
         return result
 
     def get_series(self, limit: int = 400) -> list:
@@ -488,21 +493,22 @@ class KalshiClient:
         get_markets() calls fetch fresh data from the API rather than
         returning stale cached results.
         """
-        if series_ticker is None and status is None:
-            # Invalidate all markets
-            self._markets_cache.clear()
-        else:
-            # Invalidate specific key(s)
-            keys_to_remove = []
-            for key in self._markets_cache:
-                series, stat, limit = key
-                if series_ticker is not None and series != series_ticker:
-                    continue
-                if status is not None and stat != status:
-                    continue
-                keys_to_remove.append(key)
-            for key in keys_to_remove:
-                del self._markets_cache[key]
+        with self._markets_cache_lock:
+            if series_ticker is None and status is None:  # reviewed: clear all cached markets when no filter is provided
+                # Invalidate all markets
+                self._markets_cache.clear()
+            else:
+                # Invalidate specific key(s)
+                keys_to_remove = []
+                for key in list(self._markets_cache.keys()):
+                    series, stat, limit = key
+                    if series_ticker is not None and series != series_ticker:  # reviewed: skip entries that do not match target series
+                        continue
+                    if status is not None and stat != status:  # reviewed: skip entries that do not match target status
+                        continue
+                    keys_to_remove.append(key)
+                for key in keys_to_remove:
+                    self._markets_cache.pop(key, None)
 
     def get_market(self, ticker: str) -> dict:
         """Fetch a single market's details including expiration_value for settlement."""

@@ -430,8 +430,9 @@ def composite_sigma(symbol: str = "BTCUSDT", lookback: int = 60,
             resp.raise_for_status()
             data = resp.json().get("data", [])
             if data:
-                # OKX returns [ts, o, h, l, c, ...] oldest first
-                closes = [float(row[3]) for row in data]  # close is index 3
+                # OKX returns [ts, o, h, l, c, ...]; sort ascending by timestamp and pick close (index 4)
+                sorted_rows = sorted(data, key=lambda r: float(r[0]))
+                closes = [float(row[4]) for row in sorted_rows]
                 rets = [math.log(b / a) for a, b in zip(closes, closes[1:]) if a > 0 and b > 0]
                 if len(rets) >= 5:
                     mean = sum(rets) / len(rets)

@@ -70,3 +70,27 @@ def test_execute_paper_trade_updates_bankroll(temp_trader):
     assert len(temp_trader.state["positions"]) == 1
     assert temp_trader.state["cash"] < 100.0
     assert temp_trader.state["trades_count"] == 1
+
+
+def test_compute_tier_size():
+    from poly_us_trader import PolyUSPaperTrader
+    assert PolyUSPaperTrader.compute_tier_size(100.0) == 5.0
+    assert PolyUSPaperTrader.compute_tier_size(500.0) == 25.0
+    assert PolyUSPaperTrader.compute_tier_size(2000.0) == 80.0
+    assert PolyUSPaperTrader.compute_tier_size(20000.0) == 600.0
+    assert PolyUSPaperTrader.compute_tier_size(200000.0) == 4000.0
+
+
+def test_cash_reserve_floor_blocks_overtrade(temp_trader):
+    # Total equity = $20 cash + $80 positions = $100
+    temp_trader.state["positions"] = [{"cost": 80.0, "slug": "p1"}]
+    temp_trader.state["cash"] = 20.0  # Cash is 20% of equity, below 30% floor
+    opp = {
+        "slug": "test-market-low-cash",
+        "question": "Sample",
+        "side": "yes",
+        "price": 0.95,
+    }
+    temp_trader.preview_order = MagicMock(return_value=True)
+    temp_trader.execute_paper_trade(opp)
+    assert len(temp_trader.state["positions"]) == 1  # No new position added

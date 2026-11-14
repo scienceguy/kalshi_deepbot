@@ -221,6 +221,19 @@ def _save_settled_since(data: dict):
     os.replace(tmp, SETTLED_SINCE_FILE)
 
 
+def tradable_balance_limit(cash: float, exposure: float) -> float:
+    """Compute maximum tradable capital ceiling with smooth transition across bankrolls.
+
+    Under $10 equity, caps concurrent deployment at 60% of equity (guaranteeing 40%
+    cash reserve against coin-flip wipeout). Above $10, uses TOTAL_CASH_TRADABLE_PCT
+    applied to cash.
+    """
+    portfolio_equity = cash + exposure
+    if portfolio_equity < 10.0:  # reviewed: smooth 60% equity cap for micro accounts under $10
+        return portfolio_equity * 0.60
+    return cash * config.TOTAL_CASH_TRADABLE_PCT
+
+
 class BotState:
     """Encapsulates all mutable bot state."""
 
@@ -257,7 +270,7 @@ class BotState:
         self.last_order_time: float = 0.0
         self.orders_today: int = 0
         self.today: str = ""
-        self.consecutive_no_tradeable_cycles: int = int(os.environ.get("CONSECUTIVE_NO_TRADEABLE_CYCLES", 8))
+        self.consecutive_no_tradeable_cycles: int = 0
         self.consecutive_no_trade_cycles: int = 0
         self.cycle_outcome: str = "pending"
         self.tradeable_markets_count: int = 0
@@ -336,12 +349,8 @@ class BotState:
                 )
                 return False
 
-        # reviewed: on bankrolls under $10 enforce max 60% concurrent deployment so at least 40% is kept in cash reserve
-        portfolio_equity = cash + exposure
-        if portfolio_equity < 10.0:  # reviewed: cap concurrent exposure at 60% of equity on micro accounts under $10
-            tradable_balance = portfolio_equity * 0.60
-        else:
-            tradable_balance = cash * config.TOTAL_CASH_TRADABLE_PCT
+        # reviewed: enforce smooth tradable balance ceiling across capital tiers
+        tradable_balance = tradable_balance_limit(cash, exposure)
         deployed = exposure + pending + sig.dollar_risk
         if tradable_balance > 0 and deployed > tradable_balance + 1e-3:
             log.info(
@@ -635,7 +644,7 @@ def _pos_cost_basis(p):
 
 def _order_count(o):
     """Contract count from an order record (new + legacy shape)."""
-    for k in ("initial_count_fp", "remaining_count_fp", "count", "quantity"):
+    for k in ("remaining_count_fp", "initial_count_fp", "count", "quantity"):
         v = o.get(k)
         if v in (None, "", 0, "0", "0.00"):
             continue
@@ -698,11 +707,16 @@ def _ticker_close_time(ticker: str) -> Optional[datetime]:
         if len(parts) >= 2:
             date_str = parts[1]
             dt_naive = datetime.strptime(date_str, "%y%b%d%H%M")
-            month, day = dt_naive.month, dt_naive.day
-            is_dst = (3 < month < 11) or (month == 3 and day >= 8) or (month == 11 and day < 7)
-            offset_hours = 4 if is_dst else 5
-            # reviewed: robust Eastern Time to UTC conversion for accurate close time comparison
-            return dt_naive.replace(tzinfo=timezone.utc) + timedelta(hours=offset_hours)
+            try:
+                from zoneinfo import ZoneInfo
+                # reviewed: convert US Eastern Time to UTC using standard tzdata database
+                return dt_naive.replace(tzinfo=ZoneInfo("America/New_York")).astimezone(timezone.utc)
+            except Exception:
+                month, day = dt_naive.month, dt_naive.day
+                is_dst = (3 < month < 11) or (month == 3 and day >= 8) or (month == 11 and day < 1)
+                offset_hours = 4 if is_dst else 5
+                # reviewed: robust Eastern Time to UTC conversion for accurate close time comparison
+                return dt_naive.replace(tzinfo=timezone.utc) + timedelta(hours=offset_hours)
     except Exception:
         pass
     return None
@@ -2483,6 +2497,8 @@ def cycle(client: KalshiClient):
                     state._record_filled_order(
                         client, sig, oid, fill_count, "executed", fees_dollars,
                         state.cycles, entry_taker=config.AGGRESSIVE_FILL)
+                    state.last_order_time = time.time()
+                    state.orders_today += 1
                     current_exposure += fill_count * sig.entry_price / 100.0
                 else:
                     fill_count = 0.0
@@ -2813,26 +2829,31 @@ def main():
         except Exception as e:
             log.warning("Could not seed positions from Kalshi: %s", e)
 
-    # Reconcile session_pnl on startup — pnl_ledger is the true transaction source of truth.
+    # Reconcile session_pnl on startup — paper mode uses paper_mode.pnl(), live uses pnl_ledger.
     try:
-        local_db = get_local_db()
-        ledger_total = local_db.get_total_realized_pnl()
-        # reviewed: check if pnl ledger has non-zero realized total as source of truth
-        if ledger_total is not None and ledger_total != 0:
-            state.session_pnl = round(float(ledger_total), 4)
-            log.info("Reconciled session_pnl from pnl_ledger total (source of truth): $%.2f", state.session_pnl)
+        # reviewed: dry-run reconciles session_pnl from paper_mode bankroll, live from ledger
+        if config.DRY_RUN:
+            state.session_pnl = round(float(paper_mode.pnl()), 4)
+            log.info("Reconciled session_pnl from paper_mode: $%.2f", state.session_pnl)
         else:
-            local_pnl = local_db.get_bot_state("session_pnl")
-            # reviewed: fall back to local bot_state session_pnl when ledger total is zero
-            if local_pnl is not None:
-                state.session_pnl = float(local_pnl)
-                log.info("Reconciled session_pnl from LOCAL DB: $%.2f", state.session_pnl)
+            local_db = get_local_db()
+            ledger_total = local_db.get_total_realized_pnl()
+            # reviewed: check if pnl ledger has non-zero realized total as source of truth
+            if ledger_total is not None and ledger_total != 0:
+                state.session_pnl = round(float(ledger_total), 4)
+                log.info("Reconciled session_pnl from pnl_ledger total (source of truth): $%.2f", state.session_pnl)
             else:
-                saved_pnl = get_raw_supabase_client().get_bot_state("session_pnl")
-                # reviewed: fall back to remote Supabase session_pnl when local state is absent
-                if saved_pnl is not None:
-                    state.session_pnl = float(saved_pnl)
-                    log.info("Reconciled session_pnl from Supabase: $%.2f", state.session_pnl)
+                local_pnl = local_db.get_bot_state("session_pnl")
+                # reviewed: fall back to local bot_state session_pnl when ledger total is zero
+                if local_pnl is not None:
+                    state.session_pnl = float(local_pnl)
+                    log.info("Reconciled session_pnl from LOCAL DB: $%.2f", state.session_pnl)
+                else:
+                    saved_pnl = get_raw_supabase_client().get_bot_state("session_pnl")
+                    # reviewed: fall back to remote Supabase session_pnl when local state is absent
+                    if saved_pnl is not None:
+                        state.session_pnl = float(saved_pnl)
+                        log.info("Reconciled session_pnl from Supabase: $%.2f", state.session_pnl)
     except Exception as e:
         log.warning("Could not reconcile session_pnl: %s", e)
 

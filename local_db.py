@@ -52,7 +52,17 @@ log = logging.getLogger(__name__)
 DB_DIR = Path(os.environ.get("SUPERBOT_LOCAL_DB_DIR")
               or Path(__file__).resolve().parent / "local_data")
 DB_DIR.mkdir(exist_ok=True)
-DB_PATH = DB_DIR / "superbot_local.db"
+
+
+def get_db_path() -> Path:
+    """Return mode-isolated database path (live vs dry) unless explicitly overridden."""
+    if os.environ.get("SUPERBOT_LOCAL_DB_PATH"):
+        return Path(os.environ["SUPERBOT_LOCAL_DB_PATH"])
+    mode_suffix = "_dry" if config.DRY_RUN else "_live"
+    return DB_DIR / f"superbot_local{mode_suffix}.db"
+
+
+DB_PATH = get_db_path()
 
 # Sync interval (seconds) — configurable via env
 SYNC_INTERVAL = float(config.LOCAL_DB_SYNC_INTERVAL)
@@ -61,8 +71,8 @@ SYNC_INTERVAL = float(config.LOCAL_DB_SYNC_INTERVAL)
 class LocalDB:
     """Local SQLite database with background Supabase sync."""
 
-    def __init__(self, db_path: str = str(DB_PATH), auto_sync: bool = True):
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None, auto_sync: bool = True):
+        self.db_path = str(db_path or get_db_path())
         self._local = threading.local()
         self._lock = threading.RLock()
         self._sync_thread = None
@@ -793,16 +803,15 @@ class LocalDB:
         self.close()
 
 
-# Global instance (lazy)
-_local_db: Optional[LocalDB] = None
+_local_dbs: dict[str, LocalDB] = {}
 
 
-def get_local_db() -> LocalDB:
-    """Get or create the global LocalDB instance."""
-    global _local_db
-    if _local_db is None:
-        _local_db = LocalDB()
-    return _local_db
+def get_local_db(db_path: str | None = None) -> LocalDB:
+    """Get or create the mode-isolated LocalDB instance."""
+    path_str = str(db_path or get_db_path())
+    if path_str not in _local_dbs:
+        _local_dbs[path_str] = LocalDB(db_path=path_str)
+    return _local_dbs[path_str]
 
 
 # Compatibility layer: same API as SupabaseClient for easy migration

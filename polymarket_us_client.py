@@ -68,17 +68,24 @@ def _load_secret_key() -> str:
     return ""
 
 
-def _get_client():
-    """Return a configured PolymarketUS client, or None if no creds available.
+_cached_client = None
+_cached_creds = ("", "")
 
-    Always reads creds fresh from os.environ (or BW mirror), so monkeypatching
-    env vars in tests works correctly — no module-level caching.
+
+def _get_client():
+    """Return a configured PolymarketUS client, caching to reuse HTTP connection pools.
+
+    Reads creds from environment / BW mirror and refreshes client if credentials change.
     """
+    global _cached_client, _cached_creds
     key_id = _load_key_id()
     secret_key = _load_secret_key()
     if not key_id or not secret_key:
         return None
-    return PolymarketUS(key_id=key_id, secret_key=secret_key)
+    if _cached_client is None or _cached_creds != (key_id, secret_key):
+        _cached_client = PolymarketUS(key_id=key_id, secret_key=secret_key)
+        _cached_creds = (key_id, secret_key)
+    return _cached_client
 
 
 # ── Public API (market data: no auth required) ────────────────────────────
