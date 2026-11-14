@@ -220,7 +220,8 @@ def _track_bid(ticker: str, yes_bid_cents: int, now: float):
     _ensure_bid_hist_loaded()
     h = _bid_hist.setdefault(ticker, [])
     h.append((now, max(0, min(100, int(yes_bid_cents or 0)))))
-    cutoff = now - (config.STABILITY_LOOKBACK_MIN + 1.5) * 60
+    # Keep at least 20 minutes of history so full 15m window coverage is preserved
+    cutoff = now - max(1200.0, (config.STABILITY_LOOKBACK_MIN + 15.0) * 60)
     h[:] = [(t, b) for t, b in h if t >= cutoff]
     # Cap per-ticker entries to prevent unbounded memory growth
     if len(h) > 1000:

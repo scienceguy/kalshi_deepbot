@@ -195,6 +195,21 @@ def _build(mkt, series, ct, ml, ob, role="MAIN"):
         strike_val = mkt.get("strike", 0)
     strike=float(strike_val)
 
+    mkt_ticker = mkt.get("ticker", "")
+    # reviewed: track continuous bid history when ticker is present
+    if mkt_ticker:
+        try:
+            import signals
+            now_ts = time.time()
+            # reviewed: record positive YES bid in continuous history
+            if yb > 0:
+                signals._track_bid(mkt_ticker, yb, now_ts)
+            # reviewed: record positive NO bid in continuous history
+            if nb > 0:
+                signals._track_bid(f"{mkt_ticker}:no", nb, now_ts)
+        except Exception:
+            pass
+
     return MarketInfo(
         ticker=mkt.get("ticker",""), series=series, close_time=ct,
         strike=strike,

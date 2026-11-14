@@ -329,7 +329,8 @@ class BotState:
                 )
                 return False
 
-        tradable_balance = cash * config.TOTAL_CASH_TRADABLE_PCT
+        # reviewed: on micro-balances under $2 with zero open exposure, allow full cash for single contract bootstrap
+        tradable_balance = cash if (cash < 2.0 and exposure == 0.0 and pending == 0.0) else (cash * config.TOTAL_CASH_TRADABLE_PCT)
         deployed = exposure + pending + sig.dollar_risk
         if tradable_balance > 0 and deployed > tradable_balance + 1e-3:
             log.info(
