@@ -94,6 +94,9 @@ def _size(entry_cents: int, max_dollars: float, max_contracts: int = 0) -> float
     if max_contracts and max_contracts > 0:
         n = min(n, float(max_contracts))
     n = floor_contracts(n)
+    # reviewed: ensure exact cash outlay after rounding never exceeds max_dollars
+    while n >= 0.01 and fees.buy_cash_out(n, cost, taker=config.AGGRESSIVE_FILL) > max_dollars + 1e-9:
+        n = round(n - 0.01, 2)
     return n if n >= 0.01 else 0.0
 
 
