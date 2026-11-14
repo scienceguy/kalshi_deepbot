@@ -172,6 +172,25 @@ def calibration(df: pd.DataFrame, p_yes: np.ndarray, label=""):
     return brier, auc
 
 
+def split_train_test(df: pd.DataFrame, test_days: int = 3) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split prepared dataframe into train and test sets by day."""
+    days = sorted(df.day.unique())
+    if len(days) <= test_days:
+        raise ValueError(f"need more than {test_days} days, have {len(days)}")
+    train_days, test_days_list = days[:-test_days], days[-test_days:]
+    tr = df[df.day.isin(train_days)].reset_index(drop=True)
+    te = df[df.day.isin(test_days_list)].reset_index(drop=True)
+    return tr, te
+
+
+def train(train_df: pd.DataFrame, results: dict = None, epochs: int = 800, lr: float = 0.1) -> MLFairValue:
+    """Train MLFairValue model on training feature matrix."""
+    model = MLFairValue()
+    Xtr, ytr = feature_matrix(train_df), train_df.yes_win.to_numpy().astype(np.float32)
+    model.fit(Xtr, ytr, epochs=epochs, lr=lr)
+    return model
+
+
 # ── main ────────────────────────────────────────────────────────────────────
 
 def main(argv=None) -> int:
@@ -185,19 +204,16 @@ def main(argv=None) -> int:
 
     fv, res = load_frames(a.days)
     df = prepare(fv, res)
-    days = sorted(df.day.unique())
-    if len(days) <= a.test_days:
-        print(f"need more than {a.test_days} days, have {len(days)}", file=sys.stderr)
+    try:
+        tr, te = split_train_test(df, test_days=a.test_days)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
         return 1
-    train_days, test_days = days[:-a.test_days], days[-a.test_days:]
-    tr = df[df.day.isin(train_days)].reset_index(drop=True)
-    te = df[df.day.isin(test_days)].reset_index(drop=True)
-    print(f"days: train {train_days[0]}..{train_days[-1]} ({len(tr)} rows) | "
-          f"test {test_days[0]}..{test_days[-1]} ({len(te)} rows)")
 
-    model = MLFairValue()
-    Xtr, ytr = feature_matrix(tr), tr.yes_win.to_numpy().astype(np.float32)
-    model.fit(Xtr, ytr, epochs=a.epochs, lr=a.lr)
+    print(f"days: train {tr.day.iloc[0]}..{tr.day.iloc[-1]} ({len(tr)} rows) | "
+          f"test {te.day.iloc[0]}..{te.day.iloc[-1]} ({len(te)} rows)")
+
+    model = train(tr, res, epochs=a.epochs, lr=a.lr)
 
     import torch
     with torch.no_grad():

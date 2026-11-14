@@ -81,6 +81,11 @@ def _resolve_api_key(env_key: str) -> str:
     return ""
 
 
+# Aliases for backward compatibility and test harnesses
+_load_key = _resolve_api_key
+load_key = _resolve_api_key
+
+
 # ── Vertex AI OAuth2 ADC token cache ─────────────────────────────────────────
 _vertex_token_cache: dict[str, Any] = {"token": "", "expires_at": 0.0}
 VERTEX_DEFAULT_ADC_PATH = os.path.expanduser(
