@@ -70,6 +70,10 @@ def gbm_probability_yes_wins(spot_price: float, strike: float,
     return max(0.001, min(0.999, prob))
 
 
+# Alias for callers expecting gbm_probability
+gbm_probability = gbm_probability_yes_wins
+
+
 def momentum_adjusted_probability(mid_yes_cents: float,
                                   minutes_left: float,
                                   momentum_cents_per_min: float,
