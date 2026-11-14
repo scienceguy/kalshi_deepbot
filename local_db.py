@@ -69,7 +69,22 @@ class LocalDB:
         self._stop_sync = threading.Event()
         self._auto_sync = auto_sync and supabase_is_enabled()
         
-        self._init_db()
+        try:
+            self._init_db()
+        except sqlite3.DatabaseError as e:
+            log.error("Local SQLite DB image corrupted (%s) — backing up and recreating clean database", e)
+            corrupt_path = f"{self.db_path}.corrupt.{int(time.time())}"
+            try:
+                if os.path.exists(self.db_path):
+                    os.rename(self.db_path, corrupt_path)
+                for ext in ("-wal", "-shm"):
+                    if os.path.exists(self.db_path + ext):
+                        os.rename(self.db_path + ext, corrupt_path + ext)
+            except Exception as re:
+                log.warning("Could not rename corrupt DB: %s", re)
+            self._local = threading.local()
+            self._init_db()
+
         if self._auto_sync:
             self._start_sync_thread()
 
