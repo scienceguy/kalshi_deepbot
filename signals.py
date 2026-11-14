@@ -631,7 +631,8 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
         # Blind taker favorite buying is net-negative EV (fee ~0.79c at 87c
         # exceeds raw edge ~0.67c). Only trade when model-implied true
         # probability exceeds ask price + fee + minimum edge.
-        fee_cents = fees.taker_fee_cents(1.0, entry_c / 100.0)
+        # Only subtract taker fee if AGGRESSIVE_FILL is enabled; maker orders pay zero fee
+        fee_cents = fees.taker_fee_cents(1.0, entry_c / 100.0) if config.AGGRESSIVE_FILL else 0.0
         momentum = _compute_momentum(market.ticker, time.time(), lookback_min=2.0)
         # Spot price from Binance/Coinbase composite feed for GBM model.
         # Asset from ticker: KXBTC15M-26NOV090115-15 -> BTCUSDT
