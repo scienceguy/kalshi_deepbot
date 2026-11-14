@@ -270,9 +270,9 @@ class RiskManager:
                 f"portfolio=${portfolio:.2f})"
             )
 
-        # On micro-balances (<$10.00) with no open exposure, allow $0.00 cash floor for microstructure bootstrap
-        # reviewed: microstructure bootstrap allows deploying 100% of cash on accounts under $10
-        if not paper and (cash + exposure) < 10.0 and exposure == 0.0:
+        # On micro-balances (<$10.00), allow $0.00 cash floor for microstructure bootstrap
+        # reviewed: microstructure bootstrap allows deploying cash on accounts under $10
+        if not paper and (cash + exposure) < 10.0:
             min_cash = 0.00
         else:
             min_cash = config.PAPER_MIN_CASH_ABSOLUTE if paper else config.MIN_CASH_ABSOLUTE

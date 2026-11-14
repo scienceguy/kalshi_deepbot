@@ -281,7 +281,7 @@ class BotState:
                 )
                 return False
             log.info(
-                "WINDOW CLAMP %s — %.4fx@%dc ($%.2f) -> %.0fx ($%.2f), remaining $%.2f",
+                "WINDOW CLAMP %s — %.4fx@%dc ($%.2f) -> %.2fx ($%.2f), remaining $%.2f",
                 ticker, sig.contracts, sig.entry_price, sig.dollar_risk,
                 n, n * cost_per, remaining_window,
             )
@@ -330,8 +330,9 @@ class BotState:
                 )
                 return False
 
-        # reviewed: on bankrolls under $10 allow 100% cash tradable balance until $10 is reached
-        tradable_balance = cash if (cash < 10.0 and pending == 0.0) else (cash * config.TOTAL_CASH_TRADABLE_PCT)
+        # reviewed: on bankrolls under $10 allow 100% capital tradable balance until $10 is reached
+        total_cap = cash + exposure
+        tradable_balance = total_cap if (total_cap < 10.0 and pending == 0.0) else (cash * config.TOTAL_CASH_TRADABLE_PCT)
         deployed = exposure + pending + sig.dollar_risk
         if tradable_balance > 0 and deployed > tradable_balance + 1e-3:
             log.info(
