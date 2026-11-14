@@ -485,6 +485,28 @@ class PolyUSPaperTrader:
         if "updown-5m" in slug or "-5m-" in slug:
             return None
 
+        # Strike/spot resolution shared by BOTH entry paths (R6): the gates must
+        # not depend on which branch found the candidate.
+        strike_val = None
+        strike_dict = terms.get("strike") or terms.get("priceToBeat")
+        if strike_dict and isinstance(strike_dict, dict):
+            try:
+                strike_val = float(strike_dict.get("value", 0))
+            except Exception:
+                pass
+
+        symbol = (terms.get("asset") or {}).get("symbol", "").upper()
+        if not symbol:
+            slug_lower = slug.lower()
+            if "btc" in slug_lower:
+                symbol = "BTC"
+            elif "eth" in slug_lower:
+                symbol = "ETH"
+            elif "sol" in slug_lower:
+                symbol = "SOL"
+
+        spot = crossvenue_edge.get_cached_spot(symbol) if symbol else None
+
         # 1. Evaluate cross-venue spot price & distributional fair value edge
         cv_edge = crossvenue_edge.evaluate_crossvenue_edge(market)
         # High-EV favorite hurdle: ref_prob >= MODEL_PROB_MIN (0.96) and favorite band (92c-99c).
@@ -496,6 +518,9 @@ class PolyUSPaperTrader:
             modelled_cost_cents = (_fee_cents(cv_edge["best_price"]) + _slippage_cents()
                                    + float(getattr(config, "PM_EDGE_MARGIN_CENTS", 0.5)))
             if cv_edge["best_edge_cents"] >= modelled_cost_cents:
+                if not self._passes_entry_gates(slug, cv_edge["best_side"], terms,
+                                                strike_val, spot, hours_left):
+                    return None
                 return {
                     "slug": slug,
                     "question": market.get("question", slug),
@@ -510,6 +535,11 @@ class PolyUSPaperTrader:
                     "hours_left": hours_left,
                     "source": "crossvenue",
                 }
+        # Fallback branch has no model of its own: only trade markets a model can
+        # score (crypto with strike + spot), unless PM_ALLOW_UNMODELLED=true (R6).
+        modelable = bool(strike_val and spot and spot > 0)
+        if not modelable and not getattr(config, "PM_ALLOW_UNMODELLED", False):
+            return None
 
         long_p = None
         short_p = None
@@ -577,53 +607,9 @@ class PolyUSPaperTrader:
 
         side, price = candidates[0]
 
-        # Enforce directional strike cushion hurdle: spot must be safely away from strike (>2.0% distance)
-        strike_val = None
-        strike_dict = terms.get("strike") or terms.get("priceToBeat")
-        if strike_dict and isinstance(strike_dict, dict):
-            try:
-                strike_val = float(strike_dict.get("value", 0))
-            except Exception:
-                pass
-
-        symbol = (terms.get("asset") or {}).get("symbol", "").upper()
-        if not symbol:
-            slug_lower = slug.lower()
-            if "btc" in slug_lower:
-                symbol = "BTC"
-            elif "eth" in slug_lower:
-                symbol = "ETH"
-            elif "sol" in slug_lower:
-                symbol = "SOL"
-
-        spot = crossvenue_edge.get_cached_spot(symbol) if symbol else None
-        if strike_val and spot and spot > 0:
-            pct_distance = abs(spot - strike_val) / spot
-            is_above_below = "above" in slug.lower() or terms.get("marketType") == "ASSET_PRICE_MARKET_TYPE_ABOVE_BELOW"
-            if is_above_below:
-                # If betting NO on "BTC above K", spot must be at least 2.0% BELOW strike
-                if side == "no" and (spot >= strike_val or pct_distance < 0.020):
-                    return None
-                # If betting YES on "BTC above K", spot must be at least 2.0% ABOVE strike
-                if side == "yes" and (spot <= strike_val or pct_distance < 0.020):
-                    return None
-
-        # Task 2: adaptive strike-cushion hurdle (vol-scaled z).
-        # z = |ln(S/K)| / (sigma_per_sqrt_min * sqrt(minutes_left)); require z >= adjusted_min_z.
-        # When Brier drifts up (calibration degrading), vol_scaler raises sigma and
-        # min_z, so fewer entries clear the hurdle -> more conservative. When Brier
-        # improves, sigma falls and the hurdle narrows.
-        if strike_val and spot and spot > 0 and hours_left is not None:
-            minutes_left = hours_left * 60.0
-            if minutes_left > 0:
-                sigma_per_sqrt_min = self.adjusted_sigma / math.sqrt(525600.0)
-                denom = sigma_per_sqrt_min * math.sqrt(minutes_left)
-                if denom > 0:
-                    z = abs(math.log(spot / strike_val)) / denom
-                    if z < self.adjusted_min_z:
-                        log.debug("Cushion z %.2f < min_z %.2f for %s — denying entry",
-                                  z, self.adjusted_min_z, slug)
-                        return None
+        # Same strike-cushion gates as the cross-venue branch (R6).
+        if not self._passes_entry_gates(slug, side, terms, strike_val, spot, hours_left):
+            return None
 
         # ML fair-value confirmatory gate (opt-in via ML_MODEL_PATH).
         # Denies the entry when the ML model assigns too little probability
@@ -662,6 +648,44 @@ class PolyUSPaperTrader:
             "hours_left": hours_left,
             "source": "fallback",
         }
+
+    def _passes_entry_gates(self, slug: str, side: str, terms: dict,
+                            strike_val, spot, hours_left) -> bool:
+        """Strike-cushion gates shared by both entry paths (R6).
+
+        2% directional distance check (above/below markets) and the adaptive
+        z-gate vs self.adjusted_min_z. Missing model inputs (strike/spot/hours)
+        mean the gate cannot score the market, so it passes — the caller decides
+        whether unmodelled markets may trade at all (PM_ALLOW_UNMODELLED).
+        """
+        if not (strike_val and spot and spot > 0):
+            return True
+
+        pct_distance = abs(spot - strike_val) / spot
+        is_above_below = "above" in slug.lower() or terms.get("marketType") == "ASSET_PRICE_MARKET_TYPE_ABOVE_BELOW"
+        if is_above_below:
+            # NO on "BTC above K" needs spot >=2% BELOW strike; YES needs >=2% ABOVE.
+            if side == "no" and (spot >= strike_val or pct_distance < 0.020):
+                log.debug("Distance gate denies no %s (spot=%.2f strike=%.2f d=%.3f)",
+                          slug, spot, strike_val, pct_distance)
+                return False
+            if side == "yes" and (spot <= strike_val or pct_distance < 0.020):
+                log.debug("Distance gate denies yes %s (spot=%.2f strike=%.2f d=%.3f)",
+                          slug, spot, strike_val, pct_distance)
+                return False
+
+        if hours_left is not None:
+            minutes_left = hours_left * 60.0
+            if minutes_left > 0:
+                sigma_per_sqrt_min = self.adjusted_sigma / math.sqrt(525600.0)
+                denom = sigma_per_sqrt_min * math.sqrt(minutes_left)
+                if denom > 0:
+                    z = abs(math.log(spot / strike_val)) / denom
+                    if z < self.adjusted_min_z:
+                        log.debug("Cushion z %.2f < min_z %.2f for %s — denying entry",
+                                  z, self.adjusted_min_z, slug)
+                        return False
+        return True
 
     @staticmethod
     def compute_tier_size(total_balance: float) -> float:

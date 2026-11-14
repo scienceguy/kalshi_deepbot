@@ -16,6 +16,8 @@ pytest.importorskip("polymarket_us")
 
 from poly_us_trader import PolyUSPaperTrader
 
+import config
+
 # ML model is optional (torch may not be installed everywhere).
 try:
     from ml_model import MLFairValue
@@ -47,7 +49,8 @@ def test_reset_state(temp_trader):
     assert state["milestones_reached"] == [35.0]
 
 
-def test_evaluate_opportunity_finds_favorites(temp_trader):
+def test_evaluate_opportunity_finds_favorites(temp_trader, monkeypatch):
+    monkeypatch.setattr(config, "PM_ALLOW_UNMODELLED", True)
     market = {
         "slug": "test-crypto-favorite",
         "question": "Will BTC reach strike?",
@@ -70,7 +73,8 @@ def test_evaluate_opportunity_ignores_unpriceable(temp_trader):
     assert opp is None
 
 
-def test_evaluate_opportunity_supports_single_price_complement(temp_trader):
+def test_evaluate_opportunity_supports_single_price_complement(temp_trader, monkeypatch):
+    monkeypatch.setattr(config, "PM_ALLOW_UNMODELLED", True)
     market = {
         "slug": "cpc-btc-150k-11-30-2026",
         "question": "When will Bitcoin hit $150k?",
@@ -261,7 +265,8 @@ def test_polymarket_us_client_module_attributes():
         assert hasattr(polymarket_us_client, attr), f"Missing attribute {attr} on polymarket_us_client"
 
 
-def test_evaluate_opportunity_filters_long_dated(temp_trader):
+def test_evaluate_opportunity_filters_long_dated(temp_trader, monkeypatch):
+    monkeypatch.setattr(config, "PM_ALLOW_UNMODELLED", True)
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
     # Market expiring in 48 hours should be rejected
@@ -285,6 +290,62 @@ def test_evaluate_opportunity_filters_long_dated(temp_trader):
     assert opp["slug"] == "mkt-2h"
     assert opp["hours_left"] is not None
     assert 1.9 <= opp["hours_left"] <= 2.1
+
+
+# ── R6: entry gates apply to both paths; unmodelled fallback is gated ────────
+
+def test_crossvenue_candidate_below_z_gate_rejected(temp_trader):
+    """A cross-venue candidate whose adaptive z is below adjusted_min_z is rejected.
+
+    Regression: the cross-venue branch used to return before the z-gate, so the
+    cushion check only ever ran on fallback candidates.
+    """
+    from datetime import datetime, timezone, timedelta
+    temp_trader.adjusted_min_z = 2.0
+    end = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    market = {
+        "slug": "btc-strike-test",
+        "question": "BTC vs strike?",
+        "outcomePrices": ["0.95", "0.05"],
+        "assetPriceTerms": {
+            "asset": {"symbol": "BTC"},
+            "strike": {"value": 100000},
+            "windowEnd": end,
+        },
+    }
+    cv_edge = {"best_edge_cents": 10.0, "ref_prob": 0.97, "best_price": 0.95,
+               "best_side": "yes", "spot": 100001.0, "strike": 100000}
+    with patch("poly_us_trader.crossvenue_edge.evaluate_crossvenue_edge", return_value=cv_edge), \
+         patch("poly_us_trader.crossvenue_edge.get_cached_spot", return_value=100001.0):
+        # Spot nearly at the strike -> z ~ 0 -> below the 2.0 hurdle.
+        assert temp_trader.evaluate_opportunity(market) is None
+        # Same candidate with a 30% cushion clears the z-gate and is accepted.
+        cv_edge["spot"] = 130000.0
+        with patch("poly_us_trader.crossvenue_edge.get_cached_spot", return_value=130000.0):
+            opp = temp_trader.evaluate_opportunity(market)
+    assert opp is not None
+    assert opp["source"] == "crossvenue"
+
+
+def test_sports_favourite_rejected_unless_unmodelled_allowed(temp_trader, monkeypatch):
+    """The fallback path rejects unscoreable markets unless PM_ALLOW_UNMODELLED=true."""
+    from datetime import datetime, timezone, timedelta
+    end = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    market = {
+        "slug": "soccer-final-winner",
+        "question": "Will the favourite win?",
+        "category": "sports",
+        "outcomePrices": ["0.95", "0.05"],
+        "endDate": end,
+    }
+    with patch("poly_us_trader.crossvenue_edge.evaluate_crossvenue_edge", return_value=None):
+        assert temp_trader.evaluate_opportunity(market) is None
+        monkeypatch.setattr(config, "PM_ALLOW_UNMODELLED", True)
+        opp = temp_trader.evaluate_opportunity(market)
+    assert opp is not None
+    assert opp["side"] == "yes"
+    assert opp["price"] == 0.95
+    assert opp["source"] == "fallback"
 
 
 def test_cycle_rotates_stale_long_dated_positions(temp_trader):
@@ -429,7 +490,8 @@ def test_ruin_halt_blocks_entries_after_realized_loss(temp_trader):
     assert "ruin_halt" in temp_trader.ledger_file.read_text()
 
 
-def test_available_markets_and_tradeable_brackets_tracked_separately(temp_trader):
+def test_available_markets_and_tradeable_brackets_tracked_separately(temp_trader, monkeypatch):
+    monkeypatch.setattr(config, "PM_ALLOW_UNMODELLED", True)
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
     future_2h = (now + timedelta(hours=2)).isoformat()

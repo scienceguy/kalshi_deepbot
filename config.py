@@ -144,6 +144,9 @@ PM_FEE_BPS = _env_float("PM_FEE_BPS", 0.0)
 PM_SLIPPAGE_TICKS = _env_int("PM_SLIPPAGE_TICKS", 1)
 # Minimum modelled edge (cents) required on top of fee + slippage to enter.
 PM_EDGE_MARGIN_CENTS = _env_float("PM_EDGE_MARGIN_CENTS", 0.5)
+# Fallback (non-cross-venue) entries need a model to score the market. Set
+# PM_ALLOW_UNMODELLED=true to also trade markets with no strike/spot (R6).
+PM_ALLOW_UNMODELLED = _env_bool("PM_ALLOW_UNMODELLED", False)
 
 # Paper ruin limits (R4): halt entries — requiring a manual --reset — when the
 # realized loss or the peak-to-equity drawdown crosses these dollar amounts.
