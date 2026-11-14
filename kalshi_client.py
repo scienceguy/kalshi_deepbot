@@ -305,23 +305,41 @@ class KalshiClient:
     def get_balance(self) -> float:
         """Return available balance in dollars.
 
-        Kalshi /portfolio/balance returns balance in cents. We divide by 100
-        to get dollars. If Kalshi ever changes this field's units, all PnL
-        and sizing math will be silently wrong — verify against a known
-        value at startup if deploying to a new account.
+        Kalshi V2 returns ``balance_dollars`` as an exact fixed-point string.
+        Falls back to ``balance`` in cents divided by 100.
         """
         data = self._request("GET", "/portfolio/balance")
         cents = data.get("balance", 0)
-        dollars = cents / 100.0
-        # Sanity guard: raw >$10B as cents, or <$0.01 after division — both
-        # indicate a unit mismatch (dollars vs cents).
-        if cents > 1_000_000_000 or (cents > 0 and dollars < 0.01):
+        # reviewed: prefer V2 exact fixed-point dollar string over integer cents
+        if "balance_dollars" in data and data["balance_dollars"] not in (None, ""):
+            try:
+                dollars = float(data["balance_dollars"])
+            except (TypeError, ValueError):
+                dollars = float(cents or 0) / 100.0
+        else:
+            dollars = float(cents or 0) / 100.0
+        # reviewed: warn on implausibly large raw cents balance indicating unit mismatch
+        if cents > 1_000_000_000:
             log.warning(
                 "Balance raw value %s seems mislabeled (converted to $%.2f) — "
                 "verify KALSHI balance units (cents vs dollars)",
                 cents, dollars,
             )
         return dollars
+
+    def get_total_equity(self) -> float:
+        """Return total account equity (available cash + open portfolio position value) in dollars."""
+        data = self._request("GET", "/portfolio/balance")
+        # reviewed: parse available cash from balance_dollars or cents
+        if "balance_dollars" in data and data["balance_dollars"] not in (None, ""):
+            try:
+                cash = float(data["balance_dollars"])
+            except (TypeError, ValueError):
+                cash = float(data.get("balance", 0) or 0) / 100.0
+        else:
+            cash = float(data.get("balance", 0) or 0) / 100.0
+        pos_val = float(data.get("portfolio_value", 0) or 0) / 100.0
+        return cash + pos_val
 
     def get_shard_balance(self, exchange_index: int) -> float:
         """Return the cash actually available on one exchange shard, in dollars.

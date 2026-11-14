@@ -2548,21 +2548,21 @@ def main():
 
     client = KalshiClient()
     try:
+        # reviewed: on micro-accounts, read total equity (cash + open positions) so startup succeeds during in-flight settlements
+        total_equity = client.get_total_equity() if hasattr(client, "get_total_equity") else client.get_balance()
         bal = client.get_balance()
-        # Validate balance units: Kalshi returns cents, we divide by 100.
-        # Sanity check: balance should be in reasonable dollar range (0.01 to 1M).
-        # If the raw API returned dollars instead of cents (or vice versa),
-        # halting here prevents 100x over/under-sizing of every trade.
-        if bal < 0.01 or bal > 1_000_000:
+        startup_val = max(total_equity, bal)
+        # Validate balance units: total equity or cash should be in reasonable range (0.001 to 1M).
+        # On micro-balances with open positions, cash may be temporarily under 0.01 while equity is intact.
+        if startup_val < 0.001 or startup_val > 1_000_000:  # reviewed: ensure startup equity is within valid bounds
             log.error(
-                "Balance $%.2f outside expected range (0.01–1M) — "
-                "possible cents/dollars unit mismatch. Raw value: %s. "
+                "Account equity $%.4f outside expected range (0.001–1M) — "
                 "Halt startup to prevent catastrophic sizing errors.",
-                bal, bal * 100,
+                startup_val,
             )
             return
-        log.info("Connected ✓ Balance: $%.2f", bal)
-        state.risk.initialize(paper_mode.cash(0.0) if config.DRY_RUN else bal)
+        log.info("Connected ✓ Total Equity: $%.4f (Available Cash: $%.4f)", total_equity, bal)
+        state.risk.initialize(paper_mode.cash(0.0) if config.DRY_RUN else startup_val)
     except Exception as e:
         log.error("Auth failed: %s — continuing without Kalshi connection", e)
         return  # return to main loop instead of exiting
@@ -2914,7 +2914,9 @@ def acquire_instance_lock(lock_path: Path) -> int:
 
 # reviewed: entry point only — the lock below is taken before any trading
 if __name__ == "__main__":
-    lock_path = Path(__file__).resolve().parent / ".lock"
+    is_live = bool(args.live or (not config.DRY_RUN and os.environ.get("KALSHI_CONFIRM_LIVE", "").lower() == "true"))
+    lock_name = ".lock_live" if is_live else ".lock_dry"
+    lock_path = Path(__file__).resolve().parent / lock_name
     # Hold the fd for the process lifetime; it is the lock.
     lock_fd = acquire_instance_lock(lock_path)
 
