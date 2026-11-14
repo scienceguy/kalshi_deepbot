@@ -168,8 +168,8 @@ SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
 # the final 60 seconds.
 ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 1.5)
 ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.5)
-# Optimal favourite criteria price band: ask 85-99c
-MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 85)
+# Optimal favourite criteria price band: ask 80-99c
+MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", _env_int("ENTRY_BAND_MIN", 80))
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
 MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 50)
 MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
@@ -301,10 +301,10 @@ ORDER_TIME_IN_FORCE = _env_str("ORDER_TIME_IN_FORCE", "immediate_or_cancel")
 # do not widen this one to "look better" without re-running scripts/measure_edge.py
 # and reporting per-DISTINCT-MARKET numbers. The 15-55c AGENTS.md "Optimal
 # Parameters" band is significantly NEGATIVE on this larger sample.
-ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 85)
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 80)
 ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 99)
 MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
-MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 85)
+MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 80)
 # YES favourites enabled; NO favourites disabled by default to prevent mean-reversion short traps (opt-in via ALLOW_NO_BUYS=true)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 ALLOW_NO_BUYS = _env_bool("ALLOW_NO_BUYS", False)
