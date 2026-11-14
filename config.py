@@ -368,8 +368,8 @@ EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 1.0)  # don't dump i
 # Best: MOM_88-93_dynTrue_netTrue_kelly2 → Kelly=0.10, Sharpe 6.60
 # Survival-first: max 3 contracts, 1 per $10 cash (avoids wiping account)
 # ═════════════════════════════════════════════════════════════════════
-MAX_TRADE_DOLLARS = _env_float("MAX_TRADE_DOLLARS", 5.00)
-MAX_CONTRACTS_CAP = _env_int("MAX_CONTRACTS_CAP", 3)
+MAX_TRADE_DOLLARS = _env_float("MAX_TRADE_DOLLARS", 25000.0)
+MAX_CONTRACTS_CAP = _env_int("MAX_CONTRACTS_CAP", 10000)
 CONTRACTS_PER_BALANCE_UNIT = _env_float("CONTRACTS_PER_BALANCE_UNIT", 10.0)
 # 2, not 3+: BTC/ETH/SOL/XRP/DOGE move together, so concurrent 15M positions are
 # one correlated crypto bet, not diversification.

@@ -88,7 +88,7 @@ from risk import RiskManager  # noqa: E402
 from config import MIN_CASH_ABSOLUTE, CASH_FLOOR_PCT, DRAWDOWN_HALT_PCT, MARKET_DAILY_LOSS_PCT  # noqa: E402
 from signals import floor_contracts, TradeSignal  # noqa: E402
 import signals as se  # noqa: E402
-from resilience import CycleSupervisor  # noqa: E402
+from resilience import CycleSupervisor, systemd_notify  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
@@ -2470,6 +2470,7 @@ def cycle(client: KalshiClient):
         log.info("Placed %d order(s) this cycle.", placed)
     else:
         state.consecutive_no_trade_cycles += 1
+    systemd_notify("WATCHDOG=1")
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -2566,6 +2567,7 @@ def main():
             return
         log.info("Connected ✓ Total Equity: $%.4f (Available Cash: $%.4f)", total_equity, bal)
         state.risk.initialize(paper_mode.cash(0.0) if config.DRY_RUN else startup_val)
+        systemd_notify("READY=1")
     except Exception as e:
         log.error("Auth failed: %s — continuing without Kalshi connection", e)
         return  # return to main loop instead of exiting

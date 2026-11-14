@@ -4,6 +4,7 @@ resilience.py — Helpers to keep the trading loop alive when errors occur.
 From kalshi_live_bot.
 """
 import logging
+import os
 from dataclasses import dataclass, field
 
 import config
@@ -83,3 +84,20 @@ class CycleSupervisor:
         self.last_error_type = None
         self.last_error_message = None
         self.rebuilds += 1
+
+
+def systemd_notify(state: str = "WATCHDOG=1") -> bool:
+    """Send notification to systemd via $NOTIFY_SOCKET without external dependencies."""
+    sock_path = os.environ.get("NOTIFY_SOCKET")
+    if not sock_path:
+        return False
+    try:
+        import socket
+        if sock_path.startswith("@"):
+            sock_path = "\0" + sock_path[1:]
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(sock_path)
+            sock.sendall(state.encode())
+        return True
+    except Exception:
+        return False
