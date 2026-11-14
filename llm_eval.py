@@ -180,31 +180,6 @@ def _vertex_base_url() -> str:
 
 LAYERS = [
     {
-        "name": "vertex_ai",
-        "env_key": None,  # OAuth2 ADC token via _resolve_vertex_token()
-        "auth_type": "vertex_adc",
-        "base_url": _vertex_base_url(),
-        "model": os.environ.get("VERTEX_MODEL", "google/gemini-3.6-flash"),
-        "chat_path": "/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "max_tokens": 512,
-        "extra_payload": {
-            "extra_body": {
-                "google": {
-                    "thinking_config": {
-                        "thinking_budget": 0,
-                    }
-                }
-            }
-        },
-        "free_models": [
-            "google/gemini-3.8-flash",
-            "google/gemini-3.5-flash",
-            "google/gemini-3.5-flash-lite",
-        ],
-    },
-    {
         "name": "nvidia",
         "env_key": "NVIDIA_API_KEY",
         "base_url": "https://integrate.api.nvidia.com/v1",
@@ -212,26 +187,32 @@ LAYERS = [
         "chat_path": "/chat/completions",
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # Fallback on the same NVIDIA endpoint (different model = different quota).
-        # Must return a normal message.content: reasoning-only models (e.g.
-        # nemotron-3-nano-omni) send content=null and never parse.
         "free_models": [
-            "meta/llama-3.2-90b-vision-instruct",
+            "nvidia/nemotron-3.5-bolt-e4b",
         ],
     },
     {
         "name": "openrouter",
         "env_key": "OPENROUTER_API_KEY",
         "base_url": os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-        "model": os.environ.get("OPENROUTER_MODEL", "openrouter/free"),
+        "model": os.environ.get("OPENROUTER_MODEL", "particle-ai/particle-1:free"),
         "chat_path": "/chat/completions",
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "free_models": [
-            "openrouter/free", "openrouter/auto",
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "google/gemma-2-9b-it:free",
+            "particle-ai/particle-1:free",
         ],
+    },
+    {
+        "name": "dsh_our_free_model",
+        "env_key": "DSH_API_KEY",
+        "default_key": "ofm-uXQa4m0QYkzsfPsZ-piqPvZsuskHq6MZ",
+        "base_url": os.environ.get("DSH_BASE_URL", "http://127.0.0.1:18900"),
+        "model": os.environ.get("DSH_MODEL", "kilo-auto/free"),
+        "chat_path": "/v1/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "free_models": ["kilo-auto/free"],
     },
     {
         "name": "groq",
@@ -241,7 +222,7 @@ LAYERS = [
         "chat_path": "/chat/completions",
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "free_models": ["llama-3.1-8b-instant", "gemma2-9b-it"],
+        "free_models": ["llama-3.1-8b-instant"],
     },
     {
         "name": "deepseek",
@@ -338,6 +319,8 @@ _FENCE_RE = re.compile(r"^\s*```(?:json|JSON)?\s*\n?", re.MULTILINE)
 
 def _strip_fences(text: str) -> str:
     """Remove markdown code fences (```json ... ``` or ``` ... ```)."""
+    if not text or not isinstance(text, str):
+        return ""
     lines = text.splitlines()
     if not lines:
         return text
@@ -367,6 +350,8 @@ def _parse_llm_response(content: str) -> Optional[Dict[str, Any]]:
       2. Try json.loads on the whole cleaned content.
       3. Fall back to brace-finding only if step 2 fails.
     """
+    if not content or not isinstance(content, str):
+        return None
     try:
         cleaned = _strip_fences(content)
 
@@ -476,7 +461,8 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
                 choices = data.get("choices", [])
                 if not choices:
                     continue
-                content = choices[0].get("message", {}).get("content") or ""
+                msg = choices[0].get("message", {})
+                content = msg.get("content") or msg.get("reasoning") or ""
                 result = _parse_llm_response(content)
                 if result:
                     result["layer"] = layer["name"]
@@ -540,6 +526,8 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
     last_error = None
     deadline = time.time() + config.LLM_EVAL_DEADLINE_SECONDS
     layer_idx = 0
+    evals = []
+    quorum = getattr(config, "LLM_CONSENSUS_QUORUM", 2)
 
     for layer in LAYERS:
         # Stop evaluating layers once we're close to the deadline so a slow
@@ -559,13 +547,15 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
             result = _call_layer(layer, messages, deadline)
             if result:
                 _record_layer_success(layer_name)
+                evals.append(result)
                 log.info(
-                    "LLM eval via %s (model=%s): prob=%.2f conf=%.2f",
+                    "LLM eval [%s/%s]: prob=%.2f conf=%.2f",
                     result["layer"], result.get("model", "?"),
                     result["probability_of_net_profit"],
                     result["confidence_hold_to_expiry"],
                 )
-                return result
+                if len(evals) >= quorum:
+                    break
             else:
                 _record_layer_failure(layer_name)
         except Exception as e:
@@ -574,7 +564,26 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
             log.debug("Layer %s failed: %s", layer_name, e)
             continue
 
-    log.warning("NVIDIA LLM eval failed — last error: %s", last_error)
+    if evals:
+        avg_prob = sum(e["probability_of_net_profit"] for e in evals) / len(evals)
+        avg_conf = sum(e["confidence_hold_to_expiry"] for e in evals) / len(evals)
+        layers_used = "+".join(e["layer"] for e in evals)
+        models_used = "+".join(e.get("model", "?") for e in evals)
+        reasonings = [f"[{e['layer']}]: {e.get('reasoning', '')}" for e in evals if e.get("reasoning")]
+        log.info(
+            "LLM consensus (%d models: %s): avg_prob=%.2f avg_conf=%.2f",
+            len(evals), layers_used, avg_prob, avg_conf,
+        )
+        return {
+            "probability_of_net_profit": round(avg_prob, 4),
+            "confidence_hold_to_expiry": round(avg_conf, 4),
+            "reasoning": " | ".join(reasonings) if reasonings else "",
+            "layer": f"consensus({layers_used})" if len(evals) > 1 else evals[0]["layer"],
+            "model": models_used if len(evals) > 1 else evals[0].get("model", "?"),
+            "evals_count": len(evals),
+        }
+
+    log.warning("LLM eval failed across all layers — last error: %s", last_error)
     return None
 
 
