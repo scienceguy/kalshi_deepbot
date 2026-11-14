@@ -362,6 +362,33 @@ class KalshiClient:
         resp = self._request("POST", "/portfolio/intra_exchange_instance_transfer", json=payload)
         return resp.get("transfer_id", "")
 
+    def transfer_interindex(self, source_index: int, dest_index: int, amount_dollars: float) -> str:
+        """Alias for transfer_shard to transfer funds between exchange indices."""
+        return self.transfer_shard(source_index, dest_index, amount_dollars)
+
+    def get_shard_transfers(self, limit: int = 100) -> list:
+        """Fetch list of intra-account intershard / interindex transfers."""
+        resp = self._request("GET", "/portfolio/intra_exchange_instance_transfers", params={"limit": limit})
+        return resp.get("transfers", [])
+
+    def auto_rebalance_shards(self, min_shard_cash: float = 1.0, target_shard: int = 2) -> bool:
+        """Check shard balances and transfer available cash from shard 0 if target shard is underfunded."""
+        try:
+            target_bal = self.get_shard_balance(target_shard)
+            # reviewed: check if target shard balance is below required threshold
+            if target_bal < min_shard_cash:
+                shard0_bal = self.get_shard_balance(0)
+                needed = round(min_shard_cash - target_bal, 4)
+                to_transfer = min(shard0_bal, needed)
+                # reviewed: ensure transfer amount meets minimum exchange centicent threshold
+                if to_transfer >= 0.01:
+                    tid = self.transfer_shard(0, target_shard, to_transfer)
+                    log.info("Auto-rebalanced $%.2f from shard 0 to shard %d (transfer_id=%s)", to_transfer, target_shard, tid)
+                    return True
+        except Exception as e:
+            log.warning("Auto-rebalance shards error: %s", e)
+        return False
+
     def get_positions(self) -> list:
         """Return list of open market positions."""
         data = self._request("GET", "/portfolio/positions")
