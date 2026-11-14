@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kalshi-deepbot"
+version = "2.0.0"
+description = "Kalshi SuperBot automated trading engine"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "cryptography",
+    "pytest",
+    "websockets",
+]
+
+[tool.setuptools]
+py-modules = [
+    "kalshi_client",
+    "trader",
+    "signals",
+    "gates",
+    "risk",
+    "fees",
+    "config",
+    "market_finder",
+    "model",
+    "local_db",
+    "local",
+    "supabase_client",
+    "n8n_client",
+    "llm_eval",
+    "binance_feed",
+    "binance_client",
+    "paper_mode",
+    "resilience",
+    "market_types",
+]
