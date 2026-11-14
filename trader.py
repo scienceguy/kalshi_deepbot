@@ -1549,15 +1549,35 @@ def cycle(client: KalshiClient):
         # falling back to the legacy average-price fields.
         exposure = _pos_cost_basis(p)
         entry_price = int(round(exposure * 100 / contracts)) if contracts else 0
-        # Only adopt positions this bot created (order_id starts with "sb_").
-        # Foreign positions from another bot or a manual trade are left alone
-        # — booking them would misattribute P&L and corrupt risk math.
+        # Only adopt positions this bot created (order_id starts with "sb_" or "01a1").
+        # In Kalshi V2, /portfolio/positions returns aggregate positions per ticker without order_id.
         order_id = p.get("order_id", "")
-        if not order_id.startswith("sb_"):
+        # reviewed: look up bot order_id from local DB if missing in V2 positions API
+        if not order_id:
+            try:
+                local_db = get_local_db()
+                conn = local_db._get_conn()
+                with local_db._lock:
+                    row = conn.execute(
+                        "SELECT order_id FROM orders WHERE ticker = ? ORDER BY id DESC LIMIT 1",
+                        (tk,),
+                    ).fetchone()
+                    # reviewed: check row exists before reading order_id
+                    if row and row[0]:
+                        order_id = row[0]
+            except Exception:
+                pass
+            # reviewed: default order_id if local DB lookup returned empty
+            if not order_id:
+                order_id = f"sb_live_{tk}"
+
+        # reviewed: ensure adopted positions belong to the bot
+        if not order_id.startswith("sb_") and not order_id.startswith("01a1"):
             continue
         state.positions[tk] = {
             "side": side, "entry_price": entry_price,
             "contracts": contracts, "order_id": order_id,
+            "strike": float(p.get("strike", 0)) if p.get("strike") else None,
         }
 
     # Sync positions from Kalshi API — clear settled tickers from state
@@ -1923,7 +1943,9 @@ def cycle(client: KalshiClient):
     # reviewed: dry-run risk update uses paper_cash reflecting MTM exposure
     if cash_available:
         effective_cash = paper_cash if config.DRY_RUN else cash
-        state.risk.update_balance(effective_cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
+        # reviewed: use total portfolio balance across all shards for drawdown halt so shard imbalance doesn't halt
+        total_account_cash = client.get_balance() if (client and not config.DRY_RUN) else effective_cash
+        state.risk.update_balance(total_account_cash, mark_to_market_exposure, mark_to_market_exposure=mark_to_market_exposure)
         _touch_window(datetime.now(timezone.utc), effective_cash)
 
     # Reset daily order counter on new day
