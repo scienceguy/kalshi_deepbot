@@ -91,6 +91,13 @@ from resilience import CycleSupervisor  # noqa: E402
 from llm_eval import should_block_trade, evaluate_trade  # noqa: E402
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
+import binance_feed  # noqa: E402  — WebSocket spot streams (start_ws_streams)
+
+# Polymarket US client (order placement infra ready for when crypto markets
+# launch on production; currently preprod only — no crypto updown markets on
+# the US retail API). Imported lazily so the bot starts without Polymarket
+# credentials present.
+_poly_client = None
 
 # Lazy-loaded modules (only imported when actually used)
 _ladder_strategy = None
@@ -416,6 +423,66 @@ def _coid(ticker: str, side: str) -> str:
     """Namespaced client order id so our positions are identifiable from
     exchange position data (prevents adopting foreign positions on restart)."""
     return "sb_" + uuid.uuid4().hex
+
+
+def _place_poly_order(sig) -> None:
+    """Place a concurrent fee-free maker order on Polymarket US.
+
+    Mirrors the Kalshi signal on the same asset/side. Polymarket US crypto
+    Up/Down 15m markets are in PREPROD only (not production) as of 2026-11-13,
+    so this is currently a no-op with a clear log message. When crypto markets
+    launch on production, this path places a fee-free maker limit order
+    (participateDontInitiate=True) at the same edge as the Kalshi entry.
+
+    Guards:
+    - Skipped entirely unless config.POLYMARKET_ENABLED is true.
+    - Skipped if Polymarket credentials are not configured.
+    - Skipped if no matching Polymarket market is found for the asset.
+    - On any failure: logs a warning and continues (never blocks the Kalshi leg).
+    """
+    global _poly_client
+    # Lazy import so the bot starts without Polymarket credentials present; this
+    # avoids importing polymarket_us on every cycle.
+    # reviewed: lazy import only once; lets the bot start without credentials.
+    if _poly_client is None:
+        try:
+            import polymarket_us_client as _pm
+        except ImportError:
+            log.debug("Polymarket SDK not installed — skipping concurrent order")
+            return
+        # reviewed: no credentials means no concurrent order; never blocks Kalshi.
+        if not config.POLYMARKET_KEY_ID or not config.POLYMARKET_SECRET_KEY:
+            log.debug("Polymarket credentials not configured — skipping concurrent order")
+            return
+        _poly_client = _pm
+
+    # Extract asset from Kalshi ticker: KXBTC15M-... -> BTC
+    ticker = getattr(sig.market, "ticker", "") or ""
+    series = getattr(sig.market, "series", "") or ""
+    asset = None
+    for candidate in (series, ticker.split("-")[0]):
+        base = candidate[2:] if candidate.startswith("KX") else candidate
+        base = base[:-3] if base.endswith("15M") else base
+        # reviewed: only map known crypto assets; unknown series must not be sent.
+        if base in ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE", "ZEC", "NEAR"):
+            asset = base
+            break
+    # reviewed: no asset mapping means no Polymarket market to trade.
+    if not asset:
+        log.debug("No Polymarket asset mapping for %s — skipping concurrent order", ticker)
+        return
+
+    # Polymarket US slugs for crypto updown markets follow the pattern
+    # cpc-{asset}-updown-15m-YYYY-MM-DD (preprod only). Since no production
+    # markets exist yet, we cannot resolve a slug — log and skip.
+    # When markets launch, resolve via GET /v1/markets?categories=crypto and
+    # match on assetPriceTerms.asset.symbol == {asset.lower()}.
+    log.debug(
+        "Polymarket concurrent order skipped for %s (%s): no production crypto "
+        "Up/Down 15m market on api.polymarket.us (preprod only). Set "
+        "POLYMARKET_ENABLED=true and add slug resolution when markets launch.",
+        ticker, asset,
+    )
 
 
 def _window_id(now: datetime) -> int:
@@ -2152,6 +2219,21 @@ def cycle(client: KalshiClient):
                 state.last_order_time = time.time()
                 state.orders_today += 1
 
+                # ── Concurrent Polymarket maker order (fee-free) ──
+                # Polymarket US crypto Up/Down 15m markets are in PREPROD only
+                # (not production) as of 2026-11-13 — no crypto markets to trade
+                # yet. This path is guarded by POLYMARKET_ENABLED and is a
+                # no-op until markets launch or L2 credentials are configured
+                # for the international CLOB.
+                # reviewed: POLYMARKET_ENABLED defaults false so no Polymarket order is placed until production crypto markets exist.
+                if config.POLYMARKET_ENABLED:
+                    try:
+                        _place_poly_order(sig)
+                    except Exception as e:
+                        log.warning(
+                            "Polymarket concurrent order failed for %s: %s",
+                            sig.market.ticker, e)
+
     if placed:
         state.cycle_outcome = "traded"
         log.info("Placed %d order(s) this cycle.", placed)
@@ -2224,6 +2306,14 @@ def main():
     except ValueError as e:
         log.error("Fee rate validation failed: %s — refusing to start", e)
         return
+
+    # Start live WebSocket spot-price streams (Binance + Coinbase + RedStone)
+    # for subsecond momentum gauging in the GBM gate. Falls back to REST if
+    # websockets is unavailable — non-fatal.
+    try:
+        binance_feed.start_ws_streams(sorted(binance_feed._KNOWN_BASES))
+    except Exception as e:
+        log.warning("WebSocket spot streams failed to start: %s — using REST only", e)
 
     client = KalshiClient()
     try:

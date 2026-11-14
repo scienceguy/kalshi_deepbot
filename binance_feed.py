@@ -19,6 +19,10 @@ USDT basis — acceptable for fair value, not for reconciliation.
 `sigma_per_minute` has no fallback — it depends on Binance klines only.
 `composite_sigma` adds OKX kline fallback for volatility.
 
+WebSocket streams (Binance `!miniTicker@arr`, Coinbase Advanced Trade `ticker`,
+RedStone `price` feed) maintain a live price cache for subsecond spot input.
+`spot_price()` prefers the freshest WS price and falls back to REST composite.
+
 Read-only. No keys, no orders.
 """
 
@@ -29,9 +33,9 @@ import json
 import logging
 import math
 import os
-from typing import AsyncIterator, Dict, List, Optional
-
+import threading
 import time
+from typing import AsyncIterator, Dict, List, Optional
 
 import requests
 
@@ -61,6 +65,187 @@ REDSTONE_CACHE_URL = os.environ.get(
     "REDSTONE_CACHE_URL",
     "https://api.redstone.finance/prices/?symbol={base}&provider=redstone&limit=1",
 )
+
+# ════════════════════════════════════════════════════════════════════════════
+# LIVE WEBSOCKET PRICE CACHE — subsecond spot for momentum gauging
+# ════════════════════════════════════════════════════════════════════════════
+
+_WS_STALE_SECONDS = float(os.environ.get("WS_SPOT_STALE_SECONDS", "5.0"))
+
+# {symbol: (price, ts)} — updated by background WS threads; read by spot_price().
+_ws_prices: dict[str, tuple[float, float]] = {}
+_ws_lock = threading.Lock()
+_ws_started = False
+
+
+def _ws_price(symbol: str) -> Optional[float]:
+    """Return the freshest WS price for `symbol`, or None if stale/absent."""
+    with _ws_lock:
+        entry = _ws_prices.get(symbol.upper())
+    if not entry:
+        return None
+    price, ts = entry
+    if time.monotonic() - ts > _WS_STALE_SECONDS:
+        return None
+    return price
+
+
+def _ws_set(symbol: str, price: float) -> None:
+    with _ws_lock:
+        _ws_prices[symbol.upper()] = (price, time.monotonic())
+
+
+def _binance_ws_loop(symbols: list[str]) -> None:
+    """Background thread: Binance !miniTicker@arr stream (all symbols, 1s cadence)."""
+    import websockets  # lazy import — optional dep
+
+    streams = "/".join(f"{s.lower()}@miniTicker" for s in symbols)
+    url = f"{BINANCE_WS}/streams?streams={streams}"
+    while True:
+        try:
+            # websockets.connect supports async only; run a small async runner.
+            asyncio.run(_binance_ws_async(url))
+        except Exception as e:
+            log.warning("binance WS disconnected: %s — reconnecting in 2s", e)
+            time.sleep(2)
+
+
+async def _binance_ws_async(url: str) -> None:
+    import websockets
+    async with websockets.connect(url, open_timeout=10, close_timeout=10, ping_interval=20) as ws:
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+                data = msg.get("data", {})
+                sym = data.get("s")
+                px = data.get("c")  # close = latest price
+                if sym and px is not None:
+                    _ws_set(sym, float(px))
+            except Exception:
+                continue
+
+
+def _coinbase_ws_loop(symbols: list[str]) -> None:
+    """Background thread: Coinbase Advanced Trade ticker channel."""
+    import websockets  # lazy import — optional dep
+
+    url = "wss://advanced-trade-ws.coinbase.com"
+    products = [f"{s}-USD" for s in symbols]
+    subscribe = {
+        "type": "subscribe",
+        "channel": "ticker",
+        "product_ids": products,
+    }
+    while True:
+        try:
+            asyncio.run(_coinbase_ws_async(url, subscribe))
+        except Exception as e:
+            log.warning("coinbase WS disconnected: %s — reconnecting in 2s", e)
+            time.sleep(2)
+
+
+async def _coinbase_ws_async(url: str, subscribe: dict) -> None:
+    import websockets
+    async with websockets.connect(url, open_timeout=10, close_timeout=10, ping_interval=20) as ws:
+        await ws.send(json.dumps(subscribe))
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+                if msg.get("type") != "ticker":
+                    continue
+                sym = msg.get("product_id", "").replace("-USD", "")
+                px = msg.get("price")
+                if sym and px is not None:
+                    _ws_set(sym, float(px))
+            except Exception:
+                continue
+
+
+def _redstone_ws_loop(symbols: list[str]) -> None:
+    """Background thread: RedStone price feed WebSocket (50 topic limit/conn)."""
+    import websockets  # lazy import — optional dep
+
+    url = os.environ.get("REDSTONE_WS_URL", "wss://gateway.redstone.finance/ws")
+    api_key = os.environ.get("REDSTONE_API_KEY", "")
+    headers = {}
+    if api_key:
+        headers["x-api-key"] = api_key
+
+    # RedStone feedIds are asset symbols like BTC, ETH — use those directly.
+    items = [{"feedId": s, "type": "price", "dataServiceId": "redstone-primary-prod"}
+             for s in symbols[:50]]
+    subscribe = {"op": "subscribe", "items": items}
+    while True:
+        try:
+            asyncio.run(_redstone_ws_async(url, headers, subscribe))
+        except Exception as e:
+            log.warning("redstone WS disconnected: %s — reconnecting in 2s", e)
+            time.sleep(2)
+
+
+async def _redstone_ws_async(url: str, headers: dict, subscribe: dict) -> None:
+    import websockets
+    async with websockets.connect(url, open_timeout=10, close_timeout=10,
+                                  extra_headers=headers or None,
+                                  ping_interval=20) as ws:
+        await ws.send(json.dumps(subscribe))
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+                if msg.get("type") != "price":
+                    continue
+                sym = msg.get("dataPackageId")
+                px = msg.get("value")
+                ts = msg.get("timestamp")
+                if sym and px is not None:
+                    price = float(px)
+                    # RedStone timestamp is ms; compare against our monotonic clock
+                    # by treating "now" as the reference — we only use it when fresh.
+                    _ws_set(sym, price)
+            except Exception:
+                continue
+
+
+def start_ws_streams(symbols: list[str] | None = None) -> None:
+    """Start background WebSocket price streams for the given symbols.
+
+    Safe to call multiple times — streams start only once. If `websockets` is
+    not installed the streams are silently skipped (REST fallback still works).
+    """
+    global _ws_started
+    if _ws_started:
+        return
+    symbols = symbols or list(_KNOWN_BASES)
+    try:
+        import websockets  # noqa: F401  — availability check
+    except ImportError:
+        log.warning("websockets not installed — WS price streams disabled; "
+                    "using REST composite_price only")
+        _ws_started = True
+        return
+    _ws_started = True
+    for name, fn in (("binance", _binance_ws_loop),
+                     ("coinbase", _coinbase_ws_loop),
+                     ("redstone", _redstone_ws_loop)):
+        t = threading.Thread(target=fn, args=(symbols,),
+                             daemon=True, name=f"ws-{name}")
+        t.start()
+        log.info("WS price stream started: %s", name)
+
+
+def spot_price(symbol: str = "BTCUSDT") -> Optional[float]:
+    """Spot price for `symbol`: freshest WS price if available, else REST composite.
+
+    WS prices are subsecond; REST composite is ~1-2s. For a 15s trading cycle
+    either is fine, but WS gives us the tick-level momentum the gate needs.
+    Falls back through: WS → REST composite → None.
+    """
+    base = _base_asset(symbol)
+    if base:
+        px = _ws_price(base)
+        if px is not None:
+            return px
+    return composite_price(symbol)
 
 
 def _base_asset(symbol: str) -> Optional[str]:

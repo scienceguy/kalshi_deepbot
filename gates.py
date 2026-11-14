@@ -113,10 +113,15 @@ def _cached(cache: dict, key: str, ttl: float, fn):
 
 
 def spot_for(asset: str) -> float | None:
-    """Median venue spot price, cached for GATES_SPOT_CACHE_SECONDS."""
+    """Median venue spot price, cached for GATES_SPOT_CACHE_SECONDS.
+
+    Prefers the live WebSocket price (subsecond) when a stream is running,
+    falling back to the REST composite. Cached so the gate does not add an
+    HTTP call per candidate inside the cycle.
+    """
     return _cached(
         _spot_cache, asset, config.GATES_SPOT_CACHE_SECONDS,
-        lambda: binance_feed.composite_price(f"{asset}USDT", timeout=5),
+        lambda: binance_feed.spot_price(f"{asset}USDT"),
     )
 
 

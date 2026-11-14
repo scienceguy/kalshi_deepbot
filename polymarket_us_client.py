@@ -1,8 +1,8 @@
 """
-Polymarket US read-only client for Kalshi SuperBot.
+Polymarket US client for Kalshi SuperBot.
 
 Targets the US production API at api.polymarket.us.
-Read-only: no order placement, only portfolio/balance/market data.
+Reads balances, market data, and places fee-free maker limit orders.
 Credentials: config.POLYMARKET_KEY_ID / config.POLYMARKET_SECRET_KEY,
 environment variables POLYMARKET_KEY_ID / POLYMARKET_SECRET_KEY,
 or fallback to the Bitwarden mirror at ~/.secrets/bw/polymarket_*.json.
@@ -11,12 +11,15 @@ Never logs or prints credential values.
 """
 
 import json
+import logging
 import os
 import warnings
 from pathlib import Path
 
 from polymarket_us import PolymarketUS
 from config import POLYMARKET_KEY_ID, POLYMARKET_SECRET_KEY
+
+log = logging.getLogger(__name__)
 
 
 # ── Credential loading (reads from config, then env, then BW mirror) ───────────
@@ -171,3 +174,100 @@ def close() -> None:
     """
     # No persistent client to close; each call creates its own.
     pass
+
+
+# ── Authenticated API (order placement) ──────────────────────────────────
+
+def _poly_amount(value: float) -> dict:
+    """Build an Amount dict for the Polymarket US SDK."""
+    return {"value": f"{value:.6f}", "currency": "USD"}
+
+
+def place_maker_order(slug: str, side: str, price_dollars: float,
+                      contracts: int) -> dict | None:
+    """Place a fee-free maker limit order on Polymarket US.
+
+    Uses ``participateDontInitiate=True`` so the order provides liquidity and
+    pays no taker fee. Intended for favourite-maker entries at 75-99c.
+
+    Args:
+        slug: Polymarket US market slug (e.g. ``cpc-btc-updown-15m-...``).
+        side: ``"yes"`` (buy the Up/Yes token) or ``"no"`` (sell Yes / buy Down).
+        price_dollars: Limit price in dollars (0–1).
+        contracts: Number of contracts (integer).
+
+    Returns:
+        The create response dict, or None on failure. In DRY_RUN the caller
+        should decide whether to actually create; this function always attempts
+        the create after a successful preview.
+    """
+    client = _get_authenticated_client()
+    intent = ("ORDER_INTENT_BUY_LONG" if side == "yes"
+              else "ORDER_INTENT_BUY_SHORT")
+    cash = price_dollars * contracts
+    params = {
+        "marketSlug": slug,
+        "intent": intent,
+        "type": "ORDER_TYPE_LIMIT",
+        "price": _poly_amount(price_dollars),
+        "quantity": contracts,
+        "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
+        "participateDontInitiate": True,   # fee-free maker
+        "cashOrderQty": _poly_amount(cash),
+        "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
+        "synchronousExecution": True,
+        "maxBlockTime": "PT0S",
+        "slippageTolerance": {
+            "currentPrice": _poly_amount(price_dollars),
+            "bips": 0,
+            "ticks": 0,
+        },
+    }
+    # Preview first: validates the order without placing it.
+    try:
+        client.orders.preview({"request": params})
+    except Exception as e:
+        log.warning("Poly preview failed for %s %s @ %.4f: %s",
+                    slug, side, price_dollars, e)
+        return None
+    # Create: place the order.
+    try:
+        resp = client.orders.create(params)
+        return resp
+    except Exception as e:
+        log.warning("Poly create failed for %s %s @ %.4f: %s",
+                    slug, side, price_dollars, e)
+        return None
+
+
+def get_open_orders() -> list:
+    """List open Polymarket US orders."""
+    client = _get_authenticated_client()
+    try:
+        resp = client.orders.list()
+        return resp.get("orders", []) or []
+    except Exception as e:
+        log.warning("Poly get_open_orders failed: %s", e)
+        return []
+
+
+def cancel_order(order_id: str) -> bool:
+    """Cancel a Polymarket US order by id."""
+    client = _get_authenticated_client()
+    try:
+        client.orders.cancel({"orderId": order_id})
+        return True
+    except Exception as e:
+        log.warning("Poly cancel_order %s failed: %s", order_id, e)
+        return False
+
+
+def close_position(slug: str) -> bool:
+    """Close the position on a Polymarket US market."""
+    client = _get_authenticated_client()
+    try:
+        client.orders.close_position({"marketSlug": slug})
+        return True
+    except Exception as e:
+        log.warning("Poly close_position %s failed: %s", slug, e)
+        return False

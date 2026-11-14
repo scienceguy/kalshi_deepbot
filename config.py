@@ -127,6 +127,13 @@ KALSHI_ALLOW_NONSTANDARD_URL = _env_bool("KALSHI_ALLOW_NONSTANDARD_URL", False)
 POLYMARKET_KEY_ID = _env_str("POLYMARKET_KEY_ID", "")
 POLYMARKET_SECRET_KEY = _env_str("POLYMARKET_SECRET_KEY", "")
 
+# Polymarket concurrent trading is disabled by default: crypto Up/Down 15m
+# markets are in PREPROD on api.polymarket.us (not production) as of 2026-11-13.
+# No crypto markets exist on the US retail API yet, so there is nothing to
+# trade. Set POLYMARKET_ENABLED=true when they launch or to trade on the
+# international CLOB with L2 credentials.
+POLYMARKET_ENABLED = _env_bool("POLYMARKET_ENABLED", False)
+
 # ═════════════════════════════════════════════════════════════════════
 # MARKET TARGETING (from kalshi_live_bot — expanded series list)
 # ═════════════════════════════════════════════════════════════════════
