@@ -24,7 +24,7 @@ Usage:
 
 import argparse, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
 import logging.handlers  # noqa: E402  — needed for RotatingFileHandler (submodule)
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -687,14 +687,19 @@ def _ticker_close_time(ticker: str) -> Optional[datetime]:
     """Parse close time directly from 15M ticker string (e.g. KXBTC15M-26NOV140000-00).
 
     Zero network latency, zero blocking I/O on the hot mark-to-market path.
+    Kalshi 15M tickers encode close time in US Eastern Time (ET); this converts to UTC.
     """
     try:
         parts = ticker.split("-")
         # reviewed: ensure ticker string has series and date components
         if len(parts) >= 2:
             date_str = parts[1]
-            # reviewed: robust strptime parsing with UTC timezone
-            return datetime.strptime(date_str, "%y%b%d%H%M").replace(tzinfo=timezone.utc)
+            dt_naive = datetime.strptime(date_str, "%y%b%d%H%M")
+            month, day = dt_naive.month, dt_naive.day
+            is_dst = (3 < month < 11) or (month == 3 and day >= 8) or (month == 11 and day < 7)
+            offset_hours = 4 if is_dst else 5
+            # reviewed: robust Eastern Time to UTC conversion for accurate close time comparison
+            return dt_naive.replace(tzinfo=timezone.utc) + timedelta(hours=offset_hours)
     except Exception:
         pass
     return None
