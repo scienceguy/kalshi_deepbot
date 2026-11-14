@@ -209,11 +209,11 @@ class RiskManager:
         # reviewed: skipping the ceiling when mtm is unknown is a deliberate
         # conservative-default; cash_room and per_trade_cap still limit size.
         # reviewed: mtm branch uses mark-to-market ceiling when it is present
-        # Microstructure bootstrap: on bankrolls under $10.00, allow exposure and window budget to be 100% until $10 is reached
-        if portfolio < 10.0:  # reviewed: microstructure bootstrap allows 100% exposure and cash deployment under $10.00
+        # Microstructure bootstrap: on bankrolls under $10.00, cap per-trade risk at 50% of available cash
+        if portfolio < 10.0:  # reviewed: microstructure bootstrap caps each trade at 50% cash to prevent wipeouts
             available_cash = max(0.0, cash - resting_orders_value)
-            # reviewed: Half-Kelly sizing above $0.50 prevents single-trade wipeouts while allowing micro-trades below $0.50
-            cap = max(0.0, available_cash * 0.50 if available_cash >= 0.50 else available_cash)
+            # reviewed: strict 50% Half-Kelly cap across all balances so a single loss never exhausts bankroll
+            cap = max(0.0, round(available_cash * 0.50, 4) if available_cash >= 0.02 else available_cash)
             exposure_room = cap
             cash_room = cap
             per_trade_cap = cap

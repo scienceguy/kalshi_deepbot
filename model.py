@@ -59,15 +59,14 @@ def gbm_probability_yes_wins(spot_price: float, strike: float,
         return 1.0 if spot_price >= strike else 0.0
     try:
         d2 = (math.log(spot_price / strike) +
-              (risk_free_rate - 0.5 * sigma * sigma) * T) /              (sigma * math.sqrt(T))
+              (risk_free_rate - 0.5 * sigma * sigma) * T) / \
+             (sigma * math.sqrt(T))
         base_prob = _NORMAL.cdf(d2)
     except (ValueError, OverflowError):
         return 0.5
 
-    # Apply momentum adjustment
-    adjustment = momentum_cents_per_min * minutes_left / 100.0
-    prob = base_prob + adjustment
-    return max(0.001, min(0.999, prob))
+    # Pure Black-Scholes lognormal diffusion probability without orderbook momentum distortion
+    return max(0.001, min(0.999, base_prob))
 
 
 # Alias for callers expecting gbm_probability
@@ -188,8 +187,7 @@ def model_probability_from_market(market, model_type: str = "gbm",
     if model_type == "gbm":
         if spot_price is not None and strike is not None and minutes_left > 0:
             return gbm_probability_yes_wins(
-                spot_price, strike, minutes_left, volatility,
-                momentum_cents_per_min=momentum_cents_per_min)
+                spot_price, strike, minutes_left, volatility)
         # Fall back to momentum model if no spot data (logged so a silent
         # model swap in the trade record is visible in the run log).
         log.debug("gbm fallback to momentum: %s spot=%s strike=%s",

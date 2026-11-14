@@ -333,10 +333,10 @@ class BotState:
                 )
                 return False
 
-        # reviewed: on bankrolls under $10 allow 100% capital tradable balance until $10 is reached
+        # reviewed: on bankrolls under $10 enforce max 60% concurrent deployment so at least 40% is kept in cash reserve
         portfolio_equity = cash + exposure
-        if portfolio_equity < 10.0:  # reviewed: allow full portfolio deployment on micro accounts under $10
-            tradable_balance = portfolio_equity
+        if portfolio_equity < 10.0:  # reviewed: cap concurrent exposure at 60% of equity on micro accounts under $10
+            tradable_balance = portfolio_equity * 0.60
         else:
             tradable_balance = cash * config.TOTAL_CASH_TRADABLE_PCT
         deployed = exposure + pending + sig.dollar_risk
