@@ -141,6 +141,7 @@ class LocalDB:
                     ts TEXT NOT NULL,
                     ticker TEXT NOT NULL,
                     side TEXT NOT NULL,
+                    action TEXT DEFAULT 'buy',
                     contracts REAL NOT NULL,
                     price_cents INTEGER NOT NULL,
                     order_id TEXT,
@@ -155,6 +156,10 @@ class LocalDB:
                     created_at TEXT DEFAULT (datetime('now'))
                 )
             """)
+            try:
+                conn.execute("ALTER TABLE orders ADD COLUMN action TEXT DEFAULT 'buy'")
+            except Exception:
+                pass
             
             # bot_state table (key-value with upsert support)
             conn.execute("""
@@ -294,9 +299,15 @@ class LocalDB:
         conn = self._get_conn()
         with self._lock:
             try:
-                columns = list(order_data.keys())
+                valid_cols = {
+                    "ts", "ticker", "side", "action", "contracts", "price_cents",
+                    "order_id", "status", "fees_dollars", "cycles", "fill_price_cents",
+                    "outcome_won", "pnl_dollars", "settled_at"
+                }
+                filtered = {k: v for k, v in order_data.items() if k in valid_cols}
+                columns = list(filtered.keys())
                 placeholders = ", ".join(["?" for _ in columns])
-                values = [order_data.get(c) for c in columns]
+                values = [filtered.get(c) for c in columns]
                 columns.append("synced")
                 placeholders += ", ?"
                 values.append(0)
