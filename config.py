@@ -306,9 +306,9 @@ MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
 # band above is meaningful only on the YES leg the measurement was taken from.
 # min 75 is a wide guard, not a claim -- see tests/test_gates.py::measured_band_sides.
 MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 75)
-# YES favourites enabled; NO favourites disabled by default to prevent mean-reversion short traps
+# Both YES and NO favourites enabled; entry is gated by high-confidence LLM consensus + GBM + ML models
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
-ALLOW_NO_BUYS = _env_bool("ALLOW_NO_BUYS", False)
+ALLOW_NO_BUYS = _env_bool("ALLOW_NO_BUYS", True)
 
 # NO *market data* format only: Kalshi returns NO prices directly (not
 # complemented), so this stays False. It does NOT affect order pricing —
