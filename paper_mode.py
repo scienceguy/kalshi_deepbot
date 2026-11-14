@@ -11,8 +11,10 @@ restarting the bot does not reset the curve. Paper P&L is tracked here rather
 than reusing `session_pnl` so live settlements from an earlier session can
 never leak into the paper curve.
 
-Paper fills are modelled in trader.cycle(): a dry run assumes an immediate
-taker fill, so it does not model adverse selection.
+Paper fills are modelled in trader.cycle(): a dry run uses book-based fills
+via _dry_run_fill_count() — a fill only happens when the ask on the entry side
+is at or below the resting price, size capped by counterparty depth, no quote
+means no fill. Synthetic fills are never assumed.
 """
 import json
 import logging

@@ -389,10 +389,134 @@ def get_peer_awareness() -> dict:
         "continuity_active": checkpoint_exists,
     }
 
+def artifact_put(content: str, wing: str, room: str,
+                 from_agent: str = "termux:opencode:kalshi_deepbot",
+                 stream: str = "project/kalshi_deepbot",
+                 correlation_id: str | None = None) -> dict | None:
+    """Durably store content in MemPalace via `mempalace artifact put`.
+
+    Returns the artifact dict (with id/sha256) on success, None on failure.
+    Used to file decisions, patches, and shared knowledge so peers can recall
+    them via `mempalace artifact get`.
+    """
+    if not _mp_available():
+        log.debug("artifact_put: mempalace CLI unavailable — skipping")
+        return None
+    corr = correlation_id or _now_iso()
+    r = _mp(
+        "artifact", "put",
+        "--content", content,
+        "--wing", wing,
+        "--room", room,
+        "--from-agent", from_agent,
+        "--stream", stream,
+        "--correlation-id", corr,
+    )
+    if r.returncode != 0:
+        log.warning("artifact_put RC=%s: %s", r.returncode, r.stderr[:200])
+        return None
+    try:
+        return json.loads(r.stdout)
+    except (json.JSONDecodeError, TypeError):
+        log.warning("artifact_put: could not parse output: %s", r.stdout[:200])
+        return None
+
+
+def artifact_get(artifact_id: str) -> dict | None:
+    """Retrieve a MemPalace artifact via `mempalace artifact get`.
+
+    Returns the artifact dict on success, None if not found or on error.
+    Caller should verify sha256 before applying any patch content.
+    """
+    if not _mp_available():
+        log.debug("artifact_get: mempalace CLI unavailable — skipping")
+        return None
+    r = _mp("artifact", "get", "--artifact-id", artifact_id)
+    if r.returncode != 0:
+        log.debug("artifact_get RC=%s: %s", r.returncode, r.stderr[:200])
+        return None
+    try:
+        return json.loads(r.stdout)
+    except (json.JSONDecodeError, TypeError):
+        log.warning("artifact_get: could not parse output: %s", r.stdout[:200])
+        return None
+
+
+def kg_add(entity: str, relation: str, target: str,
+           from_agent: str = "termux:opencode:kalshi_deepbot") -> bool:
+    """Add a knowledge-graph fact via `mempalace kg add`.
+
+    Returns True on success. Used to record durable relational facts
+    (e.g. `"SuperBot Monitor" → "monitors" → "<workflow>"`,
+    `"workflow" → "owned_by" → "project"`).
+    """
+    if not _mp_available():
+        log.debug("kg_add: mempalace CLI unavailable — skipping")
+        return False
+    r = _mp(
+        "kg", "add",
+        "--entity", entity,
+        "--relation", relation,
+        "--target", target,
+        "--from-agent", from_agent,
+    )
+    if r.returncode != 0:
+        log.warning("kg_add RC=%s: %s", r.returncode, r.stderr[:200])
+        return False
+    return True
+
+
+def kg_supersede(entity: str, relation: str, target: str,
+                 from_agent: str = "termux:opencode:kalshi_deepbot") -> bool:
+    """Replace a single-valued KG fact via `mempalace kg supersede`.
+
+    Returns True on success. Use when a fact changes (e.g. a workflow is
+    replaced) — the old relationship is superseded rather than duplicated.
+    """
+    if not _mp_available():
+        log.debug("kg_supersede: mempalace CLI unavailable — skipping")
+        return False
+    r = _mp(
+        "kg", "supersede",
+        "--entity", entity,
+        "--relation", relation,
+        "--target", target,
+        "--from-agent", from_agent,
+    )
+    if r.returncode != 0:
+        log.warning("kg_supersede RC=%s: %s", r.returncode, r.stderr[:200])
+        return False
+    return True
+
+
+def kg_invalidate(entity: str, relation: str, target: str,
+                  from_agent: str = "termux:opencode:kalshi_deepbot") -> bool:
+    """Retire a KG fact via `mempalace kg invalidate`.
+
+    Returns True on success. Use when a fact ended without replacement
+    (e.g. a retired workflow).
+    """
+    if not _mp_available():
+        log.debug("kg_invalidate: mempalace CLI unavailable — skipping")
+        return False
+    r = _mp(
+        "kg", "invalidate",
+        "--entity", entity,
+        "--relation", relation,
+        "--target", target,
+        "--from-agent", from_agent,
+    )
+    if r.returncode != 0:
+        log.warning("kg_invalidate RC=%s: %s", r.returncode, r.stderr[:200])
+        return False
+    return True
+
+
 __all__ = [
     "checkpoint", "resume", "on_session_start", "on_session_end",
     "get_self_narrative", "get_recent_thoughts", "get_recent_urls",
     "get_cycles_completed", "update_interests", "get_interests",
     "record_webfind", "get_peer_awareness", "heartbeat", "check_for_tasks",
     "ack_event", "CHECKPOINT_ENTITY",
+    "artifact_put", "artifact_get", "kg_add", "kg_supersede", "kg_invalidate",
 ]
