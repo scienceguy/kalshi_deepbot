@@ -2161,6 +2161,7 @@ def cycle(client: KalshiClient):
         oid = (resp.get("order") or {}).get("order_id") or resp.get("order_id", "")
         if oid:
             placed += 1
+            state.trades_placed += 1
             # Track reserved cash for this resting order so intra-cycle cash
             # tracking doesn't overspend on orders already placed this cycle.
             # NOTE: Do NOT decrement local `cash` here — max_trade_dollars()
@@ -2508,6 +2509,21 @@ def main():
             log.info("Reconciled session_pnl from pnl_ledger total: $%.2f", state.session_pnl)
     except Exception:
         log.debug("pnl_ledger total unavailable for session_pnl reconciliation")
+
+    # Reconcile trades_placed from local database so the counter survives restarts
+    try:
+        local_db = get_local_db()
+        conn = local_db._get_conn()
+        with local_db._lock:
+            trades_count = conn.execute(
+                "SELECT count(*) FROM orders WHERE status in ('settled', 'executed', 'filled')"
+            ).fetchone()[0]
+            # reviewed: only overwrite trades_placed if historical orders exist in local DB
+            if trades_count > 0:
+                state.trades_placed = int(trades_count)
+                log.info("Reconciled trades_placed from LOCAL DB: %d trades", state.trades_placed)
+    except Exception as e:
+        log.debug("trades_placed reconciliation from local DB failed: %s", e)
 
     # Also reconcile from n8n by checking recent executions for settlement webhooks
     # Replay any pending settlements from the queue file
