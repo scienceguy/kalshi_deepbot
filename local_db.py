@@ -63,7 +63,7 @@ class LocalDB:
 
     def __init__(self, db_path: str = str(DB_PATH), auto_sync: bool = True):
         self.db_path = db_path
-        self._conn = None
+        self._local = threading.local()
         self._lock = threading.RLock()
         self._sync_thread = None
         self._stop_sync = threading.Event()
@@ -74,14 +74,16 @@ class LocalDB:
             self._start_sync_thread()
 
     def _get_conn(self) -> sqlite3.Connection:
-        """Get or create database connection."""
-        if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            # Enable WAL mode for better concurrency
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA busy_timeout=5000")
-        return self._conn
+        """Get or create a dedicated connection per thread for true isolation."""
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            conn = sqlite3.connect(self.db_path, timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            # Enable WAL mode and 10s busy timeout for rock-solid concurrency
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=10000")
+            self._local.conn = conn
+        return self._local.conn
 
     def _init_db(self):
         """Create tables if they don't exist."""
@@ -518,6 +520,34 @@ class LocalDB:
                 log.warning("get_unsynced_orders error: %s", e)
                 return []
 
+    def get_sync_status(self) -> Dict[str, int]:
+        """Return counts of unsynced rows across all tables."""
+        conn = self._get_conn()
+        status = {}
+        with self._lock:
+            for table in ("signals", "orders", "bot_state", "pnl_ledger", "backtest_runs"):
+                try:
+                    count = conn.execute(f"SELECT count(*) FROM {table} WHERE synced = 0").fetchone()[0]
+                    status[table] = int(count)
+                except Exception:
+                    status[table] = 0
+        return status
+
+    def get_latest_order_id(self, ticker: str) -> Optional[str]:
+        """Find the latest order_id for a ticker from the local database."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                row = conn.execute(
+                    "SELECT order_id FROM orders WHERE ticker = ? ORDER BY id DESC LIMIT 1",
+                    (ticker,),
+                ).fetchone()
+                if row and row[0]:
+                    return row[0]
+            except Exception:
+                pass
+        return None
+
     def mark_pnl_synced(self, idempotency_key: str) -> bool:
         """Mark a pnl_ledger row as synced to Supabase."""
         conn = self._get_conn()
@@ -709,9 +739,12 @@ class LocalDB:
     def close(self):
         """Close database connection and stop sync."""
         self.stop_sync()
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        if hasattr(self, "_local") and hasattr(self._local, "conn") and self._local.conn:
+            try:
+                self._local.conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
 
     def __del__(self):
         self.close()

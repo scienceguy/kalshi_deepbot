@@ -1554,19 +1554,7 @@ def cycle(client: KalshiClient):
         order_id = p.get("order_id", "")
         # reviewed: look up bot order_id from local DB if missing in V2 positions API
         if not order_id:
-            try:
-                local_db = get_local_db()
-                conn = local_db._get_conn()
-                with local_db._lock:
-                    row = conn.execute(
-                        "SELECT order_id FROM orders WHERE ticker = ? ORDER BY id DESC LIMIT 1",
-                        (tk,),
-                    ).fetchone()
-                    # reviewed: check row exists before reading order_id
-                    if row and row[0]:
-                        order_id = row[0]
-            except Exception:
-                pass
+            order_id = get_local_db().get_latest_order_id(tk)
             # reviewed: default order_id if local DB lookup returned empty
             if not order_id:
                 order_id = f"sb_live_{tk}"
