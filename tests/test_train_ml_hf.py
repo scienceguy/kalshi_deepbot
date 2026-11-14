@@ -8,6 +8,12 @@ a synthetic check.
 import sys
 from pathlib import Path
 
+import pytest
+
+# scripts/train_ml_hf.py imports ml_model, which imports torch at module level;
+# the package is optional, so skip instead of erroring at collection.
+pytest.importorskip("torch")
+
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent

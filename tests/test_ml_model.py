@@ -1,10 +1,11 @@
 """Tests for the tiny torch fair-value model (ml_model.py)."""
 
-import ml_model as m
+import pytest
 
 # Skip (not error) on a torch-less checkout: the missing package is optional.
-import pytest
 pytest.importorskip("torch")
+
+import ml_model as m  # noqa: E402
 
 
 def _row(strike, spot=100000.0, settle=100500.0, kalshi=None):

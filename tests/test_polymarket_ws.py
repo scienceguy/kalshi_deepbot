@@ -13,6 +13,10 @@ from unittest.mock import patch
 
 import pytest
 
+# polymarket_ws imports the polymarket_us SDK at module level; it is optional,
+# so skip instead of erroring at collection.
+pytest.importorskip("polymarket_us")
+
 import polymarket_ws
 from polymarket_ws import (
     DEFAULT_SUB_TYPE,

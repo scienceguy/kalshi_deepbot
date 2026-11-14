@@ -1,6 +1,7 @@
 """Tests for fund_tracker.py — READ-ONLY balance + manual transfer ledger.
 Mocks kalshi_client and polymarket_us_client so no network/auth is required.
 """
+import pytest
 import json
 import sys
 from unittest.mock import patch, MagicMock
@@ -50,6 +51,8 @@ def _genuine_pm_module():
     it, so a plain top-level import can be stale. This resolves the real module
     and _read_pm_balance's lazy import will resolve the same object.
     """
+    # The real client imports the polymarket_us SDK, which is optional.
+    pytest.importorskip("polymarket_us")
     mod = sys.modules.get("polymarket_us_client")
     if mod is None or not hasattr(mod, "usd_cash_balance"):
         sys.modules.pop("polymarket_us_client", None)

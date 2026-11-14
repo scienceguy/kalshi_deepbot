@@ -17,6 +17,16 @@ import stat
 import tempfile
 from pathlib import Path
 
+import pytest
+
+# Termux/proot-only: /tmp is a locked-down tmpfs on this device. On any other
+# machine the constraint does not hold, so skip rather than fail.
+pytestmark = [
+    pytest.mark.termux,
+    pytest.mark.skipif(not Path("/data/data/com.termux").exists(),
+                       reason="not a Termux/proot device"),
+]
+
 TMP = Path("/tmp")
 TMPDIR = Path(os.environ.get("TMPDIR", "/data/data/com.termux/files/home/tmp"))
 OPENCODE_TMP = Path("/data/data/com.termux/files/usr/tmp/opencode")

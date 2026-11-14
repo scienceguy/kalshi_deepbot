@@ -7,6 +7,11 @@ import importlib.util
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
+# ml_model imports torch at module level; the package is optional, so skip.
+pytest.importorskip("torch")
+
 import crossvenue_history as ch
 import ml_model
 

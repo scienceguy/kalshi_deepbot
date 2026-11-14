@@ -12,6 +12,10 @@ from pathlib import Path
 import pytest
 from unittest.mock import MagicMock
 
+# polymarket_us_client imports the polymarket_us SDK at module level; the SDK
+# is optional, so skip instead of erroring at collection.
+pytest.importorskip("polymarket_us")
+
 import polymarket_us_client
 from polymarket_us import PolymarketUS
 
