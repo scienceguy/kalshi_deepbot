@@ -338,27 +338,92 @@ def test_window_budget_blocks_overtrade_in_same_window(temp_trader):
     assert len(temp_trader.state["positions"]) == 1
 
 
-def test_auto_reset_threshold_preserves_history(temp_trader):
-    # Simulate prior trade history in ledger
-    temp_trader._append_ledger({"event": "prior_trade", "slug": "t1", "pnl": 0.05})
+def test_mtm_dip_does_not_reset_or_drop_positions(temp_trader):
+    """A $0.10 MTM dip must not reset the bankroll, drop positions, or touch
+    realized_pnl (R4). The old 34.95 auto-reset silently erased losing runs."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    market = {
+        "slug": "dip-market",
+        "question": "Q",
+        "outcomePrices": ["0.85", "0.15"],
+        "endDate": (now + timedelta(hours=2)).isoformat(),
+    }
+    temp_trader.state["positions"] = [{
+        "slug": "dip-market",
+        "side": "yes",
+        "price": 0.95,
+        "qty": 1,
+        "cost": 0.95,
+        "unrealized_pnl": -0.05,
+    }]
+    temp_trader.state["cash"] = 34.05   # equity dips to ~34.90 (< old 34.95 trigger)
+    temp_trader.state["realized_pnl"] = -3.0
 
-    # Set state equity to 34.90 (<= 34.95 threshold)
-    temp_trader.state["cash"] = 34.90
-    temp_trader.state["positions"] = []
-
-    with patch.object(temp_trader, "scan_markets", return_value=[]):
+    with patch.object(temp_trader, "scan_markets", return_value=[market]):
         temp_trader.cycle()
 
-    # Cash reset to $35.00
-    assert temp_trader.state["cash"] == 35.0
-    assert temp_trader.state["start_balance"] == 35.0
-    assert temp_trader.state["positions"] == []
+    assert temp_trader.state["positions"] != []
+    assert temp_trader.state["positions"][0]["slug"] == "dip-market"
+    assert temp_trader.state["realized_pnl"] == -3.0
+    assert temp_trader.state["cash"] == 34.05
+    ledger = temp_trader.ledger_file.read_text()
+    assert "auto_reset_threshold" not in ledger
 
-    # Ledger history preserved
-    lines = temp_trader.ledger_file.read_text().splitlines()
-    assert len(lines) >= 2
-    assert any("prior_trade" in l for l in lines)
-    assert any("auto_reset_threshold" in l for l in lines)
+
+def test_reset_preserves_lifetime_stats(temp_trader):
+    """--reset writes a ledger (and forfeit) event but never clears lifetime stats (R4)."""
+    temp_trader.state["lifetime_realized_pnl"] = -5.5
+    temp_trader.state["realized_pnl"] = -2.0
+    temp_trader.state["peak_equity"] = 40.0
+    temp_trader.state["max_drawdown"] = 8.0
+    temp_trader.state["ruin_events"] = 1
+    temp_trader.state["trades_count"] = 7
+    temp_trader.state["positions"] = [{
+        "slug": "forfeit-market",
+        "side": "yes",
+        "price": 0.50,
+        "qty": 2,
+        "cost": 1.0,
+        "current_price": 0.6,
+    }]
+
+    temp_trader.reset_state(35.0)
+
+    assert temp_trader.state["cash"] == 35.0
+    assert temp_trader.state["trades_count"] == 7
+    assert temp_trader.state["ruin_events"] == 1
+    assert temp_trader.state["peak_equity"] == 40.0
+    assert temp_trader.state["max_drawdown"] == 8.0
+    # lifetime absorbs prior realized + the forfeited position's +$0.20 mark-to-book
+    assert temp_trader.state["lifetime_realized_pnl"] == round(-5.5 - 2.0 + 0.2, 4)
+
+    ledger = temp_trader.ledger_file.read_text()
+    assert '"event": "reset"' in ledger
+    assert '"event": "forfeit"' in ledger
+
+
+def test_ruin_halt_blocks_entries_after_realized_loss(temp_trader):
+    """A realized loss beyond the ruin limit halts entries until manual --reset (R4)."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    market = {
+        "slug": "mkt",
+        "question": "Q",
+        "outcomePrices": ["0.95", "0.05"],
+        "endDate": (now + timedelta(hours=2)).isoformat(),
+    }
+    temp_trader.state["realized_pnl"] = -15.0
+    temp_trader.state["cash"] = 20.0
+    with patch.object(temp_trader, "scan_markets", return_value=[market]):
+        temp_trader.cycle()
+    assert temp_trader.state.get("ruin_halted") is True
+    assert int(temp_trader.state.get("ruin_events", 0)) == 1
+
+    temp_trader.preview_order = MagicMock(return_value=True)
+    ok = temp_trader.execute_paper_trade({"slug": "new", "question": "Q", "side": "yes", "price": 0.95})
+    assert ok is False
+    assert "ruin_halt" in temp_trader.ledger_file.read_text()
 
 
 def test_available_markets_and_tradeable_brackets_tracked_separately(temp_trader):

@@ -97,14 +97,50 @@ class PolyUSPaperTrader:
             log.warning("ML_MODEL_PATH set but ml_model/torch unavailable; ML gate disabled")
 
     def reset_state(self, initial_cash: float = 35.0) -> dict:
-        """Reset paper bankroll to starting balance with clean position ledger."""
+        """Manual reset to a fresh bankroll (--reset only; the bot never auto-resets).
+
+        Lifetime stats (lifetime_realized_pnl, peak_equity, max_drawdown,
+        ruin_events, trades_count) survive a reset — losing runs are not erased.
+        Positions discarded by the reset are booked at the best available mark
+        with a "forfeit" ledger event.
+        """
+        old = getattr(self, "state", None) or {}
+        old_realized = float(old.get("realized_pnl", 0.0) or 0.0)
+        old_lifetime = float(old.get("lifetime_realized_pnl", 0.0) or 0.0)
+        forfeit_pnl = 0.0
+        for pos in old.get("positions", []):
+            mark = float(pos.get("current_price") or pos.get("price") or 0.0)
+            qty = float(pos.get("qty", 0) or 0)
+            payout = round(mark * qty, 4)
+            pnl = round(payout - float(pos.get("cost", 0.0) or 0.0), 4)
+            forfeit_pnl = round(forfeit_pnl + pnl, 4)
+            self._append_ledger({
+                "event": "forfeit",
+                "slug": pos.get("slug"),
+                "side": pos.get("side"),
+                "qty": qty,
+                "mark": mark,
+                "payout": payout,
+                "pnl": pnl,
+                "reason": "manual_reset",
+                "cash_after": initial_cash,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
         state = {
             "start_balance": initial_cash,
             "cash": initial_cash,
             "positions": [],
             "realized_pnl": 0.0,
-            "trades_count": 0,
+            "unrealized_pnl": 0.0,
+            "total_pnl": 0.0,
+            "trades_count": int(old.get("trades_count", 0) or 0),
+            "lifetime_realized_pnl": round(old_lifetime + old_realized + forfeit_pnl, 4),
+            "peak_equity": round(max(float(old.get("peak_equity", initial_cash) or initial_cash), initial_cash), 4),
+            "max_drawdown": float(old.get("max_drawdown", 0.0) or 0.0),
+            "ruin_events": int(old.get("ruin_events", 0) or 0),
+            "ruin_halted": False,
             "milestones_reached": [float(initial_cash)],
+            "window_spent": 0.0,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         self._save_state(state)
@@ -119,10 +155,27 @@ class PolyUSPaperTrader:
         return state
 
     def _load_state(self, initial_cash: float) -> dict:
+        fresh = {
+            "start_balance": initial_cash,
+            "cash": initial_cash,
+            "positions": [],
+            "realized_pnl": 0.0,
+            "trades_count": 0,
+            "lifetime_realized_pnl": 0.0,
+            "peak_equity": float(initial_cash),
+            "max_drawdown": 0.0,
+            "ruin_events": 0,
+            "ruin_halted": False,
+            "milestones_reached": [float(initial_cash)],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
         if self.state_file.exists():
             try:
                 data = json.loads(self.state_file.read_text())
                 if "cash" in data and "positions" in data:
+                    # Older state files predate the lifetime stats; default them.
+                    for k, v in fresh.items():
+                        data.setdefault(k, v)
                     return data
                 raise ValueError("state file missing required keys (cash/positions)")
             except Exception as e:
@@ -136,16 +189,8 @@ class PolyUSPaperTrader:
                     self.state_file.replace(quarantine)
                 except OSError as re:
                     log.error("Could not quarantine corrupt state file %s: %s", self.state_file, re)
-        state = {
-            "start_balance": initial_cash,
-            "cash": initial_cash,
-            "positions": [],
-            "realized_pnl": 0.0,
-            "trades_count": 0,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self._save_state(state)
-        return state
+        self._save_state(fresh)
+        return fresh
 
     def _save_state(self, state: dict):
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -338,6 +383,8 @@ class PolyUSPaperTrader:
                 pass
             self.state["cash"] = round(self.state["cash"] + total_payout, 4)
             self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
+            self.state["lifetime_realized_pnl"] = round(
+                float(self.state.get("lifetime_realized_pnl", 0.0) or 0.0) + pnl, 4)
             # Move this position's unrealized into realized so total_pnl stays consistent.
             pos_unreal = float(pos.get("unrealized_pnl", 0.0) or 0.0)
             self.state["unrealized_pnl"] = round(self.state.get("unrealized_pnl", 0.0) - pos_unreal, 4)
@@ -583,6 +630,11 @@ class PolyUSPaperTrader:
         side = opp["side"]
         price = opp["price"]
 
+        # Ruin halt (R4): no new entries until a manual --reset.
+        if self.state.get("ruin_halted"):
+            log.info("Ruin halt active — refusing new entries (manual --reset required)")
+            return False
+
         # Check if already in this market
         if any(p["slug"] == slug for p in self.state["positions"]):
             return False
@@ -753,6 +805,8 @@ class PolyUSPaperTrader:
                 pnl = round(payout - pos["cost"], 4)
                 self.state["cash"] = round(self.state["cash"] + payout, 4)
                 self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
+                self.state["lifetime_realized_pnl"] = round(
+                    float(self.state.get("lifetime_realized_pnl", 0.0) or 0.0) + pnl, 4)
                 log.info(
                     "🔄 ROTATED long-dated position %s (>24h) | Payout=$%.2f PnL=$%+.2f -> Freed cash=$%.2f",
                     slug, payout, pnl, self.state["cash"]
@@ -829,29 +883,30 @@ class PolyUSPaperTrader:
         total_pnl = round(realized_pnl + total_unrealized, 4)
         total_equity = round(self.state["cash"] + total_mtm, 2)
 
-        # Auto-reset rule: if post-settlement equity drops to <= 34.95, reset bankroll to $35.00 while preserving history
-        if total_equity <= 34.95:
-            prior_eq = total_equity
-            log.info("Post-settlement equity $%.2f <= $34.95 — resetting bankroll to $35.00 while preserving ledger history", prior_eq)
-            self.state["cash"] = 35.0
-            self.state["start_balance"] = 35.0
-            self.state["positions"] = []
-            self.state["realized_pnl"] = 0.0
-            self.state["unrealized_pnl"] = 0.0
-            self.state["total_pnl"] = 0.0
-            self.state["window_budget"] = 1.05
-            self.state["window_spent"] = 0.0
-            total_equity = 35.0
-            total_mtm = 0.0
-            total_unrealized = 0.0
-            realized_pnl = 0.0
-            total_pnl = 0.0
-            self._save_state(self.state)
+        # Ruin rule (R4): evaluated on realized P&L and drawdown from peak —
+        # never on instantaneous MTM. A trip HALTS entries and needs a manual
+        # --reset; the bankroll is never auto-reset and positions are never
+        # silently discarded.
+        peak = max(float(self.state.get("peak_equity", total_equity) or 0.0), total_equity)
+        drawdown = round(peak - total_equity, 4)
+        self.state["peak_equity"] = round(peak, 4)
+        self.state["max_drawdown"] = round(
+            max(float(self.state.get("max_drawdown", 0.0) or 0.0), drawdown), 4)
+        realized_loss = -float(self.state.get("realized_pnl", 0.0) or 0.0)
+        if (not self.state.get("ruin_halted")
+                and (realized_loss >= float(getattr(config, "POLY_RUIN_REALIZED_LOSS_DOLLARS", 10.0))
+                     or drawdown >= float(getattr(config, "POLY_MAX_DRAWDOWN_DOLLARS", 15.0)))):
+            self.state["ruin_halted"] = True
+            self.state["ruin_events"] = int(self.state.get("ruin_events", 0) or 0) + 1
+            log.error(
+                "RUIN HALT: realized loss $%.2f / drawdown from peak $%.2f hit the limit — "
+                "no new entries until a manual --reset (lifetime stats preserved)",
+                realized_loss, drawdown)
             self._append_ledger({
-                "event": "auto_reset_threshold",
-                "prior_equity": prior_eq,
-                "threshold": 34.95,
-                "cash": 35.0,
+                "event": "ruin_halt",
+                "realized_loss": realized_loss,
+                "drawdown": drawdown,
+                "peak_equity": peak,
                 "timestamp": now.isoformat(),
             })
 
@@ -1039,6 +1094,12 @@ def main():
         print(f"Realized P&L:   ${realized:+.2f}")
         print(f"Unrealized P&L: ${unrealized:+.2f}")
         print(f"Total Net P&L:  ${total_pnl:+.2f}")
+        print(f"Lifetime Realized P&L: ${state.get('lifetime_realized_pnl', realized):+.2f} "
+              f"(never cleared by resets)")
+        print(f"Peak Equity:    ${state.get('peak_equity', total_equity):.2f} | "
+              f"Max Drawdown: ${state.get('max_drawdown', 0.0):.2f} | "
+              f"Ruin Events: {state.get('ruin_events', 0)} | "
+              f"Ruin Halted: {bool(state.get('ruin_halted', False))}")
         print(f"Trades Count:   {state.get('trades_count', 0)}")
         print(f"Milestones Reached: {state.get('milestones_reached', [init_cash])}")
         for p in positions:

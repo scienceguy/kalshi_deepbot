@@ -135,6 +135,12 @@ POLYMARKET_SECRET_KEY = _env_str("POLYMARKET_SECRET_KEY", "")
 # international CLOB with L2 credentials.
 POLYMARKET_ENABLED = _env_bool("POLYMARKET_ENABLED", False)
 
+# Paper ruin limits (R4): halt entries — requiring a manual --reset — when the
+# realized loss or the peak-to-equity drawdown crosses these dollar amounts.
+# Evaluated on realized/drawdown basis, never on instantaneous MTM.
+POLY_RUIN_REALIZED_LOSS_DOLLARS = _env_float("POLY_RUIN_REALIZED_LOSS_DOLLARS", 10.0)
+POLY_MAX_DRAWDOWN_DOLLARS = _env_float("POLY_MAX_DRAWDOWN_DOLLARS", 15.0)
+
 # ═════════════════════════════════════════════════════════════════════
 # MARKET TARGETING (from kalshi_live_bot — expanded series list)
 # ═════════════════════════════════════════════════════════════════════
