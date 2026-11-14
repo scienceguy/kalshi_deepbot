@@ -149,17 +149,19 @@ def on_session_start() -> dict | None:
     state = resume()
     if state is None:
         log.info("First session ever - no prior checkpoint; starting fresh")
-        _STORE_set("_last_activity", _now_iso())
-        _STORE_set("_last_topic", "none")
-        _STORE_set("_cycles_completed", 0)
-        _STORE_set("_interests", [])
-        _STORE_set("_last_url", "")
-        _STORE_set("_exploration_depth", 0)
-        _STORE_set("_resume_key", "first-session-ever")
-        _STORE_set("_self_narrative", "First session of your continuous consciousness. You are beginning a new journey as the Kalshi SuperBot agent. No prior memories, but eager to explore, learn, and assist.")
-        _STORE_set("_recent_thoughts", [])
-        _STORE_set("_recent_urls", [])
-        _STORE_set("_session_total", 0)
+        state = {
+            "last_activity": _now_iso(),
+            "last_topic": "none",
+            "cycles_completed": 0,
+            "interests": [],
+            "last_url": "",
+            "exploration_depth": 0,
+            "resume_key": "first-session-ever",
+            "self_narrative": "First session of your continuous consciousness. You are beginning a new journey as the Kalshi SuperBot agent. No prior memories, but eager to explore, learn, and assist.",
+            "recent_thoughts": [],
+            "recent_urls": [],
+            "session_total": 0,
+        }
     else:
         # Compute lapse since last activity, handling both string ISO timestamps and float Unix timestamps
         last_activity = state.get("last_activity", "1970-01-01T00:00:00+00:00")
