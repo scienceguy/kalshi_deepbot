@@ -2082,10 +2082,12 @@ def cycle(client: KalshiClient):
                 log.debug("Signal PASS %s — %s", ticker, sig.reason)
 
     # LLM evaluation as pre-entry filter (runs before gates so it can veto early).
-    # Runs for all signals in the entry window, not just at order placement.
+    # Rank signals first by EV/strength and evaluate top candidate(s) to avoid multi-signal timeouts.
     if config.LLM_EVALUATION_ENABLED:
+        signals = se.rank_signals(signals)
         llm_filtered = []
-        for sig in signals:
+        max_llm_candidates = max(1, config.MAX_OPEN_POSITIONS - len(state.positions))
+        for sig in signals[:max_llm_candidates]:
             minutes_in = 15.0 - sig.market.minutes_left
             if config.ENTRY_WINDOW_START_MIN <= minutes_in <= config.ENTRY_WINDOW_END_MIN:
                 total_value = (cash if cash is not None else 0.0) + mark_to_market_exposure
