@@ -16,7 +16,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, List
 
 import config
 import fees
@@ -694,3 +694,20 @@ def rank_signals(signals: list):
         boost = 1.2 if s.market.bracket_role == "HEDGE_NO" else 1.0
         return s.strength * s.confidence * boost, s.market.ticker
     return sorted(tradeable, key=key, reverse=True)
+
+
+class SignalEngine:
+    """Wrapper exposing the signal engine as an object for callers expecting SignalEngine."""
+
+    def __init__(self, default_cash: float = 10.0):
+        self.default_cash = default_cash
+
+    def evaluate(self, market: MarketInfo, cash: Optional[float] = None,
+                 max_trade_override: Optional[float] = None,
+                 max_contracts: int = 0) -> List[TradeSignal]:
+        c = cash if cash is not None else self.default_cash
+        return evaluate(market, cash=c, max_trade_override=max_trade_override,
+                        max_contracts=max_contracts)
+
+    def rank_signals(self, signals: list) -> list:
+        return rank_signals(signals)

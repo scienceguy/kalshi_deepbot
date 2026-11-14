@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import MagicMock
 from dataclasses import dataclass
 from signals import (max_contracts_for_cash, _size, _maker_price, evaluate,
-                     rank_signals, TradeSignal, _model_volatility)
+                     rank_signals, TradeSignal, _model_volatility, SignalEngine)
 import config
 import gates
 from market_finder import MarketInfo
@@ -167,3 +167,12 @@ def test_model_volatility_clamps_extremes(monkeypatch):
     assert _model_volatility("BTC") == 5.00
     monkeypatch.setattr(gates, "sigma_per_min", lambda asset: 1e-9)
     assert _model_volatility("BTC") == 0.20
+
+
+def test_signal_engine_class_interface():
+    """Verify SignalEngine class wrapper can be imported and instantiated."""
+    se = SignalEngine(default_cash=1.50)
+    assert se.default_cash == 1.50
+    assert hasattr(se, "evaluate")
+    assert hasattr(se, "rank_signals")
+
