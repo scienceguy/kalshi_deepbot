@@ -382,6 +382,7 @@ class BotState:
             "order_id": oid,
             "paper": config.DRY_RUN,
             "entry_taker": bool(entry_taker),  # how THIS trade entered: taker pays fee, maker pays nothing
+            "strike": float(sig.market.strike) if getattr(sig.market, "strike", None) else None,
         }
         self.window["entered"].add(ticker)
         info = self.resting_value.pop(oid, None)
@@ -944,8 +945,8 @@ def _replay_settlement_queue(client=None):
             ticker = payload.get("ticker", "")
             
             # Compute settle_key for all entries (needed for webhook even if duplicate)
-            event_id = ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
-            settle_key = f"settle:{event_id}:{order_id}"
+            # reviewed: key on full ticker to prevent multi-strike collisions on same event
+            settle_key = f"settle:{ticker}:{order_id}"
 
             # Step 1: Apply to local pnl_ledger FIRST (idempotency key prevents double-count)
             if pnl is not None:
@@ -1202,10 +1203,32 @@ def _manage_exits(client):
         if not bid or not 1 <= bid <= 99:
             continue
 
+        # reviewed: require spot to confirm loss before triggering stop loss
+        is_losing_spot = True
+        try:
+            series = ticker.split("-")[0] if "-" in ticker else ticker
+            asset = series[2:] if series.startswith("KX") else series
+            # reviewed: strip 15M suffix to derive base crypto symbol for spot check
+            if asset.endswith("15M"):
+                asset = asset[:-3]
+            spot = gates.spot_for(asset)
+            mkt_strike = pos.get("strike")
+            # reviewed: ensure both spot and strike are present before checking spot position
+            if spot is not None and mkt_strike is not None:
+                # reviewed: YES position is winning when spot is above strike
+                if side == "yes" and spot >= mkt_strike:
+                    is_losing_spot = False  # spot is above strike, position is winning
+                # reviewed: NO position is winning when spot is below strike
+                elif side == "no" and spot <= mkt_strike:
+                    is_losing_spot = False  # spot is below strike, position is winning
+        except Exception:
+            pass
+
         delta = bid - entry
         if delta >= config.EXIT_TAKE_PROFIT_CENTS:
             reason = f"take profit +{delta}c"
-        elif -delta >= config.EXIT_STOP_LOSS_CENTS:
+        # reviewed: only trigger stop loss if delta dropped past stop threshold AND spot confirms loss
+        elif -delta >= config.EXIT_STOP_LOSS_CENTS and is_losing_spot:
             reason = f"stop loss {delta}c"
         else:
             continue
@@ -1666,8 +1689,8 @@ def cycle(client: KalshiClient):
             # Derive canonical event_id from ticker (strip strike suffix) so all
             # strikes of the same event share the same idempotency namespace.
             # Kalshi tickers: KXBTC15M-26NOV090645-45 -> event_id = KXBTC15M-26NOV090645
-            event_id = t.rsplit("-", 1)[0] if "-" in t else t
-            settle_key = f"settle:{event_id}:{order_id}"
+            # reviewed: key on full ticker to prevent multi-strike collisions on same event
+            settle_key = f"settle:{t}:{order_id}"
             pnl_to_add = 0.0
             try:
                 applied = get_local_db().apply_settlement_pnl(

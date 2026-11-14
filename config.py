@@ -352,10 +352,10 @@ HEDGE_MAX_NO_ENTRY_CENTS = _env_int("HEDGE_MAX_NO_ENTRY_CENTS", 88)
 # DISABLED for final-minute taker strategy: hold to BRTI settlement.
 # The 60-second BRTI average is the alpha source; exiting early loses it.
 # ═════════════════════════════════════════════════════════════════════
-# ENABLED: sell immediately when profitable by +3c, cut loss at -8c
+# ENABLED: spot-confirmed stop loss prevents premature exit on bid-ask noise
 EXIT_ENABLED = _env_bool("EXIT_ENABLED", True)
-EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 3)   # bid moved +3c vs entry (immediate take profit)
-EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 8)       # bid moved -8c vs entry (strict stop loss)
+EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 3)   # sell immediately as soon as profitable by +3c
+EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 25)      # 25c stop loss gives full variance buffer
 EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 0.5)  # allow intra-window take profit down to 30s left
 
 # ═════════════════════════════════════════════════════════════════════
