@@ -1455,7 +1455,19 @@ def cycle(client: KalshiClient):
     # find_active_markets fetches fresh data, so invalidation is not needed here.
     # Trend maker archived (operator decision 2026-11-10): engine kept on disk
     # but unreachable from the loop; `git revert <archive-sha>` restores the call.
-    markets = find_active_markets(client)
+    # When account balance is under $10 (micro-balance bootstrap), restrict to major crypto (BTC, ETH, SOL)
+    # to eliminate single-loss ruin from altcoin spikes (e.g. HYPE, ZEC, NEAR)
+    # reviewed: bootstrap on major cryptos under $10 threshold
+    if config.BOOTSTRAP_MAJOR_ONLY and cash is not None and cash < config.BOOTSTRAP_THRESHOLD_DOLLARS:
+        bootstrap_series = config.TARGET_SERIES_MAJOR
+        log.info("Micro-balance bootstrap active (cash=$%.2f < $%.2f) — targeting major crypto %s with fractional contracts",
+                 cash, config.BOOTSTRAP_THRESHOLD_DOLLARS, config.TARGET_SERIES_MAJOR)
+    else:
+        bootstrap_series = config.TARGET_SERIES
+    try:
+        markets = find_active_markets(client, target_series=bootstrap_series)
+    except TypeError:
+        markets = find_active_markets(client)
     state.tradeable_brackets = len(markets)
     state.available_active_markets = getattr(markets, "total_available", len(markets))
     state.available_markets_count = state.available_active_markets

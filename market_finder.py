@@ -320,7 +320,7 @@ class _MarketResult(list):
         self.extra = list(extra)
 
 
-def find_active_markets(client: KalshiClient, extra_band=None):
+def find_active_markets(client: KalshiClient, extra_band=None, target_series=None):
     now = datetime.now(timezone.utc)
     result = []
     total_available = 0
@@ -333,6 +333,8 @@ def find_active_markets(client: KalshiClient, extra_band=None):
     if extra_band:
         FETCH_MIN_P = min(MIN_P, int(extra_band[0]))
         FETCH_MAX_P = max(MAX_P, int(extra_band[1]))
+
+    series_list = target_series if target_series is not None else config.TARGET_SERIES
 
     # Fetch markets for all series concurrently (bounded pool), then
     # fetch orderbooks concurrently below. This avoids spending several
@@ -348,8 +350,8 @@ def find_active_markets(client: KalshiClient, extra_band=None):
     # Fetch markets for all series concurrently (bounded pool), then
     # fetch orderbooks concurrently below. This avoids spending several
     # seconds on sequential per-series fetches inside the 30s cycle timeout.
-    with ThreadPoolExecutor(max_workers=min(len(config.TARGET_SERIES), 4)) as ex:
-        futs = {ex.submit(_fetch_one, s): s for s in config.TARGET_SERIES}
+    with ThreadPoolExecutor(max_workers=min(len(series_list), 4)) as ex:
+        futs = {ex.submit(_fetch_one, s): s for s in series_list}
         for fut in as_completed(futs):
             mains, hedges, n = fut.result()
             total_available += n
@@ -370,7 +372,7 @@ def find_active_markets(client: KalshiClient, extra_band=None):
         fetch_list.append((mkt, ct, ml, "MAIN", None))
 
     all_hedges.sort(key=lambda x: x[3])
-    for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(config.TARGET_SERIES)]:
+    for mkt, ct, ml, ya in all_hedges[:config.MAX_HEDGE_PER_SERIES * len(series_list)]:
         fetch_list.append((mkt, ct, ml, "HEDGE_NO", ya))
 
     # Fetch orderbooks for all rungs passing the permissive fetch band.
@@ -436,8 +438,9 @@ def find_active_markets(client: KalshiClient, extra_band=None):
             log.debug("Hedge filtered hedge_ya=%dc: %s", hedge_ya, mkt["ticker"])
 
     tradable_count = len(result)
-    log.info("Available markets: %d | Tradable brackets: %d (Maker-only criteria: ask %d-%dc, liq>=5, window %.1f-%.1fmin)",
-             total_available, tradable_count, MIN_P, MAX_P, config.ENTRY_WINDOW_START_MIN, config.ENTRY_WINDOW_END_MIN)
+    criteria_type = "Taker criteria" if config.AGGRESSIVE_FILL else "Maker-only criteria"
+    log.info("Available markets: %d | Tradable brackets: %d (%s: ask %d-%dc, liq>=5, window %.1f-%.1fmin)",
+             total_available, tradable_count, criteria_type, MIN_P, MAX_P, config.ENTRY_WINDOW_START_MIN, config.ENTRY_WINDOW_END_MIN)
     try:
         import signals
         signals._maybe_save_bid_hist(now.timestamp())

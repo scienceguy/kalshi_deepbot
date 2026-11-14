@@ -641,8 +641,8 @@ class KalshiClient:
             "price_dollars":               price_dollars,
             "time_in_force":               "good_till_canceled",
             "self_trade_prevention_type":  "taker_at_cross",
-            # reviewed: default post_only=True for limit orders so resting quotes never cross and never pay taker fees
-            "post_only":                   (True if (post_only is None and order_type == "limit") else ((not config.AGGRESSIVE_FILL) if post_only is None else bool(post_only))),
+            # reviewed: taker aggressive fill crosses the book (post_only=False), maker rests (post_only=True)
+            "post_only":                   (bool(post_only) if post_only is not None else (not config.AGGRESSIVE_FILL)),
         }
         _add_exchange_index(payload, ticker)
 

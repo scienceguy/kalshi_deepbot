@@ -81,8 +81,15 @@ def _size(entry_cents: int, max_dollars: float, max_contracts: int = 0) -> float
     """Convert a dollar budget into contracts (fractional, 2dp)."""
     if entry_cents <= 0 or entry_cents >= 100 or max_dollars <= 0:
         return 0.0
-    cost = entry_cents / 100
-    n = min(max_dollars, config.MAX_TRADE_DOLLARS) / cost
+    cost = entry_cents / 100.0
+    # Include estimated taker fee if AGGRESSIVE_FILL is active so size fits within max_dollars
+    # reviewed: size budget accounts for taker fee when aggressive fill crosses spread
+    if config.AGGRESSIVE_FILL:
+        fee_per_contract = fees.FEE_RATE * cost * (1.0 - cost)
+        effective_cost = cost + fee_per_contract
+    else:
+        effective_cost = cost
+    n = min(max_dollars, config.MAX_TRADE_DOLLARS) / (effective_cost if effective_cost > 0 else cost)
     if max_contracts and max_contracts > 0:
         n = min(n, float(max_contracts))
     n = floor_contracts(n)
