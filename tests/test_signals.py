@@ -170,9 +170,28 @@ def test_model_volatility_clamps_extremes(monkeypatch):
 
 
 def test_signal_engine_class_interface():
-    """Verify SignalEngine class wrapper can be imported and instantiated."""
+    """Verify SignalEngine class wrapper can be imported, instantiated, and evaluates."""
     se = SignalEngine(default_cash=1.50)
     assert se.default_cash == 1.50
     assert hasattr(se, "evaluate")
     assert hasattr(se, "rank_signals")
+
+    # Mock market to verify evaluate returns TradeSignal list
+    mock_market = MagicMock()
+    mock_market.ticker = "KXBTC15M-TEST"
+    mock_market.mid_yes = 85.0
+    mock_market.yes_ask = 86
+    mock_market.yes_bid = 84
+    mock_market.no_bid = 14
+    mock_market.no_ask = 16
+    mock_market.minutes_left = 6.0
+    mock_market.bracket_role = "MAIN"
+    mock_market.skew = 20.0
+    mock_market.series = "KXBTC15M"
+
+    sigs = se.evaluate(mock_market, cash=1.50)
+    assert isinstance(sigs, list)
+    ranked = se.rank_signals(sigs)
+    assert isinstance(ranked, list)
+
 

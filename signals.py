@@ -703,11 +703,9 @@ class SignalEngine:
         self.default_cash = default_cash
 
     def evaluate(self, market: MarketInfo, cash: Optional[float] = None,
-                 max_trade_override: Optional[float] = None,
-                 max_contracts: int = 0) -> List[TradeSignal]:
+                 max_trade_override: Optional[float] = None) -> List[TradeSignal]:
         c = cash if cash is not None else self.default_cash
-        return evaluate(market, cash=c, max_trade_override=max_trade_override,
-                        max_contracts=max_contracts)
+        return evaluate(market, cash=c, max_trade_override=max_trade_override)
 
     def rank_signals(self, signals: list) -> list:
         return rank_signals(signals)
