@@ -109,26 +109,31 @@ class PolyUSPaperTrader:
         except Exception as e:
             log.debug("Failed general scan: %s", e)
 
+        # 3. Fetch active fast-expiring crypto threshold & up/down markets via events
+        for symbol in ("BTC", "ETH", "SOL"):
+            try:
+                events = polymarket_us_client.search_events(symbol)
+                for ev in events[:4]:  # Top 4 events per symbol
+                    ev_slug = ev.get("slug")
+                    if not ev_slug:
+                        continue
+                    ev_full = polymarket_us_client.get_event_by_slug(ev_slug)
+                    for m in ev_full.get("event", {}).get("markets", []):
+                        m_slug = m.get("slug")
+                        if m_slug and not m.get("closed", False):
+                            markets_by_slug[m_slug] = m
+            except Exception as e:
+                log.debug("Failed %s event search: %s", symbol, e)
+
         return list(markets_by_slug.values())
 
     def preview_order(self, slug: str, side: str, price_dollars: float, qty: int) -> bool:
         """Validate order against Polymarket US production order preview API."""
         if not self.auth_client:
             return True
-        intent = "ORDER_INTENT_BUY_LONG" if side == "yes" else "ORDER_INTENT_BUY_SHORT"
-        params = {
-            "marketSlug": slug,
-            "intent": intent,
-            "type": "ORDER_TYPE_LIMIT",
-            "price": {"value": f"{price_dollars:.2f}", "currency": "USD"},
-            "quantity": qty,
-            "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
-            "participateDontInitiate": True,
-            "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
-        }
         try:
-            self.auth_client.orders.preview({"request": params})
-            return True
+            res = polymarket_us_client.preview_order(slug, side, price_dollars, qty)
+            return res is not None
         except Exception as e:
             log.debug("Order preview failed for %s %s @ $%.2f: %s", slug, side, price_dollars, e)
             return False
@@ -140,16 +145,28 @@ class PolyUSPaperTrader:
         for pos in self.state.get("positions", []):
             slug = pos["slug"]
             m_info = market_map.get(slug)
-            # Only poll settlement endpoint if market is known closed or not found in active list
+
+            # Check if market has closed or passed its endDate
             is_closed = m_info.get("closed", False) if m_info else False
+            if m_info and not is_closed:
+                end_date_str = m_info.get("endDate") or m_info.get("gameStartTime")
+                if end_date_str:
+                    try:
+                        end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                        if now >= end_dt:
+                            is_closed = True
+                    except Exception:
+                        pass
+
+            # If market is still actively trading and not past end date, keep holding
             if not is_closed and m_info is not None:
                 remaining_positions.append(pos)
                 continue
 
             try:
-                settle_res = self.client.get(f"/v1/markets/{slug}/settlement", authenticated=False)
-                settlement = settle_res.get("settlement")
-                if settlement is not None:
+                settle_res = polymarket_us_client.get_market_settlement(slug)
+                if settle_res is not None and "settlement" in settle_res:
+                    settlement = settle_res["settlement"]
                     payout_per_contract = float(settlement) if pos["side"] == "yes" else (1.0 - float(settlement))
                     total_payout = round(payout_per_contract * pos["qty"], 4)
                     cost = pos["cost"]

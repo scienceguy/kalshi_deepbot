@@ -94,3 +94,65 @@ def test_cash_reserve_floor_blocks_overtrade(temp_trader):
     temp_trader.preview_order = MagicMock(return_value=True)
     temp_trader.execute_paper_trade(opp)
     assert len(temp_trader.state["positions"]) == 1  # No new position added
+
+
+def test_check_settlements_yes_win(temp_trader):
+    temp_trader.state["positions"] = [{
+        "slug": "test-settle-yes",
+        "side": "yes",
+        "price": 0.95,
+        "qty": 5,
+        "cost": 4.75,
+    }]
+    temp_trader.state["cash"] = 95.25
+    temp_trader.state["realized_pnl"] = 0.0
+
+    with patch("poly_us_trader.polymarket_us_client.get_market_settlement", return_value={"slug": "test-settle-yes", "settlement": 1.0}):
+        temp_trader.check_settlements({"test-settle-yes": {"closed": True}})
+
+    assert len(temp_trader.state["positions"]) == 0
+    assert temp_trader.state["cash"] == 95.25 + 5.00  # Payout is $5.00
+    assert temp_trader.state["realized_pnl"] == round(5.00 - 4.75, 4)  # +$0.25
+
+
+def test_check_settlements_no_win(temp_trader):
+    temp_trader.state["positions"] = [{
+        "slug": "test-settle-no",
+        "side": "no",
+        "price": 0.98,
+        "qty": 10,
+        "cost": 9.80,
+    }]
+    temp_trader.state["cash"] = 90.20
+    temp_trader.state["realized_pnl"] = 0.0
+
+    # Settlement 0.0 means YES lost, so NO won: payout = (1.0 - 0.0) * 10 = $10.00
+    with patch("poly_us_trader.polymarket_us_client.get_market_settlement", return_value={"slug": "test-settle-no", "settlement": 0.0}):
+        temp_trader.check_settlements({"test-settle-no": {"closed": True}})
+
+    assert len(temp_trader.state["positions"]) == 0
+    assert temp_trader.state["cash"] == 90.20 + 10.00  # Payout is $10.00
+    assert temp_trader.state["realized_pnl"] == round(10.00 - 9.80, 4)  # +$0.20
+
+
+def test_polymarket_us_client_module_attributes():
+    import polymarket_us_client
+    expected_attrs = [
+        "get_market_by_slug",
+        "get_market_book",
+        "get_market_settlement",
+        "get_events",
+        "get_event_by_slug",
+        "search_events",
+        "get_portfolio_positions",
+        "get_account_balances",
+        "usd_cash_balance",
+        "preview_order",
+        "place_maker_order",
+        "get_open_orders",
+        "cancel_order",
+        "close_position",
+    ]
+    for attr in expected_attrs:
+        assert hasattr(polymarket_us_client, attr), f"Missing attribute {attr} on polymarket_us_client"
+

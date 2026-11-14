@@ -122,6 +122,61 @@ def get_market_book(slug: str) -> dict:
             return {}
 
 
+def get_market_settlement(slug: str) -> dict | None:
+    """Fetch settlement outcome for a market slug.
+
+    Returns dict with {"slug": slug, "settlement": float(1.0 or 0.0)} if settled,
+    or None if market is not yet settled or not found.
+    """
+    temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
+    try:
+        res = temp_client.markets.settlement(slug)
+        if isinstance(res, dict) and "settlement" in res:
+            return {"slug": slug, "settlement": float(res["settlement"])}
+        elif hasattr(res, "settlement"):
+            return {"slug": slug, "settlement": float(res.settlement)}
+    except Exception:
+        pass
+    return None
+
+
+def get_events(limit: int = 100) -> list:
+    """List events from Polymarket US (public gateway)."""
+    temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
+    try:
+        res = temp_client.events.list({"limit": limit})
+        if isinstance(res, dict):
+            return res.get("events", []) or []
+        return getattr(res, "events", []) or []
+    except Exception as e:
+        log.warning("Poly get_events failed: %s", e)
+        return []
+
+
+def get_event_by_slug(slug: str) -> dict:
+    """Retrieve full event detail including all child markets by slug."""
+    temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
+    try:
+        res = temp_client.events.retrieve_by_slug(slug)
+        return res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else {})
+    except Exception as e:
+        log.warning("Poly get_event_by_slug %s failed: %s", slug, e)
+        return {}
+
+
+def search_events(query: str) -> list:
+    """Search Polymarket US events by keyword (e.g. BTC, ETH, SOL)."""
+    temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
+    try:
+        res = temp_client.search.query({"query": query})
+        if isinstance(res, dict):
+            return res.get("events", []) or []
+        return getattr(res, "events", []) or []
+    except Exception as e:
+        log.warning("Poly search_events %s failed: %s", query, e)
+        return []
+
+
 def _get_market_data(path: str, *, authenticated: bool = False) -> dict:
     """Internal helper: call SDK get() for market data with the appropriate auth flag."""
     temp_client = PolymarketUS(key_id="", secret_key="") if not authenticated else _get_client()
@@ -193,6 +248,33 @@ def _poly_amount(value: float) -> dict:
     return {"value": f"{value:.2f}", "currency": "USD"}
 
 
+def preview_order(slug: str, side: str, price_dollars: float,
+                  contracts: int) -> dict | None:
+    """Validate an order against Polymarket US production order preview API.
+
+    Returns the preview response dict on success, or None on failure.
+    """
+    client = _get_authenticated_client()
+    intent = ("ORDER_INTENT_BUY_LONG" if side == "yes"
+              else "ORDER_INTENT_BUY_SHORT")
+    params = {
+        "marketSlug": slug,
+        "intent": intent,
+        "type": "ORDER_TYPE_LIMIT",
+        "price": _poly_amount(price_dollars),
+        "quantity": contracts,
+        "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
+        "participateDontInitiate": True,   # fee-free maker
+        "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
+    }
+    try:
+        return client.orders.preview({"request": params})
+    except Exception as e:
+        log.warning("Poly preview failed for %s %s @ %.4f: %s",
+                    slug, side, price_dollars, e)
+        return None
+
+
 def place_maker_order(slug: str, side: str, price_dollars: float,
                       contracts: int) -> dict | None:
     """Place a fee-free maker limit order on Polymarket US.
@@ -211,6 +293,9 @@ def place_maker_order(slug: str, side: str, price_dollars: float,
         should decide whether to actually create; this function always attempts
         the create after a successful preview.
     """
+    if preview_order(slug, side, price_dollars, contracts) is None:
+        return None
+
     client = _get_authenticated_client()
     intent = ("ORDER_INTENT_BUY_LONG" if side == "yes"
               else "ORDER_INTENT_BUY_SHORT")
@@ -224,13 +309,6 @@ def place_maker_order(slug: str, side: str, price_dollars: float,
         "participateDontInitiate": True,   # fee-free maker
         "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
     }
-    # Preview first: validates the order without placing it.
-    try:
-        client.orders.preview({"request": params})
-    except Exception as e:
-        log.warning("Poly preview failed for %s %s @ %.4f: %s",
-                    slug, side, price_dollars, e)
-        return None
     # Create: place the order.
     try:
         resp = client.orders.create(params)
