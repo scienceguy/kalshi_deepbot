@@ -2647,7 +2647,7 @@ def main():
     except Exception as e:
         log.warning("Could not reconcile session_pnl: %s", e)
 
-    # Reconcile trades_placed from local database so the counter survives restarts
+    # Reconcile trades_placed from local database or exchange fills so the counter survives restarts
     try:
         local_db = get_local_db()
         conn = local_db._get_conn()
@@ -2655,12 +2655,26 @@ def main():
             trades_count = conn.execute(
                 "SELECT count(*) FROM orders WHERE status in ('settled', 'executed', 'filled')"
             ).fetchone()[0]
-            # reviewed: only overwrite trades_placed if historical orders exist in local DB
-            if trades_count > 0:
-                state.trades_placed = int(trades_count)
-                log.info("Reconciled trades_placed from LOCAL DB: %d trades", state.trades_placed)
+        # reviewed: check orders table, then bot_state, then exchange fills
+        if trades_count > 0:
+            state.trades_placed = int(trades_count)
+            log.info("Reconciled trades_placed from LOCAL DB orders: %d trades", state.trades_placed)
+        else:
+            saved_trades = local_db.get_bot_state("trades_placed")
+            # reviewed: check if bot_state has saved trades count
+            if saved_trades is not None and int(saved_trades) > 0:
+                state.trades_placed = int(saved_trades)
+                log.info("Reconciled trades_placed from bot_state: %d trades", state.trades_placed)
+            # reviewed: only query exchange fills when running in live mode
+            elif not config.DRY_RUN:
+                fills = client._request("GET", "/portfolio/fills", params={"limit": 100})
+                fill_list = fills.get("fills", [])
+                # reviewed: backfill trades_placed from exchange fills when local DB was reset
+                if fill_list:
+                    state.trades_placed = len(fill_list)
+                    log.info("Reconciled trades_placed from exchange fills: %d trades", state.trades_placed)
     except Exception as e:
-        log.debug("trades_placed reconciliation from local DB failed: %s", e)
+        log.debug("trades_placed reconciliation failed: %s", e)
 
     # Also reconcile from n8n by checking recent executions for settlement webhooks
     # Replay any pending settlements from the queue file
