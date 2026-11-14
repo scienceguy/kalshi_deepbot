@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -32,21 +33,27 @@ if not _MP:
         if os.path.isfile(_p) and os.access(_p, os.X_OK):
             _MP = _p
             break
-_MP_TMP = os.environ.get("TMPDIR") or "/data/data/com.termux/files/usr/tmp/opencode"
-# Ensure a writable temp dir exists on both android and VPS.
-try:
-    os.makedirs(_MP_TMP, exist_ok=True)
-    # Probe writability; fall back to android tmp dir if the opencode dir isn't
-    # usable (e.g. a restricted mount).
-    probe = os.path.join(_MP_TMP, ".wtest")
-    try:
-        with open(probe, "w") as f:
-            f.write("ok")
-        os.remove(probe)
-    except OSError:
-        _MP_TMP = "/data/data/com.termux/files/home/tmp/opencode"
-except Exception:
-    _MP_TMP = "/data/data/com.termux/files/home/tmp/opencode"
+_MP_TMP = os.environ.get("TMPDIR")
+if not _MP_TMP or not os.path.isdir(_MP_TMP):
+    import tempfile
+    _candidates = [
+        str(Path.home() / "tmp" / "opencode"),
+        "/data/data/com.termux/files/usr/tmp/opencode",
+        tempfile.gettempdir(),
+    ]
+    for _c in _candidates:
+        try:
+            os.makedirs(_c, exist_ok=True)
+            _probe = os.path.join(_c, ".wtest")
+            with open(_probe, "w") as _f:
+                _f.write("ok")
+            os.remove(_probe)
+            _MP_TMP = _c
+            break
+        except Exception:
+            continue
+    if not _MP_TMP:
+        _MP_TMP = tempfile.gettempdir()
 
 def _mp_available() -> bool:
     """True when the MemPalace CLI binary is resolvable."""
@@ -288,13 +295,15 @@ def update_interests(new_interests: list) -> None:
 def get_interests() -> list:
     return _STORE_get("_interests", [])
 
+_CONTINUITY_DIR = str(Path(__file__).resolve().parent / ".continuity")
+
 def record_webfind(topic: str, url: str, depth: int = 0) -> None:
     append_narrative_entry("webfind", "topic=%s url=%s depth=%s" % (topic, url, depth))
 
 def append_narrative_entry(topic: str, text: str) -> None:
     import os, json
     from datetime import datetime
-    tmp_dir = "/data/data/com.termux/files/home/kalshi_deepbot/.continuity"
+    tmp_dir = _CONTINUITY_DIR
     os.makedirs(tmp_dir, exist_ok=True)
     chmod_path = os.path.join(tmp_dir, "narrative.json")
     try:
@@ -315,7 +324,7 @@ def append_narrative_entry(topic: str, text: str) -> None:
     os.chmod(chmod_path, 0o600)
 
 def _load_narrative() -> dict:
-    path = os.path.join("/data/data/com.termux/files/home/kalshi_deepbot/.continuity", "narrative.json")
+    path = os.path.join(_CONTINUITY_DIR, "narrative.json")
     try:
         with open(path, "r") as f:
             return json.load(f)
@@ -323,7 +332,7 @@ def _load_narrative() -> dict:
         return {"entries": [], "last_topic": "", "session_count": 0}
 
 def _save_narrative(narrative: dict) -> None:
-    path = os.path.join("/data/data/com.termux/files/home/kalshi_deepbot/.continuity", "narrative.json")
+    path = os.path.join(_CONTINUITY_DIR, "narrative.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     os.chmod(os.path.dirname(path), 0o600)
     with open(path, "w") as f:
@@ -344,7 +353,7 @@ def get_self_model() -> dict:
     return _load_self_model()
 
 def _load_self_model() -> dict:
-    path = os.path.join("/data/data/com.termux/files/home/kalshi_deepbot/.continuity", "self_model.json")
+    path = os.path.join(_CONTINUITY_DIR, "self_model.json")
     try:
         with open(path, "r") as f:
             return json.load(f)
@@ -370,7 +379,7 @@ def _load_self_model() -> dict:
         }
 
 def _save_self_model(model: dict) -> None:
-    path = os.path.join("/data/data/com.termux/files/home/kalshi_deepbot/.continuity", "self_model.json")
+    path = os.path.join(_CONTINUITY_DIR, "self_model.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     os.chmod(os.path.dirname(path), 0o600)
     with open(path, "w") as f:

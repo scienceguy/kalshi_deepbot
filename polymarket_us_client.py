@@ -34,7 +34,8 @@ def _load_key_id() -> str:
     if key_id:
         return key_id
     # 3. Fall back to BW mirror
-    _BW_DIR = Path(os.environ.get("BW_DIR", "/data/data/com.termux/files/home/.secrets/bw"))
+    _default_bw = str(Path.home() / ".secrets/bw")
+    _BW_DIR = Path(os.environ.get("BW_DIR", _default_bw))
     _key_file = _BW_DIR / "polymarket_api_key.json"
     if _key_file.exists():
         try:
@@ -55,7 +56,8 @@ def _load_secret_key() -> str:
     if secret_key:
         return secret_key
     # 3. Fall back to BW mirror
-    _BW_DIR = Path(os.environ.get("BW_DIR", "/data/data/com.termux/files/home/.secrets/bw"))
+    _default_bw = str(Path.home() / ".secrets/bw")
+    _BW_DIR = Path(os.environ.get("BW_DIR", _default_bw))
     _secret_file = _BW_DIR / "polymarket_secret_key.json"
     if _secret_file.exists():
         try:
