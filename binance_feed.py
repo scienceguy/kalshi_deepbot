@@ -91,8 +91,12 @@ def _ws_price(symbol: str) -> Optional[float]:
 
 
 def _ws_set(symbol: str, price: float) -> None:
+    now = time.monotonic()
     with _ws_lock:
-        _ws_prices[symbol.upper()] = (price, time.monotonic())
+        _ws_prices[symbol.upper()] = (price, now)
+        base = _base_asset(symbol)
+        if base and base != symbol.upper():
+            _ws_prices[base] = (price, now)
 
 
 def _binance_ws_loop(symbols: list[str]) -> None:
@@ -103,8 +107,12 @@ def _binance_ws_loop(symbols: list[str]) -> None:
     """
     import websockets  # lazy import — optional dep
 
-    streams = "/".join(f"{s.lower()}@miniTicker" for s in symbols)
-    url = f"{BINANCE_WS}/stream?streams={streams}"
+    # Format stream names: btcusdt@miniTicker, ethusdt@miniTicker, etc.
+    # Base stream URL is wss://data-stream.binance.vision/stream?streams=...
+    # (without the trailing /ws prefix which causes 404 on combined streams).
+    sym_streams = [s.lower() if s.lower().endswith("usdt") else f"{s.lower()}usdt" for s in symbols]
+    streams = "/".join(f"{s}@miniTicker" for s in sym_streams)
+    url = f"wss://data-stream.binance.vision/stream?streams={streams}"
     tried_once = False
     while True:
         try:
@@ -164,12 +172,13 @@ async def _coinbase_ws_async(url: str, subscribe: dict) -> None:
         async for raw in ws:
             try:
                 msg = json.loads(raw)
-                if msg.get("type") != "ticker":
-                    continue
-                sym = msg.get("product_id", "").replace("-USD", "")
-                px = msg.get("price")
-                if sym and px is not None:
-                    _ws_set(sym, float(px))
+                if msg.get("channel") == "ticker":
+                    for ev in msg.get("events", []):
+                        for t in ev.get("tickers", []):
+                            sym = t.get("product_id", "").replace("-USD", "")
+                            px = t.get("price")
+                            if sym and px is not None:
+                                _ws_set(sym, float(px))
             except Exception:
                 continue
 
