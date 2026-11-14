@@ -1603,7 +1603,7 @@ def cycle(client: KalshiClient):
         if not yes_pos and not no_pos:
             continue
         side = "yes" if yes_pos else "no"
-        contracts = int(yes_pos or no_pos)
+        contracts = floor_contracts(yes_pos or no_pos)
         # Entry price from the position's cost basis (market_exposure_dollars),
         # falling back to the legacy average-price fields.
         exposure = _pos_cost_basis(p)
@@ -2637,14 +2637,14 @@ def main():
             if not yes_pos and not no_pos:
                 continue
             side = "yes" if yes_pos else "no"
-            contracts = int(yes_pos or no_pos)
+            contracts = floor_contracts(yes_pos or no_pos)
             # Entry price from the position's cost basis (market_exposure_dollars),
             # falling back to the legacy average-price fields.
             exposure = _pos_cost_basis(p)
             # Guard: an adopted position with contracts but zero/negative cost
             # basis can't produce a valid entry price and would corrupt PnL math.
             if contracts > 0 and exposure <= 0:
-                log.warning("Skipping position %s: %d contracts but $%.2f cost basis (invalid entry price)",
+                log.warning("Skipping position %s: %.2f contracts but $%.2f cost basis (invalid entry price)",
                             ticker, contracts, exposure)
                 continue
             entry_price = int(round(exposure * 100 / contracts)) if contracts else 0
