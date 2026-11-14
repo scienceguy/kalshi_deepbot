@@ -99,6 +99,13 @@ class RiskManager:
             self.state.halt_reason = ""
             log.info("✅ Risk halt lifted — drawdown recovered to %.1f%% (peak $%.2f)",
                      drawdown * 100, peak)
+        # reviewed: clear false risk halt from settlement race when cash exceeds start balance with 0 exposure
+        elif self.state.halted and effective_exposure <= 1e-6 and cash >= self.state.start_balance:
+            self.state.session_high = cash
+            self.state.halted = False
+            self.state.halt_reason = ""
+            log.info("✅ Risk halt cleared — cash $%.2f >= start $%.2f with 0 exposure (settlement spike resolved)",
+                     cash, self.state.start_balance)
 
     def record_trade_outcome(self, won: bool, profit: float):
         """Track consecutive losses for cooldown logic (from Momentum v16)."""

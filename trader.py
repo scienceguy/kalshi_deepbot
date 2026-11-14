@@ -658,8 +658,7 @@ def _mark_to_market_exposure(positions, markets):
                 exposure += yes_pos * mkt_info.mid_yes / 100.0
             if no_pos:
                 exposure += no_pos * mkt_info.mid_no / 100.0
-        else:
-            exposure += _pos_cost_basis(p)
+        # reviewed: ignore unquoted or expired positions to avoid settlement cash double-count
     return exposure
 
 

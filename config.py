@@ -524,10 +524,9 @@ EXCHANGE_PRICE_CACHE_SECONDS = _env_int("EXCHANGE_PRICE_CACHE_SECONDS", 30)
 # ═════════════════════════════════════════════════════════════════════
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 LOG_FILE = Path(__file__).resolve().parent / "bot.log"
-# Rotate bot.log so it cannot grow unbounded on a constrained Android device.
-# 300MB per file, 3 rotated backups = ~1.2GB cap (user-requested headroom for
-# long-running VPS sessions) instead of 5MB and climbing.
-LOG_MAX_BYTES = _env_int("LOG_MAX_BYTES", 300 * 1024 * 1024)
+# 1GB per file, 3 rotated backups = ~4GB cap (user-requested headroom for
+# long-running VPS sessions)
+LOG_MAX_BYTES = _env_int("LOG_MAX_BYTES", 1024 * 1024 * 1024)
 LOG_BACKUP_COUNT = _env_int("LOG_BACKUP_COUNT", 3)
 # Paper early exits charge the same taker exit fee as live maker exits, so a
 # dry run's P&L does not silently diverge from live. Single knob; toggling it
