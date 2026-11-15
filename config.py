@@ -606,6 +606,9 @@ REQUEST_TIMEOUT_SECONDS = _env_int("REQUEST_TIMEOUT_SECONDS", 10)
 # cycle (longer than the 15s loop interval). 0.2s = 5 req/s with headroom, and
 # 429s are still retried with backoff.
 REQUEST_MIN_GAP_SECONDS = _env_float("REQUEST_MIN_GAP_SECONDS", 0.2)
+# Per-cycle Kalshi HTTP request budget (B7); 0 disables. Over it, the cycle
+# logs a WARNING with the count.
+KALSHI_REQUEST_BUDGET_PER_CYCLE = _env_int("KALSHI_REQUEST_BUDGET_PER_CYCLE", 40)
 KALSHI_POOL_MAXSIZE = _env_int("KALSHI_POOL_MAXSIZE", 20)
 CYCLE_TIMEOUT_SECONDS = _env_int("CYCLE_TIMEOUT_SECONDS", 30)
 CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 20)

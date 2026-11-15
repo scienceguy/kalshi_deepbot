@@ -20,6 +20,8 @@ from requests.adapters import HTTPAdapter
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
+import rate_limit
+
 import config
 
 log = logging.getLogger(__name__)
@@ -106,6 +108,10 @@ class KalshiClient:
         self._verified = False
         self._balance_cache = None
         self._balance_cache_ts = 0.0
+        # B7: per-cycle HTTP attempt counter (reset via reset_request_counter)
+        # and the shared backoff engine (Retry-After honored, capped at 30s).
+        self.request_count = 0
+        self._backoff = rate_limit.Backoff(base=0.7, cap=30.0, max_attempts=5)
 
     def _verify_key(self):
         """Confirm the loaded private key corresponds to KALSHI_KEY_ID.
@@ -219,6 +225,10 @@ class KalshiClient:
 
     # ── Rate-limited Request ──────────────────────────────────────────────────
 
+    def reset_request_counter(self) -> None:
+        """Zero the per-cycle HTTP attempt counter (B7)."""
+        self.request_count = 0
+
     def _request(self, method: str, path: str, timeout: int = None, **kwargs) -> dict:
         """Execute a rate-limited, signed request. Returns parsed JSON.
 
@@ -268,6 +278,7 @@ class KalshiClient:
 
             # Re-generate auth header on each attempt so RSA timestamp remains fresh across backoff sleeps
             headers = self._auth_header(method, full_path)
+            self.request_count += 1
             try:
                 resp = self.session.request(method, url, headers=headers, **kwargs)
             except requests.RequestException as e:
@@ -292,13 +303,16 @@ class KalshiClient:
                         self._last_req = time.time()
                 return resp.json()
             elif resp.status_code == 429:
+                retry_after = None
                 try:
-                    wait = float(resp.headers.get("Retry-After") or 0)
+                    raw = resp.headers.get("Retry-After")
+                    retry_after = float(raw) if raw is not None else None
                 except (TypeError, ValueError):
-                    wait = 0.0
-                wait = wait or 0.7 * (2 ** _attempt)
+                    retry_after = None
+                # B7: rate_limit.Backoff honors Retry-After and caps it at 30s
+                # (an uncapped header could previously sleep for hours).
+                wait = self._backoff.sleep(_attempt, retry_after)
                 log.warning("429 %s %s — backing off %.1fs (attempt %d/5)", method, path, wait, _attempt + 1)
-                time.sleep(wait)
                 continue
             elif resp.status_code == 404:
                 log.warning("404 %s %s — resource not found", method, path)

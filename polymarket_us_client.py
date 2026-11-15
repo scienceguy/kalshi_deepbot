@@ -13,29 +13,36 @@ Never logs or prints credential values.
 import json
 import logging
 import os
-import threading
 import time
 from pathlib import Path
 
 from polymarket_us import PolymarketUS
 from config import POLYMARKET_KEY_ID, POLYMARKET_SECRET_KEY
 
+import rate_limit
+
 log = logging.getLogger(__name__)
 
-_last_req_time: float = 0.0
-_rate_lock = threading.Lock()
 POLYMARKET_MIN_GAP_SECONDS: float = 0.20  # Max 5 req/s to prevent Cloudflare 429 throttling
 
 
+# B7: pace requests through the shared token bucket from rate_limit
+# (1/POLYMARKET_MIN_GAP_SECONDS with burst=1 — identical pacing to the old
+# hand-rolled minimum-gap sleep).
+_RATE_BUCKET = rate_limit.TokenBucket(1.0 / POLYMARKET_MIN_GAP_SECONDS,
+                                      burst=1,
+                                      name="polymarket_us")
+
+
 def _enforce_rate_limit(min_gap: float = POLYMARKET_MIN_GAP_SECONDS) -> None:
-    """Enforce minimum spacing between Polymarket US API requests to prevent Cloudflare 429 throttling."""
-    global _last_req_time
-    with _rate_lock:
-        now = time.time()
-        elapsed = now - _last_req_time
-        if elapsed < min_gap:
-            time.sleep(min_gap - elapsed)
-        _last_req_time = time.time()
+    """Pace Polymarket US requests via the shared token bucket (B7).
+
+    An explicit non-default min_gap sleeps directly (unusual override path).
+    """
+    if min_gap != POLYMARKET_MIN_GAP_SECONDS:
+        time.sleep(min_gap)
+        return
+    _RATE_BUCKET.acquire(block=True)
 
 
 class PolymarketAPIError(Exception):

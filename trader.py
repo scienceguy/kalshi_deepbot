@@ -2864,6 +2864,16 @@ def _refresh_series_fee_models(client, live: bool) -> None:
                         for k, v in sorted(models.items())[:5]))
 
 
+def _report_kalshi_request_budget(client) -> None:
+    """Log the per-cycle Kalshi HTTP request count; warn over budget (B7)."""
+    requests = int(getattr(client, "request_count", 0) or 0)
+    log.debug("cycle kalshi request count: %d", requests)
+    budget = getattr(config, "KALSHI_REQUEST_BUDGET_PER_CYCLE", 40)
+    if budget and requests > budget:  # reviewed: 0 disables the budget; over it, only a WARNING — a slow discovery pass must not halt trading
+        log.warning("cycle kalshi request budget exceeded: %d > %d (KALSHI_REQUEST_BUDGET_PER_CYCLE)",
+                    requests, budget)
+
+
 def main():
     mode = "DRY RUN 🔵" if config.DRY_RUN else "LIVE ⚡"
     log.info("=" * 58)
@@ -3205,7 +3215,9 @@ def main():
             log.debug("MemPalace task sweep failed: %s", e)
         try:
             trades_before = state.trades_placed
+            client.reset_request_counter()  # B7: per-cycle request accounting
             cycle(client)
+            _report_kalshi_request_budget(client)
             # reviewed: update consecutive no trade cycles counter based on whether trades were placed
             if state.trades_placed > trades_before:
                 state.consecutive_no_trade_cycles = 0
