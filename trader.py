@@ -955,6 +955,10 @@ def _settle_pnl(contracts: float, entry_price_cents: float,
                 exit_price_dollars: float, entry_taker: bool) -> tuple:
     """(realized_pnl_dollars, entry_fee_dollars) for a position held to settlement.
 
+    ``exit_price_dollars`` is the payout price for OUR side, not the market's
+    YES settlement: a YES position passes the YES settlement, a NO position
+    passes ``1 - yes`` (callers in `_resolve_pending_settlement` do this).
+
     The entry is a taker when AGGRESSIVE_FILL crossed the ask at placement
     time, and a taker pays the fee; a resting maker order pays nothing.
     Settlement itself is not a trade, so it is always fee-free. Live and
