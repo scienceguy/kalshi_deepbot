@@ -23,6 +23,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 def _load_bs_calibration():
     """Lazy import of scripts/bs_calibration.
@@ -36,6 +37,7 @@ def _load_bs_calibration():
 
 
 import polymarket_us_client
+import poly_us_stream  # L4: WebSocket price stream, REST fallback
 import crossvenue_edge
 import config
 import report_state  # B19 operator visibility hook
@@ -126,6 +128,23 @@ def _book_yes_prices(book: dict):
         return bid, ask
     except (KeyError, TypeError, ValueError):
         return None, None
+
+
+def _bbo_for_slug(slug: str) -> tuple[Optional[float], Optional[float]]:
+    """Return (yes_bid, yes_ask) for a slug from the WebSocket stream cache,
+    falling back to REST get_market_book() when the stream is unavailable or
+    has no data for the slug. L4: streaming price feed with REST fallback."""
+    stream = poly_us_stream.get_poly_stream()
+    if stream is not None and stream.is_connected():
+        bbo = stream.get_bbo(slug)
+        if bbo is not None and (bbo.yes_bid is not None or bbo.yes_ask is not None):
+            return bbo.yes_bid, bbo.yes_ask
+    # REST fallback (same shape as _book_yes_prices input)
+    try:
+        book = polymarket_us_client.get_market_book(slug)
+    except Exception:
+        book = {}
+    return _book_yes_prices(book)
 
 
 def _slippage_cents() -> float:
@@ -792,13 +811,9 @@ class PolyUSPaperTrader:
             # fetch a fresh book for this slug to test the trade-through condition.
             book_in_map = m_info.get("book")
             if isinstance(book_in_map, dict) and book_in_map:
-                book = book_in_map
+                yes_bid, yes_ask = _book_yes_prices(book_in_map)
             else:
-                try:
-                    book = polymarket_us_client.get_market_book(slug)
-                except Exception:
-                    book = {}
-            yes_bid, yes_ask = _book_yes_prices(book)
+                yes_bid, yes_ask = _bbo_for_slug(slug)
             filled = False
             if side == "yes" and yes_ask is not None and yes_ask <= resting_price:
                 # Book has traded down to our buy price or below.
@@ -1462,10 +1477,14 @@ class PolyUSPaperTrader:
         # fill (ask + slippage) by default; PM_PAPER_FILL_MODEL=maker records a
         # resting paper order instead of filling immediately.
         try:
-            book = polymarket_us_client.get_market_book(slug)
+            yes_bid, yes_ask = _bbo_for_slug(slug)
         except Exception:
-            book = {}
-        yes_bid, yes_ask = _book_yes_prices(book)
+            yes_bid, yes_ask = None, None
+        book = (
+            {"bbo": {"yes_bid": yes_bid, "yes_ask": yes_ask}}
+            if yes_bid is not None and yes_ask is not None
+            else {}
+        )
         if side == "yes":
             ask = yes_ask
         else:
@@ -1701,6 +1720,17 @@ class PolyUSPaperTrader:
         markets = self.scan_markets()
         market_map = {m["slug"]: m for m in markets if "slug" in m}
 
+        # L4: track all position and resting-order slugs with the WebSocket
+        # stream so price updates are pushed instead of polled. Missing
+        # credentials or a disconnected stream degrades to REST fallback.
+        stream = poly_us_stream.get_poly_stream()
+        if stream is not None and stream.has_credentials():
+            for pos in self.state.get("positions", []):
+                stream.track(pos["slug"])
+            for o in self.state.get("resting_orders") or []:
+                if o.get("state") == "resting":
+                    stream.track(o.get("slug", ""))
+
         # Ensure market data is available for all open positions. A8: the
         # parent event slug comes from the market payload field stored on the
         # position at entry time (`eventSlug`), never from re-parsing the
@@ -1774,11 +1804,7 @@ class PolyUSPaperTrader:
             if is_stale_long_dated:
                 # Exit at the venue bid with the same fee model — never at the
                 # displayed mark (R5). Selling NO means its bid = 1 - YES ask.
-                try:
-                    book = polymarket_us_client.get_market_book(slug)
-                except Exception:
-                    book = {}
-                yes_bid, yes_ask = _book_yes_prices(book)
+                yes_bid, yes_ask = _bbo_for_slug(slug)
                 current_mark = float(pos.get("current_price", pos["price"]))
                 bid = yes_bid if pos["side"] == "yes" else (
                     round(1.0 - yes_ask, 4) if yes_ask is not None else None)
@@ -1878,13 +1904,9 @@ class PolyUSPaperTrader:
         # fabricate a halt.
         con_mtm = 0.0
         for pos in self.state.get("positions", []):
-            try:
-                book = polymarket_us_client.get_market_book(pos["slug"])
-                yes_bid, yes_ask = _book_yes_prices(book)
-                bid = yes_bid if pos["side"] == "yes" else (
-                    round(1.0 - yes_ask, 4) if yes_ask is not None else None)
-            except Exception:
-                bid = None
+            yes_bid, yes_ask = _bbo_for_slug(pos["slug"])
+            bid = yes_bid if pos["side"] == "yes" else (
+                round(1.0 - yes_ask, 4) if yes_ask is not None else None)
             if bid is None:
                 bid = float(pos.get("current_price", pos["price"]) or pos["price"])
             con_mtm += round(bid * float(pos.get("qty", 0) or 0), 4)
