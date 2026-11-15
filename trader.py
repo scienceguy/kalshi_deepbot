@@ -30,31 +30,35 @@ from typing import Optional
 
 import config  # noqa: E402
 
-# Parse args FIRST so env is set before config loads
-parser = argparse.ArgumentParser()
-_mode = parser.add_mutually_exclusive_group()
-_mode.add_argument("--live", action="store_true", help="Enable LIVE trading (overrides DRY_RUN=true)")
-_mode.add_argument("--dry", action="store_true")
-parser.add_argument("--once", action="store_true")
-parser.add_argument("--debug", action="store_true")
-parser.add_argument("--interval", type=int, default=config.LOOP_INTERVAL_SECONDS)
-parser.add_argument("--cycle-limit", type=int, default=0,
-                    help="stop after this many cycles (0 = disabled)")
-parser.add_argument("--ml-model", type=str, default=None,
-                    help="path to saved torch fair-value model (ml_model.py). "
-                         "When given, ML fair value overrides venue-implied fair "
-                         "as an additional entry filter.")
-args = parser.parse_args()
 
-# Set DRY_RUN directly on the config module — avoids mutating os.environ
-# before config loads, which could leak into other modules/subprocesses.
-if args.live:
-    config.DRY_RUN = False
-elif args.dry:
-    config.DRY_RUN = True
+def parse_args(argv=None):
+    """Parse CLI args. B16: called from main(), never at import time."""
+    parser = argparse.ArgumentParser()
+    _mode = parser.add_mutually_exclusive_group()
+    _mode.add_argument("--live", action="store_true", help="Enable LIVE trading (overrides DRY_RUN=true)")
+    _mode.add_argument("--dry", action="store_true")
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--interval", type=int, default=config.LOOP_INTERVAL_SECONDS)
+    parser.add_argument("--cycle-limit", type=int, default=0,
+                        help="stop after this many cycles (0 = disabled)")
+    parser.add_argument("--ml-model", type=str, default=None,
+                        help="path to saved torch fair-value model (ml_model.py). "
+                             "When given, ML fair value overrides venue-implied fair "
+                             "as an additional entry filter.")
+    args = parser.parse_args(argv)
 
-if args.debug:
-    config.LOG_LEVEL = "DEBUG"  # noqa: E402
+    # Set DRY_RUN directly on the config module — avoids mutating os.environ,
+    # which could leak into other modules/subprocesses.
+    if args.live:
+        config.DRY_RUN = False
+    elif args.dry:
+        config.DRY_RUN = True
+
+    if args.debug:
+        config.LOG_LEVEL = "DEBUG"
+    return args
+
 
 import fees  # noqa: E402
 
@@ -119,20 +123,28 @@ def _load_ml_model(path: str):
     return _ml_model
 
 
-log_target = config.LOG_FILE if not config.DRY_RUN else os.environ.get("DRY_LOG_FILE", "bot_dry.log")
-lf = Path(log_target).expanduser()
-if not lf.is_absolute():  # reviewed: ensure log file path is anchored to repo directory
-    lf = Path(__file__).resolve().parent / lf
-lf.parent.mkdir(parents=True, exist_ok=True)
-logging.basicConfig(
-    level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout),
-              logging.handlers.RotatingFileHandler(
-                  lf, maxBytes=config.LOG_MAX_BYTES,
-                  backupCount=config.LOG_BACKUP_COUNT)],
-)
+def _configure_logging():
+    """Attach console + rotating file handlers.
+
+    B16: a RotatingFileHandler creates/opens the log file and the parent
+    directory is created, so this runs from main() — not at import time.
+    """
+    log_target = config.LOG_FILE if not config.DRY_RUN else os.environ.get("DRY_LOG_FILE", "bot_dry.log")
+    lf = Path(log_target).expanduser()
+    if not lf.is_absolute():  # reviewed: ensure log file path is anchored to repo directory
+        lf = Path(__file__).resolve().parent / lf
+    lf.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout),
+                  logging.handlers.RotatingFileHandler(
+                      lf, maxBytes=config.LOG_MAX_BYTES,
+                      backupCount=config.LOG_BACKUP_COUNT)],
+    )
+
+
 log = logging.getLogger("trader")
 
 # Global LocalDB client (lazy) — primary write path with background Supabase sync
@@ -468,9 +480,27 @@ class BotState:
         _save_paper_positions(self.positions)
 
 
-# Global state
-state = BotState()
-state.settled_since = _load_settled_since()
+# Global bot state — created lazily by get_state() (B16: import must stay
+# side-effect free). main() and the test fixture in tests/conftest.py call
+# get_state() before the first cycle; internal code reads this module global
+# at runtime, so wholesale monkeypatch.setattr(trader, "state", ...) still works.
+
+
+def get_state() -> BotState:
+    """Create the bot state on first use and return the singleton."""
+    global state
+    if "state" not in globals() or state is None:
+        state = BotState()
+        state.settled_since = _load_settled_since()
+    return state
+
+
+def __getattr__(name):
+    # PEP 562: let `trader.state` resolve to the singleton even before
+    # get_state() has run, without creating state at import time.
+    if name == "state":
+        return get_state()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -2921,6 +2951,37 @@ def _report_kalshi_request_budget(client) -> None:
 
 
 def main():
+    args = parse_args()
+    _configure_logging()
+    get_state()
+
+    # Runtime guard: if .env has DRY_RUN=false but the user didn't pass --live,
+    # refuse to start. This prevents a silent env flip from enabling live trading.
+    if not config.DRY_RUN and not args.live:
+        log.error(
+            "DRY_RUN is false in .env but --live was not passed. "
+            "Set DRY_RUN=true in .env, or pass --live to confirm live trading."
+        )
+        sys.exit(1)
+
+    # reviewed: entry point only — the lock below is taken before any trading
+    lock_path = Path(__file__).resolve().parent / INSTANCE_LOCK_NAME
+    # Hold the fd for the process lifetime; it is the lock.
+    lock_fd = acquire_instance_lock(lock_path)
+
+    try:
+        _run_loop(args)
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+            # Not unlinked: unlinking lets a waiter lock the old inode while a
+            # newcomer creates and locks a fresh one — two bots, two locks.
+        except (OSError, FileNotFoundError):
+            pass
+
+
+def _run_loop(args):
     mode = "DRY RUN 🔵" if config.DRY_RUN else "LIVE ⚡"
     log.info("=" * 58)
     log.info("Kalshi SuperBot v%s — %s", config.__version__, mode)
@@ -3389,28 +3450,5 @@ def acquire_instance_lock(lock_path: Path) -> int:
             raise SystemExit(1)
 
 
-# reviewed: entry point only — the lock below is taken before any trading
 if __name__ == "__main__":
-    lock_path = Path(__file__).resolve().parent / INSTANCE_LOCK_NAME
-    # Hold the fd for the process lifetime; it is the lock.
-    lock_fd = acquire_instance_lock(lock_path)
-
-    # Runtime guard: if .env has DRY_RUN=false but the user didn't pass --live,
-    # refuse to start. This prevents a silent env flip from enabling live trading.
-    if not config.DRY_RUN and not args.live:
-        log.error(
-            "DRY_RUN is false in .env but --live was not passed. "
-            "Set DRY_RUN=true in .env, or pass --live to confirm live trading."
-        )
-        sys.exit(1)
-
-    try:
-        main()
-    finally:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            os.close(lock_fd)
-            # Not unlinked: unlinking lets a waiter lock the old inode while a
-            # newcomer creates and locks a fresh one — two bots, two locks.
-        except (OSError, FileNotFoundError):
-            pass
+    main()

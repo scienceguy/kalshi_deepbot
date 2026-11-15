@@ -24,9 +24,16 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Make scripts/ importable for bs_calibration (Task 2: Brier calibration + vol scaling).
-sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
-from bs_calibration import RollingCalibrationMonitor, AdaptiveVolatilityScaler
+def _load_bs_calibration():
+    """Lazy import of scripts/bs_calibration.
+
+    B16: the sys.path mutation and the import run on first use, not at module
+    import time — importing poly_us_trader must stay side-effect free.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
+    from bs_calibration import RollingCalibrationMonitor, AdaptiveVolatilityScaler
+    return RollingCalibrationMonitor, AdaptiveVolatilityScaler
+
 
 import polymarket_us_client
 import crossvenue_edge
@@ -281,6 +288,7 @@ class PolyUSPaperTrader:
             log.warning("Polymarket US gateway health check: FAILED or unreachable")
 
         # Task 2: continuous Brier calibration + adaptive volatility scaling.
+        RollingCalibrationMonitor, AdaptiveVolatilityScaler = _load_bs_calibration()
         self.cal_monitor = RollingCalibrationMonitor(
             ledger_path=str(DATA_DIR / "bs_calibration_ledger.jsonl"))
         self.vol_scaler = AdaptiveVolatilityScaler(

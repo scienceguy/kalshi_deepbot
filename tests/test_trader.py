@@ -953,24 +953,41 @@ class TestShardAwareCash:
 
 
 def test_root_logger_file_handler_is_rotating():
-    """bot.log must use a RotatingFileHandler (stdlib) so it cannot grow
-    unbounded on a constrained device. Regression: the bot used a plain
+    """Import must attach no file handler; after main()'s logging setup the
+    bot.log file handler must be a RotatingFileHandler (stdlib) so it cannot
+    grow unbounded on a constrained device. Regression: the bot used a plain
     FileHandler and bot.log reached 54MB+ with no cap.
 
     pytest replaces the root logger's handlers with a /dev/null FileHandler
     during capture, so introspecting in-process sees pytest's handler, not the
     bot's. Run a clean subprocess import instead to see the real config.
+    B16: the rotating handler is attached by _configure_logging() (called from
+    main()), not at import time.
     """
     import subprocess, sys, os
+    import_code = (
+        "import logging, logging.handlers;"
+        "import config, trader;"
+        "hs=[h for h in logging.getLogger().handlers"
+        "      if isinstance(h, logging.FileHandler)];"
+        "print(len(hs))"
+    )
     code = (
         "import logging, logging.handlers;"
         "import config, trader;"
+        "trader._configure_logging();"
         "hs=[h for h in logging.getLogger().handlers"
         "      if isinstance(h, logging.FileHandler)];"
         "print(type(hs[0]).__name__, hs[0].maxBytes, hs[0].backupCount)"
     )
     env = dict(os.environ)
     # Point LOG_FILE at a temp path so the subprocess does not touch bot.log.
+    out_import = subprocess.run(
+        [sys.executable, "-c", import_code],
+        capture_output=True, text=True, env=env, cwd=os.getcwd(),
+    )
+    assert out_import.returncode == 0, out_import.stderr
+    assert out_import.stdout.strip() == "0", out_import.stdout
     out = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True, text=True, env=env, cwd=os.getcwd(),
