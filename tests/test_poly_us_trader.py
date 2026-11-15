@@ -332,6 +332,38 @@ def test_crossvenue_candidate_below_z_gate_rejected(temp_trader):
     assert opp["source"] == "crossvenue"
 
 
+def test_entry_gate_uses_edge_sigma(temp_trader):
+    """A7: the z-gate is scored with the same sigma the edge model used."""
+    from datetime import datetime, timezone, timedelta
+    temp_trader.adjusted_min_z = 0.0
+    end = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    market = {
+        "slug": "btc-sigma-test",
+        "question": "BTC vs strike?",
+        "outcomePrices": ["0.95", "0.05"],
+        "assetPriceTerms": {
+            "asset": {"symbol": "BTC"},
+            "strike": {"value": 100000},
+            "windowEnd": end,
+        },
+    }
+    cv_edge = {"best_edge_cents": 10.0, "ref_prob": 0.97, "best_price": 0.95,
+               "best_side": "yes", "spot": 130000.0, "strike": 100000, "vol": 1.25}
+    seen = {}
+    orig = temp_trader._passes_entry_gates
+
+    def spy(slug, side, terms, strike_val, spot, hours_left, sigma=None):
+        seen["sigma"] = sigma
+        return orig(slug, side, terms, strike_val, spot, hours_left, sigma=sigma)
+
+    with patch("poly_us_trader.crossvenue_edge.evaluate_crossvenue_edge", return_value=cv_edge), \
+         patch("poly_us_trader.crossvenue_edge.get_cached_spot", return_value=130000.0), \
+         patch.object(temp_trader, "_passes_entry_gates", side_effect=spy):
+        opp = temp_trader.evaluate_opportunity(market)
+    assert opp is not None
+    assert seen["sigma"] == 1.25
+
+
 def test_sports_favourite_rejected_unless_unmodelled_allowed(temp_trader, monkeypatch):
     """The fallback path rejects unscoreable markets unless PM_ALLOW_UNMODELLED=true."""
     from datetime import datetime, timezone, timedelta

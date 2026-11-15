@@ -988,7 +988,9 @@ class PolyUSPaperTrader:
         spot = crossvenue_edge.get_cached_spot(symbol) if symbol else None
 
         # 1. Evaluate cross-venue spot price & distributional fair value edge
-        cv_edge = crossvenue_edge.evaluate_crossvenue_edge(market)
+        # One sigma per decision (A7): the edge model and the z-gate below use
+        # the larger of live vol and the adaptive adjusted_sigma.
+        cv_edge = crossvenue_edge.evaluate_crossvenue_edge(market, sigma_floor=self.adjusted_sigma)
         # High-EV favorite hurdle: ref_prob >= MODEL_PROB_MIN (0.96) and favorite band (92c-99c).
         # Edge must clear modelled costs (fee + slippage + margin) — the raw 0.5c hurdle
         # was below any plausible spread/model error (R5).
@@ -999,7 +1001,8 @@ class PolyUSPaperTrader:
                                    + float(getattr(config, "PM_EDGE_MARGIN_CENTS", 0.5)))
             if cv_edge["best_edge_cents"] >= modelled_cost_cents:
                 if not self._passes_entry_gates(slug, cv_edge["best_side"], terms,
-                                                strike_val, spot, hours_left):
+                                                strike_val, spot, hours_left,
+                                                sigma=cv_edge.get("vol")):
                     return None
                 return {
                     "slug": slug,
@@ -1089,7 +1092,8 @@ class PolyUSPaperTrader:
         side, price = candidates[0]
 
         # Same strike-cushion gates as the cross-venue branch (R6).
-        if not self._passes_entry_gates(slug, side, terms, strike_val, spot, hours_left):
+        if not self._passes_entry_gates(slug, side, terms, strike_val, spot, hours_left,
+                                        sigma=(cv_edge or {}).get("vol")):
             return None
 
         # ML fair-value confirmatory gate (opt-in via ML_MODEL_PATH).
@@ -1152,13 +1156,16 @@ class PolyUSPaperTrader:
         }
 
     def _passes_entry_gates(self, slug: str, side: str, terms: dict,
-                            strike_val, spot, hours_left) -> bool:
+                            strike_val, spot, hours_left, sigma=None) -> bool:
         """Strike-cushion gates shared by both entry paths (R6).
 
         2% directional distance check (above/below markets) and the adaptive
         z-gate vs self.adjusted_min_z. Missing model inputs (strike/spot/hours)
         mean the gate cannot score the market, so it passes — the caller decides
         whether unmodelled markets may trade at all (PM_ALLOW_UNMODELLED).
+
+        `sigma` is the annualized vol the caller's edge model used (A7); when
+        omitted the gate falls back to self.adjusted_sigma.
         """
         if not (strike_val and spot and spot > 0):
             return True
@@ -1179,7 +1186,8 @@ class PolyUSPaperTrader:
         if hours_left is not None:
             minutes_left = hours_left * 60.0
             if minutes_left > 0:
-                sigma_per_sqrt_min = self.adjusted_sigma / math.sqrt(525600.0)
+                gate_sigma = float(sigma) if sigma else self.adjusted_sigma
+                sigma_per_sqrt_min = gate_sigma / math.sqrt(525600.0)
                 denom = sigma_per_sqrt_min * math.sqrt(minutes_left)
                 if denom > 0:
                     z = abs(math.log(spot / strike_val)) / denom

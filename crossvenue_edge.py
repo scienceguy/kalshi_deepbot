@@ -28,6 +28,15 @@ KalshiCDF = Sequence[Tuple[float, float]]
 _spot_cache: dict[str, tuple[float, float]] = {}
 _vol_cache: dict[str, tuple[float, float]] = {}
 
+# A7: a cached value may be reused only this long after its last successful
+# fetch. Beyond it the feed is treated as unavailable ("no spot/vol, no trade")
+# instead of silently feeding an arbitrarily old number into edge and z math.
+_SPOT_MAX_AGE_SECONDS = 30.0
+_VOL_MAX_AGE_SECONDS = 600.0
+
+# Resolution sources already logged, so a mismatch warns once per market type.
+_resolution_source_warned: set = set()
+
 
 def get_cached_spot(symbol: str) -> Optional[float]:
     """Fetch spot price for symbol with a 5s cache to avoid HTTP thrashing."""
@@ -42,11 +51,17 @@ def get_cached_spot(symbol: str) -> Optional[float]:
             return spot
     except Exception:
         pass
-    return cached[1] if cached else None
+    if cached and now - cached[0] <= _SPOT_MAX_AGE_SECONDS:  # reviewed: stale spots are dropped, never silently reused (A7)
+        return cached[1]
+    return None
 
 
-def get_cached_vol(symbol: str) -> float:
-    """Fetch annualized composite volatility with a 60s cache to avoid kline REST thrashing."""
+def get_cached_vol(symbol: str) -> Optional[float]:
+    """Fetch annualized composite volatility with a 60s cache to avoid kline REST thrashing.
+
+    Returns None when no value was fetched within _VOL_MAX_AGE_SECONDS; callers
+    must treat that as "no vol, no trade" (A7).
+    """
     now = time.time()
     cached = _vol_cache.get(symbol)
     if cached and now - cached[0] < 60.0:
@@ -60,7 +75,35 @@ def get_cached_vol(symbol: str) -> float:
             return vol
     except Exception:
         pass
-    return cached[1] if cached else 0.60
+    if cached and now - cached[0] <= _VOL_MAX_AGE_SECONDS:  # reviewed: stale vol is dropped, never silently reused (A7)
+        return cached[1]
+    return None
+
+
+def _log_resolution_source(symbol: str, terms: dict) -> None:
+    """Log the market's resolution source; warn once when it is not our USD feed (A7)."""
+    asset_info = terms.get("asset") or {}
+    source = None
+    for container in (asset_info, terms):
+        if not isinstance(container, dict):
+            continue
+        for key in ("source", "resolutionSource", "priceSource"):
+            v = container.get(key)
+            if isinstance(v, str) and v.strip():
+                source = v.strip()
+                break
+        if source:
+            break
+    if not source:
+        return
+    log.info("resolution source for %s: %s", symbol, source)
+    if symbol and symbol.upper() in source.upper():
+        return
+    key = (symbol or "", source)
+    if key not in _resolution_source_warned:
+        _resolution_source_warned.add(key)
+        log.warning("resolution source for %s is not the %sUSDT feed the bot tracks: %s",
+                    symbol, (symbol or "").upper(), source)
 
 
 def extract_asset_and_strike(market: dict) -> tuple[Optional[str], Optional[float], Optional[datetime]]:
@@ -90,8 +133,13 @@ def extract_asset_and_strike(market: dict) -> tuple[Optional[str], Optional[floa
     return symbol, strike_val, end_dt
 
 
-def evaluate_crossvenue_edge(market: dict, spot_override: Optional[float] = None) -> Optional[Dict[str, Any]]:
-    """Evaluate cross-venue fair value edge for a Polymarket crypto market."""
+def evaluate_crossvenue_edge(market: dict, spot_override: Optional[float] = None,
+                             sigma_floor: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """Evaluate cross-venue fair value edge for a Polymarket crypto market.
+
+    `sigma_floor` (the caller's adjusted sigma) unifies the volatility used for
+    the edge and for the cushion z in this one decision: the larger of the live
+    vol and the floor wins (A7)."""
     symbol, strike, end_dt = extract_asset_and_strike(market)
     if not symbol or not strike or not end_dt:
         return None
@@ -108,8 +156,15 @@ def evaluate_crossvenue_edge(market: dict, spot_override: Optional[float] = None
     if spot is None or spot <= 0:
         return None
 
-    # Derive live annualized volatility from composite 1m sigma, falling back to 0.60
+    # Derive live annualized volatility from composite 1m sigma. A stale or
+    # missing vol means the edge cannot be priced honestly (A7).
     vol = get_cached_vol(symbol)
+    if vol is None:
+        log.info("no usable volatility for %s — refusing to price an edge", symbol)
+        return None
+    if sigma_floor is not None and sigma_floor > vol:  # reviewed: one sigma per decision — the larger of live vol and the caller's floor (A7)
+        vol = float(sigma_floor)
+    _log_resolution_source(symbol, market.get("assetPriceTerms") or {})
 
     # Reference Black-Scholes lognormal probability P(S_T >= K)
     ref_prob = gbm_probability_yes_wins(
@@ -171,6 +226,7 @@ def evaluate_crossvenue_edge(market: dict, spot_override: Optional[float] = None
         "spot": spot,
         "strike": strike,
         "minutes_left": minutes_left,
+        "vol": vol,
         "ref_prob": round(ref_prob, 4),
         "cushion_z": round(cushion_z, 3) if cushion_z is not None else None,
         "long_price": long_p,
