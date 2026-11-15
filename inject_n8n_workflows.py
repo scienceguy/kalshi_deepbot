@@ -24,7 +24,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-DB_PATH = os.environ.get("N8N_DB_PATH", "/data/data/com.termux/files/home/.n8n/database.sqlite")
+DB_PATH = os.environ.get("N8N_DB_PATH", os.path.expanduser("~/.n8n/database.sqlite"))
 PROJECT_ID = os.environ.get("N8N_PROJECT_ID", "Tnj4bqvQK0YrKDi3")
 USER_ID = os.environ.get("N8N_USER_ID", "8479b7c4-cebe-4ef5-807e-9cb8e6f2f773")
 

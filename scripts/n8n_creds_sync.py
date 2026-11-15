@@ -34,9 +34,9 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-STORE = Path(os.environ.get("BW_SECRET_STORE", "/data/data/com.termux/files/home/.secrets/bw"))
-N8N_DB = Path(os.environ.get("N8N_DB_PATH", "/data/data/com.termux/files/home/.n8n/database.sqlite"))
-N8N_CONFIG = Path(os.environ.get("N8N_CONFIG_PATH", "/data/data/com.termux/files/home/.n8n/config"))
+STORE = Path(os.environ.get("BW_SECRET_STORE", os.path.expanduser("~/.secrets/bw")))
+N8N_DB = Path(os.environ.get("N8N_DB_PATH", os.path.expanduser("~/.n8n/database.sqlite")))
+N8N_CONFIG = Path(os.environ.get("N8N_CONFIG_PATH", os.path.expanduser("~/.n8n/config")))
 
 # How each secret is presented as an n8n httpHeaderAuth credential.
 # Match is by lowercase substring of the Bitwarden item name; first hit wins.

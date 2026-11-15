@@ -29,8 +29,8 @@ if not _MP:
     for _p in (
         "/usr/local/bin/mempalace",
         "/usr/bin/mempalace",
-        "/data/data/com.termux/files/home/bin/mempalace",
-        "/data/data/com.termux/files/home/.local/bin/mempalace",
+        os.path.expanduser("~/bin/mempalace"),
+        os.path.expanduser("~/.local/bin/mempalace"),
     ):
         if os.path.isfile(_p) and os.access(_p, os.X_OK):
             _MP = _p
@@ -40,7 +40,7 @@ if not _MP_TMP or not os.path.isdir(_MP_TMP):
     import tempfile
     _candidates = [
         str(Path.home() / "tmp" / "opencode"),
-        "/data/data/com.termux/files/usr/tmp/opencode",
+        "/tmp/opencode",
         tempfile.gettempdir(),
     ]
     for _c in _candidates:
@@ -64,9 +64,9 @@ def _mp_available() -> bool:
 def _mp(*args):
     import shlex
     if not _mp_available():
-        raise RuntimeError("mempalace CLI not found (tried PATH candidates and /data/data/com.termux/files/home/bin/mempalace, /data/data/com.termux/files/home/.local/bin/mempalace)")
+        raise RuntimeError("mempalace CLI not found (tried PATH, /usr/local/bin, /usr/bin and ~/bin, ~/.local/bin)")
     quoted = [shlex.quote(a) for a in args]
-    # /tmp is NOT writable on this Termux/proot setup — use the approved temp dir.
+    # Use the approved temp dir for mempalace CLI invocations.
     cmd = "cd " + _MP_TMP + " && " + _MP + " " + " ".join(quoted)
     return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=30)
 

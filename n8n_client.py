@@ -118,7 +118,7 @@ def load_api_key() -> Optional[str]:
     key_file = Path(
         os.environ.get(
             "N8N_API_KEY_FILE",
-            "/data/data/com.termux/files/home/.n8n/n8n_api_key.txt",
+            os.path.expanduser("~/.secrets/n8n_api_key"),
         )
     )
     api_key = _read_api_key_file(key_file)
@@ -130,7 +130,7 @@ def load_api_key() -> Optional[str]:
     key_file = Path(
         os.environ.get(
             "N8N_PROGRAMMATIC_API_KEY_FILE",
-            "/data/data/com.termux/files/home/n8n-programmatic-api-key.txt",
+            os.path.expanduser("~/n8n-programmatic-api-key.txt"),
         )
     )
     return _read_api_key_file(key_file)

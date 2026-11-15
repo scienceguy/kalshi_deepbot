@@ -7,7 +7,7 @@ routes settlement P&L through n8n webhooks.
 
 ## System constraints (all agents)
 
-- `/tmp` is NOT writable on this termux/proot setup (restricted mount / Android). Never write temp files to `/tmp`. Use `$TMPDIR` (`/data/data/com.termux/files/home/tmp`) or `/data/data/com.termux/files/usr/tmp/opencode` for any temporary writes. Writing to `/tmp` fails with "Permission denied" every time — do not retry there.
+- Temp files go to `$TMPDIR` or `/tmp/opencode` (not bare `/tmp`). On the old Termux box `/tmp` was a restricted mount — that constraint no longer applies on the VPS.
 
 ## Repo layout
 
@@ -48,7 +48,7 @@ routes settlement P&L through n8n webhooks.
 ## How to run
 
 ```bash
-cd /data/data/com.termux/files/home/kalshi_deepbot
+cd /opt/superbot
 
 # 1. Copy env + fill credentials
 cp .env.example .env
@@ -380,7 +380,7 @@ Coordination (logstream):
 ## CONCURRENT AGENTS — READ BEFORE ANY GIT COMMAND
 
 **More than one agent edits this checkout at the same time.** There is a single
-working tree (`/data/data/com.termux/files/home/kalshi_deepbot`) shared by every
+working tree (`/opt/superbot`) shared by every
 agent, and all of them push to the same `main`. Treat the tree as shared state.
 
 Rules:

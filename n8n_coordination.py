@@ -23,7 +23,7 @@ import sys
 from datetime import datetime, timezone
 
 # Add mempalace to path so we can use its logstream CLI via subprocess
-MEMPALACE_HOME = os.environ.get("MEMPALACE_HOME", "/data/data/com.termux/files/home/mempalace")
+MEMPALACE_HOME = os.environ.get("MEMPALACE_HOME", os.path.expanduser("~/mempalace"))
 
 
 def log(msg):

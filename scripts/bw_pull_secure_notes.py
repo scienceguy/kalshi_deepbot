@@ -21,8 +21,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-STORE = Path(os.environ.get("BW_SECRET_STORE", "/data/data/com.termux/files/home/.secrets/bw"))
-SUPABASE_KEY_FILE = Path(os.environ.get("SUPABASE_KEY_FILE", "/data/data/com.termux/files/home/.secrets/supabase_service_key"))
+STORE = Path(os.environ.get("BW_SECRET_STORE", os.path.expanduser("~/.secrets/bw")))
+SUPABASE_KEY_FILE = Path(os.environ.get("SUPABASE_KEY_FILE", os.path.expanduser("~/.secrets/supabase_service_key")))
 # Bitwarden item name -> n8n credential name, when they differ.
 NAME_ALIASES = {"Supabase Service Key": "Supabase API Key"}
 
