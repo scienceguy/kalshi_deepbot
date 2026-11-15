@@ -2,6 +2,7 @@
 import pytest
 from risk import RiskManager, RiskState
 import config
+import fees
 
 
 def test_risk_initialize():
@@ -48,6 +49,8 @@ def test_max_trade_dollars_skips_ceiling_when_mtm_none():
     config.MIN_CASH_ABSOLUTE = 0.0
     config.PER_TRADE_PCT = 0.5
     config.MAX_TRADE_DOLLARS = 50.0
+    config.MAX_POSITION_TOTAL_PCT = 1.0  # disable total cap for this test
+    config.MAX_POSITION_PER_TICKER_PCT = 1.0  # disable ticker cap for this test
     r = RiskManager()
     r.state.start_balance = 100.0
     r.state.session_high = 100.0
@@ -65,6 +68,8 @@ def test_max_trade_dollars_uses_mtm_for_ceiling_when_given():
     config.MIN_CASH_ABSOLUTE = 0.0
     config.PER_TRADE_PCT = 0.5
     config.MAX_TRADE_DOLLARS = 50.0
+    config.MAX_POSITION_TOTAL_PCT = 1.0  # disable total cap for this test
+    config.MAX_POSITION_PER_TICKER_PCT = 1.0  # disable ticker cap for this test
     r = RiskManager()
     r.state.start_balance = 100.0
     r.state.session_high = 100.0
@@ -184,3 +189,297 @@ def test_risk_state_persists_across_restart(monkeypatch):
     assert r2.state.cooldown_started_at == pytest.approx(1000.0)
     assert r2.state.halted_at == pytest.approx(1000.0)
     assert r.state.consecutive_losses == 3  # consecutive losses preserved across daily resets
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PILLAR B - Financial Guardrails Tests (Red-first)
+# ══════════════════════════════════════════════════════════════════════
+
+def test_daily_loss_circuit_breaker_halts_trading(monkeypatch):
+    """Daily loss circuit breaker: halt trading when daily P&L exceeds limit."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "DAILY_LOSS_LIMIT_PCT", 0.05)  # 5% daily loss limit
+    
+    r = RiskManager()
+    r.initialize(100.0)  # $100 starting balance
+    
+    # First, add a small loss (within limit)
+    r.update_daily_pnl(-3.0)  # $3 loss (3% of $100)
+    assert r.state.daily_pnl == -3.0
+    assert r.state.halted is False
+    
+    # Add another loss that breaches the 5% limit ($5)
+    halted, reason = r.update_daily_pnl(-3.0)  # Total $6 loss (6% of $100)
+    assert halted is True
+    assert "daily loss limit" in reason
+    assert r.state.halted is True
+    assert r.state.halt_reason == reason
+    
+    # Subsequent checks should also block
+    allowed, reason = r.check(100.0, 0.0, 1.0, "TEST", total_value=100.0)
+    assert allowed is False
+    assert "daily loss circuit breaker" in reason
+
+
+def test_daily_loss_circuit_breaker_resets_at_midnight(monkeypatch):
+    """Daily P&L resets at midnight UTC."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "DAILY_LOSS_LIMIT_PCT", 0.05)
+    
+    r = RiskManager()
+    r.initialize(100.0)
+    
+    # Add a loss that would trigger halt
+    r.update_daily_pnl(-6.0)
+    assert r.state.halted is True
+    
+    # Fast-forward past midnight (24 hours)
+    clock["t"] += 86400 + 1
+    r.update_daily_pnl(0.0)  # Just check
+    
+    assert r.state.daily_pnl == 0.0
+    assert r.state.halted is False  # Halt should be lifted after reset
+    assert r.state.daily_pnl_reset_ts == clock["t"]
+
+
+def test_max_position_per_ticker_cap(monkeypatch):
+    """Max exposure per ticker caps at MAX_POSITION_PER_TICKER_PCT of portfolio."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "MAX_POSITION_PER_TICKER_PCT", 0.15)  # 15% per ticker
+    monkeypatch.setattr(config, "MAX_POSITION_TOTAL_PCT", 0.30)
+    monkeypatch.setattr(config, "EXPOSURE_CEILING_PCT", 0.30)
+    monkeypatch.setattr(config, "CASH_FLOOR_PCT", 0.70)
+    monkeypatch.setattr(config, "MIN_CASH_ABSOLUTE", 0.0)
+    monkeypatch.setattr(config, "PER_TRADE_PCT", 1.0)  # disable per-trade cap
+    monkeypatch.setattr(config, "MAX_TRADE_DOLLARS", 1000.0)
+    
+    r = RiskManager()
+    r.initialize(100.0)
+    
+    # Add some existing exposure for KXBTC15M
+    r.update_ticker_exposure("KXBTC15M-26NOV15-15", 10.0)
+    assert r.state.ticker_exposure["KXBTC15M-26NOV15-15"] == 10.0
+    assert r.state.total_exposure == 10.0
+    
+    # Try to add more - should be capped at 15% of $100 = $15 total
+    # Already have $10, so room is $5
+    max_trade = r.max_trade_dollars(100.0, 10.0, ticker="KXBTC15M-26NOV15-15")
+    assert max_trade == 5.0  # $15 cap - $10 existing = $5 room
+    
+    # Different ticker should have its own cap
+    max_trade2 = r.max_trade_dollars(100.0, 10.0, ticker="KXETH15M-26NOV15-15")
+    assert max_trade2 == 15.0  # $15 cap for new ticker
+
+
+def test_max_total_position_cap(monkeypatch):
+    """Total open exposure caps at MAX_POSITION_TOTAL_PCT of portfolio."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "MAX_POSITION_PER_TICKER_PCT", 1.0)  # disable ticker cap
+    monkeypatch.setattr(config, "MAX_POSITION_TOTAL_PCT", 0.30)  # 30% total
+    monkeypatch.setattr(config, "EXPOSURE_CEILING_PCT", 0.30)
+    monkeypatch.setattr(config, "CASH_FLOOR_PCT", 0.70)
+    monkeypatch.setattr(config, "MIN_CASH_ABSOLUTE", 0.0)
+    monkeypatch.setattr(config, "PER_TRADE_PCT", 1.0)  # disable per-trade cap
+    monkeypatch.setattr(config, "MAX_TRADE_DOLLARS", 1000.0)
+    
+    r = RiskManager()
+    r.initialize(100.0)
+    
+    # Add exposure across multiple tickers
+    r.update_ticker_exposure("KXBTC15M-26NOV15-15", 10.0)
+    r.update_ticker_exposure("KXETH15M-26NOV15-15", 10.0)
+    assert r.state.total_exposure == 20.0
+    
+    # Total cap is 30% of $100 = $30. Already used $20, so $10 room
+    max_trade = r.max_trade_dollars(100.0, 20.0, ticker="KXBTC15M-26NOV15-15")
+    assert max_trade == 10.0  # $30 total cap - $20 existing = $10 room
+
+
+def test_kelly_sizing_with_min_ev_edge(monkeypatch):
+    """Kelly sizing respects MIN_EV_EDGE_PCT - rejects trades with insufficient edge."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "KELLY_FRACTION", 0.25)
+    monkeypatch.setattr(config, "MIN_EV_EDGE_PCT", 0.05)  # 5% min EV edge
+    monkeypatch.setattr(fees, "FEE_RATE", 0.07)
+    
+    r = RiskManager()
+    r.initialize(100.0)
+    
+    # Test case: entry at 75c, win_prob = 0.80
+    # Profit = 25c, Loss = 75c, b = 25/75 = 1/3
+    # Kelly = (0.80 * 1/3 - 0.20) / (1/3) = 0.0667
+    # Fractional Kelly (0.25) = 0.0167 * $100 = $1.67
+    # EV = 0.80 * 0.25 - 0.20 * 0.75 - fee = 0.20 - 0.15 - 0.013 = 0.037 < 0.05
+    kelly = r.kelly_size(0.80, 75, 100.0)
+    assert kelly == 0.0  # Below min EV edge
+    
+    # Test case: entry at 50c, win_prob = 0.60 (sufficient edge)
+    # Profit = 50c, Loss = 50c, b = 1.0
+    # EV = 0.60 * 0.50 - 0.40 * 0.50 - fee = 0.10 - 0.0175 = 0.0825 > 0.05
+    kelly = r.kelly_size(0.60, 50, 100.0)
+    assert kelly > 0.0  # Should be positive
+
+
+def test_liquidity_check_rejects_wide_spread(monkeypatch):
+    """Liquidity check rejects markets with spread > MAX_SPREAD_CENTS."""
+    import risk
+    from market_finder import MarketInfo
+    
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "MAX_SPREAD_CENTS", 10)
+    monkeypatch.setattr(config, "MIN_DEPTH_CONTRACTS", 10.0)
+    
+    r = RiskManager()
+    r.initialize(100.0)
+    
+    # Market with wide spread (15c > 10c max)
+    market = MarketInfo(
+        ticker="KXBTC15M-26NOV15-15",
+        series="KXBTC15M",
+        close_time=1000000.0,
+        strike_type="CE",
+        strike=50000.0,
+        yes_bid=70, yes_ask=85,  # 15c spread
+        no_bid=15, no_ask=30,
+        yes_liquidity=100, no_liquidity=100,
+        minutes_left=10.0,
+    )
+    
+    ok, reason = r.check_liquidity(market, "yes")
+    assert ok is False
+    assert "spread 15c > max 10c" in reason
+    
+    # Market with tight spread (5c)
+    market.yes_bid = 72
+    market.yes_ask = 77
+    ok, reason = r.check_liquidity(market, "yes")
+    assert ok is True
+
+
+def test_liquidity_check_rejects_thin_depth(monkeypatch):
+    """Liquidity check rejects markets with depth < MIN_DEPTH_CONTRACTS."""
+    import risk
+    from market_finder import MarketInfo
+    
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "MAX_SPREAD_CENTS", 10)
+    monkeypatch.setattr(config, "MIN_DEPTH_CONTRACTS", 10.0)
+    
+    r = RiskManager()
+    r.initialize(100.0)
+    
+    # Market with thin depth (5 < 10 min)
+    market = MarketInfo(
+        ticker="KXBTC15M-26NOV15-15",
+        series="KXBTC15M",
+        close_time=1000000.0,
+        strike_type="CE",
+        strike=50000.0,
+        yes_bid=72, yes_ask=77,
+        no_bid=23, no_ask=28,
+        yes_liquidity=5, no_liquidity=100,  # Thin YES depth
+        minutes_left=10.0,
+    )
+    
+    ok, reason = r.check_liquidity(market, "yes")
+    assert ok is False
+    assert "depth 5 < min 10.0" in reason
+    
+    # Market with sufficient depth
+    market.yes_liquidity = 15
+    ok, reason = r.check_liquidity(market, "yes")
+    assert ok is True
+
+
+def test_liquidity_check_rejects_missing_book(monkeypatch):
+    """Liquidity check rejects markets with missing bid/ask."""
+    import risk
+    from market_finder import MarketInfo
+    
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "MAX_SPREAD_CENTS", 10)
+    monkeypatch.setattr(config, "MIN_DEPTH_CONTRACTS", 10.0)
+    
+    r = RiskManager()
+    r.initialize(100.0)
+    
+    # Market with missing ask
+    market = MarketInfo(
+        ticker="KXBTC15M-26NOV15-15",
+        series="KXBTC15M",
+        close_time=1000000.0,
+        strike_type="CE",
+        strike=50000.0,
+        yes_bid=72, yes_ask=None,
+        no_bid=23, no_ask=28,
+        yes_liquidity=100, no_liquidity=100,
+        minutes_left=10.0,
+    )
+    
+    ok, reason = r.check_liquidity(market, "yes")
+    assert ok is False
+    assert "no yes book" in reason
+
+
+def test_update_ticker_exposure_removes_when_zero(monkeypatch):
+    """update_ticker_exposure removes ticker when exposure goes to zero."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    
+    r = RiskManager()
+    r.initialize(100.0)
+    
+    r.update_ticker_exposure("KXBTC15M-26NOV15-15", 10.0)
+    assert "KXBTC15M-26NOV15-15" in r.state.ticker_exposure
+    
+    # Reduce to zero
+    r.update_ticker_exposure("KXBTC15M-26NOV15-15", -10.0)
+    assert "KXBTC15M-26NOV15-15" not in r.state.ticker_exposure
+    assert r.state.total_exposure == 0.0
+
+
+def test_check_ticker_exposure_blocks_over_cap(monkeypatch):
+    """check_ticker_exposure blocks when additional exposure would exceed cap."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "MAX_POSITION_PER_TICKER_PCT", 0.15)
+    monkeypatch.setattr(config, "MAX_POSITION_TOTAL_PCT", 0.30)
+    
+    r = RiskManager()
+    r.initialize(100.0)
+    
+    r.update_ticker_exposure("KXBTC15M-26NOV15-15", 10.0)
+    
+    # Try to add $10 more - would exceed $15 cap
+    ok, reason = r.check_ticker_exposure("KXBTC15M-26NOV15-15", 10.0, 100.0)
+    assert ok is False
+    assert "ticker exposure cap" in reason
+    
+    # Add $5 - should be OK ($10 + $5 = $15 cap)
+    ok, reason = r.check_ticker_exposure("KXBTC15M-26NOV15-15", 5.0, 100.0)
+    assert ok is True

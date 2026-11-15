@@ -40,6 +40,7 @@ class TradeSignal:
     market:      MarketInfo
     strength:    float = 0.0
     confidence:  float = 1.0
+    win_prob:    float = 0.5  # Model win probability for Kelly sizing (Pillar B)
 
     @property
     def is_trade(self) -> bool:
@@ -404,6 +405,7 @@ def _evaluate_common(
     minutes_in: float,
     source: str,
     strength: float,
+    win_prob: float = 0.5,
 ):
     """
     Shared evaluation logic. Returns TradeSignal or None.
@@ -414,7 +416,7 @@ def _evaluate_common(
     n = _size(ep, max_dollars, max_contracts) if ep > 0 else 0
 
     def _pass(r, p=ep, count=n, s=eval_side):
-        return TradeSignal("PASS", s, p, count, 0.0, r, market)
+        return TradeSignal("PASS", s, p, count, 0.0, r, market, win_prob=win_prob)
 
     # ── ALLOW_NO_BUYS gate ──────────────────────────────────────────────
     # reviewed: enforce ALLOW_NO_BUYS=False on all evaluation paths
@@ -496,7 +498,7 @@ def _evaluate_common(
         f"{minutes_in:.1f}min {n:.4f}x@{ep}c=${risk_:.2f}"
     )
     log.info("SIGNAL: %s — %s", market.ticker, reason)
-    return TradeSignal(direction, side, ep, n, risk_, reason, market, strength, confidence)
+    return TradeSignal(direction, side, ep, n, risk_, reason, market, strength, confidence, win_prob=win_prob)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -522,7 +524,7 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
     n_hedge = _size(p_hedge, max_dollars, max_contracts) if p_hedge > 0 else 0
 
     def _pass(r, s="no", p=p_hedge, count=n_hedge):
-        results.append(TradeSignal("PASS", s, p, count, 0.0, r, market))
+        results.append(TradeSignal("PASS", s, p, count, 0.0, r, market, win_prob=0.5))
 
     minutes_in = 15.0 - market.minutes_left
     if minutes_in < config.ENTRY_WINDOW_START_MIN:
@@ -576,7 +578,10 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
         f"{minutes_in:.1f}min {n:.4f}x@{ep}c=${risk_:.2f}"
     )
     log.info("SIGNAL: %s — %s", market.ticker, reason)
-    results.append(TradeSignal("NO", "no", ep, n, risk_, reason, market, strength, confidence))
+    # For hedge, win_prob is P(NO wins) = 1 - P(YES wins). 
+    # Approximate using mid_yes: if mid_yes is low, P(YES wins) is low, so P(NO wins) is high
+    hedge_win_prob = 1.0 - (market.mid_yes or 50.0) / 100.0
+    results.append(TradeSignal("NO", "no", ep, n, risk_, reason, market, strength, confidence, win_prob=hedge_win_prob))
     return results
 
 
@@ -703,6 +708,7 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
                 f"Model prob {trade_prob*100:.0f}% below high-EV hurdle "
                 f"{config.MODEL_PROB_MIN*100:.0f}% (ask={entry_c}c)",
                 market,
+                win_prob=trade_prob,
             ))
             continue
         edge = edge_cents(trade_prob, entry_c, fee_cents)
@@ -718,6 +724,7 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
                 f"Edge {edge:+.1f}c below min {config.MODEL_MIN_EDGE_CENTS}c "
                 f"(prob={trade_prob*100:.0f}% ask={entry_c}c fee={fee_cents:.1f}c)",
                 market,
+                win_prob=trade_prob,
             ))
             continue
 
@@ -725,6 +732,7 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
             market, max_dollars, max_contracts, bullish,
             entry_min, entry_max, minutes_in,
             "TAKER_FAVOURITE", strength,
+            win_prob=trade_prob,
         )
         if sig and sig.is_trade:
             results.append(sig)

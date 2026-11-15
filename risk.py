@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Tuple
 
 import config
+import fees
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,13 @@ class RiskState:
     cooldown_started_at: float = 0.0
     halted_at: float = 0.0
     market_daily_losses: dict = field(default_factory=dict)
+    # Daily P&L tracking for daily loss circuit breaker (Pillar B)
+    daily_pnl: float = 0.0
+    daily_pnl_reset_ts: float = 0.0
+    # Per-ticker exposure tracking (Pillar B)
+    ticker_exposure: dict = field(default_factory=dict)
+    # Total open exposure (Pillar B)
+    total_exposure: float = 0.0
 
     @property
     def peak(self) -> float:
@@ -67,12 +75,21 @@ class RiskManager:
     def initialize(self, starting_balance: float):
         self.state.start_balance = starting_balance
         self.state.session_high = starting_balance
+        self.state.daily_pnl = 0.0
+        self.state.daily_pnl_reset_ts = time.time()
+        self.state.ticker_exposure = {}
+        self.state.total_exposure = 0.0
         log.info(
             "Risk: start=$%.2f | floor=%.0f%% cash | ceiling=%.0f%% exposure "
-            "| %.0f%% per-trade | halt at -%.0f%%",
+            "| %.0f%% per-trade | halt at -%.0f%% | daily_loss_limit=%.0f%% | max_ticker=%.0f%% | max_total=%.0f%% | kelly=%.0f%% | min_ev=%.0f%%",
             starting_balance,
             config.CASH_FLOOR_PCT * 100, config.EXPOSURE_CEILING_PCT * 100,
             config.PER_TRADE_PCT * 100, config.DRAWDOWN_HALT_PCT * 100,
+            config.DAILY_LOSS_LIMIT_PCT * 100,
+            config.MAX_POSITION_PER_TICKER_PCT * 100,
+            config.MAX_POSITION_TOTAL_PCT * 100,
+            config.KELLY_FRACTION * 100,
+            config.MIN_EV_EDGE_PCT * 100,
         )
 
     def update_balance(self, cash: float, exposure: float = 0.0,
@@ -140,6 +157,147 @@ class RiskManager:
             self.state.halt_reason = ""
             log.info("✅ Risk halt auto-resumed after %d min (HALT_AUTO_RESUME=true; peak $%.2f)",
                      config.HALT_MIN_MINUTES, peak)
+
+    def update_daily_pnl(self, pnl_delta: float) -> Tuple[bool, str]:
+        """Update daily P&L and check daily loss circuit breaker.
+        
+        Returns (halted, reason). If halted is True, trading should stop and
+        open orders should be cancelled.
+        """
+        # Reset daily P&L at midnight UTC
+        now = time.time()
+        if now - self.state.daily_pnl_reset_ts >= 86400:  # 24 hours
+            if self.state.daily_pnl != 0.0:
+                log.info("📅 Daily P&L reset: was $%.2f", self.state.daily_pnl)
+            self.state.daily_pnl = 0.0
+            self.state.daily_pnl_reset_ts = now
+            # A new day starts fresh: clear a daily-loss halt so trading can resume
+            if self.state.halted and "daily loss" in self.state.halt_reason:
+                self.state.halted = False
+                self.state.halted_at = 0.0
+                self.state.halt_reason = ""
+
+        self.state.daily_pnl += pnl_delta
+        daily_limit = self.state.start_balance * config.DAILY_LOSS_LIMIT_PCT
+        
+        if self.state.daily_pnl <= -daily_limit:
+            if not self.state.halted:
+                self.state.halted = True
+                self.state.halted_at = now
+                self.state.halt_reason = (
+                    f"daily loss limit: ${self.state.daily_pnl:.2f} <= -${daily_limit:.2f} "
+                    f"({config.DAILY_LOSS_LIMIT_PCT*100:.0f}% of ${self.state.start_balance:.2f})"
+                )
+                log.warning("🛑 DAILY LOSS CIRCUIT BREAKER — %s. Halt trading & cancel open orders.",
+                            self.state.halt_reason)
+                return True, self.state.halt_reason
+        return False, "ok"
+
+    def kelly_size(self, win_prob: float, entry_price_cents: int, 
+                   total_balance: float) -> float:
+        """Calculate fractional Kelly bet size in dollars.
+        
+        Kelly fraction = (p * b - q) / b where:
+        - p = win probability
+        - q = 1 - p = loss probability  
+        - b = net odds (profit/loss ratio) = (100 - entry) / entry for binary
+        
+        For Kalshi binary: if we buy YES at 75c, profit = 25c, loss = 75c
+        b = 25/75 = 1/3
+        Kelly = (p * 1/3 - (1-p)) / (1/3) = p - 3(1-p) = 4p - 3
+        
+        Returns dollar amount capped by fractional Kelly and min EV edge.
+        """
+        if entry_price_cents <= 0 or entry_price_cents >= 100:
+            return 0.0
+        
+        # Net odds: profit/loss ratio
+        profit_cents = 100 - entry_price_cents
+        loss_cents = entry_price_cents
+        if loss_cents <= 0:
+            return 0.0
+        b = profit_cents / loss_cents
+        
+        # Kelly formula: f = (p * b - q) / b = p - q/b
+        p = win_prob
+        q = 1.0 - p
+        kelly_fraction = (p * b - q) / b if b > 0 else 0.0
+        
+        # Apply fractional Kelly multiplier
+        kelly_fraction *= config.KELLY_FRACTION
+        
+        # Must have positive edge after fees
+        # Net EV per contract = p * profit - q * loss - fee
+        fee_per_contract = fees.FEE_RATE * (entry_price_cents / 100.0) * (profit_cents / 100.0)
+        net_ev = p * (profit_cents / 100.0) - q * (loss_cents / 100.0) - fee_per_contract
+        
+        if net_ev < config.MIN_EV_EDGE_PCT:
+            log.debug("Kelly rejected: net EV $%.4f < min edge $%.4f", net_ev, config.MIN_EV_EDGE_PCT)
+            return 0.0
+        
+        # Kelly bet in dollars
+        kelly_dollars = max(0.0, kelly_fraction * total_balance)
+        
+        # Cap at MAX_TRADE_DOLLARS
+        return min(kelly_dollars, config.MAX_TRADE_DOLLARS)
+
+    def update_ticker_exposure(self, ticker: str, exposure_delta: float):
+        """Update per-ticker exposure tracking."""
+        current = self.state.ticker_exposure.get(ticker, 0.0)
+        new_exposure = current + exposure_delta
+        if new_exposure <= 0:
+            self.state.ticker_exposure.pop(ticker, None)
+        else:
+            self.state.ticker_exposure[ticker] = new_exposure
+        # Update total exposure
+        self.state.total_exposure = sum(self.state.ticker_exposure.values())
+
+    def check_ticker_exposure(self, ticker: str, additional_exposure: float, 
+                               total_portfolio: float) -> Tuple[bool, str]:
+        """Check if adding exposure would exceed per-ticker or total caps."""
+        # Per-ticker cap
+        current_ticker_exp = self.state.ticker_exposure.get(ticker, 0.0)
+        new_ticker_exp = current_ticker_exp + additional_exposure
+        ticker_cap = total_portfolio * config.MAX_POSITION_PER_TICKER_PCT
+        if new_ticker_exp > ticker_cap:
+            return False, (
+                f"ticker exposure cap: ${new_ticker_exp:.2f} > ${ticker_cap:.2f} "
+                f"({config.MAX_POSITION_PER_TICKER_PCT*100:.0f}% of ${total_portfolio:.2f})"
+            )
+        
+        # Total exposure cap
+        new_total_exp = self.state.total_exposure + additional_exposure
+        total_cap = total_portfolio * config.MAX_POSITION_TOTAL_PCT
+        if new_total_exp > total_cap:
+            return False, (
+                f"total exposure cap: ${new_total_exp:.2f} > ${total_cap:.2f} "
+                f"({config.MAX_POSITION_TOTAL_PCT*100:.0f}% of ${total_portfolio:.2f})"
+            )
+        
+        return True, "ok"
+
+    def check_liquidity(self, market, side: str) -> Tuple[bool, str]:
+        """Check orderbook spread and depth for liquidity protection."""
+        if side == "yes":
+            bid = market.yes_bid
+            ask = market.yes_ask
+            depth = market.yes_liquidity or 0
+        else:
+            bid = market.no_bid
+            ask = market.no_ask
+            depth = market.no_liquidity or 0
+        
+        if bid is None or ask is None:
+            return False, f"no {side} book (bid={bid}, ask={ask})"
+        
+        spread = ask - bid
+        if spread > config.MAX_SPREAD_CENTS:
+            return False, f"spread {spread}c > max {config.MAX_SPREAD_CENTS}c"
+        
+        if depth < config.MIN_DEPTH_CONTRACTS:
+            return False, f"depth {depth} < min {config.MIN_DEPTH_CONTRACTS}"
+        
+        return True, "ok"
 
     def record_trade_outcome(self, won: bool, profit: float):
         """Track consecutive losses for cooldown logic (from Momentum v16)."""
@@ -252,7 +410,10 @@ class RiskManager:
     def max_trade_dollars(self, cash: float, exposure: float,
                           resting_orders_value: float = 0.0,
                           paper: bool = False,
-                          mark_to_market_exposure: float = None) -> float:
+                          mark_to_market_exposure: float = None,
+                          ticker: str = None,
+                          win_prob: float = None,
+                          entry_price_cents: int = None) -> float:
         """
         Maximum we can spend on one trade right now.
         Returns 0.0 if no trades should be placed.
@@ -264,6 +425,9 @@ class RiskManager:
         If mark_to_market_exposure is provided, it's used for the exposure
         ceiling check (more accurate than cost-basis). The cost-basis exposure
         is still used for per-trade cap calculations which are cash-based.
+        
+        If ticker, win_prob, entry_price_cents are provided, applies Kelly sizing
+        with min EV edge (Pillar B).
         """
         # Paper-only guard bypass (PAPER_GUARDS_ENABLED=false); live keeps the
         # drawdown halt and the consecutive-loss cooldown.
@@ -316,22 +480,50 @@ class RiskManager:
             # Per-trade cap (based on cash, not exposure)
             per_trade_cap = cash * per_trade_pct
 
+        # Kelly sizing with min EV edge (Pillar B)
+        if ticker and win_prob is not None and entry_price_cents is not None:
+            kelly_dollars = self.kelly_size(win_prob, entry_price_cents, portfolio)
+            per_trade_cap = min(per_trade_cap, kelly_dollars)
+
+        # Per-ticker exposure cap (Pillar B)
+        if ticker:
+            ticker_exp = self.state.ticker_exposure.get(ticker, 0.0)
+            ticker_cap = cash * config.MAX_POSITION_PER_TICKER_PCT
+            ticker_room = max(0.0, ticker_cap - ticker_exp)
+            exposure_room = min(exposure_room, ticker_room)
+        
+        # Total exposure cap (Pillar B)
+        total_exp_cap = cash * config.MAX_POSITION_TOTAL_PCT
+        total_exp_room = max(0.0, total_exp_cap - self.state.total_exposure)
+        exposure_room = min(exposure_room, total_exp_room)
+
         return min(exposure_room, cash_room, per_trade_cap, config.MAX_TRADE_DOLLARS)
 
     def check(self, cash: float, exposure: float,
               trade_cost: float, ticker: str,
               total_value: float = None,
               resting_orders_value: float = 0.0,
-              paper: bool = False) -> Tuple[bool, str]:
+              paper: bool = False,
+              win_prob: float = None,
+              entry_price_cents: int = None,
+              market=None) -> Tuple[bool, str]:
         """Final pre-order check. Returns (allowed, reason)."""
         # Paper-only guard bypass (PAPER_GUARDS_ENABLED=false); the live path
         # still enforces the halt, cooldown and per-market loss limit.
         if not _paper_guards_relaxed():  # reviewed: bypass is paper-only, live always runs the guards
+            # Daily loss circuit breaker takes precedence over generic halt message
+            if self.state.halted and "daily loss" in self.state.halt_reason:
+                return False, f"daily loss circuit breaker: {self.state.halt_reason}"
             if self.state.halted:  # reviewed: live drawdown halt blocks every new order
                 return False, f"session halted ({self.state.halt_reason})"
 
             if self._loss_cooldown_active():  # reviewed: live cooling-off after 3 straight losses, expires LOSS_COOLDOWN_MINUTES after it started
                 return False, "consecutive loss cooldown"
+
+            # Daily loss circuit breaker (Pillar B)
+            halted, reason = self.update_daily_pnl(0.0)  # Just check, don't add P&L
+            if halted:
+                return False, f"daily loss circuit breaker: {reason}"
 
             # Per-market daily loss limit check. The config value is a fraction of
             # total portfolio value (cash + exposure), so it scales with the full
@@ -343,8 +535,18 @@ class RiskManager:
             if self.market_loss_exceeded(ticker, market_limit):  # reviewed: live per-market realized+unrealized loss cap
                 return False, f"market daily loss limit reached: {self.market_loss_total(ticker):.2f} >= {market_limit:.2f}"
 
+            # Liquidity/slippage protection (Pillar B)
+            if market:
+                liq_ok, liq_reason = self.check_liquidity(market, "yes" if "YES" in ticker.upper() else "no")
+                if not liq_ok:
+                    return False, f"liquidity check failed: {liq_reason}"
+
         mtm_exp = (total_value - cash) if (total_value is not None and cash is not None) else None
-        max_trade = self.max_trade_dollars(cash, exposure, resting_orders_value, paper=paper, mark_to_market_exposure=mtm_exp)
+        max_trade = self.max_trade_dollars(
+            cash, exposure, resting_orders_value, paper=paper, 
+            mark_to_market_exposure=mtm_exp,
+            ticker=ticker, win_prob=win_prob, entry_price_cents=entry_price_cents
+        )
 
         if trade_cost > max_trade:
             portfolio = cash + exposure
