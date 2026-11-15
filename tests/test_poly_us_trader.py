@@ -1688,3 +1688,26 @@ def test_status_does_not_take_the_lock(tmp_path, monkeypatch, capsys):
         os.close(fd)
     out = capsys.readouterr().out
     assert "Total Equity" in out
+
+
+# ── A10: watchdog pings during long backoff sleeps ──────────────────────────
+
+def test_backoff_sleep_pings_watchdog(monkeypatch):
+    """A10: a 300s backoff sleep pings WATCHDOG=1 at least once per 60s."""
+    import poly_us_trader
+    events = []
+    monkeypatch.setattr(poly_us_trader.time, "sleep", lambda s: events.append(("sleep", s)))
+    monkeypatch.setattr(poly_us_trader, "systemd_notify", lambda m: events.append(("ping", m)))
+    poly_us_trader._sleep_with_watchdog(300)
+    since_ping = 0.0
+    pings = 0
+    for kind, val in events:
+        if kind == "sleep":
+            since_ping += val
+            assert since_ping <= 60.0, "no watchdog ping within 60s of sleeping"
+        else:
+            assert val == "WATCHDOG=1"
+            since_ping = 0.0
+            pings += 1
+    assert pings >= 1
+    assert sum(v for k, v in events if k == "sleep") == pytest.approx(300.0)

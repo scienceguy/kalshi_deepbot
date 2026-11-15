@@ -68,6 +68,21 @@ def _request_stop(signum, frame):
     _stop_requested = True
 
 
+def _sleep_with_watchdog(seconds: float, chunk: float = 30.0) -> None:
+    """Sleep in chunks, pinging the systemd watchdog after each one (A10).
+
+    The engine only pings after a successful cycle, so a long backoff sleep
+    (up to 300s) would let WatchdogSec=120 kill the service mid-backoff and
+    turn a calm backoff into a restart loop. Ping at least every `chunk`
+    seconds (30s < 60s acceptance bound, well under WatchdogSec).
+    """
+    remaining = float(seconds)
+    while remaining > 0:
+        time.sleep(min(chunk, remaining))
+        remaining -= chunk
+        systemd_notify("WATCHDOG=1")
+
+
 
 def market_end_dt(market: dict):
     """Single source of truth for a market's end time (R5).
@@ -2074,9 +2089,9 @@ def main():
                 backoff = min(args.interval * (2 ** (cycle_failures - 1)), 300)
                 log.error("Cycle error (%d consecutive, backing off %.0fs): %s",
                           cycle_failures, backoff, e)
-                time.sleep(backoff)
+                _sleep_with_watchdog(backoff)
                 continue
-            time.sleep(args.interval)
+            _sleep_with_watchdog(args.interval)
         if _stop_requested:
             log.info("Stop signal received — shutting down cleanly.")
     finally:

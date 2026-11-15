@@ -6,17 +6,31 @@ Wants=network-online.target
 [Service]
 Type=notify
 NotifyAccess=main
-# The engine sends WATCHDOG=1 once per cycle (~15-20s). A hung cycle that
-# never returns therefore trips the watchdog and systemd restarts the unit.
+# The engine pings WATCHDOG=1 after every successful cycle (~15-20s) and from
+# its sleep helper at least every 30s during long backoff sleeps (A10). A hung
+# cycle therefore still trips the watchdog; a venue-outage backoff does not.
 WatchdogSec=120
 TimeoutStartSec=90
-User=ubuntu
+# A10: dedicated unprivileged service account. Create once:
+#   sudo useradd --system --home /opt/superbot --shell /usr/sbin/nologin polybot
+#   sudo chown -R polybot:polybot /opt/superbot/local_data
+#   sudo install -m 600 -o polybot -g polybot /opt/superbot/.env /opt/superbot/.env
+User=polybot
+Group=polybot
 WorkingDirectory=/opt/superbot
 ExecStart=/opt/superbot/.venv/bin/python poly_us_trader.py --interval 15
 Restart=always
 RestartSec=15
 StandardOutput=journal
 StandardError=journal
+# A10 hardening: no privilege escalation; read-only system; writes only to the
+# state/ledger/log directory and the instance lock file (the leading "-" lets
+# the lock path be absent on first start).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/superbot/local_data -/opt/superbot/.lock_poly
+PrivateTmp=true
+MemoryMax=1G
 
 [Install]
 WantedBy=multi-user.target

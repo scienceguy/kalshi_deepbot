@@ -6,7 +6,7 @@ state).
 
 | Item | Value |
 |---|---|
-| Host | `ubuntu@129.146.63.250` (`ssh -i ~/.ssh/oci_ed25519`) |
+| Host | `<vps-host>` (SSH user `<vps-user>`, key `<ssh-key>`) |
 | Code | `/opt/superbot` (git checkout of `origin/main`) |
 | Interpreter | `/opt/superbot/.venv/bin/python` |
 | Unit | `poly-us-dry.service` (`deploy/poly-us-dry.service`) |
@@ -17,8 +17,10 @@ state).
 
 ## Redeploy
 
+Real host/user/key values are kept in private notes, never in this repository.
+
 ```bash
-ssh -i ~/.ssh/oci_ed25519 ubuntu@129.146.63.250
+ssh -i <ssh-key> <vps-user>@<vps-host>
 cd /opt/superbot
 git fetch origin main && git pull --ff-only origin main
 .venv/bin/python -m pip install -r requirements.txt      # only if deps changed
@@ -54,14 +56,32 @@ sudo systemctl restart poly-us-dry.service
 
 ## Unit / watchdog
 
-The unit runs `Type=notify` with `WatchdogSec=120`. The engine sends
-`WATCHDOG=1` once per cycle (~15–20 s), so a wedged cycle is restarted by
-systemd instead of hanging forever. Reinstall after editing:
+The unit runs `Type=notify` with `WatchdogSec=120`. The engine pings
+`WATCHDOG=1` after every cycle (~15–20 s) **and** from its sleep helper at least
+every 30 s while backing off after failures (A10), so a long venue-outage
+backoff no longer gets killed and restarted mid-sleep; a genuinely wedged cycle
+still trips the watchdog.
+
+The service runs as the dedicated unprivileged user `polybot` with
+`NoNewPrivileges=true`, `ProtectSystem=strict`, writes confined to
+`local_data/` and `.lock_poly`, `PrivateTmp=true` and `MemoryMax=1G`. Create the
+account and restricted `.env` once:
+
+```bash
+sudo useradd --system --home /opt/superbot --shell /usr/sbin/nologin polybot
+sudo chown -R polybot:polybot /opt/superbot/local_data
+sudo install -m 600 -o polybot -g polybot /opt/superbot/.env /opt/superbot/.env
+```
+
+Reinstall after editing:
 
 ```bash
 sudo cp /opt/superbot/deploy/poly-us-dry.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl restart poly-us-dry.service
 ```
+
+If SSH exposure is a concern, restrict it to key-only auth, a firewall
+allowlist, and rotate the key.
 
 ## Log rotation
 
