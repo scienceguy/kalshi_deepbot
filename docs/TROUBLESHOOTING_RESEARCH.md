@@ -1,7 +1,7 @@
 # Trading Bot Troubleshooting Research Report
 
 **Project:** kalshi_superbot  
-**Target file:** `/data/data/com.termux/files/home/kalshi_superbot/TROUBLESHOOTING_RESEARCH.md`  
+**Target file:** `docs/TROUBLESHOOTING_RESEARCH.md`  
 **Prepared:** Sun Nov 01 2026  
 **Scope:** Automated trading bot crash recovery, position reconciliation, PnL integrity, rate limiting, circuit breakers, dry-run vs live safety, n8n webhook reliability, and logging/observability.
 

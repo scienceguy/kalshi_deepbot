@@ -45,7 +45,7 @@ SKIP_DIRS = {".git", "__pycache__", "venv", ".venv", "node_modules"}
 # No directory exemption and no baseline. legacy/ is scanned like everything
 # else. It briefly held a recorded exemption for one unfixed name; that file
 # (legacy/polymarket_arb.py) called a method defined nowhere in the tree, so it
-# was deleted rather than papered over (AUDIT_REPORT.md:236 lists it under
+# was deleted rather than papered over (docs/AUDIT_REPORT.md:236 lists it under
 # "unused exchange clients, delete"). An exemption set whose only correct state
 # is empty is a hole waiting to be refilled, so the mechanism is gone too.
 

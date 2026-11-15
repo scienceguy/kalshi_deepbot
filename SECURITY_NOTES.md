@@ -17,3 +17,13 @@ The following committed files from early development should be scrubbed or ignor
 
 ## 4. In-Process Code Execution Hardening
 - **MemPalace Task Sweep (`_handle_task`)**: Verified strictly log-only. The daemon logs received inbox events but never evaluates, executes, or shells out task payload bodies.
+
+## 5. Verified by owner
+
+Unverified — awaiting owner confirmation. Nothing below has been checked; every line is intentionally left empty. No dates, names, or confirmations are recorded here until the owner fills them in.
+
+- [ ] Key rotated (date: ____, by: ____)
+- [ ] Kalshi key visibility confirmed ____
+- [ ] Polymarket key visibility confirmed ____
+- [ ] GitHub secret scanning enabled ____
+- [ ] Repository visibility confirmed Private ____

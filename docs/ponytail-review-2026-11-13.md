@@ -127,7 +127,7 @@ Commit b296b74 replaces the paper-trading fill simulator (a random-number model 
 
 **What this is:** The `.gitignore` adds `!docs/*.md` with the comment "Audit reports written under docs/ are part of the record." The audit file is tracked because of this wildcard negation.
 
-**Problem:** The wildcard `!docs/*.md` will track *any* `.md` file created under `docs/`, including future unrelated notes. The existing pattern for other tracked docs (MEMPALACE_GUIDE.md, TOOL_AWARENESS_GUIDE.md, PONYTAIL_AUDIT.md) lists each file explicitly.
+**Problem:** The wildcard `!docs/*.md` will track *any* `.md` file created under `docs/`, including future unrelated notes. The existing pattern for other tracked docs (docs/MEMPALACE_GUIDE.md, docs/TOOL_AWARENESS_GUIDE.md, docs/PONYTAIL_AUDIT.md) lists each file explicitly.
 
 **Fix:** Either list `docs/ponytail-audit-2026-11-13.md` explicitly in `.gitignore` (like the other docs) and remove the wildcard, or keep the wildcard but add a comment that only audit reports belong in `docs/`. The explicit list is safer.
 

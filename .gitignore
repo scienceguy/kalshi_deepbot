@@ -46,6 +46,7 @@ bot.log
 dry_state.json
 settlement_queue.json
 paper_state.json
+paper_state_precutover_*.json
 paper_positions.json
 .lock
 .lock_*
@@ -65,6 +66,7 @@ Thumbs.db
 *.swo
 
 # Logs
+logs/
 *.log
 
 # Generated data dumps: never commit, and the miner skips gitignored files so
@@ -111,19 +113,7 @@ data/crossvenue/
 !README.md
 !AGENTS.md
 !SECURITY_NOTES.md
-# Planning/audit docs: tracked deliberately. They were invisible to git AND to
-# the corruption scan, and kept being lost to worktree cleanups.
-!COMPREHENSIVE_TODO.md
-!COMPOUNDING_TODO.md
-!ASSESSMENT.md
-!RESEARCH_PREDICTIVE_MODELS.md
-!STRATEGY_RESEARCH.md
-!KALSHI_API_RESEARCH.md
-!POSITION_RECONCILIATION_RESEARCH.md
-!TROUBLESHOOTING_RESEARCH.md
-!MEMPALACE_GUIDE.md
-!TOOL_AWARENESS_GUIDE.md
-!PONYTAIL_AUDIT.md
+# Planning/audit docs moved to docs/ (B18); !docs/*.md covers them there.
 # Audit reports written under docs/ are part of the record (same reason as above).
 !docs/*.md
 !HANDOFF.md
