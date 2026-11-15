@@ -644,6 +644,8 @@ class PolyUSPaperTrader:
                 fill_cost = round(filled_qty * fill_price, 4)
                 self.state["cash"] = round(self.state["cash"] + (float(o.get("cost", 0.0) or 0.0) - fill_cost), 4)
                 self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - (float(o.get("cost", 0.0) or 0.0) - fill_cost), 4))
+                # A13: count live trades on the venue-confirmed fill, not at placement.
+                self.state["trades_count"] = int(self.state.get("trades_count", 0) or 0) + 1
                 self.state["positions"].append({
                     "slug": o.get("slug", ""),
                     "question": o.get("question", ""),
@@ -671,6 +673,71 @@ class PolyUSPaperTrader:
                 log.info("Live order %s resolved with no held position -> cancelled, reserved cash released", oid)
         self.state["resting_orders"] = [o for o in self.state.get("resting_orders") or [] if o.get("state") == "resting"]
         return True
+
+    def reconcile_venue_state(self) -> bool:
+        """A13: compare internal bookkeeping to the venue (live mode only).
+
+        (a) venue USD cash vs state cash plus any resting-order reservations
+            (the venue balance is not reduced until orders fill or release),
+            and (b) per-slug position quantities vs the venue's portfolio
+            positions. A mismatch beyond POLY_VENUE_RECON_TOLERANCE_DOLLARS /
+            half a contract logs a WARNING, halts new entries
+            (venue_recon_halted) until a manual --reset, and appends to the
+            ledger. Venue API errors are NOT treated as mismatches — they are
+            not evidence either way.
+        """
+        if not self.live_mode:
+            return True
+        try:
+            bal_data = polymarket_us_client.get_account_balances()
+            venue_cash = float(polymarket_us_client.usd_cash_balance(bal_data or {}))
+            venue_pos = polymarket_us_client.get_portfolio_positions() or {}
+        except Exception as e:
+            log.warning("Venue reconcile skipped — venue unavailable: %s", e)
+            return True
+
+        reserved = sum(float(o.get("cost", 0.0) or 0.0)
+                       for o in self.state.get("resting_orders") or []
+                       if o.get("state") == "resting")
+        expected_cash = round(float(self.state.get("cash", 0.0) or 0.0) + reserved, 4)
+        cash_gap = abs(venue_cash - expected_cash)
+        tol = float(getattr(config, "POLY_VENUE_RECON_TOLERANCE_DOLLARS", 1.0) or 1.0)
+
+        state_qty: dict = {}
+        for p in self.state.get("positions") or []:
+            s = p.get("slug")
+            if s:
+                state_qty[s] = state_qty.get(s, 0.0) + float(p.get("qty", 0) or 0)
+        rows = venue_pos if isinstance(venue_pos, list) else (
+            venue_pos.get("positions") if isinstance(venue_pos, dict) else []) or []
+        venue_qty: dict = {}
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            s = r.get("marketSlug") or r.get("slug") or r.get("market")
+            if not s:
+                continue
+            try:
+                q = float(r.get("qty") or r.get("size") or r.get("quantity") or 0)
+            except (TypeError, ValueError):
+                continue
+            venue_qty[s] = venue_qty.get(s, 0.0) + q
+        gaps = {s: [round(state_qty.get(s, 0.0), 4), round(venue_qty.get(s, 0.0), 4)]
+                 for s in set(state_qty) | set(venue_qty)
+                 if abs(state_qty.get(s, 0.0) - venue_qty.get(s, 0.0)) > 0.5}
+        if cash_gap <= tol and not gaps:
+            log.info("Venue reconcile OK — cash gap $%.2f, positions match on %d slug(s)",
+                     cash_gap, len(state_qty))
+            return True
+        self.state["venue_recon_halted"] = True
+        self._append_ledger({"event": "venue_recon_halt",
+                             "cash_gap": round(cash_gap, 4),
+                             "position_gaps": gaps,
+                             "timestamp": datetime.now(timezone.utc).isoformat()})
+        log.warning("VENUE RECONCILE MISMATCH — cash gap $%.2f (venue $%.2f vs state+reserved $%.2f), "
+                    "position gaps %s — new entries HALTED until manual --reset",
+                    cash_gap, venue_cash, expected_cash, gaps)
+        return False
 
     def reconcile_paper_maker_orders(self, market_map: dict):
         """A3: fill resting paper maker orders when the book trades through.
@@ -1305,6 +1372,10 @@ class PolyUSPaperTrader:
         if self.state.get("ruin_halted"):
             log.info("Ruin halt active — refusing new entries (manual --reset required)")
             return False
+        # A13: venue reconciliation mismatch — no new entries until manual --reset.
+        if self.state.get("venue_recon_halted"):
+            log.info("Venue reconcile mismatch halt active — refusing new entries (manual --reset required)")
+            return False
         # Daily realized loss halt (R3): refuse new entries once today's realized
         # P&L reaches POLY_DAILY_LOSS_LIMIT_DOLLARS.
         if self._daily_loss_halted():
@@ -1475,10 +1546,10 @@ class PolyUSPaperTrader:
         if getattr(self, "live_mode", False):
             # Live mode: book the position only after a confirmed fill. The order
             # sits in a `resting` record with cash reserved until reconciliation
-            # confirms the fill (R3).
+            # confirms the fill (R3). trades_count increments on that confirmed
+            # fill (A13), not here at placement.
             self.state["cash"] = round(self.state["cash"] - cost, 4)
             self.state["window_spent"] = round(window_spent + cost, 4)
-            self.state["trades_count"] += 1
             self.state.setdefault("resting_orders", []).append({
                 "order_id": order_id,
                 "slug": slug,
@@ -1621,8 +1692,10 @@ class PolyUSPaperTrader:
                         m_slug = m.get("slug")
                         if m_slug:
                             market_map[m_slug] = m
-                except Exception:
-                    pass
+                except Exception as e:
+                    # A13: was swallowed silently; a failed parent-event fetch
+                    # hides a position from the book, so say so at WARNING.
+                    log.warning("Failed to fetch event %s for missing market data: %s", ev_slug, e)
             # For any still missing, fetch individually with spacing
             for s in missing_slugs:
                 if s not in market_map:
@@ -1634,8 +1707,8 @@ class PolyUSPaperTrader:
                             m_data = fresh_m.get("market") or fresh_m
                             if m_data and "slug" in m_data:
                                 market_map[s] = m_data
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning("Failed to fetch market %s even after parent event lookup: %s", s, e)
 
         self.check_settlements(market_map)
 
@@ -1643,6 +1716,14 @@ class PolyUSPaperTrader:
         # only confirmed filled quantity, cancel stale ones, release reserved cash.
         if self.live_mode:
             self.reconcile_live_orders()
+            # A13: periodic venue-vs-state reconciliation (balance + positions).
+            every = int(getattr(config, "POLY_VENUE_RECON_EVERY_CYCLES", 20) or 0)
+            if every > 0:
+                left = int(getattr(self, "_venue_recon_left", 1)) - 1
+                if left <= 0:
+                    self.reconcile_venue_state()
+                    left = every
+                self._venue_recon_left = left
 
         # Paper maker mode: fill resting paper orders when the book trades through
         # their resting price (no fee, maker fill).
@@ -1759,12 +1840,29 @@ class PolyUSPaperTrader:
         total_pnl = round(realized_pnl + total_unrealized, 4)
         total_equity = round(self.state["cash"] + total_mtm, 2)
 
-        # Ruin rule (R4): evaluated on realized P&L and drawdown from peak —
-        # never on instantaneous MTM. A trip HALTS entries and needs a manual
-        # --reset; the bankroll is never auto-reset and positions are never
-        # silently discarded.
-        peak = max(float(self.state.get("peak_equity", total_equity) or 0.0), total_equity)
-        drawdown = round(peak - total_equity, 4)
+        # Ruin rule (R4, A13): evaluated on realized P&L and the drawdown of a
+        # CONSERVATIVE, bid-based mark-to-market equity (what the venue would
+        # pay right now), not the displayed mid. A trip HALTS entries and needs
+        # a manual --reset; the bankroll is never auto-reset and positions are
+        # never silently discarded. An unreadable book falls back to the
+        # displayed price for that position only, so a venue hiccup cannot
+        # fabricate a halt.
+        con_mtm = 0.0
+        for pos in self.state.get("positions", []):
+            try:
+                book = polymarket_us_client.get_market_book(pos["slug"])
+                yes_bid, yes_ask = _book_yes_prices(book)
+                bid = yes_bid if pos["side"] == "yes" else (
+                    round(1.0 - yes_ask, 4) if yes_ask is not None else None)
+            except Exception:
+                bid = None
+            if bid is None:
+                bid = float(pos.get("current_price", pos["price"]) or pos["price"])
+            con_mtm += round(bid * float(pos.get("qty", 0) or 0), 4)
+        con_equity = round(self.state["cash"] + con_mtm, 2)
+
+        peak = max(float(self.state.get("peak_equity", con_equity) or 0.0), con_equity)
+        drawdown = round(peak - con_equity, 4)
         self.state["peak_equity"] = round(peak, 4)
         self.state["max_drawdown"] = round(
             max(float(self.state.get("max_drawdown", 0.0) or 0.0), drawdown), 4)
@@ -1836,6 +1934,9 @@ class PolyUSPaperTrader:
         self.calibration_halted = halted
         self.calibration_probing = probing
         self.calibration_reason = reason
+        # A13: persist for --status (read-only) to report.
+        self.state["a1_breaker"] = {"halted": bool(halted), "probing": bool(probing),
+                                    "reason": str(reason or "")}
         band_gap = None
         if snap.get("price_band_92_99c"):
             band_gap = snap["price_band_92_99c"].get("calibration_gap_pp")
@@ -2007,6 +2108,12 @@ def _print_status(state: dict, init_cash: float) -> None:
           f"(settled P&L ${float(state.get('settled_realized_pnl', 0.0) or 0.0):+.2f})")
     print(f"Ledger Reconciliation: ledger realized ${float(state.get('ledger_realized_pnl', 0.0) or 0.0):+.2f} "
           f"vs state ${realized:+.2f} (gap ${float(state.get('ledger_realized_gap', 0.0) or 0.0):+.2f})")
+    a1 = state.get("a1_breaker") or {}
+    print(f"A1 Calibration Breaker: {'HALTED' if a1.get('halted') else 'ok'} "
+          f"(probing={bool(a1.get('probing'))}, reason={a1.get('reason') or 'none'})")
+    print(f"Venue Reconcile:        {'HALTED (mismatch)' if state.get('venue_recon_halted') else 'ok'}")
+    a5 = exposure_by_asset(state)
+    print(f"A5 Exposure by asset:   {', '.join(f'{k}=${v:.2f}' for k, v in sorted(a5.items())) or 'none'}")
     if state.get("pre_epoch_realized_pnl"):
         print(f"Pre-epoch ledger P&L (before this ${state.get('start_balance', 0.0):.2f} baseline "
               f"started {state.get('epoch_started_at')}): ${float(state['pre_epoch_realized_pnl']):+.2f}")

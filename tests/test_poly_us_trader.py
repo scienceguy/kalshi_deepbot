@@ -1711,3 +1711,128 @@ def test_backoff_sleep_pings_watchdog(monkeypatch):
             pings += 1
     assert pings >= 1
     assert sum(v for k, v in events if k == "sleep") == pytest.approx(300.0)
+
+
+# ── A13: accounting & reconciliation ─────────────────────────────────────────
+
+def test_ruin_rule_uses_bid_based_mtm(temp_trader, monkeypatch):
+    """A13: entries halt when the BID-based equity drawdown hits the limit.
+
+    Displayed-mid equity stays flat at 109 (bid-based equity is 20), so the
+    pre-A13 mid-MTM rule would not have halted.
+    """
+    pos = {"slug": "bidmtm-test", "side": "yes", "price": 0.99, "current_price": 0.99,
+           "qty": 100, "cost": 10.0, "event_slug": "ev-bidmtm"}
+    temp_trader.state["positions"] = [pos]
+    temp_trader.state["cash"] = 10.0
+    temp_trader.state["peak_equity"] = 40.0
+    book = {"bbo": {"yes_bid": "0.10", "yes_ask": "0.12"}}
+    with patch.object(temp_trader, "scan_markets", return_value=[]), \
+         patch("polymarket_us_client.get_market_book", return_value=book), \
+         patch("polymarket_us_client.get_event_by_slug",
+               return_value={"event": {"markets": []}}), \
+         patch("polymarket_us_client.get_market_by_slug", return_value={}), \
+         patch("polymarket_us_client.get_market_settlement", return_value=None):
+        temp_trader.cycle()
+    assert temp_trader.state["ruin_halted"] is True
+    assert temp_trader.state["ruin_events"] == 1
+
+
+def test_ruin_rule_not_tripped_by_healthy_bid(temp_trader):
+    """A13: with a healthy bid, bid-based drawdown is zero — no halt."""
+    pos = {"slug": "bidmtm-ok", "side": "yes", "price": 0.99, "current_price": 0.99,
+           "qty": 100, "cost": 10.0, "event_slug": "ev-bidmtm-ok"}
+    temp_trader.state["positions"] = [pos]
+    temp_trader.state["cash"] = 10.0
+    temp_trader.state["peak_equity"] = 40.0
+    book = {"bbo": {"yes_bid": "0.99", "yes_ask": "1.00"}}
+    with patch.object(temp_trader, "scan_markets", return_value=[]), \
+         patch("polymarket_us_client.get_market_book", return_value=book), \
+         patch("polymarket_us_client.get_event_by_slug",
+               return_value={"event": {"markets": []}}), \
+         patch("polymarket_us_client.get_market_by_slug", return_value={}), \
+         patch("polymarket_us_client.get_market_settlement", return_value=None):
+        temp_trader.cycle()
+    assert temp_trader.state.get("ruin_halted") is False
+
+
+def test_live_venue_reconcile_mismatch_halts_entries(temp_trader, caplog):
+    """A13: venue cash vs state cash mismatch logs WARNING and halts entries."""
+    temp_trader.live_mode = True
+    temp_trader.state["cash"] = 30.0
+    temp_trader.state["positions"] = [{"slug": "recon-1", "side": "no", "qty": 2,
+                                        "price": 0.95, "cost": 1.9, "symbol": "ETH"}]
+    with patch("polymarket_us_client.get_account_balances",
+               return_value={"balances": [{"currency": "USD", "currentBalance": 10.0}]}), \
+         patch("polymarket_us_client.get_portfolio_positions",
+               return_value={"positions": [{"marketSlug": "recon-1", "qty": 2}]}):
+        with caplog.at_level("WARNING"):
+            assert temp_trader.reconcile_venue_state() is False
+    assert temp_trader.state["venue_recon_halted"] is True
+    assert "mismatch" in caplog.text.lower()
+    # Entries are refused while the halt latch is set.
+    assert temp_trader.execute_paper_trade({"slug": "recon-1", "question": "Q",
+                                            "side": "no", "price": 0.95,
+                                            "ref_prob": 0.98}) is False
+
+
+def test_live_venue_reconcile_position_mismatch_halts(temp_trader):
+    """A13: position qty gap (cash fine) also halts entries."""
+    temp_trader.live_mode = True
+    temp_trader.state["cash"] = 30.0
+    temp_trader.state["positions"] = [{"slug": "recon-2", "side": "yes", "qty": 3,
+                                        "price": 0.95, "cost": 2.85, "symbol": "SOL"}]
+    with patch("polymarket_us_client.get_account_balances",
+               return_value={"balances": [{"currency": "USD", "currentBalance": 30.0}]}), \
+         patch("polymarket_us_client.get_portfolio_positions", return_value={"positions": []}):
+        assert temp_trader.reconcile_venue_state() is False
+    assert temp_trader.state["venue_recon_halted"] is True
+
+
+def test_live_venue_reconcile_matching_state_does_not_halt(temp_trader):
+    """A13: matching cash and positions reconcile clean."""
+    temp_trader.live_mode = True
+    temp_trader.state["cash"] = 30.0
+    temp_trader.state["positions"] = [{"slug": "recon-3", "side": "yes", "qty": 3,
+                                        "price": 0.95, "cost": 2.85, "symbol": "SOL"}]
+    with patch("polymarket_us_client.get_account_balances",
+               return_value={"balances": [{"currency": "USD", "currentBalance": 30.0}]}), \
+         patch("polymarket_us_client.get_portfolio_positions",
+               return_value={"positions": [{"marketSlug": "recon-3", "qty": 3}]}):
+        assert temp_trader.reconcile_venue_state() is True
+    assert not temp_trader.state.get("venue_recon_halted")
+
+
+def test_live_trades_count_increments_on_fill_not_placement(temp_trader):
+    """A13: live resting order placement does not count; a confirmed fill does."""
+    temp_trader.live_mode = True
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 5.0
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+    opp = {"slug": "tc-fill-1", "question": "Q", "side": "no", "price": 0.95, "ref_prob": 0.98}
+    book = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.93"}}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book), \
+         patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-TC-1"}):
+        assert temp_trader.execute_paper_trade(opp) is True
+    assert temp_trader.state["trades_count"] == 0
+    with patch("polymarket_us_client.get_open_orders", return_value=[]), \
+         patch("polymarket_us_client.get_portfolio_positions",
+               return_value={"positions": [{"marketSlug": "tc-fill-1", "qty": 1}]}):
+        assert temp_trader.reconcile_live_orders() is True
+    assert temp_trader.state["trades_count"] == 1
+
+
+def test_status_prints_a1_breaker_and_a5_exposure(temp_trader, capsys):
+    """A13: --status reports the A1 breaker and A5 per-asset exposure."""
+    import poly_us_trader
+    temp_trader.state["positions"] = [{"slug": "s1", "side": "yes", "price": 0.95,
+                                        "qty": 2, "cost": 1.9, "symbol": "BTC"}]
+    temp_trader.state["a1_breaker"] = {"halted": True, "probing": False, "reason": "brier high"}
+    temp_trader.state["venue_recon_halted"] = True
+    poly_us_trader._print_status(temp_trader.state, 35.0)
+    out = capsys.readouterr().out
+    assert "A1 Calibration Breaker" in out
+    assert "HALTED" in out
+    assert "A5 Exposure by asset" in out
+    assert "BTC" in out

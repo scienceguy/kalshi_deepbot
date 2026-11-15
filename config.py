@@ -215,6 +215,12 @@ POLY_DAILY_LOSS_LIMIT_DOLLARS = _env_float("POLY_DAILY_LOSS_LIMIT_DOLLARS", 5.0)
 POLY_CONFIRM_LIVE = _env_bool("POLY_CONFIRM_LIVE", False)
 # Resting order TTL (seconds) before auto-cancel (R3).
 POLY_RESTING_ORDER_TTL_SECONDS = _env_int("POLY_RESTING_ORDER_TTL_SECONDS", 900)
+# A13: venue reconciliation (live mode only). Every N cycles, compare internal
+# cash/positions to the venue balance and positions endpoint. A mismatch beyond
+# the tolerance halts new entries until a manual --reset. API errors are not
+# treated as mismatches.
+POLY_VENUE_RECON_EVERY_CYCLES = _env_int("POLY_VENUE_RECON_EVERY_CYCLES", 20)
+POLY_VENUE_RECON_TOLERANCE_DOLLARS = _env_float("POLY_VENUE_RECON_TOLERANCE_DOLLARS", 1.0)
 
 # ═════════════════════════════════════════════════════════════════════
 # MARKET TARGETING (from kalshi_live_bot — expanded series list)
