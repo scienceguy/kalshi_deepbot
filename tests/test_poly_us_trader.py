@@ -15,7 +15,7 @@ import pytest
 # SDK at module level; the SDK is optional, so skip instead of erroring.
 pytest.importorskip("polymarket_us")
 
-from poly_us_trader import PolyUSPaperTrader
+from poly_us_trader import PolyUSPaperTrader, _taker_fee
 
 import config
 
@@ -102,7 +102,7 @@ def test_execute_paper_trade_updates_bankroll(temp_trader):
 
 
 def test_compute_tier_size():
-    from poly_us_trader import PolyUSPaperTrader
+    from poly_us_trader import PolyUSPaperTrader, _taker_fee
     assert PolyUSPaperTrader.compute_tier_size(20.0) == 0.60
     assert PolyUSPaperTrader.compute_tier_size(100.0) == 3.0
     assert PolyUSPaperTrader.compute_tier_size(500.0) == 15.0
@@ -377,9 +377,9 @@ def test_cycle_rotates_stale_long_dated_positions(temp_trader):
          patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
         temp_trader.cycle()
 
-    # Stale position rotated out at the NO bid (0.98); cash credited gross of fee (fee=0)
+    # Stale position rotated out at the NO bid (0.98), net of the taker fee.
     assert len(temp_trader.state["positions"]) == 0
-    assert temp_trader.state["cash"] == round(50.0 + 0.98 * 5, 4)
+    assert temp_trader.state["cash"] == round(50.0 + 0.98 * 5 - _taker_fee(5, 0.98), 4)
 
 
 def test_window_budget_blocks_overtrade_in_same_window(temp_trader):
@@ -394,7 +394,7 @@ def test_window_budget_blocks_overtrade_in_same_window(temp_trader):
     # First trade: 1 contract @ 0.95 = $0.95 -> fits in $1.05 budget
     ok1 = temp_trader.execute_paper_trade(opp1)
     assert ok1 is True
-    assert temp_trader.state["window_spent"] == 0.95
+    assert temp_trader.state["window_spent"] == round(0.95 + _taker_fee(1, 0.95), 4)
 
     # Second trade in the same window: remaining budget is $1.05 - $0.95 = $0.10 < $0.90 -> BLOCKED!
     opp2 = {"slug": "opp2", "question": "Q2", "side": "yes", "price": 0.95}
@@ -792,8 +792,9 @@ def test_buy_fill_records_best_ask(temp_trader):
     assert ok is True
     pos = temp_trader.state["positions"][0]
     assert pos["fill_price"] == 0.96
-    assert pos["cost"] == round(1 * 0.96, 4)
-    assert temp_trader.state["cash"] == round(35.0 - 0.96, 4)
+    # Cost is the stake plus the venue taker fee C*p*(1-p)*rate.
+    assert pos["cost"] == round(0.96 + _taker_fee(1, 0.96), 4)
+    assert temp_trader.state["cash"] == round(35.0 - 0.96 - _taker_fee(1, 0.96), 4)
     ledger = temp_trader.ledger_file.read_text()
     assert '"source": "crossvenue"' in ledger
 
@@ -996,3 +997,13 @@ def test_startup_reconciles_state_against_ledger(tmp_path):
     assert again.state["epoch_started_at"] == trader.state["epoch_started_at"]
     assert again.state["pre_epoch_realized_pnl"] == pytest.approx(-0.90)
     assert again.state["ledger_realized_gap"] == pytest.approx(0.0)
+
+
+def test_taker_fee_matches_official_table():
+    """Polymarket crypto taker fee is C x 0.07 x p x (1-p) (100-share table)."""
+    assert round(_taker_fee(100, 0.95), 2) == 0.33
+    assert round(_taker_fee(100, 0.50), 2) == 1.75
+    assert round(_taker_fee(100, 0.99), 2) == 0.07
+    # No fee at the extremes, none at zero size.
+    assert _taker_fee(100, 1.0) == 0.0
+    assert _taker_fee(0, 0.95) == 0.0

@@ -191,12 +191,18 @@ def fetch_pm_ladder_us(slug: str, timeout: int = 20) -> Optional[Ladder]:
         return None
 
     try:
-        market = get_market_by_slug(slug, timeout=timeout)
+        resp = get_market_by_slug(slug)
     except Exception as e:
         log.debug("US fetch %s failed: %s", slug, e)
         return None
 
-    if market is None:
+    # The US client returns the envelope {"market": {...}}; the mapper below
+    # reads the market fields directly. Accept a bare market dict too.
+    market = None
+    if isinstance(resp, dict):
+        inner = resp.get("market")
+        market = inner if isinstance(inner, dict) else resp
+    if not market:
         return None
 
     parsed = parse_pm_slug(slug)

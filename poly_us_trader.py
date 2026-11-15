@@ -97,7 +97,8 @@ def _slippage_cents() -> float:
 
 
 def _fee_cents(price_dollars: float) -> float:
-    return price_dollars * 100.0 * float(getattr(config, "PM_FEE_BPS", 0.0)) / 10_000.0
+    """Per-contract taker fee in cents."""
+    return _taker_fee(1.0, price_dollars) * 100.0
 
 
 def _fill_buy_price(displayed: float, ask) -> float:
@@ -109,8 +110,15 @@ def _fill_sell_price(displayed: float, bid) -> float:
     return round(bid if bid is not None else displayed, 4)
 
 
-def _fee_dollars(notional: float) -> float:
-    return round(notional * float(getattr(config, "PM_FEE_BPS", 0.0)) / 10_000.0, 4)
+def _taker_fee(qty: float, price_dollars: float) -> float:
+    """Polymarket taker fee: C x feeRate x p x (1 - p), rounded to 5dp.
+
+    Official schedule (docs.polymarket.com/trading/fees): crypto 0.07, sports
+    0.05, finance/politics/tech 0.04. Makers pay nothing; paper fills at the
+    ask, which is a taker fill, so the taker fee is the honest model.
+    """
+    rate = float(getattr(config, "PM_FEE_RATE", 0.07))
+    return round(qty * rate * price_dollars * (1.0 - price_dollars), 5)
 
 
 class PolyUSPaperTrader:
@@ -1001,7 +1009,7 @@ class PolyUSPaperTrader:
         else:
             ask = round(1.0 - yes_bid, 4) if yes_bid is not None else None
         fill_price = _fill_buy_price(price, ask)
-        entry_fee = _fee_dollars(qty * fill_price)
+        entry_fee = _taker_fee(qty, fill_price)
         cost = round(qty * fill_price + entry_fee, 4)
         if cost > available_window_budget or cost > available_cash:
             return False
@@ -1179,7 +1187,7 @@ class PolyUSPaperTrader:
                 bid = yes_bid if pos["side"] == "yes" else (
                     round(1.0 - yes_ask, 4) if yes_ask is not None else None)
                 exit_price = _fill_sell_price(current_mark, bid)
-                exit_fee = _fee_dollars(exit_price * pos["qty"])
+                exit_fee = _taker_fee(pos["qty"], exit_price)
                 payout = round(exit_price * pos["qty"] - exit_fee, 4)
                 pnl = round(payout - pos["cost"], 4)
                 self.state["cash"] = round(self.state["cash"] + payout, 4)

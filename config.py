@@ -136,11 +136,13 @@ POLYMARKET_SECRET_KEY = _env_str("POLYMARKET_SECRET_KEY", "")
 POLYMARKET_ENABLED = _env_bool("POLYMARKET_ENABLED", False)
 
 # Polymarket US paper-trader fill model (R5): paper fills are modelled at the
-# venue's best ask (buys) / best bid (sells) plus slippage ticks and a fee rate
-# taken from the venue's published schedule. Polymarket US maker orders are
-# fee-free, so the default fee is 0 bps; set PM_FEE_BPS if the schedule changes.
+# venue's best ask (buys) / best bid (sells) plus slippage ticks and the venue's
+# published taker fee. Official schedule: fee = C x feeRate x p x (1 - p).
+# Crypto = 0.07, sports = 0.05, finance/politics/tech = 0.04; makers pay 0.
+# A paper fill at the ask is a taker fill, so the crypto rate is the default and
+# modelling it as 0 would overstate every EV number and the paper equity curve.
 # One "tick" is $0.01 on a binary contract.
-PM_FEE_BPS = _env_float("PM_FEE_BPS", 0.0)
+PM_FEE_RATE = _env_float("PM_FEE_RATE", 0.07)
 PM_SLIPPAGE_TICKS = _env_int("PM_SLIPPAGE_TICKS", 1)
 # Minimum modelled edge (cents) required on top of fee + slippage to enter.
 PM_EDGE_MARGIN_CENTS = _env_float("PM_EDGE_MARGIN_CENTS", 0.5)
