@@ -160,6 +160,44 @@ def price_for_maker_entry(book: dict, side: str) -> float | None:
         return price if price <= cap else None
 
 
+def exposure_by_asset(state: dict) -> dict:
+    """A5: total equity (cost) currently exposed per asset symbol.
+
+    Sums open position costs plus resting order costs, grouped by symbol.
+    Returns {symbol: total_cost_dollars}.
+    """
+    exposure: dict = {}
+    for p in state.get("positions") or []:
+        sym = p.get("symbol") or ""
+        exposure[sym] = exposure.get(sym, 0.0) + float(p.get("cost", 0.0) or 0.0)
+    for o in state.get("resting_orders") or []:
+        sym = o.get("symbol") or ""
+        exposure[sym] = exposure.get(sym, 0.0) + float(o.get("cost", 0.0) or 0.0)
+    return exposure
+
+
+def exposure_by_direction(state: dict) -> dict:
+    """A5: total equity (cost) exposed per direction (yes/no)."""
+    exposure = {"yes": 0.0, "no": 0.0}
+    for p in state.get("positions") or []:
+        exposure[p.get("side", "yes")] = exposure.get(p.get("side", "yes"), 0.0) + float(p.get("cost", 0.0) or 0.0)
+    for o in state.get("resting_orders") or []:
+        exposure[o.get("side", "yes")] = exposure.get(o.get("side", "yes"), 0.0) + float(o.get("cost", 0.0) or 0.0)
+    return exposure
+
+
+def exposure_by_expiry(state: dict) -> dict:
+    """A5: total equity (cost) exposed per expiry window (end_date)."""
+    exposure: dict = {}
+    for p in state.get("positions") or []:
+        key = p.get("end_date") or "unknown"
+        exposure[key] = exposure.get(key, 0.0) + float(p.get("cost", 0.0) or 0.0)
+    for o in state.get("resting_orders") or []:
+        key = o.get("end_date") or "unknown"
+        exposure[key] = exposure.get(key, 0.0) + float(o.get("cost", 0.0) or 0.0)
+    return exposure
+
+
 def _taker_fee(qty: float, price_dollars: float) -> float:
     """Polymarket taker fee: C x feeRate x p x (1 - p), rounded to 5dp.
 
@@ -945,6 +983,7 @@ class PolyUSPaperTrader:
                     "side": cv_edge["best_side"],
                     "price": cv_edge["best_price"],
                     "category": "crypto",
+                    "symbol": symbol,
                     "cross_edge_cents": cv_edge["best_edge_cents"],
                     "ref_prob": cv_edge["ref_prob"],
                     "spot": cv_edge["spot"],
@@ -1060,6 +1099,7 @@ class PolyUSPaperTrader:
             "side": side,
             "price": price,
             "category": market.get("category", ""),
+            "symbol": symbol,
             "spot": spot,
             "strike": strike_val,
             "end_date": end_date,
@@ -1243,6 +1283,40 @@ class PolyUSPaperTrader:
         if cost > available_window_budget or cost > available_cash:
             return False
 
+        # A5: correlated exposure caps — reject entries that would breach
+        # per-asset, per-expiry-window, or same-direction limits.
+        symbol = opp.get("symbol") or ""
+        end_date = opp.get("end_date") or "unknown"
+        side = opp["side"]
+
+        asset_exposure = exposure_by_asset(self.state)
+        new_asset_total = asset_exposure.get(symbol, 0.0) + cost
+        asset_cap = total_balance * float(getattr(config, "PM_MAX_EXPOSURE_PCT_PER_ASSET", 0.25))
+        if new_asset_total > asset_cap:
+            log.debug("A5 exposure cap: %s asset exposure $%.2f > cap $%.2f (%.0f%%) — rejecting %s",
+                      symbol, new_asset_total, asset_cap,
+                      float(getattr(config, "PM_MAX_EXPOSURE_PCT_PER_ASSET", 0.25)) * 100, slug)
+            return False
+
+        expiry_exposure = exposure_by_expiry(self.state)
+        new_expiry_total = expiry_exposure.get(end_date, 0.0) + cost
+        expiry_cap = total_balance * float(getattr(config, "PM_MAX_EXPOSURE_PCT_PER_EXPIRY_WINDOW", 0.25))
+        if new_expiry_total > expiry_cap:
+            log.debug("A5 exposure cap: expiry %s exposure $%.2f > cap $%.2f (%.0f%%) — rejecting %s",
+                      end_date, new_expiry_total, expiry_cap,
+                      float(getattr(config, "PM_MAX_EXPOSURE_PCT_PER_EXPIRY_WINDOW", 0.25)) * 100, slug)
+            return False
+
+        if float(getattr(config, "PM_MAX_EXPOSURE_PCT_SAME_DIRECTION", 0.0)) > 0:
+            dir_exposure = exposure_by_direction(self.state)
+            new_dir_total = dir_exposure.get(side, 0.0) + cost
+            dir_cap = total_balance * float(getattr(config, "PM_MAX_EXPOSURE_PCT_SAME_DIRECTION", 0.0))
+            if new_dir_total > dir_cap:
+                log.debug("A5 exposure cap: %s direction exposure $%.2f > cap $%.2f (%.0f%%) — rejecting %s",
+                          side, new_dir_total, dir_cap,
+                          float(getattr(config, "PM_MAX_EXPOSURE_PCT_SAME_DIRECTION", 0.0)) * 100, slug)
+                return False
+
         # Validate order syntax with Polymarket US production API (at the fill price)
         valid = self.preview_order(slug, side, fill_price, qty)
         if not valid:
@@ -1278,6 +1352,8 @@ class PolyUSPaperTrader:
                 "fee": entry_fee,
                 "source": opp.get("source", ""),
                 "category": opp.get("category", ""),
+                "symbol": symbol,
+                "end_date": end_date,
                 "state": "resting",
                 "placed_at": datetime.now(timezone.utc).isoformat(),
                 "window_ts": self.state.get("current_window_ts"),
@@ -1302,6 +1378,8 @@ class PolyUSPaperTrader:
                 "fee": entry_fee,
                 "source": opp.get("source", ""),
                 "category": opp.get("category", ""),
+                "symbol": symbol,
+                "end_date": end_date,
                 "state": "resting",
                 "placed_at": datetime.now(timezone.utc).isoformat(),
                 "window_ts": self.state.get("current_window_ts"),
@@ -1327,6 +1405,8 @@ class PolyUSPaperTrader:
                 "cost": cost,
                 "order_id": order_id,
                 "category": opp.get("category", ""),
+                "symbol": symbol,
+                "end_date": end_date,
                 "opened_at": datetime.now(timezone.utc).isoformat(),
                 "paper_fill_model": "taker",
             }

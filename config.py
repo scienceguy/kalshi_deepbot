@@ -176,6 +176,18 @@ CAL_PROBE_SIZE_FRACTION = _env_float("CAL_PROBE_SIZE_FRACTION", 0.5)
 # Number of new settled probe outcomes needed to fully clear a halted state.
 CAL_PROBE_OUTCOMES_N = _env_int("CAL_PROBE_OUTCOMES_N", 5)
 
+# Correlated exposure caps (A5): entries are capped by count (max_open_positions)
+# and a 3% per-window budget, but not by underlying asset or direction. BTC/ETH/SOL
+# up/down and threshold markets move together, so a single adverse move can hit
+# many positions at once. Compute exposure from open positions plus resting orders.
+# Max equity (cost) exposed to any single asset, as a fraction of total equity.
+PM_MAX_EXPOSURE_PCT_PER_ASSET = _env_float("PM_MAX_EXPOSURE_PCT_PER_ASSET", 0.25)
+# Max equity exposed to any single expiry window, as a fraction of total equity.
+PM_MAX_EXPOSURE_PCT_PER_EXPIRY_WINDOW = _env_float("PM_MAX_EXPOSURE_PCT_PER_EXPIRY_WINDOW", 0.25)
+# Max equity exposed to positions all in the same direction (all YES or all NO),
+# as a fraction of total equity. Disabled by default (set > 0 to enable).
+PM_MAX_EXPOSURE_PCT_SAME_DIRECTION = _env_float("PM_MAX_EXPOSURE_PCT_SAME_DIRECTION", 0.0)
+
 # Paper ruin limits (R4): halt entries — requiring a manual --reset — when the
 # realized loss or the peak-to-equity drawdown crosses these dollar amounts.
 # Evaluated on realized/drawdown basis, never on instantaneous MTM.

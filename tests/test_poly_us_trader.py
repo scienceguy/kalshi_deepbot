@@ -1250,3 +1250,122 @@ def test_a3_maker_price_capped_at_ask_minus_tick():
     # Crossed book: bid >= ask → None
     book_crossed = {"bbo": {"yes_bid": "0.95", "yes_ask": "0.94"}}
     assert price_for_maker_entry(book_crossed, "yes") is None
+
+
+# ── A5: correlated exposure caps ──────────────────────────────────────────
+
+def _make_btc_position(i, cost=1.00, side="yes", end_date="2026-01-01T00:00:00Z"):
+    return {
+        "slug": f"btc-{i}", "question": f"Q{i}", "side": side, "price": 0.95,
+        "fill_price": 0.95, "displayed_price": 0.95, "fee": 0.0,
+        "source": "", "category": "crypto", "symbol": "BTC",
+        "qty": 1, "cost": cost, "order_id": f"oid-btc-{i}",
+        "opened_at": "2026-01-01T00:00:00+00:00", "end_date": end_date,
+        "paper_fill_model": "taker",
+    }
+
+
+def test_a5_asset_cap_rejects_btc_when_cap_exceeded(temp_trader):
+    """A5: BTC entry rejected when 25% of equity is already in BTC positions."""
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+    # 11 BTC positions @ $1.00 = $11.00 exposure; total_balance = $46.00;
+    # cap = 25% of $46.00 = $11.50. New trade ~$0.97 → $11.97 > $11.50 → reject.
+    temp_trader.state["positions"] = [_make_btc_position(i) for i in range(11)]
+
+    book = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.96"}}
+    opp = {"slug": "btc-new", "question": "New BTC", "side": "yes", "price": 0.95,
+           "ref_prob": 0.98, "symbol": "BTC", "end_date": "2026-01-01T00:00:00Z"}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        ok = temp_trader.execute_paper_trade(opp)
+
+    assert ok is False  # $11.00 + ~$0.97 > $11.50 cap → rejected
+    assert len(temp_trader.state["positions"]) == 11  # no new position added
+
+
+def test_a5_eth_accepted_when_btc_at_cap(temp_trader):
+    """A5: ETH entry accepted when BTC is at the 25% asset cap (different asset)."""
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+    temp_trader.state["positions"] = [_make_btc_position(i) for i in range(11)]
+
+    book = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.96"}}
+    opp = {"slug": "eth-new", "question": "New ETH", "side": "yes", "price": 0.95,
+           "ref_prob": 0.98, "symbol": "ETH", "end_date": "2026-01-02T00:00:00Z"}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        ok = temp_trader.execute_paper_trade(opp)
+
+    assert ok is True  # ETH exposure is $0.00 → well under cap
+    assert len(temp_trader.state["positions"]) == 12
+
+
+def test_a5_resting_order_counts_toward_asset_cap(temp_trader):
+    """A5: a resting maker order counts toward the asset cap (no double-spend)."""
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+    temp_trader.state["positions"] = [_make_btc_position(i) for i in range(11)]
+
+    book = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.96"}}
+    opp = {"slug": "btc-resting", "question": "BTC resting", "side": "yes", "price": 0.95,
+           "ref_prob": 0.98, "symbol": "BTC", "end_date": "2026-01-01T00:00:00Z"}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        ok = temp_trader.execute_paper_trade(opp)
+
+    assert ok is False
+    assert len(temp_trader.state["positions"]) == 11
+    assert len(temp_trader.state.get("resting_orders", [])) == 0
+
+
+def test_a5_exposure_by_asset_includes_resting_orders():
+    """A5: exposure_by_asset sums positions + resting orders grouped by symbol."""
+    from poly_us_trader import exposure_by_asset
+    state = {
+        "positions": [_make_btc_position(0, cost=3.00)],
+        "resting_orders": [{
+            "order_id": "oid-rest-1", "slug": "btc-rest", "side": "yes",
+            "price": 0.95, "qty": 1, "cost": 4.00, "fee": 0.0,
+            "symbol": "BTC", "end_date": "2026-01-01T00:00:00Z",
+            "state": "resting", "placed_at": "2026-01-01T00:00:00Z",
+        }],
+    }
+    exp = exposure_by_asset(state)
+    assert exp["BTC"] == 7.00  # 3.00 (position) + 4.00 (resting order)
+
+
+def test_a5_exposure_by_direction():
+    """A5: exposure_by_direction sums positions + resting orders per side."""
+    from poly_us_trader import exposure_by_direction
+    state = {
+        "positions": [_make_btc_position(0, cost=2.00, side="yes")],
+        "resting_orders": [{
+            "order_id": "oid-rest-2", "slug": "btc-rest", "side": "no",
+            "price": 0.95, "qty": 1, "cost": 3.00, "fee": 0.0,
+            "symbol": "BTC", "end_date": "2026-01-01T00:00:00Z",
+            "state": "resting", "placed_at": "2026-01-01T00:00:00Z",
+        }],
+    }
+    exp = exposure_by_direction(state)
+    assert exp["yes"] == 2.00
+    assert exp["no"] == 3.00
+
+
+def test_a5_exposure_by_expiry():
+    """A5: exposure_by_expiry sums positions + resting orders per end_date."""
+    from poly_us_trader import exposure_by_expiry
+    state = {
+        "positions": [_make_btc_position(0, cost=2.00, end_date="2026-01-15T00:00:00Z")],
+        "resting_orders": [{
+            "order_id": "oid-rest-3", "slug": "btc-rest", "side": "yes",
+            "price": 0.95, "qty": 1, "cost": 3.00, "fee": 0.0,
+            "symbol": "BTC", "end_date": "2026-01-15T00:00:00Z",
+            "state": "resting", "placed_at": "2026-01-01T00:00:00Z",
+        }],
+    }
+    exp = exposure_by_expiry(state)
+    assert exp["2026-01-15T00:00:00Z"] == 5.00
