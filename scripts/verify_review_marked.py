@@ -24,8 +24,13 @@ instead of an exit code, which is how the gate is itself tested.
     python3 scripts/verify_review_marked.py --diff-file f # a unified diff
     python3 scripts/verify_review_marked.py --allow-unreviewed
 
-Exit 0 clean, 1 findings (or unreviewed conditions, without --allow-unreviewed).
-Read-only: parses diff text, never imports the module, never writes.
+Exit 0 clean, 1 when a money-path diff fails the test-ship rule (B10): a
+diff touching trader.py/risk.py/signals.py/gates.py/fees.py/kalshi_client.py/
+market_finder.py must also add or modify a tests/test_*.py whose added lines
+reference a changed function name (any tests/ file for an inline fix). The
+review markers are advisory notes only — they record that someone looked,
+and cannot record that they were right, so they no longer gate. Read-only:
+parses diff text, never imports the module, never writes.
 
 Deliberate limit: the marker is a convention, not proof. It records that someone
 looked; it cannot record that they were right. A corrupted line carrying a
@@ -85,6 +90,69 @@ def parse_added(diff_text):
     return out
 
 
+# ── B10: a money-path diff must ship a test referencing the change ──────────
+# Markers are written by the same agent that writes the change, so they cannot
+# be the independent check; the test requirement is. Markers stay advisory.
+
+def changed_paths(diff_text):
+    """Set of file paths the diff adds or modifies (deletions excluded)."""
+    paths = set()
+    for line in diff_text.splitlines():
+        if line.startswith("+++ "):
+            spec = line[4:].strip()
+            path = spec[2:] if spec.startswith("b/") else spec
+            if path and path != "/dev/null":
+                paths.add(path)
+    return paths
+
+
+def added_test_lines(diff_text):
+    """Sources of lines added inside tests/*.py files in the diff."""
+    out = []
+    in_tests = False
+    for line in diff_text.splitlines():
+        if line.startswith("+++ "):
+            spec = line[4:].strip()
+            path = spec[2:] if spec.startswith("b/") else spec
+            in_tests = bool(path and path.startswith("tests/")
+                            and path.endswith(".py"))
+        elif line.startswith("+") and not line.startswith("+++"):
+            if in_tests:
+                out.append(line[1:])
+    return out
+
+
+def changed_function_names(diff_text):
+    """Names of functions whose def lines are ADDED in money-path files."""
+    names = set()
+    for path, _lineno, src in parse_added(diff_text):
+        if path not in MONEY_PATH:
+            continue
+        m = re.match(r"\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", src)
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def test_coverage_ok(diff_text):
+    """True when a money-path diff ships a test referencing the change (B10).
+
+    A diff that adds no new ``def`` (an inline fix inside an existing
+    function) only needs any tests/ change; when it adds one, at least one
+    added test line must mention a changed function by name.
+    """
+    if not any(p in MONEY_PATH for p in changed_paths(diff_text)):
+        return True
+    test_lines = added_test_lines(diff_text)
+    if not test_lines:
+        return False
+    names = changed_function_names(diff_text)
+    if not names:
+        return True
+    haystack = "\n".join(test_lines)
+    return any(name in haystack for name in names)
+
+
 def unreviewed(diff_text):
     """[(path, lineno, source)] for added conditions with no review marker.
 
@@ -117,12 +185,12 @@ def unreviewed(diff_text):
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Require review markers on new money-path conditions")
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Require a test with money-path changes (B10); review markers advisory")
     ap.add_argument("--diff-file", help="read a unified diff from this file instead of git")
     ap.add_argument("--allow-unreviewed", action="store_true",
-                    help="list unreviewed conditions but exit 0 (for tests)")
-    args = ap.parse_args()
+                    help="kept for compatibility; markers no longer fail the gate (B10)")
+    args = ap.parse_args(argv)
 
     if args.diff_file:
         with open(args.diff_file, encoding="utf-8") as fh:
@@ -133,17 +201,19 @@ def main():
             capture_output=True, text=True, check=True,
         ).stdout
 
+    # Advisory only (B10): markers record that someone looked; the test-ship
+    # rule below is the gate. Findings are printed, not enforced.
     hits = unreviewed(diff_text)
     for path, lineno, src in hits:
-        print("%s:%d: new condition without '# reviewed: <why>'" % (path, lineno))
+        print("note: %s:%d: new condition without '# reviewed: <why>' (advisory)" % (path, lineno))
         print("    %s" % src.strip())
-
+    if not test_coverage_ok(diff_text):
+        print("")
+        print("money-path diff has no test (or the test does not reference the change)")
+        print("Add or modify a tests/test_*.py file whose added lines mention a changed")
+        print("function name (or any tests/ file for an inline fix).")
+        return 1
     print("")
-    if hits:
-        print("%d unreviewed condition(s) in the money path" % len(hits))
-        print("Add a reason on the line or the one above:")
-        print("    <line>  # reviewed: why this guard is intended")
-        return 0 if args.allow_unreviewed else 1
     print("all clean")
     return 0
 

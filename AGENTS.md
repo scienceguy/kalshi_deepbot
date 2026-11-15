@@ -204,17 +204,16 @@ disjoint classes — never treat one as a substitute for another:
 These four classes pass every gate and every test. Each was tried against the
 gates in this session; do not assume a clean run covers them:
 
-1. **Pure insertion of a condition -- detection still missed, review now forced.**
+1. **Pure insertion of a condition -- markers advisory since B10.**
    A staged `+ if limit != 0:` with no removed line has no counterpart to compare, so
-   verify_operators judges nothing (measured: exit 0). In the money path (`trader.py`,
-   `risk.py`, `signals.py`, `gates.py`, `fees.py`, `kalshi_client.py`,
-   `market_finder.py`) `scripts/verify_review_marked.py` now refuses the commit unless
-   the line, or the one immediately above it in the same hunk, carries
-   `# reviewed: <why this guard belongs here>` (reason at least 8 characters). That
-   does NOT make the splice detectable: nothing reads whether the reason is true, so
-   a corrupted guard with a plausible reason passes. It converts an unnoticed wrong
-   branch into a line whose justification is written down and reviewable in the diff.
-   Outside those seven files the class is still silent.
+   verify_operators judges nothing (measured: exit 0). Until 2026-11-15
+   `scripts/verify_review_marked.py` refused the commit unless the line, or the one
+   immediately above it in the same hunk, carried `# reviewed: <why>`. Since B10 that
+   gate is advisory only: the hard rule is that a money-path diff must ship a test
+   referencing the change. The marker mechanism stays for compatibility; it still
+   does not make the splice detectable: nothing reads whether the reason is true, so
+   a corrupted guard with a plausible reason passes. Outside those seven files the
+   class is still silent.
 2. **One defined name swapped for another.** `return total` -> `return lines`
    where `lines` is bound in an enclosing scope parses and resolves to a *real*
    object, so pyflakes is silent and the operator gate is silent. A swap is only

@@ -1,4 +1,10 @@
-"""verify_review_marked: new money-path conditions must carry a review reason."""
+"""verify_review_marked: B10 — money-path diffs must ship a referencing test.
+
+Markers are advisory notes; the test-ship rule is the gate: a diff touching
+a money-path file (MONEY_PATH) must also add or modify a tests/*.py file,
+and when it adds a def in the money path, at least one added test line must
+reference it by name.
+"""
 
 import pathlib
 import sys
@@ -104,3 +110,69 @@ def test_hunk_offset_is_applied_to_reported_lineno():
     hits = vr.unreviewed(diff)
     assert len(hits) == 1
     assert hits[0][1] == 242
+
+
+# ── B10: money-path diffs must ship a test referencing the change ────────
+
+def _risk_diff(with_test=False, new_def=False):
+    guard = "+    def new_guard(self):\n" if new_def else ""
+    diff = (
+        "--- a/risk.py\n"
+        "+++ b/risk.py\n"
+        "@@ -1,2 +1,4 @@\n"
+        " total = self.mark_to_market()\n"
+        + guard +
+        "+        if total <= 0:\n"
+        "+            return False\n"
+        "         return total < self.ceiling\n"
+    )
+    if with_test:
+        diff += (
+            "--- a/tests/test_risk.py\n"
+            "+++ b/tests/test_risk.py\n"
+            "@@ -1,1 +1,2 @@\n"
+            "+def test_ceiling():\n"
+            "+    assert True\n"
+        )
+    return diff
+
+
+def test_money_path_diff_without_test_fails():
+    """Acceptance: a risk.py diff with no tests/ change fails the gate."""
+    assert vr.test_coverage_ok(_risk_diff()) is False
+
+
+def test_money_path_diff_with_added_test_passes():
+    """Acceptance: the same diff plus a test passes."""
+    assert vr.test_coverage_ok(_risk_diff(with_test=True)) is True
+
+
+def test_added_test_must_reference_changed_function():
+    """When the diff adds a def, the test must reference it by name."""
+    assert vr.test_coverage_ok(_risk_diff(with_test=True, new_def=True)) is False
+    referencing = _risk_diff(with_test=True, new_def=True).replace(
+        "+def test_ceiling():", "+def test_new_guard():")
+    assert vr.test_coverage_ok(referencing) is True
+
+
+def test_non_money_path_diff_needs_no_test():
+    diff = (
+        "--- a/README.md\n"
+        "+++ b/README.md\n"
+        "@@ -1,1 +1,2 @@\n"
+        "+some doc line\n"
+        " text\n"
+    )
+    assert vr.test_coverage_ok(diff) is True
+
+
+def test_main_exit_codes_follow_the_test_rule(tmp_path):
+    """main() exits 1 without a test, 0 with one (acceptance, end to end)."""
+    no_test = tmp_path / "no_test.diff"
+    no_test.write_text(_risk_diff())
+    rc = vr.main(["--diff-file", str(no_test)])
+    assert rc == 1
+    with_test = tmp_path / "with_test.diff"
+    with_test.write_text(_risk_diff(with_test=True))
+    rc = vr.main(["--diff-file", str(with_test)])
+    assert rc == 0
