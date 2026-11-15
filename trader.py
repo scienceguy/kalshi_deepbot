@@ -94,6 +94,7 @@ from resilience import CycleSupervisor, systemd_notify  # noqa: E402
 from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, calibration_beats_chance as _llm_calibration_beats_chance  # noqa: E402
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
+import mempalace_bridge  # noqa: E402  (M1: MemPalace bridge off hot path)
 import binance_feed  # noqa: E402  — WebSocket spot streams (start_ws_streams)
 import report_state  # noqa: E402  — B19 operator visibility hook
 
@@ -106,6 +107,7 @@ _poly_client = None
 # Lazy-loaded modules (only imported when actually used)
 _ladder_strategy = None
 _local_module = None
+_bridge = None  # MemPalace bridge (M1) — started at startup, stopped at shutdown
 
 # Lazy-loaded ML fair-value model (only when --ml-model is passed).
 _ml_model = None
@@ -3044,6 +3046,7 @@ def main():
 
 
 def _run_loop(args):
+    global _bridge
     mode = "DRY RUN 🔵" if config.DRY_RUN else "LIVE ⚡"
     log.info("=" * 58)
     log.info("Kalshi SuperBot v%s — %s", config.__version__, mode)
@@ -3085,6 +3088,16 @@ def _run_loop(args):
         _local_module.on_session_start()
     except Exception as e:
         log.warning("MemPalace session start failed: %s — continuing without continuity", e)
+
+    # Start the MemPalace bridge (M1): background writer + subscriber,
+    # non-blocking on the trading path.
+    try:
+        if _bridge is None:
+            _bridge = mempalace_bridge.get_default_bridge()
+        _bridge.start()
+        log.info("MemPalace bridge started (writer + subscriber threads)")
+    except Exception as e:
+        log.warning("MemPalace bridge start failed: %s — MemPalace features disabled", e)
 
     # Validate credentials, dry-run mode, bands, and fee rate before connecting to Kalshi.
     # The local .env sets DRY_RUN=false, which overrides the safe default of True.
@@ -3375,8 +3388,13 @@ def _run_loop(args):
             state.last_series_fee_refresh = time.time()
         # Sweep the MemPalace inbox for task.request events addressed to this
         # agent before each cycle so the operator can delegate work mid-run.
+        # M1: bridge.drain_tasks() reads from the inbound subscriber queue
+        # (non-blocking, under 1ms) instead of spawning a CLI process.
         try:
-            for task in _local_module.check_for_tasks():
+            if _bridge is None:
+                _bridge = mempalace_bridge.get_default_bridge()
+                _bridge.start()
+            for task in _bridge.drain_tasks():
                 _handle_task(task)
         except Exception as e:
             log.debug("MemPalace task sweep failed: %s", e)
@@ -3392,9 +3410,11 @@ def _run_loop(args):
                 state.consecutive_no_trade_cycles += 1
             cycle_count += 1
             # Checkpoint to MemPalace every N cycles for continuity.
+            # M1: bridge.checkpoint() queues the event (non-blocking); the
+            # writer thread delivers it on the hot path's behalf.
             if cycle_count % MEM_PALACE_CHECKPOINT_EVERY == 0:
                 try:
-                    _local_module.checkpoint({
+                    _bridge.checkpoint({
                         "cycles_completed": state.cycles,
                         "session_pnl": state.session_pnl,
                         "last_activity": datetime.now(timezone.utc).isoformat(),
@@ -3439,8 +3459,9 @@ def _run_loop(args):
         state.resilience.mark_success()
         # Post heartbeat after every successful cycle so the agent's
         # continuous presence is visible on the MemPalace logstream.
+        # M1: bridge.heartbeat() queues the event (non-blocking, under 1ms).
         try:
-            _local_module.heartbeat()
+            _bridge.heartbeat(state.cycles)
         except Exception as e:
             log.debug("MemPalace heartbeat failed: %s", e)
         # Drift-corrected sleep: measure cycle duration and sleep only the
@@ -3453,6 +3474,12 @@ def _run_loop(args):
         time.sleep(sleep_for)
 
     # Persist final state to MemPalace for continuity across restarts.
+    try:
+        if _bridge is not None:
+            _bridge.stop(timeout=5.0)
+            log.info("MemPalace bridge stopped")
+    except Exception as e:
+        log.warning("MemPalace bridge stop failed: %s", e)
     try:
         _local_module.on_session_end()
     except Exception as e:
