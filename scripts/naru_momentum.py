@@ -4,7 +4,7 @@
 Signal: over L minutes the favourite's mid has risen by >= thr cents and the
 ask sits in the band -> buy the ask, exit H minutes later at the then-current
 bid (both legs pay the Kalshi taker fee). A hold that runs past the window
-close holds to settlement instead.
+close holds to settlement instead. All reported results are net of fees.
 
 Inputs are the recorded yes_ask / no_ask per minute and the recorded outcome;
 yes_bid is taken as 100 - no_ask, which is exact under a one-tick book. Nothing
@@ -59,12 +59,14 @@ def simulate(mt: pd.DataFrame, look: int, hold: int, thr: int,
             "entry_min": m,
             "price": buy[m][ok] / 100.0,
             "exit": bid[m][ok] / 100.0,
+            "fee_in": fee_in[m][ok],
+            "fee_out": fee_out[m][ok],
             "win_settle": shot[15 - hold][ok] if (15 - hold) in shot else np.nan,
         }))
     if not rows:
         return {"n": 0}
     t = pd.concat(rows)
-    t["fee"] = FEE * t.price * (1 - t.price) + FEE * t.exit * (1 - t.exit)
+    t["fee"] = t.fee_in + t.fee_out            # both taker legs, per contract
     t["net"] = (t.exit - t.price) - t.fee          # round trip, never held to settle
     t = t.sort_values("entry_min").reset_index(drop=True)
 
@@ -73,8 +75,8 @@ def simulate(mt: pd.DataFrame, look: int, hold: int, thr: int,
         c = bal * frac / r.price
         if c <= 0:
             continue
-        bal -= c * r.price + c * FEE * r.price * (1 - r.price)      # buy leg
-        bal += c * r.exit - c * FEE * r.exit * (1 - r.exit)         # sell leg
+        bal -= c * r.price + c * r.fee_in      # buy leg: ask + taker fee
+        bal += c * r.exit - c * r.fee_out      # sell leg: bid - taker fee
         peak = max(peak, bal)
         dd = max(dd, 1 - bal / peak)
         if bal < 1:
@@ -117,8 +119,8 @@ def main() -> int:
               f"{r['net_c']:>+7.2f} {r['final']:>10.2f} {r['maxdd']*100:>5.1f}%")
     assert rows, "no momentum configs traded"
     pos = [r for r in rows if r["final"] > a.start]
-    print(f"\n{len(rows)} configs tested, {len(pos)} profitable after both taker fees")
-    print(f"best final ${rows[0]['final']:.2f} vs start ${a.start:.2f}")
+    print(f"\n{len(rows)} configs tested, {len(pos)} profitable net of fees (both taker legs)")
+    print(f"best final ${rows[0]['final']:.2f} vs start ${a.start:.2f} (net of fees)")
     return 0
 
 

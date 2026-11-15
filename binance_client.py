@@ -20,8 +20,6 @@ from typing import Any, Dict, Optional
 import requests
 from requests.adapters import HTTPAdapter
 
-import config
-
 log = logging.getLogger("binance_client")
 
 # Binance public API base URL

@@ -122,7 +122,6 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
                 "respondWith": "json",
                 "options": {}
             },
-            "position": [600, 0]
         }
         
         nodes = [webhook_node, http_request_node, respond_node]
@@ -155,7 +154,6 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
                 "respondWith": "json",
                 "options": {}
             },
-            "position": [300, 0]
         }
 
         nodes = [webhook_node, respond_node]
@@ -194,7 +192,6 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
                 "respondWith": "json",
                 "options": {}
             },
-            "position": [600, 0]
         }
         
         nodes = [webhook_node, code_node, respond_node]

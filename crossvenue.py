@@ -22,7 +22,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import requests
 
@@ -370,7 +370,6 @@ def to_cdf(ladder: Ladder):
 
 def _interp(x, xp, fp):
     """Linear interpolation of fp at x given sorted xp. Pure stdlib."""
-    import bisect
     i = bisect.bisect_left(xp, x)
     if i == 0:
         return fp[0]
@@ -390,7 +389,6 @@ def compare(kalshi: Ladder, poly: Ladder):
     if k is None or p is None:
         return []
     poly_strikes = [pt[0] for pt in p]
-    poly_probs = [pt[1] for pt in p]
     lo, hi = poly_strikes[0], poly_strikes[-1]
     out = []
     for strike, kalshi_mid in k:

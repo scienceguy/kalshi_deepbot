@@ -33,7 +33,7 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import pandas as pd
 import pyarrow as pa

@@ -12,7 +12,6 @@ No orders are placed anywhere.
 from __future__ import annotations
 
 import math
-import os
 from datetime import datetime
 from typing import List, Optional
 

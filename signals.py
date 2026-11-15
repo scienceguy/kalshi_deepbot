@@ -104,11 +104,14 @@ def _size(entry_cents: int, max_dollars: float, max_contracts: int = 0) -> float
 # MAKER PRICING
 # ═════════════════════════════════════════════════════════════════════
 
-def _maker_price(market: MarketInfo, bullish: bool) -> int:
+def _maker_price(market: MarketInfo, bullish: bool) -> Optional[int]:
     """
     Decide entry price per direction (from kalshi_live_bot).
     In aggressive mode we cross the book (with optional buffer); otherwise we
     quote 1c inside the spread with fill-optimized depth.
+
+    Returns None when the book for the direction being bought is locked or
+    crossed (best bid >= best ask) — no honest maker price exists there.
     """
     buffer = getattr(config, "AGGRESSIVE_ENTRY_BUFFER_CENTS", 0)
     if config.AGGRESSIVE_FILL:
@@ -129,15 +132,28 @@ def _maker_price(market: MarketInfo, bullish: bool) -> int:
         if bullish:
             if yes_bid and yes_ask:
                 if yes_ask <= yes_bid:
-                    result = max(1, min(99, yes_bid))  # spread ≤ 0 — reject
-                else:
-                    target = yes_bid + 1 if (yes_ask - yes_bid) > 1 else yes_bid
-                    # Deeper quote: 1c under ask for ~85% live fill rate
-                    result = min(target, max(1, yes_ask - 1))
+                    return None  # locked/crossed YES book — no honest maker price
+                target = yes_bid + 1 if (yes_ask - yes_bid) > 1 else yes_bid
+                # Deeper quote: 1c under ask. Fill-rate report (computed
+                # 2026-11-15, B19) from the local orders tables
+                # (local_data/, distinct order_id, duplicate rows from sync
+                # double-writes collapsed): legacy superbot_local.db
+                # (pre-mode-split) 40 rows / 20 distinct, 19 settled
+                # (fill confirmed at settlement) vs 1 "executed"-only, never
+                # settled → 19/20 = 95%; superbot_local_dry.db 34 rows / 17
+                # distinct, all settled → 17/17 = 100% (dry fills are
+                # simulated from the live book). Rows span 2026-11-14 only —
+                # small sample. A true resting-maker fill rate is NOT
+                # computable from this table: unfilled maker orders are
+                # never inserted. The old "~85% live fill rate" figure has
+                # no local-data source.
+                result = min(target, max(1, yes_ask - 1))
             else:
                 result = yes_ask or yes_bid or 1
         else:
             if no_bid and no_ask:
+                if no_ask <= no_bid:
+                    return None  # locked/crossed NO book — no honest maker price
                 target = no_bid + 1 if (no_ask - no_bid) > 1 else no_bid
                 result = min(target, max(1, no_ask - 1))
             else:
@@ -419,7 +435,11 @@ def _evaluate_common(
         return _pass("No liquidity")
 
     # ── Entry price ─────────────────────────────────────────────────────
-    ep = _maker_price(market, bullish)
+    # Locked/crossed book: _maker_price returned None above (ep_val) — reject
+    # this direction rather than trade into a broken book.
+    ep = ep_val
+    if ep is None:
+        return _pass("Locked/crossed book — no maker price")
     ep = max(1, min(99, int(ep)))
 
     # Entry band check (allow 1c inside spread for maker orders resting below ask)

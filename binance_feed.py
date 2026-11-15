@@ -102,7 +102,6 @@ def _ws_set(symbol: str, price: float) -> None:
 
 def _binance_ws_loop(symbols: list[str]) -> None:
     """Background thread: Binance.US combined @ticker stream (all symbols, subsecond cadence)."""
-    import websockets  # lazy import — optional dep
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -142,7 +141,6 @@ async def _binance_ws_async(url: str) -> None:
 
 def _coinbase_ws_loop(symbols: list[str]) -> None:
     """Background thread: Coinbase Advanced Trade ticker channel."""
-    import websockets  # lazy import — optional dep
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -189,7 +187,6 @@ def _redstone_ws_loop(symbols: list[str]) -> None:
     Skipped entirely if the gateway is unreachable — REST composite_price
     covers spot input. Non-fatal.
     """
-    import websockets  # lazy import — optional dep
 
     url = os.environ.get("REDSTONE_WS_URL", "wss://gateway.redstone.finance/ws")
     api_key = os.environ.get("REDSTONE_API_KEY", "")
@@ -252,7 +249,8 @@ def start_ws_streams(symbols: list[str] | None = None) -> None:
         return
     symbols = symbols or list(_KNOWN_BASES)
     try:
-        import websockets  # noqa: F401  — availability check
+        import websockets  # optional dep — availability check below uses it
+        log.debug("websockets %s available", getattr(websockets, "__version__", "?"))
     except ImportError:
         log.warning("websockets not installed — WS price streams disabled; "
                     "using REST composite_price only")

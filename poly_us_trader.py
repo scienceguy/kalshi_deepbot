@@ -38,6 +38,7 @@ def _load_bs_calibration():
 import polymarket_us_client
 import crossvenue_edge
 import config
+import report_state  # B19 operator visibility hook
 from resilience import systemd_notify
 
 # Optional ML fair-value model (torch may not be installed everywhere).
@@ -53,6 +54,9 @@ STATE_FILE = DATA_DIR / "poly_us_state.json"
 LEDGER_FILE = DATA_DIR / "poly_us_paper_ledger.jsonl"
 POLY_US_LOG_FILE = DATA_DIR / "poly_us_dry.log"
 LOCK_FILE = Path(__file__).resolve().parent / ".lock_poly"
+
+# B19: operator-visibility reporter, created lazily inside cycle().
+_poly_state_reporter = None
 
 log = logging.getLogger("poly_us_trader")
 
@@ -2027,6 +2031,36 @@ class PolyUSPaperTrader:
         if budget and requests > budget:
             log.warning("cycle request budget exceeded: %d > %d (PM_REQUEST_BUDGET_PER_CYCLE)",
                         requests, budget)
+
+
+        # B19: operator visibility — classify and emit to the monitor webhook +
+        # bot_state only on change plus a heartbeat. Never raises, never blocks
+        # (n8n webhook is queued by the client).
+        try:
+            global _poly_state_reporter
+            if _poly_state_reporter is None:
+                _poly_state_reporter = report_state.StateReporter("poly_us")
+            try:
+                dl_halted = self._daily_loss_halted()
+            except Exception:
+                dl_halted = bool(self.state.get("daily_loss_halted"))
+            a1_halted = bool(getattr(self, "calibration_halted", False) and not getattr(self, "calibration_probing", False))
+            halted = (bool(self.state.get("ruin_halted"))
+                      or bool(self.state.get("venue_recon_halted"))
+                      or dl_halted or a1_halted
+                      or self.paper_fill_model is None)
+            new_state = report_state.classify(halted=halted, degraded=not markets,
+                                              traded=bool(trades_placed))
+            _poly_state_reporter.report(new_state,
+                                        equity=total_equity,
+                                        positions=len(self.state.get("positions", [])),
+                                        markets=len(markets),
+                                        a1_halted=a1_halted,
+                                        ruin_halted=bool(self.state.get("ruin_halted")),
+                                        daily_loss_halted=dl_halted,
+                                        calibration_reason=self.calibration_reason or "")
+        except Exception as e:
+            log.warning("report_state hook failed (non-fatal): %s", e)
 
         systemd_notify("WATCHDOG=1")
 

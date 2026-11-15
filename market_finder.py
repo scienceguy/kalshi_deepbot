@@ -376,10 +376,8 @@ def find_active_markets(client: KalshiClient, extra_band=None, target_series=Non
     # passing the stale band filter). Stale prices from /markets can mis-filter:
     # a market that passes on stale data gets an orderbook fetch; one that fails
     # on stale data is dropped before the orderbook can correct it.
-    # Use a permissive initial band (1-99) for orderbook fetching, then apply
-    # the real entry band after fresh prices are available.
-    FETCH_BAND_MIN = 1
-    FETCH_BAND_MAX = 99
+    # Fetch orderbooks for everything discovered; the real entry band is
+    # applied after fresh prices are available.
     fetch_list = []  # (mkt, ct, ml, role, ya)
     for mkt, ct, ml, mid in all_mains:
         # reviewed: unconditionally fetch orderbook for all discovered active markets so bid history is 100% recorded

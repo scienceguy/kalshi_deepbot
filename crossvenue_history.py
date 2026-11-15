@@ -28,7 +28,7 @@ import logging
 import math
 import statistics
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, List, Optional
 
 import requests

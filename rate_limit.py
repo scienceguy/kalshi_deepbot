@@ -379,8 +379,6 @@ def default_limiter() -> RateLimiter:
 
 
 if __name__ == "__main__":  # pragma: no cover — quick self-check
-    import sys
-
     # 1. Min-gap equivalence: burst=1, rate=10 -> 10 tokens/s, 4 gaps of 0.1s
     b = TokenBucket(rate_per_sec=10.0, burst=1.0, name="selfcheck")
     start = time.monotonic()

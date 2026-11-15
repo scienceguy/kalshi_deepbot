@@ -13,6 +13,9 @@ _STORE = {}
 
 CHECKPOINT_ENTITY = "agent_continuity_checkpoint"
 
+# Agent identity: host:harness:project (per MemPalace protocol)
+AGENT_IDENTITY = "ubuntu:opencode:kalshi_deepbot"
+
 _MP = ""
 # Try shutil.which first (works when PATH includes ~/bin)
 _candidate = shutil.which("mempalace")
@@ -123,7 +126,7 @@ def checkpoint(state: dict | None = None, correlation_id: str | None = None) -> 
         "--room", "continuity",
         "--topic", "agent-checkpoint",
         "--correlation-id", corr,
-        "--from-agent", "termux:opencode:kalshi_deepbot",
+        "--from-agent", AGENT_IDENTITY,
         "--to-agent", "*",
         "--body", body,
     )
@@ -139,7 +142,7 @@ def resume() -> dict | None:
     r = _mp(
         "logstream", "list",
         "--topic", "agent-checkpoint",
-        "--to-agent", "termux:opencode:kalshi_deepbot",
+        "--to-agent", AGENT_IDENTITY,
         "--json",
         "--limit", "5",
     )
@@ -221,7 +224,7 @@ def on_session_end() -> None:
 
 def _post_status(status: str, extra: dict | None = None) -> None:
     """Post a status event to the MemPalace logstream announcing agent state."""
-    body_parts = ["status=" + status, "agent=termux:opencode:kalshi_deepbot", "ts=" + _now_iso()]
+    body_parts = ["status=" + status, "agent=" + AGENT_IDENTITY, "ts=" + _now_iso()]
     if extra:
         body_parts.append("data=" + _serialize(extra))
     r = _mp(
@@ -231,7 +234,7 @@ def _post_status(status: str, extra: dict | None = None) -> None:
         "--room", "status",
         "--topic", "agent-heartbeat",
         "--correlation-id", _now_iso(),
-        "--from-agent", "termux:opencode:kalshi_deepbot",
+        "--from-agent", AGENT_IDENTITY,
         "--to-agent", "*",
         "--body", " | ".join(body_parts),
     )
@@ -256,7 +259,7 @@ def check_for_tasks() -> list[dict]:
         "--stream", "project/kalshi_deepbot",
         "--room", "delegation",
         "--type", "task.request",
-        "--to-agent", "termux:opencode:kalshi_deepbot",
+        "--to-agent", AGENT_IDENTITY,
         "--status", "open",
         "--json",
         "--limit", "10",
@@ -371,7 +374,7 @@ def _load_self_model() -> dict:
     except (FileNotFoundError, json.JSONDecodeError):
         return {
             "identity": {
-                "agent_id": "termux:opencode:kalshi_deepbot",
+                "agent_id": AGENT_IDENTITY,
                 "created": datetime.now(timezone.utc).isoformat(),
                 "version": "1.0.0",
             },
@@ -408,14 +411,14 @@ def get_peer_awareness() -> dict:
             data = {"events": []}
         for event in data.get("events", []):
             ident = event.get("from_agent", "")
-            if not ident or ident == "termux:opencode:kalshi_deepbot":
+            if not ident or ident == AGENT_IDENTITY:
                 continue
             topic = event.get("topic", "unknown")
             peers_working.append((ident, topic, "working"))
     recent_broadcasts = []
     try:
         r = _mp("logstream", "list", "--topic", "cross-project-awareness",
-                "--to-agent", "termux:opencode:kalshi_deepbot", "--json", "--limit", "3")
+                "--to-agent", AGENT_IDENTITY, "--json", "--limit", "3")
         if r.returncode == 0 and r.stdout:
             try:
                 data = json.loads(r.stdout)
@@ -433,7 +436,7 @@ def get_peer_awareness() -> dict:
     }
 
 def artifact_put(content: str, wing: str, room: str,
-                 from_agent: str = "termux:opencode:kalshi_deepbot",
+                 from_agent: str = AGENT_IDENTITY,
                  stream: str = "project/kalshi_deepbot",
                  correlation_id: str | None = None) -> dict | None:
     """Durably store content in MemPalace via `mempalace artifact put`.
@@ -486,7 +489,7 @@ def artifact_get(artifact_id: str) -> dict | None:
 
 
 def kg_add(entity: str, relation: str, target: str,
-           from_agent: str = "termux:opencode:kalshi_deepbot") -> bool:
+           from_agent: str = AGENT_IDENTITY) -> bool:
     """Add a knowledge-graph fact via `mempalace kg add`.
 
     Returns True on success. Used to record durable relational facts
@@ -510,7 +513,7 @@ def kg_add(entity: str, relation: str, target: str,
 
 
 def kg_supersede(entity: str, relation: str, target: str,
-                 from_agent: str = "termux:opencode:kalshi_deepbot") -> bool:
+                 from_agent: str = AGENT_IDENTITY) -> bool:
     """Replace a single-valued KG fact via `mempalace kg supersede`.
 
     Returns True on success. Use when a fact changes (e.g. a workflow is
@@ -533,7 +536,7 @@ def kg_supersede(entity: str, relation: str, target: str,
 
 
 def kg_invalidate(entity: str, relation: str, target: str,
-                  from_agent: str = "termux:opencode:kalshi_deepbot") -> bool:
+                  from_agent: str = AGENT_IDENTITY) -> bool:
     """Retire a KG fact via `mempalace kg invalidate`.
 
     Returns True on success. Use when a fact ended without replacement

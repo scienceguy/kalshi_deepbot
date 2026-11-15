@@ -22,7 +22,7 @@ Usage:
     python trader.py --debug  # verbose logging
 """
 
-import argparse, hashlib, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
+import argparse, hashlib, inspect, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
 import logging.handlers  # noqa: E402  — needed for RotatingFileHandler (submodule)
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -95,6 +95,7 @@ from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, 
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
 import binance_feed  # noqa: E402  — WebSocket spot streams (start_ws_streams)
+import report_state  # noqa: E402  — B19 operator visibility hook
 
 # Polymarket US client (order placement infra ready for when crypto markets
 # launch on production; currently preprod only — no crypto updown markets on
@@ -1086,7 +1087,6 @@ def _resolve_pending_settlement(client, payload):
     ticker = payload.get("ticker", "")
     side = payload.get("side", "")
     contracts = payload.get("contracts", 0)
-    entry_price = payload.get("entry_price", 0)
     if not ticker or side not in ("yes", "no") or not contracts:
         return None
     try:
@@ -1758,6 +1758,57 @@ def _sizing_cash(client) -> float:
     return client.get_shard_balance(CRYPTO_EXCHANGE_INDEX)
 
 
+def _find_active_markets_with_fallback(client, series):
+    """find_active_markets(client, target_series=series) when the callable's
+    signature accepts target_series (or **kwargs); else the 1-arg call.
+
+    Signature-based (B19): the old code caught TypeError and string-matched
+    the message, which is brittle across Python versions and mocks.
+    """
+    try:
+        params = inspect.signature(find_active_markets).parameters
+    except (TypeError, ValueError):
+        # Uninspectable callable (C builtin / partial): use the plain call.
+        return find_active_markets(client)
+    if ("target_series" in params
+            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())):
+        return find_active_markets(client, target_series=series)
+    return find_active_markets(client)
+
+
+_state_reporter: report_state.StateReporter | None = None
+
+
+def _report_cycle_state(cash, positions, risk_state):
+    """B19: classify this cycle and emit the operator state report.
+
+    `traded` reads cycle_outcome, which lags one cycle by construction (the
+    same lag the existing bot_state batch write has). Best-effort only.
+    """
+    global _state_reporter
+    try:
+        if _state_reporter is None:
+            _state_reporter = report_state.StateReporter("kalshi")
+        degraded = [name for name, val in (("cash", cash), ("positions", positions)) if val is None]
+        try:
+            cooldown = state.risk._loss_cooldown_active()
+        except Exception:
+            cooldown = bool(risk_state.get("cooldown_started_at"))
+        new_state = report_state.classify(
+            halted=bool(risk_state.get("halted")),
+            cooldown=cooldown,
+            degraded=bool(degraded),
+            traded=(state.cycle_outcome == "traded"),
+        )
+        _state_reporter.report(new_state,
+                               cycle=state.cycles,
+                               cycle_outcome=state.cycle_outcome,
+                               risk_halt_reason=risk_state.get("halt_reason") or "",
+                               degraded_sources=degraded)
+    except Exception as e:
+        log.warning("_report_cycle_state failed (non-fatal): %s", e)
+
+
 def cycle(client: KalshiClient):
     state.cycles += 1
     log.info("── Cycle %d ──────────────────────", state.cycles)
@@ -1806,14 +1857,7 @@ def cycle(client: KalshiClient):
                  cash, config.BOOTSTRAP_THRESHOLD_DOLLARS, config.TARGET_SERIES_MAJOR)
     else:
         bootstrap_series = config.TARGET_SERIES
-    try:
-        markets = find_active_markets(client, target_series=bootstrap_series)
-    except TypeError as e:
-        # reviewed: only fall back if the callable signature itself rejected target_series (e.g. 1-arg mock)
-        if "target_series" in str(e):
-            markets = find_active_markets(client)
-        else:
-            raise
+    markets = _find_active_markets_with_fallback(client, bootstrap_series)
     state.tradeable_brackets = len(markets)
     state.available_active_markets = getattr(markets, "total_available", len(markets))
     state.available_markets_count = state.available_active_markets
@@ -2466,6 +2510,10 @@ def cycle(client: KalshiClient):
                 state._last_logged_state = current_state
         except Exception:
             log.debug("Supabase bot_state writes failed")
+
+    # B19: per-cycle operator visibility — classify and emit to the monitor
+    # webhook + bot_state only on change plus a heartbeat (never raises).
+    _report_cycle_state(cash, positions, risk_state)
 
     # Hard stops
     if state.risk.state.halted:

@@ -16,13 +16,11 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import pandas as pd
-from backtest_engine import StratParams, run_sweep
+from backtest_engine import run_sweep
 from kalshi_client import KalshiClient
 from dateutil import parser
 
@@ -114,9 +112,10 @@ def market_to_backtest_format(market, minute_quotes):
     expiration_value = market.get("expiration_value")
     floor_strike = market.get("floor_strike")
 
-    # YES wins if expiration_value >= floor_strike
+    # YES wins if expiration_value >= floor_strike; values must be parseable
     try:
-        yes_won = float(expiration_value) >= float(floor_strike)
+        float(expiration_value)
+        float(floor_strike)
     except (ValueError, TypeError):
         return None
 
