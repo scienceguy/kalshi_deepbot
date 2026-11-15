@@ -303,6 +303,42 @@ class GateResult:
 # EVALUATION
 # ═════════════════════════════════════════════════════════════════════
 
+# B17: the measured-q floor is only as good as the settled fills behind it.
+# scripts/q_floor_holdout.py recomputes the in-band YES-side win rate from
+# settled fills on a time-ordered train/holdout split and writes
+# local_data/q_floor.json. Min n=100 holdout rows: below that a Wilson bound
+# still moves by >1c per few wins — that is noise, not a measurement — so the
+# floor is refused instead of applied. GATES_MEASURED_Q (0.9928) was measured
+# in-sample on quotes, not fills; it remains only the pre-B17 fallback below.
+GATES_Q_FLOOR_MIN_N = 100
+_Q_FLOOR_FILE = Path(__file__).resolve().parent / "local_data" / "q_floor.json"
+
+
+def _measured_q_floor():
+    """Return (floor, n, source); floor None means refuse the floor.
+
+    Measurement file present and usable: the Wilson 95% holdout lower bound.
+    File present but insufficient/corrupt: refuse rather than revive the
+    constant. No file at all: keep the pre-B17 opt-in constant, but say so
+    loudly in metrics (q_floor_n=0, q_floor_source=config:GATES_MEASURED_Q).
+    """
+    if not _Q_FLOOR_FILE.exists():  # reviewed: no measurement yet — keep pre-B17 opt-in constant, logged loudly as config:GATES_MEASURED_Q
+        return config.GATES_MEASURED_Q, 0, "config:GATES_MEASURED_Q"
+    try:
+        data = json.loads(_Q_FLOOR_FILE.read_text())
+        n = int(data["q_floor_n"])
+        source = str(data.get("q_floor_source", "holdout"))
+        if n < GATES_Q_FLOOR_MIN_N:  # reviewed: below 100 holdout rows the Wilson bound is noise; refuse rather than apply
+            return None, n, f"refused:holdout_n_{n}<{GATES_Q_FLOOR_MIN_N}"
+        floor = float(data["q_floor"])
+        if not 0.0 <= floor <= 1.0:  # reviewed: measurement outside [0,1] is corrupt; refuse rather than apply
+            return None, n, "refused:q_floor_out_of_range"
+        return floor, n, source
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        log.warning("q_floor holdout unreadable (%s); floor refused", e)
+        return None, 0, "refused:unreadable"
+
+
 def _hurdle_for(asset: str | None) -> float:
     return float(getattr(config, f"GATES_ATR_HURDLE_{asset or ''}",
                          config.GATES_ATR_HURDLE))
@@ -513,8 +549,13 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
                     if (config.GATES_MEASURED_FLOOR_ENABLED
                             and config.GATES_MEASURED_BAND_MIN_CENTS
                             <= yes_equiv <= config.GATES_MEASURED_BAND_MAX_CENTS):
-                        q = max(q, config.GATES_MEASURED_Q)
-                        metrics["q_measured_floor"] = True
+                        # reviewed: B17 floor q at the Wilson 95% holdout lower bound from settled fills — never at the raw 0.9928; below 100 holdout rows the floor is refused
+                        q_floor, q_floor_n, q_floor_source = _measured_q_floor()
+                        metrics["q_floor_n"] = q_floor_n
+                        metrics["q_floor_source"] = q_floor_source
+                        if q_floor is not None:  # reviewed: B17 apply the measured Wilson bound only when the measurement is usable
+                            q = max(q, q_floor)
+                            metrics["q_measured_floor"] = True
                 metrics["q"] = q
 
     # ── Gate 2: fee-adjusted EV ─────────────────────────────────────────
