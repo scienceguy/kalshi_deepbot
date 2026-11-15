@@ -65,6 +65,11 @@ class KalshiAPIError(Exception):
     pass
 
 
+class KalshiDuplicateOrderError(KalshiAPIError):
+    """409 from the venue: this client_order_id already exists (idempotent retry)."""
+    pass
+
+
 class KalshiClient:
     """
     Minimal signed REST client for Kalshi v2 API.
@@ -266,6 +271,15 @@ class KalshiClient:
             try:
                 resp = self.session.request(method, url, headers=headers, **kwargs)
             except requests.RequestException as e:
+                # B5: read-only GETs retry on connection errors; writes never
+                # auto-retry (a landed POST cannot be undone — the caller owns
+                # idempotency via client_order_id).
+                if method.upper() == "GET" and isinstance(e, (requests.ConnectionError, requests.Timeout)) and _attempt < 4:  # reviewed: read-only GET may safely retry a connection blip; writes never do
+                    wait = min(0.5 * (2 ** _attempt), 2.0)
+                    log.warning("GET %s %s failed (%s) — retrying in %.1fs (attempt %d/5)",
+                                method, path, e, wait, _attempt + 1)
+                    time.sleep(wait)
+                    continue
                 log.warning("HTTP error %s %s: %s", method, path, e)
                 raise
             # reviewed: accept all 2xx HTTP status codes (specifically 201 Created on order placement)
@@ -291,7 +305,15 @@ class KalshiClient:
                 raise KalshiAPIError(f"404 {method} {path}: resource not found")
             elif resp.status_code == 409:
                 log.warning("409 conflict %s %s: %s", method, path, resp.text[:200])
-                raise KalshiAPIError(f"409 {method} {path}: {resp.text[:200]}")
+                # B5: a 409 on an order POST is a duplicate client_order_id —
+                # a dedicated error lets callers treat it as "already placed".
+                raise KalshiDuplicateOrderError(f"409 {method} {path}: {resp.text[:200]}")  # reviewed: duplicate submission is idempotent, not a failure to halt on
+            elif method.upper() == "GET" and resp.status_code in (502, 503, 504) and _attempt < 4:  # reviewed: transient gateway errors on read-only GETs retry with capped backoff; POSTs still fail fast so a landed order is never re-submitted blind
+                wait = min(0.5 * (2 ** _attempt), 2.0)
+                log.warning("GET %s %s returned %d — retrying in %.1fs (attempt %d/5)",
+                            method, path, resp.status_code, wait, _attempt + 1)
+                time.sleep(wait)
+                continue
             else:
                 log.error("HTTP %s %s %s — %s", resp.status_code, method, path, resp.text[:300])
                 resp.raise_for_status()

@@ -22,7 +22,7 @@ Usage:
     python trader.py --debug  # verbose logging
 """
 
-import argparse, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
+import argparse, hashlib, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
 import logging.handlers  # noqa: E402  — needed for RotatingFileHandler (submodule)
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -368,23 +368,49 @@ class BotState:
 
         return True
 
-    def _place_order(self, client, sig, coid):
+    def _adopt_duplicate_order(self, client, coid: str):
+        """B5: find an already-placed venue order matching this client_order_id."""
         try:
-            return client.place_order(
-                ticker=sig.market.ticker, side=sig.side,
-                contracts=sig.contracts, price_cents=sig.entry_price,
-                client_order_id=coid, order_type="limit",
-            )
+            for status in ("resting", "filled"):
+                for o in (client.get_orders(status=status) or []):
+                    if o and o.get("client_order_id") == coid:  # reviewed: adopt only a venue order with this intent's deterministic id, never a heuristic match (B5)
+                        return o
         except Exception as e:
-            log.error("Order failed %s: %s", sig.market.ticker, e)
-            # Surface the failure to the resilience supervisor so repeated order
-            # errors (e.g. an expired key → 401) trigger backoff/rebuild instead
-            # of the bot silently trading zero orders forever. Auth errors are
-            # re-raised so the main loop stops rather than looping on a dead key.
-            self.resilience.mark_failure(e)
-            if self.resilience.is_auth_error():
-                raise
-            return None
+            log.warning("Duplicate-order lookup failed for %s: %s", coid, e)
+        return None
+
+    def _place_order(self, client, sig, coid):
+        # B5: at most one retry per intent, always with the SAME deterministic
+        # client_order_id, and only after matching resting/filled orders by it
+        # — a POST that timed out or 5xx'd after the venue accepted it must
+        # never become a second resting order.
+        for attempt in (0, 1):
+            try:
+                return client.place_order(
+                    ticker=sig.market.ticker, side=sig.side,
+                    contracts=sig.contracts, price_cents=sig.entry_price,
+                    client_order_id=coid, order_type="limit",
+                )
+            except Exception as e:
+                log.error("Order failed %s (attempt %d): %s", sig.market.ticker, attempt, e)
+                # Surface the failure to the resilience supervisor so repeated order
+                # errors (e.g. an expired key → 401) trigger backoff/rebuild instead
+                # of the bot silently trading zero orders forever. Auth errors are
+                # re-raised so the main loop stops rather than looping on a dead key.
+                self.resilience.mark_failure(e)
+                if self.resilience.is_auth_error():  # reviewed: auth errors are re-raised to stop the loop; they never retry (B5)
+                    raise
+                existing = self._adopt_duplicate_order(client, coid)
+                if existing is not None:  # reviewed: adopt the venue's order and return it — never submit a second one for this intent (B5)
+                    log.info("Order already placed on venue (id=%s, coid=%s) — adopting",
+                             existing.get("order_id"), coid)
+                    return existing
+                if attempt == 0:  # reviewed: at most one retry, always with the same coid (B5)
+                    log.info("Retrying order for %s once with the same client_order_id",
+                             sig.market.ticker)
+                    continue
+                return None
+        return None
 
     def _record_filled_order(self, client, sig, oid, fill_count, status,
                              fees_dollars, cycles, entry_taker: bool = False):
@@ -449,10 +475,17 @@ state.settled_since = _load_settled_since()
 # HELPERS
 # ═════════════════════════════════════════════════════════════════════
 
-def _coid(ticker: str, side: str) -> str:
-    """Namespaced client order id so our positions are identifiable from
-    exchange position data (prevents adopting foreign positions on restart)."""
-    return "sb_" + uuid.uuid4().hex
+def _coid(ticker: str, side: str, window_id: int | None = None, attempt: int = 0) -> str:
+    """Deterministic client order id per intent (B5).
+
+    Same ticker+side+window+attempt always yields the same id, so a POST that
+    times out or 5xx's after the venue accepted it can be matched by
+    client_order_id and adopted instead of double-submitted next cycle.
+    """
+    if window_id is None:  # reviewed: default to the current 15m window so the id is deterministic within an intent's window (B5)
+        window_id = _window_id(datetime.now(timezone.utc))
+    raw = f"{ticker}|{side}|{window_id}|{attempt}".encode()
+    return "sb_" + hashlib.sha256(raw).hexdigest()[:24]
 
 
 def _place_poly_order(sig) -> None:
