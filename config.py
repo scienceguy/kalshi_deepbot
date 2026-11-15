@@ -168,6 +168,11 @@ PM_ALLOW_UNMODELLED = _env_bool("PM_ALLOW_UNMODELLED", False)
 # live models are deliberately distinct. Do not mix models in one state epoch.
 PM_PAPER_FILL_MODEL = _env_str("PM_PAPER_FILL_MODEL", "taker")
 
+# A8: per-cycle Polymarket request budget. The cycle logs its request count at
+# DEBUG and raises a WARNING above this number; it never blocks trading by
+# itself (B7 will wire real rate limiting). 0 disables the warning.
+PM_REQUEST_BUDGET_PER_CYCLE = _env_int("PM_REQUEST_BUDGET_PER_CYCLE", 40)
+
 # Calibration circuit breaker (A1): halt new entries when rolling calibration
 # degrades, but only with enough samples, and only time-bounded so a single bad
 # streak cannot permanently stall the engine.

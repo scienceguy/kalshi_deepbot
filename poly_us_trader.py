@@ -49,6 +49,12 @@ LOCK_FILE = Path(__file__).resolve().parent / ".lock_poly"
 
 log = logging.getLogger("poly_us_trader")
 
+# A8: market list pagination. The API pages with limit/offset; a short page is
+# the end of the list. A full page at the cap means the scan is truncated and
+# must be announced rather than silently losing markets.
+_SCAN_PAGE_SIZE = 100
+_SCAN_MAX_PAGES = 10
+
 # R17: SIGTERM/SIGINT set this flag; the main loop exits cleanly after the
 # current cycle instead of dying mid-write (state/ledger stay consistent).
 _stop_requested = False
@@ -633,6 +639,7 @@ class PolyUSPaperTrader:
                     "cost": fill_cost,
                     "order_id": oid,
                     "category": o.get("category", ""),
+                    "event_slug": o.get("event_slug", ""),
                     "opened_at": o.get("placed_at"),
                 })
             if filled_qty > 0:
@@ -721,6 +728,7 @@ class PolyUSPaperTrader:
                     "cost": fill_cost,
                     "order_id": o.get("order_id"),
                     "category": o.get("category", ""),
+                    "event_slug": o.get("event_slug", ""),
                     "opened_at": datetime.now(timezone.utc).isoformat(),
                     "paper_fill_model": "maker",
                 })
@@ -732,39 +740,75 @@ class PolyUSPaperTrader:
         self.state["resting_orders"] = still_resting
         self._save_state(self.state)
 
+    def _note_request(self, n: int = 1) -> None:
+        """Count one venue request for the per-cycle budget (A8)."""
+        self._cycle_requests = int(getattr(self, "_cycle_requests", 0)) + n
+
+    def _paged_market_list(self, query: dict) -> list:
+        """List markets with limit/offset pagination until a short page (A8).
+
+        Logs pages and market count; warns when a full page at the page cap
+        means the result is truncated. A page error keeps the pages already
+        fetched (matching the old per-scan error handling).
+        """
+        max_pages = _SCAN_MAX_PAGES
+        page_size = _SCAN_PAGE_SIZE
+        markets: list = []
+        pages = 0
+        while pages < max_pages:
+            q = dict(query)
+            q["limit"] = page_size
+            q["offset"] = pages * page_size
+            self._note_request(1)
+            try:
+                res = self.client.get("/v1/markets", query=q, authenticated=False)
+            except Exception as e:
+                log.debug("Market scan page %d failed: %s", pages + 1, e)
+                break
+            rows = res.get("markets", []) if isinstance(res, dict) else []
+            markets.extend(rows)
+            pages += 1
+            if len(rows) < page_size:
+                log.info("market scan: %d page(s), %d market(s) (query=%s)",
+                         pages, len(markets), query)
+                return markets
+        log.warning("market scan truncated: query=%s hit %d full page(s) (%d markets) "
+                    "— results may be incomplete", query, pages, len(markets))
+        return markets
+
     def scan_markets(self) -> list:
-        """Scan open active markets across crypto and active categories."""
+        """Scan open active markets across crypto and active categories.
+
+        Both list calls paginate with offset until a short page (A8). The
+        parent event slug for each market is carried on the payload
+        (`eventSlug`) and stored with positions when they are opened.
+        """
         if not self.client:
             return []
         markets_by_slug = {}
-        # 1. Fetch active crypto price markets
-        try:
-            res_crypto = self.client.get("/v1/markets?active=true&closed=false&categories=crypto&limit=100", authenticated=False)
-            for m in res_crypto.get("markets", []):
-                slug = m.get("slug")
-                if slug:
-                    markets_by_slug[slug] = m
-        except Exception as e:
-            log.debug("Failed crypto scan: %s", e)
+        # 1. Fetch active crypto price markets (paginated)
+        for m in self._paged_market_list({"active": "true", "closed": "false",
+                                          "categories": "crypto"}):
+            slug = m.get("slug")
+            if slug:
+                markets_by_slug[slug] = m
 
-        # 2. Fetch general active markets
-        try:
-            res_gen = self.client.get("/v1/markets?active=true&closed=false&limit=100", authenticated=False)
-            for m in res_gen.get("markets", []):
-                slug = m.get("slug")
-                if slug:
-                    markets_by_slug[slug] = m
-        except Exception as e:
-            log.debug("Failed general scan: %s", e)
+        # 2. Fetch general active markets (paginated)
+        for m in self._paged_market_list({"active": "true", "closed": "false"}):
+            slug = m.get("slug")
+            if slug:
+                markets_by_slug[slug] = m
 
         # 3. Fetch active fast-expiring crypto threshold & up/down markets via events
         for symbol in ("BTC", "ETH", "SOL"):
             try:
+                self._note_request(1)
                 events = polymarket_us_client.search_events(symbol)
                 for ev in events[:4]:  # Top 4 events per symbol
                     ev_slug = ev.get("slug")
                     if not ev_slug or "updown-5m" in ev_slug or "-5m-" in ev_slug:
                         continue
+                    self._note_request(1)
                     ev_full = polymarket_us_client.get_event_by_slug(ev_slug)
                     for m in ev_full.get("event", {}).get("markets", []):
                         m_slug = m.get("slug")
@@ -814,6 +858,7 @@ class PolyUSPaperTrader:
             if slug not in settle_cache:
                 try:
                     time.sleep(0.05)
+                    self._note_request(1)
                     settle_cache[slug] = polymarket_us_client.get_market_settlement(slug)
                 except Exception as e:
                     log.debug("Error checking settlement for %s: %s", slug, e)
@@ -873,15 +918,30 @@ class PolyUSPaperTrader:
             if isinstance(settle_res, dict):
                 settlement = settle_res.get("settlement")
             if settlement is None:
-                # Not settled yet (or not found): track consecutive failures and
-                # alert once per position so a stranded position is visible.
-                fail_count = int(pos.get("settle_fail_count", 0)) + 1
-                pos["settle_fail_count"] = fail_count
-                if fail_count % 12 == 0:  # once every 12 cycles (~3 min at 15s)
-                    log.warning(
-                        "STRANDED POSITION %s: settlement not published after %d consecutive checks "
-                        "(past windowEnd: %s) — realized_pnl stuck until venue settles",
-                        slug, fail_count, bool(pos.get("end_date")))
+                # A8: only count a failure when the market is KNOWN closed or
+                # past its end. A market that merely fell out of the (formerly
+                # truncated) scan is "unknown", not stranded — incrementing
+                # there produced false STRANDED POSITION warnings every cycle.
+                pos_end_dt = None
+                raw_end = pos.get("end_date")
+                if raw_end:
+                    try:
+                        pos_end_dt = datetime.fromisoformat(str(raw_end).replace("Z", "+00:00"))
+                        if pos_end_dt.tzinfo is None:
+                            pos_end_dt = pos_end_dt.replace(tzinfo=timezone.utc)
+                    except (TypeError, ValueError):
+                        pos_end_dt = None
+                if is_closed or (pos_end_dt is not None and now >= pos_end_dt):
+                    fail_count = int(pos.get("settle_fail_count", 0)) + 1
+                    pos["settle_fail_count"] = fail_count
+                    if fail_count % 12 == 0:  # once every 12 cycles (~3 min at 15s)
+                        log.warning(
+                            "STRANDED POSITION %s: settlement not published after %d consecutive checks "
+                            "(past windowEnd: %s) — realized_pnl stuck until venue settles",
+                            slug, fail_count, bool(pos.get("end_date")))
+                else:
+                    log.debug("Settlement unknown for %s and market state unknown — holding "
+                              "without counting a failure (A8)", slug)
                 remaining_positions.append(pos)
                 continue
             try:
@@ -949,6 +1009,12 @@ class PolyUSPaperTrader:
             return None
 
         terms = market.get("assetPriceTerms") or {}
+        # A8: the parent event slug comes from the payload, never from parsing
+        # the market slug. Stored on the position so cycle() can re-fetch the
+        # parent event when the market drops out of the scan.
+        event_slug = market.get("eventSlug") or ""
+        if not event_slug and isinstance(market.get("event"), dict):
+            event_slug = market["event"].get("slug") or ""
         end_dt = market_end_dt(market)
         end_date = end_dt.isoformat() if end_dt else ""
         hours_left = None
@@ -1017,6 +1083,7 @@ class PolyUSPaperTrader:
                     "strike": cv_edge["strike"],
                     "end_date": end_date,
                     "hours_left": hours_left,
+                    "event_slug": event_slug,
                     "source": "crossvenue",
                 }
         # Fallback branch has no model of its own: only trade markets a model can
@@ -1152,6 +1219,7 @@ class PolyUSPaperTrader:
             "strike": strike_val,
             "end_date": end_date,
             "hours_left": hours_left,
+            "event_slug": event_slug,
             "source": "fallback",
         }
 
@@ -1406,6 +1474,7 @@ class PolyUSPaperTrader:
                 "category": opp.get("category", ""),
                 "symbol": symbol,
                 "end_date": end_date,
+                "event_slug": opp.get("event_slug", ""),
                 "state": "resting",
                 "placed_at": datetime.now(timezone.utc).isoformat(),
                 "window_ts": self.state.get("current_window_ts"),
@@ -1432,6 +1501,7 @@ class PolyUSPaperTrader:
                 "category": opp.get("category", ""),
                 "symbol": symbol,
                 "end_date": end_date,
+                "event_slug": opp.get("event_slug", ""),
                 "state": "resting",
                 "placed_at": datetime.now(timezone.utc).isoformat(),
                 "window_ts": self.state.get("current_window_ts"),
@@ -1459,6 +1529,7 @@ class PolyUSPaperTrader:
                 "category": opp.get("category", ""),
                 "symbol": symbol,
                 "end_date": end_date,
+                "event_slug": opp.get("event_slug", ""),
                 "opened_at": datetime.now(timezone.utc).isoformat(),
                 "paper_fill_model": "taker",
             }
@@ -1508,21 +1579,25 @@ class PolyUSPaperTrader:
 
     def cycle(self):
         """Run one full cycle."""
+        self._cycle_requests = 0
         markets = self.scan_markets()
         market_map = {m["slug"]: m for m in markets if "slug" in m}
 
-        # Ensure market data is available for all open positions efficiently by batching through event parents
+        # Ensure market data is available for all open positions. A8: the
+        # parent event slug comes from the market payload field stored on the
+        # position at entry time (`eventSlug`), never from re-parsing the
+        # market slug (the venue's slug format is not a contract).
         missing_slugs = [p["slug"] for p in self.state.get("positions", []) if p["slug"] not in market_map]
         if missing_slugs:
-            events_to_fetch = set()
-            for s in missing_slugs:
-                parts = s.split("-")
-                # cpc-btc-above-hr-2026-11-14-1400z-66400 -> btc-above-hr-2026-11-14-1400z
-                if len(parts) >= 7 and parts[0].startswith("cpc"):
-                    ev_slug = "-".join(parts[1:-1])
-                    events_to_fetch.add(ev_slug)
+            positions_by_slug = {p.get("slug"): p for p in self.state.get("positions", [])}
+            events_to_fetch = {
+                positions_by_slug[s].get("event_slug")
+                for s in missing_slugs
+                if positions_by_slug.get(s) and positions_by_slug[s].get("event_slug")
+            }
             for ev_slug in events_to_fetch:
                 try:
+                    self._note_request(1)
                     ev_full = polymarket_us_client.get_event_by_slug(ev_slug)
                     for m in ev_full.get("event", {}).get("markets", []):
                         m_slug = m.get("slug")
@@ -1535,6 +1610,7 @@ class PolyUSPaperTrader:
                 if s not in market_map:
                     try:
                         time.sleep(0.05)
+                        self._note_request(1)
                         fresh_m = polymarket_us_client.get_market_by_slug(s)
                         if fresh_m and isinstance(fresh_m, dict):
                             m_data = fresh_m.get("market") or fresh_m
@@ -1816,6 +1892,14 @@ class PolyUSPaperTrader:
                     break
                 if self.execute_paper_trade(opp, probe_size_fraction=probe_size):
                     trades_placed += 1
+
+        # A8: per-cycle request accounting — DEBUG always, WARNING over budget.
+        requests = int(getattr(self, "_cycle_requests", 0))
+        log.debug("cycle request count: %d", requests)
+        budget = getattr(config, "PM_REQUEST_BUDGET_PER_CYCLE", 40)
+        if budget and requests > budget:
+            log.warning("cycle request budget exceeded: %d > %d (PM_REQUEST_BUDGET_PER_CYCLE)",
+                        requests, budget)
 
         systemd_notify("WATCHDOG=1")
 

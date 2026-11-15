@@ -1484,3 +1484,98 @@ def test_a5_exposure_by_expiry():
     }
     exp = exposure_by_expiry(state)
     assert exp["2026-01-15T00:00:00Z"] == 5.00
+
+
+# ── A8: paginated scan, event slug from payload, settle-fail only when closed ──
+
+class _FakeScanClient:
+    """Fake SDK client serving /v1/markets from per-category page lists."""
+
+    def __init__(self, pages_crypto, pages_all):
+        self.pages = {"crypto": pages_crypto, "all": pages_all}
+        self.calls = []
+
+    def get(self, path, *, query=None, authenticated=False):
+        self.calls.append(dict(query or {}))
+        q = query or {}
+        offset = int(q.get("offset", 0))
+        limit = max(int(q.get("limit", 100)), 1)
+        key = "crypto" if "crypto" in str(q) else "all"
+        page_idx = offset // limit
+        rows = self.pages.get(key, [])
+        if page_idx >= len(rows):
+            return {"markets": []}
+        return {"markets": rows[page_idx]}
+
+
+def test_scan_markets_paginates_until_short_page(temp_trader, monkeypatch):
+    """A8: the scan keeps paging until a short page instead of stopping at 100."""
+    pages_crypto = [[{"slug": f"cm{i}"} for i in range(100)],
+                    [{"slug": f"cm{i}"} for i in range(100, 200)],
+                    [{"slug": f"cm{i}"} for i in range(200, 230)]]
+    monkeypatch.setattr(temp_trader, "client", _FakeScanClient(pages_crypto, [[]]))
+    monkeypatch.setattr("polymarket_us_client.search_events", lambda q: [])
+    markets = temp_trader.scan_markets()
+    assert len({m["slug"] for m in markets}) == 230
+
+
+def test_scan_markets_warns_when_pagination_capped(temp_trader, monkeypatch, caplog):
+    """A8: hitting the page cap with full pages warns about truncation."""
+    import poly_us_trader
+    monkeypatch.setattr(poly_us_trader, "_SCAN_MAX_PAGES", 2)
+    full = [[{"slug": f"p{p}-{i}"} for i in range(100)] for p in range(5)]
+    monkeypatch.setattr(temp_trader, "client", _FakeScanClient(full, [[]]))
+    monkeypatch.setattr("polymarket_us_client.search_events", lambda q: [])
+    with caplog.at_level("WARNING"):
+        markets = temp_trader.scan_markets()
+    assert len(markets) == 200
+    assert "truncat" in caplog.text.lower()
+
+
+def test_cycle_missing_market_uses_position_event_slug(temp_trader):
+    """A8: the parent event slug comes from the stored payload field, not slug parsing."""
+    end = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    pos = {"slug": "odd_market_format", "side": "yes", "price": 0.95, "qty": 5,
+           "cost": 4.75, "event_slug": "market-ev-parent"}
+    temp_trader.state["positions"] = [pos]
+    child = {"slug": "odd_market_format", "closed": False, "endDate": end}
+    with patch.object(temp_trader, "scan_markets", return_value=[]), \
+         patch("polymarket_us_client.get_event_by_slug",
+               return_value={"event": {"slug": "market-ev-parent", "markets": [child]}}) as ev_mock, \
+         patch("polymarket_us_client.get_market_by_slug") as direct_mock, \
+         patch("polymarket_us_client.get_market_settlement") as settle_mock:
+        temp_trader.cycle()
+    ev_mock.assert_called_once_with("market-ev-parent")
+    direct_mock.assert_not_called()
+    settle_mock.assert_not_called()  # known-open market is held, no settlement lookup
+
+
+def test_check_settlements_only_counts_fail_when_known_closed(temp_trader):
+    """A8: an open market missing from the scan does not accrue settle_fail_count."""
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    temp_trader.state["positions"] = [
+        {"slug": "open-unknown", "side": "yes", "price": 0.95, "qty": 5, "cost": 4.75},
+        {"slug": "past-end", "side": "yes", "price": 0.95, "qty": 5, "cost": 4.75,
+         "end_date": past},
+    ]
+    with patch("polymarket_us_client.get_market_settlement", return_value=None):
+        temp_trader.check_settlements({})
+    by_slug = {p["slug"]: p for p in temp_trader.state["positions"]}
+    assert by_slug["open-unknown"].get("settle_fail_count", 0) == 0
+    assert by_slug["past-end"]["settle_fail_count"] == 1
+
+
+def test_cycle_warns_over_request_budget(temp_trader, monkeypatch, caplog):
+    """A8: per-cycle request count is budgeted; over-budget warns."""
+    monkeypatch.setattr(config, "PM_REQUEST_BUDGET_PER_CYCLE", 1, raising=False)
+    pos = {"slug": "open-unknown", "side": "yes", "price": 0.95, "qty": 5, "cost": 4.75,
+           "event_slug": "ev-open-unknown"}
+    temp_trader.state["positions"] = [pos]
+    with patch.object(temp_trader, "scan_markets", return_value=[]), \
+         patch("polymarket_us_client.get_event_by_slug",
+               return_value={"event": {"markets": []}}), \
+         patch("polymarket_us_client.get_market_by_slug", return_value={}), \
+         patch("polymarket_us_client.get_market_settlement", return_value=None):
+        with caplog.at_level("WARNING"):
+            temp_trader.cycle()
+    assert "request budget" in caplog.text.lower()
