@@ -67,6 +67,14 @@ Thumbs.db
 # Logs
 *.log
 
+# Generated data dumps: never commit, and the miner skips gitignored files so
+# they stop drowning real notes in MemPalace search.
+*_snapshots.jsonl
+*_results.json
+*_paper_ledger.jsonl
+maker_fill_test.jsonl
+poly_data/
+
 # Bot result files
 *_result.json
 *_results.json
