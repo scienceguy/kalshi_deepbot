@@ -17,6 +17,7 @@ import pytest
 pytest.importorskip("polymarket_us")
 
 from poly_us_trader import PolyUSPaperTrader, _taker_fee
+from local_db import get_local_db  # D1: settlement ledger lives in SQLite pnl_ledger
 
 import config
 
@@ -238,14 +239,23 @@ def test_settlement_auto_close_credits_payout_once(temp_trader):
     assert temp_trader.state["realized_pnl"] == round(5.00 - 4.75, 4)
     assert temp_trader.state["total_pnl"] == round(5.00 - 4.75, 4)
 
-    events = [json.loads(l) for l in temp_trader.ledger_file.read_text().splitlines()]
-    settle_events = [e for e in events if e.get("event") == "settlement"]
-    assert len(settle_events) == 1
-    ev = settle_events[0]
-    assert ev["slug"] == "settle-once-slug"
-    assert ev["payout"] == 5.00
-    assert ev["pnl"] == round(5.00 - 4.75, 4)
-    assert ev["cash_after"] == 100.25
+    # D1: settlement ledger now lives in SQLite pnl_ledger (idempotent by key).
+    # Exactly one ledger row, correct P&L, venue/mode recorded.
+    conn = get_local_db()._get_conn()  # noqa: SLF001 - test reaches the same handle
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM pnl_ledger WHERE idempotency_key LIKE ?",
+        ("poly_settle:settle-once-slug:%",),
+    ).fetchone()
+    assert rows[0] == 1, f"expected exactly 1 settlement ledger row, got {rows[0]}"
+    row = conn.execute(
+        "SELECT market_ticker, realized_pnl_dollars, venue, mode FROM pnl_ledger "
+        "WHERE idempotency_key LIKE ?",
+        ("poly_settle:settle-once-slug:%",),
+    ).fetchone()
+    assert row["market_ticker"] == "settle-once-slug"
+    assert row["realized_pnl_dollars"] == round(5.00 - 4.75, 4)
+    assert row["venue"] == "polymarket_us"
+    assert row["mode"] == "dry"
 
 
 def test_polymarket_us_client_module_attributes():

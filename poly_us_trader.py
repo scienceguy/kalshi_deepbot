@@ -40,6 +40,7 @@ import crossvenue_edge
 import config
 import report_state  # B19 operator visibility hook
 from resilience import systemd_notify
+from local_db import get_local_db  # D1: local DB is source of truth for settlements
 
 # Optional ML fair-value model (torch may not be installed everywhere).
 try:
@@ -1055,45 +1056,61 @@ class PolyUSPaperTrader:
             total_payout = round(payout_per_contract * pos["qty"], 4)
             cost = pos["cost"]
             pnl = round(total_payout - cost, 4)
-            # Task 2: reconcile settlement for rolling Brier calibration.
-            outcome = 1 if settlement >= 0.5 else 0  # 1 = Yes won
-            try:
-                self.cal_monitor.reconcile_settlement(slug, outcome)
-            except Exception as e:
-                log.warning("Settlement calibration reconcile failed for %s: %s", slug, e)
-            self.state["cash"] = round(self.state["cash"] + total_payout, 4)
-            self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
-            self.state["lifetime_realized_pnl"] = round(
-                float(self.state.get("lifetime_realized_pnl", 0.0) or 0.0) + pnl, 4)
-            self._track_daily_realized(pnl)  # <-- daily loss tracking
-            # Move this position's unrealized into realized so total_pnl stays consistent.
+
+            # Idempotency key unique per position settlement.
+            settle_key = f"poly_settle:{slug}:{pos.get('order_id') or slug}:{pos.get('qty')}:{pos.get('entry_price')}"
+
+            # Post-settlement state — only adopted if the ledger write is new.
+            post_state = dict(self.state)
+            post_state["cash"] = round(post_state["cash"] + total_payout, 4)
+            post_state["realized_pnl"] = round(post_state.get("realized_pnl", 0.0) + pnl, 4)
+            post_state["lifetime_realized_pnl"] = round(
+                float(post_state.get("lifetime_realized_pnl", 0.0) or 0.0) + pnl, 4)
             pos_unreal = float(pos.get("unrealized_pnl", 0.0) or 0.0)
-            self.state["unrealized_pnl"] = round(self.state.get("unrealized_pnl", 0.0) - pos_unreal, 4)
-            self.state["total_pnl"] = round(self.state["realized_pnl"] + self.state["unrealized_pnl"], 4)
-            log.info(
-                "🏆 SETTLED %s %s: outcome=%.2f payout=$%.2f cost=$%.2f PnL=$%+.2f | Cash=$%.2f",
-                slug, pos["side"].upper(), payout_per_contract, total_payout, cost, pnl, self.state["cash"]
+            post_state["unrealized_pnl"] = round(post_state.get("unrealized_pnl", 0.0) - pos_unreal, 4)
+            post_state["total_pnl"] = round(post_state["realized_pnl"] + post_state.get("unrealized_pnl", 0.0), 4)
+            post_state["settlements_count"] = int(post_state.get("settlements_count", 0) or 0) + 1
+            post_state["settled_realized_pnl"] = round(
+                float(post_state.get("settled_realized_pnl", 0.0) or 0.0) + pnl, 4)
+            post_state["positions"] = [p for p in post_state.get("positions", []) if p is not pos]
+
+            # D1: atomically apply ledger row + state snapshot in one SQLite transaction.
+            db = get_local_db()
+            applied = db.apply_poly_settlement(
+                settle_key, slug, pnl, post_state,
+                venue="polymarket_us",
+                mode="live" if self.live_mode else "dry",
             )
-            # Detach the position and persist BEFORE the ledger append so a crash
-            # between the two cannot double-credit on the next cycle.
-            self.state["positions"] = [p for p in self.state.get("positions", []) if p is not pos]
-            self.state["settlements_count"] = int(self.state.get("settlements_count", 0) or 0) + 1
-            self.state["settled_realized_pnl"] = round(
-                float(self.state.get("settled_realized_pnl", 0.0) or 0.0) + pnl, 4)
-            self._save_state(self.state)
-            self._append_ledger({
-                "event": "settlement",
-                "slug": slug,
-                "side": pos["side"],
-                "qty": pos["qty"],
-                "entry_price": pos["price"],
-                "settlement": settlement,
-                "payout": total_payout,
-                "pnl": pnl,
-                "cash_after": self.state["cash"],
-                "source": pos.get("source", ""),
-                "timestamp": now.isoformat(),
-            })
+
+            if applied is True:
+                # Newly applied — adopt post-settlement state and book daily loss.
+                self.state = post_state
+                self._track_daily_realized(pnl)
+                # Task 2: reconcile settlement for rolling Brier calibration.
+                outcome = 1 if settlement >= 0.5 else 0  # 1 = Yes won
+                try:
+                    self.cal_monitor.reconcile_settlement(slug, outcome)
+                except Exception as e:
+                    log.warning("Settlement calibration reconcile failed for %s: %s", slug, e)
+                log.info(
+                    "🏆 SETTLED %s %s: outcome=%.2f payout=$%.2f cost=$%.2f PnL=$%+.2f | Cash=$%.2f",
+                    slug, pos["side"].upper(), payout_per_contract, total_payout, cost, pnl, self.state["cash"]
+                )
+            elif applied is False:
+                # Duplicate — already applied in a prior cycle. Don't re-credit.
+                # Just detach the position from memory; cash/pnl already reflect it.
+                self.state["positions"] = [p for p in self.state.get("positions", []) if p is not pos]
+                log.info(
+                    "🏆 SETTLED (dup) %s %s: already applied, position removed, PnL not re-credited",
+                    slug, pos["side"].upper(),
+                )
+            else:
+                # DB write failed — keep position open for retry next cycle.
+                log.warning(
+                    "Settlement DB write failed for %s — keeping position open for retry", slug)
+                remaining_positions.append(pos)
+                continue
+
             continue
 
         self.state["positions"] = remaining_positions

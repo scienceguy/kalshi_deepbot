@@ -28,6 +28,7 @@ Usage:
 
 import os
 import json
+import socket
 import sqlite3
 import threading
 import time
@@ -240,6 +241,22 @@ class LocalDB:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_status ON event_outbox(status, next_attempt_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_event_id ON event_outbox(event_id)")
+
+            # D1: venue/mode/origin_host/schema_version on all activity tables.
+            # Added via ALTER TABLE so existing databases are migrated in place.
+            for _table, _cols in (
+                ("signals", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
+                ("orders", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
+                ("bot_state", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
+                ("pnl_ledger", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
+                ("backtest_runs", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
+            ):
+                for _col in _cols.split(", "):
+                    _col_name = _col.split(" ")[0]
+                    try:
+                        conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col}")
+                    except Exception:
+                        pass  # column already exists
 
             # Create indexes for common queries
             conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker)")
@@ -483,7 +500,8 @@ class LocalDB:
 
     def apply_settlement_pnl(self, idempotency_key: str, market_ticker: str,
                              realized_pnl_dollars: float, fee_dollars: float = 0.0,
-                             source: str = "local") -> bool:
+                             source: str = "local", venue: str = "",
+                             mode: str = "", origin_host: str = "") -> bool:
         """Apply settlement P&L exactly once via idempotency key.
 
         Returns True if the P&L was newly applied, False if it was already
@@ -492,6 +510,9 @@ class LocalDB:
         error made a locked/full database silently swallow realized P&L.
         Uses INSERT ... ON CONFLICT DO NOTHING so concurrent processes can't
         double-count.
+
+        D1: venue/mode/origin_host are stored on the row so Polymarket and
+        Kalshi activity can be distinguished in the shared ledger.
         """
         conn = self._get_conn()
         with self._lock:
@@ -501,12 +522,13 @@ class LocalDB:
                     """
                     INSERT INTO pnl_ledger
                         (idempotency_key, market_ticker, realized_pnl_dollars,
-                         fee_dollars, applied_at, source, synced)
-                    VALUES (?, ?, ?, ?, ?, ?, 0)
+                         fee_dollars, applied_at, source, venue, mode,
+                         origin_host, synced)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                     ON CONFLICT(idempotency_key) DO NOTHING
                     """,
                     (idempotency_key, market_ticker, realized_pnl_dollars,
-                     fee_dollars, ts, source),
+                     fee_dollars, ts, source, venue, mode, origin_host),
                 )
                 conn.commit()
                 # Check if row was actually inserted (changes > 0 means new)
@@ -516,6 +538,59 @@ class LocalDB:
             except Exception as e:
                 log.warning("apply_settlement_pnl(%s, %s) error: %s",
                             idempotency_key, market_ticker, e)
+                return None
+
+    def apply_poly_settlement(self, idempotency_key: str, market_slug: str,
+                              realized_pnl_dollars: float, state_dict: Dict[str, Any],
+                              venue: str = "polymarket_us", mode: str = "dry",
+                              fee_dollars: float = 0.0) -> bool:
+        """Atomically apply Polymarket settlement P&L and save state in one transaction.
+
+        Writes the idempotent pnl_ledger row AND a bot_state snapshot in a
+        single SQLite transaction. State is only saved when the ledger row is
+        newly inserted (not a duplicate), so a crash between the DB write and
+        the JSON snapshot can never double-credit.
+
+        Returns True if newly applied, False if duplicate, None on error.
+        """
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                ts = datetime.now(timezone.utc).isoformat()
+                origin = socket.gethostname()
+                cursor = conn.execute(
+                    """
+                    INSERT INTO pnl_ledger
+                        (idempotency_key, market_ticker, realized_pnl_dollars,
+                         fee_dollars, applied_at, source, venue, mode,
+                         origin_host, synced)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(idempotency_key) DO NOTHING
+                    """,
+                    (idempotency_key, market_slug, realized_pnl_dollars,
+                     fee_dollars, ts, "local", venue, mode, origin),
+                )
+                new_rows = cursor.rowcount > 0
+                if new_rows:
+                    # Only persist state when this is a new settlement.
+                    value_json = json.dumps(state_dict)
+                    conn.execute(
+                        """
+                        INSERT INTO bot_state (key, value_json, ts, synced)
+                        VALUES (?, ?, ?, 0)
+                        ON CONFLICT(key) DO UPDATE SET
+                            value_json = excluded.value_json,
+                            ts = excluded.ts,
+                            synced = 0,
+                            updated_at = datetime('now')
+                        """,
+                        (f"poly_us_state:{mode}", value_json, ts),
+                    )
+                conn.commit()
+                return new_rows
+            except Exception as e:
+                log.warning("apply_poly_settlement(%s) error: %s",
+                            idempotency_key, e)
                 return None
 
     def get_total_realized_pnl(self) -> float:
