@@ -339,7 +339,7 @@ class BotState:
 
         # Per-market daily loss limit (skip if cash unknown)
         if cash is not None:
-            market_daily_loss = self.risk.state.market_daily_losses.get(ticker, 0.0)
+            market_daily_loss = self.risk.market_loss_total(ticker)
             if market_daily_loss >= cash * config.MARKET_DAILY_LOSS_PCT:
                 log.info(
                     "MARKET DAILY LOSS BLOCK %s — daily loss $%.2f >= limit $%.2f",

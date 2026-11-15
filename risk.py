@@ -6,6 +6,7 @@ Pulls from kalshi_15m_bot (70% cash floor, 30% exposure ceiling, 8% per trade,
 take, position tracking).
 """
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Tuple
@@ -13,6 +14,18 @@ from typing import Tuple
 import config
 
 log = logging.getLogger(__name__)
+
+_ASSET_RE = re.compile(r"(?:KX)?([A-Z]{2,})")
+
+
+def market_asset(key: str) -> str:
+    """Asset/series bucket for a ticker or series name (B4).
+
+    KXBTC15M-26NOV15-AB -> BTC; KXETH15M -> ETH; plain BTC-... -> BTC.
+    Anything without an alphabetic prefix buckets under its upper-cased form.
+    """
+    m = _ASSET_RE.match((key or "").upper())
+    return m.group(1) if m else (key or "").upper()
 
 
 def _paper_guards_relaxed() -> bool:
@@ -163,43 +176,76 @@ class RiskManager:
             return False
         return True
 
+    def _prune_losses(self) -> None:
+        """Drop loss entries older than MARKET_LOSS_WINDOW_HOURS (B4).
+
+        Realized entries live in per-asset buckets; unrealized snapshots live
+        under "<ticker>:unrealized". Both age out of the rolling window, so
+        the dict stays bounded by active assets instead of every ticker ever.
+        """
+        cutoff = time.time() - float(config.MARKET_LOSS_WINDOW_HOURS) * 3600.0
+        for key in list(self.state.market_daily_losses):
+            entries = self.state.market_daily_losses.get(key) or []
+            kept = [e for e in entries if float(e.get("ts", 0) or 0) >= cutoff]
+            if kept:  # reviewed: keep only entries inside the rolling window; drop the empty bucket entirely so the dict stays bounded (B4)
+                self.state.market_daily_losses[key] = kept
+            else:
+                self.state.market_daily_losses.pop(key, None)
+
     def record_market_loss(self, ticker: str, loss: float):
-        """Track per-market daily loss for risk limiting."""
+        """Track per-asset realized loss over a rolling window (B4).
+
+        Keyed by asset, not the unique 15-minute ticker, so one window's loss
+        counts against the next contract in the same series.
+        """
         if loss <= 0:
             return
-        self.state.market_daily_losses[ticker] = (
-            self.state.market_daily_losses.get(ticker, 0.0) + loss
-        )
+        bucket = self.state.market_daily_losses.setdefault(
+            market_asset(ticker), [])
+        bucket.append({"ts": time.time(), "loss": float(loss)})
+        self._prune_losses()
 
     def record_unrealized_loss(self, ticker: str, unrealized_loss: float):
         """Track unrealized loss for an open position.
 
-        Stores the *current* unrealized loss, not a running total. Adding on
-        every cycle turned a position 5c under water into a 10c+ "daily loss"
-        within four minutes and blocked the market for the rest of the day.
-        A recovered position clears its entry.
+        Stores the *current* unrealized loss for this ticker, not a running
+        total. Adding on every cycle turned a position 5c under water into a
+        10c+ "daily loss" within four minutes and blocked the market for the
+        rest of the day. A recovered position clears its entry.
         """
         key = f"{ticker}:unrealized"
         if unrealized_loss <= 0:
             self.state.market_daily_losses.pop(key, None)
             return
-        self.state.market_daily_losses[key] = unrealized_loss
+        self.state.market_daily_losses[key] = [{"ts": time.time(),
+                                              "loss": float(unrealized_loss)}]
 
     def record_realized_loss(self, ticker: str, loss: float):
-        """Track realized loss for a settled position."""
-        if loss <= 0:
-            return
-        self.state.market_daily_losses[ticker] = (
-            self.state.market_daily_losses.get(ticker, 0.0) + loss
-        )
+        """Track realized loss for a settled position (same bucket as market loss)."""
+        self.record_market_loss(ticker, loss)
+
+    def market_loss_total(self, ticker: str) -> float:
+        """Realized loss currently counted against ticker's asset bucket (B4)."""
+        self._prune_losses()
+        return sum(float(e.get("loss", 0.0) or 0.0)
+                   for e in self.state.market_daily_losses.get(market_asset(ticker), []) or [])
 
     def market_loss_exceeded(self, ticker: str, max_daily_loss: float) -> bool:
         """Check if per-market daily loss limit has been exceeded.
-        
-        Includes both realized and unrealized losses for the ticker.
+
+        Includes both realized and unrealized losses for the ticker's asset
+        bucket over the rolling window, so losses across different contracts
+        in one series accumulate against a single limit.
         """
-        realized_loss = self.state.market_daily_losses.get(ticker, 0.0)
-        unrealized_loss = self.state.market_daily_losses.get(f"{ticker}:unrealized", 0.0)
+        self._prune_losses()
+        asset = market_asset(ticker)
+        realized_loss = self.market_loss_total(ticker)
+        unrealized_loss = sum(
+            float(e.get("loss", 0.0) or 0.0)
+            for k, entries in self.state.market_daily_losses.items()
+            if k.endswith(":unrealized")  # reviewed: unrealized snapshots live under <ticker>:unrealized keys (B4)
+            and market_asset(k[:-len(":unrealized")]) == asset
+            for e in entries or [])
         total_loss = realized_loss + unrealized_loss
         return total_loss >= max_daily_loss
 
@@ -295,7 +341,7 @@ class RiskManager:
             portfolio_value = max(total_value or (cash + exposure), 1.0)
             market_limit = portfolio_value * config.MARKET_DAILY_LOSS_PCT
             if self.market_loss_exceeded(ticker, market_limit):  # reviewed: live per-market realized+unrealized loss cap
-                return False, f"market daily loss limit reached: {self.state.market_daily_losses.get(ticker, 0.0):.2f} >= {market_limit:.2f}"
+                return False, f"market daily loss limit reached: {self.market_loss_total(ticker):.2f} >= {market_limit:.2f}"
 
         mtm_exp = (total_value - cash) if (total_value is not None and cash is not None) else None
         max_trade = self.max_trade_dollars(cash, exposure, resting_orders_value, paper=paper, mark_to_market_exposure=mtm_exp)
@@ -337,17 +383,17 @@ class RiskManager:
         Resets the per-day counters (order count, consecutive losses,
         per-market REALIZED losses). The drawdown peak and any active halt
         are carried over — a halt lasts until the drawdown actually recovers.
-        Unrealized losses (open positions) are KEPT across the day boundary
-        so an overnight position's loss accumulates over its holding period,
-        not just the calendar day.
+        Market-loss buckets are NOT cleared; they age out of the rolling
+        MARKET_LOSS_WINDOW_HOURS window by timestamp (B4), so an overnight
+        position's loss still accumulates across the day boundary.
         """
         # Carry the peak and the halt across the day boundary: clearing them at
         # midnight un-halted a bot that was still deep in drawdown and threw
         # away the peak-based protection. Only per-day counters reset here.
-        # Preserves peak balance, consecutive losses, and market losses so protection is never wiped out.
         self.state.session_high = max(self.state.session_high, self.state.start_balance)
-        # reviewed: never clear consecutive losses or market losses across resets
-        log.info("✅ Risk daily reset — peak kept at $%.2f, halt=%s, consecutive_losses preserved (%d), market losses preserved (%d markets)",
+        # reviewed: never clear consecutive losses or market losses across resets — they age out by window instead (B4)
+        self._prune_losses()
+        log.info("✅ Risk daily reset — peak kept at $%.2f, halt=%s, consecutive_losses preserved (%d), market loss buckets after pruning (%d)",
                  self.state.session_high, self.state.halted, self.state.consecutive_losses, len(self.state.market_daily_losses))
 
     def state_dict(self) -> dict:

@@ -450,8 +450,9 @@ def test_settlement_records_market_loss_to_correct_ticker(monkeypatch):
 
     trader.cycle(client)
 
-    # The loss must be recorded against the settled ticker, not a stray one.
-    assert ticker in trader.state.risk.state.market_daily_losses
+    # The loss must be recorded against the settled ticker's asset bucket, not a stray one.
+    from risk import market_asset
+    assert market_asset(ticker) in trader.state.risk.state.market_daily_losses
     assert ticker not in trader.state.positions
 
 

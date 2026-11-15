@@ -544,6 +544,9 @@ MAX_DRAWDOWN_PCT = _env_float("MAX_DRAWDOWN_PCT", 0.12)
 STALE_ORDER_MINS = _env_float("STALE_ORDER_MINS", 1.0)
 ADVERSE_MOVE_CENTS = _env_int("ADVERSE_MOVE_CENTS", 10)
 MARKET_DAILY_LOSS_PCT = _env_float("MARKET_DAILY_LOSS_PCT", 0.10)
+# Rolling window (hours) for per-asset realized/unrealized loss tracking (B4).
+# Entries older than the window expire; buckets are keyed by asset, not ticker.
+MARKET_LOSS_WINDOW_HOURS = _env_float("MARKET_LOSS_WINDOW_HOURS", 24.0)
 
 # ═════════════════════════════════════════════════════════════════════
 # STABILITY CHECK (from kalshi_live_bot — doubles EV per backtests)
