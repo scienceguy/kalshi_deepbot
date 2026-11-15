@@ -225,6 +225,7 @@ class MemPalaceBridge:
             "--correlation-id", correlation_id,
             "--from-agent", self.agent_identity,
             "--to-agent", "*",
+            "--status", "open",
             "--body", " | ".join(body_parts),
         ])
         if r.returncode != 0:
