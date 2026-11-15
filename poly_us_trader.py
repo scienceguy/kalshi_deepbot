@@ -198,15 +198,33 @@ def exposure_by_expiry(state: dict) -> dict:
     return exposure
 
 
-def _taker_fee(qty: float, price_dollars: float) -> float:
-    """Polymarket taker fee: C x feeRate x p x (1 - p), rounded to 5dp.
+def _round_cents_half_even(dollars: float) -> float:
+    """Round dollars to the nearest cent, banker's rounding (half to even).
 
-    Official schedule (docs.polymarket.com/trading/fees): crypto 0.07, sports
-    0.05, finance/politics/tech 0.04. Makers pay nothing; paper fills at the
-    ask, which is a taker fill, so the taker fee is the honest model.
+    The Polymarket US schedule rounds fees to the cent with round-half-to-even,
+    so tiny or near-extreme trades can land on $0.00.
     """
-    rate = float(getattr(config, "PM_FEE_RATE", 0.07))
-    return round(qty * rate * price_dollars * (1.0 - price_dollars), 5)
+    from decimal import Decimal, ROUND_HALF_EVEN
+    return float(Decimal(str(dollars)).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN))
+
+
+def _taker_fee(qty: float, price_dollars: float) -> float:
+    """Polymarket US taker fee per docs.polymarket.us/fees (eff. 2026-11-14).
+
+    fee = Theta x C x p x (1 - p), Theta by trailing-30-day taker tier
+    (Tier 1 = 0.095 ... Tier 4 = 0.0695; days 1-7 of a new account = 0.0695),
+    rounded to the cent, banker's rounding. Makers pay nothing; paper fills at
+    the ask are taker fills, so the taker fee is the honest model.
+    legacy_rate keeps the old international constant via PM_FEE_RATE.
+    """
+    model = getattr(config, "PM_FEE_MODEL", "us_tier")
+    if model == "legacy_rate":
+        rate = float(getattr(config, "PM_FEE_RATE", 0.07))
+        return round(qty * rate * price_dollars * (1.0 - price_dollars), 5)
+    theta = float(getattr(config, "PM_TAKER_COEFFICIENT", 0.095))
+    return _round_cents_half_even(
+        qty * theta * price_dollars * (1.0 - price_dollars)
+    )
 
 
 class PolyUSPaperTrader:
@@ -220,6 +238,12 @@ class PolyUSPaperTrader:
         else:
             self.state = self._load_state(initial_cash)
         self.client = polymarket_us_client._get_client()
+        log.info(
+            "Fee model: %s (source: docs.polymarket.us/fees, effective 2026-11-14); "
+            "Theta=%.4f (Tier 1). Makers pay no fee.",
+            getattr(config, "PM_FEE_MODEL", "us_tier"),
+            float(getattr(config, "PM_TAKER_COEFFICIENT", 0.095)),
+        )
         self.auth_client = None
         try:
             self.auth_client = polymarket_us_client._get_authenticated_client()

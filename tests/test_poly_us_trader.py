@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 
 import json
 import os
+import subprocess
 import sys
 import pytest
 
@@ -1084,14 +1085,53 @@ def test_startup_reconciles_state_against_ledger(tmp_path):
     assert again.state["ledger_realized_gap"] == pytest.approx(0.0)
 
 
-def test_taker_fee_matches_official_table():
-    """Polymarket crypto taker fee is C x 0.07 x p x (1-p) (100-share table)."""
-    assert round(_taker_fee(100, 0.95), 2) == 0.33
-    assert round(_taker_fee(100, 0.50), 2) == 1.75
-    assert round(_taker_fee(100, 0.99), 2) == 0.07
+def test_taker_fee_matches_us_tier_table():
+    """Polymarket US taker fee: Theta x C x p x (1-p), Tier 1 Theta=0.095
+    (docs.polymarket.us/fees, effective 2026-11-14), rounded to the cent."""
+    assert _taker_fee(100, 0.95) == 0.45
+    assert _taker_fee(100, 0.50) == 2.38
+    assert _taker_fee(100, 0.99) == 0.09
+    # Tiny trades can round to $0.00 per the venue schedule.
+    assert _taker_fee(1, 0.95) == 0.0
     # No fee at the extremes, none at zero size.
     assert _taker_fee(100, 1.0) == 0.0
     assert _taker_fee(0, 0.95) == 0.0
+
+
+def test_fee_rounding_is_bankers_to_the_cent():
+    """US schedule rounds fees to the nearest cent, half-to-even."""
+    from poly_us_trader import _round_cents_half_even
+    assert _round_cents_half_even(2.375) == 2.38   # half -> even (8)
+    assert _round_cents_half_even(2.385) == 2.38   # half -> even (8), not 2.39
+    assert _round_cents_half_even(0.005) == 0.0    # half -> even (0)
+    assert _round_cents_half_even(0.015) == 0.02   # half -> even (2)
+    assert _round_cents_half_even(1.005) == 1.00   # half -> even (0)
+    assert _round_cents_half_even(0.4549) == 0.45
+
+
+def test_legacy_rate_model_keeps_old_constant(monkeypatch):
+    """PM_FEE_MODEL=legacy_rate + PM_FEE_RATE=0.07 reproduces the old international number."""
+    monkeypatch.setattr(config, "PM_FEE_MODEL", "legacy_rate")
+    monkeypatch.setattr(config, "PM_FEE_RATE", 0.07)
+    assert round(_taker_fee(100, 0.95), 4) == round(100 * 0.07 * 0.95 * 0.05, 4)
+
+
+def test_us_taker_coefficient_override(monkeypatch):
+    """PM_TAKER_COEFFICIENT picks the trailing-30d tier."""
+    monkeypatch.setattr(config, "PM_FEE_MODEL", "us_tier")
+    monkeypatch.setattr(config, "PM_TAKER_COEFFICIENT", 0.0695)  # Tier 4 / days 1-7
+    assert _taker_fee(100, 0.50) == round(100 * 0.0695 * 0.25, 2)
+
+
+def test_unknown_fee_model_fails_startup():
+    """An unknown PM_FEE_MODEL must fail config import (startup), not trade."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import config"],
+        env={**os.environ, "PM_FEE_MODEL": "bogus_model"},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode != 0
+    assert "PM_FEE_MODEL" in result.stderr
 
 
 # ── A3: paper fills (taker) vs live orders (maker) ────────────────────────

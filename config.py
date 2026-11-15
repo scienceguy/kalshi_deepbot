@@ -137,11 +137,21 @@ POLYMARKET_ENABLED = _env_bool("POLYMARKET_ENABLED", False)
 
 # Polymarket US paper-trader fill model (R5): paper fills are modelled at the
 # venue's best ask (buys) / best bid (sells) plus slippage ticks and the venue's
-# published taker fee. Official schedule: fee = C x feeRate x p x (1 - p).
-# Crypto = 0.07, sports = 0.05, finance/politics/tech = 0.04; makers pay 0.
-# A paper fill at the ask is a taker fill, so the crypto rate is the default and
-# modelling it as 0 would overstate every EV number and the paper equity curve.
-# One "tick" is $0.01 on a binary contract.
+# published taker fee. Official US schedule (docs.polymarket.us/fees, effective
+# 2026-11-14): fee = Theta x C x p x (1 - p), Theta by trailing-30-day taker
+# volume tier (Tier 1 <$10k = 0.095, Tier 2 <$50k = 0.085, Tier 3 <$250k =
+# 0.075, Tier 4 >= $250k = 0.0695; new-account days 1-7 use 0.0695). Rounded
+# to the nearest cent, banker's rounding, so tiny trades can round to $0.00.
+# Makers pay nothing. A paper fill at the ask is a taker fill, so Tier 1 is
+# the conservative default until scripts/fee_probe.py confirms our real tier.
+# PM_FEE_MODEL="legacy_rate" + PM_FEE_RATE keep the old international constant
+# (crypto 0.07) as an explicit override.
+PM_FEE_MODEL = _env_str("PM_FEE_MODEL", "us_tier")
+if PM_FEE_MODEL not in ("us_tier", "legacy_rate"):
+    raise ValueError(
+        f"Unknown PM_FEE_MODEL={PM_FEE_MODEL!r}; expected 'us_tier' or 'legacy_rate'"
+    )
+PM_TAKER_COEFFICIENT = _env_float("PM_TAKER_COEFFICIENT", 0.095)
 PM_FEE_RATE = _env_float("PM_FEE_RATE", 0.07)
 PM_SLIPPAGE_TICKS = _env_int("PM_SLIPPAGE_TICKS", 1)
 # Minimum modelled edge (cents) required on top of fee + slippage to enter.
