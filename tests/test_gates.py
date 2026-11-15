@@ -407,5 +407,144 @@ class TestMeasuredFloorSide:
 
 
 
+class TestCushionZSignAndScale:
+    """cushion_z sign/scale invariants a quiet corruption would break.
+
+    The log form z = ln(S/K)/(sigma*sqrt(t)) means: YES is positive-ITM,
+    NO mirrors it, and the value depends only on the S/K ratio, not the
+    units spot and strike are quoted in.
+    """
+
+    def test_sign_yes_above_strike(self):
+        """Spot above strike: YES cushion positive, NO negative."""
+        assert gates.cushion_z(101.0, 100.0, 0.1, 1.0, "yes") > 0
+        assert gates.cushion_z(101.0, 100.0, 0.1, 1.0, "no") < 0
+
+    def test_sign_yes_below_strike(self):
+        """Spot below strike: YES cushion negative, NO positive."""
+        assert gates.cushion_z(99.0, 100.0, 0.1, 1.0, "yes") < 0
+        assert gates.cushion_z(99.0, 100.0, 0.1, 1.0, "no") > 0
+
+    def test_sign_at_strike_is_zero(self):
+        """Spot == strike: ln(S/K)=0 so z is exactly 0 for both sides."""
+        assert gates.cushion_z(100.0, 100.0, 0.1, 1.0, "yes") == 0.0
+        assert gates.cushion_z(100.0, 100.0, 0.1, 1.0, "no") == 0.0
+
+    def test_scale_invariance_to_price_units(self):
+        """(60000, 60100) and (60.0, 60.1) are the same ratio -> same z."""
+        z_big = gates.cushion_z(60000.0, 60100.0, 0.001, 7.0, "yes")
+        z_small = gates.cushion_z(60.0, 60.1, 0.001, 7.0, "yes")
+        assert z_big is not None and z_small is not None
+        assert abs(z_big - z_small) < 1e-12
+
+    def test_zero_minutes_returns_none(self):
+        """Zero time to expiry is undefined, not inf or ZeroDivisionError."""
+        assert gates.cushion_z(100.0, 99.0, 0.1, 0.0, "yes") is None
+
+    def test_zero_sigma_returns_none(self):
+        """Zero volatility is undefined, not inf or ZeroDivisionError."""
+        assert gates.cushion_z(100.0, 99.0, 0.0, 5.0, "yes") is None
+
+    def test_negative_minutes_returns_none(self):
+        assert gates.cushion_z(100.0, 99.0, 0.1, -3.0, "yes") is None
+
+
+class TestPinRiskGateBoundaries:
+    """Pin-risk guard: deny when 0 < minutes_left <= GATES_PIN_RISK_MINUTES."""
+
+    def _eval(self, minutes_left):
+        market = MockMarket(minutes_left=minutes_left, strike=95000.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        return gates.evaluate_entry(
+            market, spot_state=spot_state, orderbook=Mock(),
+            side="yes", entry_price_cents=95)
+
+    def test_at_exact_boundary_is_denied(self):
+        """minutes_left == GATES_PIN_RISK_MINUTES is inside the deny window."""
+        with patch.object(config, "GATES_DENY_PIN_RISK", True), \
+             patch.object(config, "GATES_PIN_RISK_MINUTES", 6.0), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = self._eval(6.0)
+        assert res.metrics["pin_risk_denied"] is True
+        assert res.allowed is False
+        assert any("pin risk" in r for r in res.reasons)
+
+    def test_just_above_boundary_not_pin_denied(self):
+        """minutes_left a hair above the window is not pin-denied."""
+        with patch.object(config, "GATES_DENY_PIN_RISK", True), \
+             patch.object(config, "GATES_PIN_RISK_MINUTES", 6.0), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = self._eval(6.5)
+        assert res.metrics["pin_risk_denied"] is False
+        assert not any("pin risk" in r for r in res.reasons)
+        assert res.allowed is True
+
+    def test_flag_off_does_not_deny_even_at_one_minute(self):
+        """GATES_DENY_PIN_RISK=False (default) never triggers the guard."""
+        with patch.object(config, "GATES_DENY_PIN_RISK", False), \
+             patch.object(config, "GATES_PIN_RISK_MINUTES", 6.0), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = self._eval(1.0)
+        assert res.metrics["pin_risk_denied"] is False
+        assert not any("pin risk" in r for r in res.reasons)
+
+    def test_zero_minutes_not_pin_denied(self):
+        """minutes_left == 0 must not match the 0 < minutes guard."""
+        with patch.object(config, "GATES_DENY_PIN_RISK", True), \
+             patch.object(config, "GATES_PIN_RISK_MINUTES", 6.0), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = self._eval(0.0)
+        assert res.metrics["pin_risk_denied"] is False
+        assert not any("pin risk" in r for r in res.reasons)
+
+
+class TestThinCushionDenial:
+    """A thin cushion must come back as a denial reason, not an exception."""
+
+    def test_at_the_money_denied_with_reason(self):
+        """Spot == strike -> z = 0 < GATES_MIN_CUSHION_Z -> block, no raise."""
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 95000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        with patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=Mock(),
+                side="yes", entry_price_cents=77)
+        assert res.allowed is False
+        assert any("cushion_z" in r for r in res.reasons)
+        assert res.metrics["cushion_z"] == pytest.approx(0.0)
+        assert res.metrics["q"] == pytest.approx(0.5)
+
+    def test_slightly_otm_denied_when_z_below_min(self):
+        """A small positive z below the configured minimum is denied."""
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 95100.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        with patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=Mock(),
+                side="yes", entry_price_cents=77)
+        z = res.metrics["cushion_z"]
+        assert z is not None
+        assert z < config.GATES_MIN_CUSHION_Z
+        assert res.allowed is False
+        assert any("cushion_z" in r for r in res.reasons)
+
+    def test_zero_minutes_denies_with_reason_not_exception(self):
+        """No time left -> gate3 denial reason, not a crash."""
+        market = MockMarket(minutes_left=0.0)
+        spot_state = {"spot": 96000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        with patch.object(config, "GATES_SHADOW_MODE", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=Mock(),
+                side="yes", entry_price_cents=77)
+        assert res.allowed is False
+        assert any("gate3" in r for r in res.reasons)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
