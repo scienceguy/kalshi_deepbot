@@ -169,6 +169,21 @@ def sigma_per_min(asset: str) -> float | None:
     )
 
 
+def sigma_from_atr(atr, spot):
+    """Fractional per-sqrt-minute LOG-vol from a dollar ATR (B11).
+
+    ATR is a mean TRUE RANGE of high-low candles, about 1.6 sigma, not
+    E|dS| (~0.8 sigma). Legacy V1 multiplied by sqrt(pi/2) as if it were
+    E|dS| and overstated sigma ~1.9x; V2 divides by 1.6. Config flag
+    GATES_SIGMA_FROM_ATR_V2 selects; off keeps V1 byte-identical.
+    """
+    if atr is None or not spot:  # reviewed: ATR needs both a range and a price level to become a log-vol; missing either means no estimate (B11)
+        return None
+    if getattr(config, "GATES_SIGMA_FROM_ATR_V2", False):
+        return (atr / spot) / 1.6
+    return (atr / spot) * math.sqrt(math.pi / 2)
+
+
 _LAST_DECISION_MAX = 2000
 
 
@@ -252,9 +267,9 @@ def cushion_z(spot: float, strike: float, sigma: float, minutes: float,
     binance_feed.prob_above.
 
     Pass gates.sigma_per_min() (per-minute log-vol) or convert ATR via
-    sigma = (atr / spot) * sqrt(pi/2). Do NOT pass a dollar-denominated sigma:
-    that made the old arithmetic form dimensionally wrong and produced huge z
-    values that never blocked.
+    gates.sigma_from_atr (V2: (atr/spot)/1.6; V1 legacy: (atr/spot)*sqrt(pi/2)).
+    Do NOT pass a dollar-denominated sigma: that made the old arithmetic form
+    dimensionally wrong and produced huge z values that never blocked.
     """
     if spot <= 0 or strike <= 0 or sigma <= 0:
         return None
@@ -389,6 +404,7 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
     spot = spot_state.get("spot")
     sigma = spot_state.get("sigma_per_sqrt_min",
                            spot_state.get("sigma_per_min"))
+    metrics["sigma_source"] = "spot_state" if sigma is not None else None  # reviewed: composite_sigma from the feed is preferred; ATR-derived sigma is the fallback (B11)
     atr = spot_state.get("atr_1m")
     if asset is None:
         block_reasons.append("gate0: unsupported underlying")
@@ -435,16 +451,19 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
         if minutes <= 0:
             block_reasons.append("gate3: no time remaining")
         elif sigma is None:
-            # atr_1m is an average *true range* in DOLLARS (E|dS| over one candle,
-            # ~0.798*sigma_dollar), not a log-vol. Convert to per-minute log-vol:
-            # sigma_log ~ E|d ln S| ~ E|dS| / S = atr / spot, scaled by
-            # sqrt(pi/2)=1.2533 to turn E|X| into a standard deviation. The old
-            # code passed raw dollars as sigma, which made cushion_z dimensionally
-            # wrong (z in dollars, not standard deviations) and never blocked.
+            # ATR is a mean true RANGE (high-low, ~1.6 sigma per minute), not
+            # E|dS| (~0.8 sigma). V1 multiplied by sqrt(pi/2)=1.2533 as if it
+            # were E|dS| and overstated sigma ~1.9x; V2 divides by 1.6.
             # A wider sigma LOWERS q, so the gate rejects MORE.
-            sigma = ((atr / spot) * math.sqrt(math.pi / 2)
-                     if (atr is not None and spot)  # reviewed: gate0 sigma resolution requires both atr and spot to derive log-vol
-                     else (0.0007 if spot else None))
+            sigma_v1 = (atr / spot) * math.sqrt(math.pi / 2) if (atr is not None and spot) else None
+            sigma_v2 = (atr / spot) / 1.6 if (atr is not None and spot) else None
+            sigma = sigma_v2 if config.GATES_SIGMA_FROM_ATR_V2 else sigma_v1  # reviewed: GATES_SIGMA_FROM_ATR_V2 off keeps the legacy sqrt(pi/2) conversion byte-identical (B11)
+            metrics["sigma_atr_v1"] = sigma_v1
+            metrics["sigma_atr_v2"] = sigma_v2
+            metrics["sigma_source"] = "atr_v2" if config.GATES_SIGMA_FROM_ATR_V2 else "atr_v1"
+            if sigma is None:  # reviewed: no ATR and no spot means no derivable vol; the fixed model vol keeps gate 3 dimensionally sane instead of failing open (B11)
+                sigma = 0.0007 if spot else None
+                metrics["sigma_source"] = "fixed_fallback"
         if minutes <= config.GATES_HIGH_GAMMA_MINUTES:
             metrics["high_gamma_zone"] = True
             if config.GATES_DENY_HIGH_GAMMA:

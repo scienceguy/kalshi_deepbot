@@ -339,6 +339,9 @@ GATES_DENY_PIN_RISK = _env_bool("GATES_DENY_PIN_RISK", False)
 GATES_SPOT_CACHE_SECONDS = _env_int("GATES_SPOT_CACHE_SECONDS", 30)
 GATES_ATR_CACHE_SECONDS = _env_int("GATES_ATR_CACHE_SECONDS", 60)
 GATES_SIGMA_CACHE_SECONDS = _env_int("GATES_SIGMA_CACHE_SECONDS", 60)
+# B11: ATR is a mean true range (~1.6 sigma), not E|dS| (~0.8 sigma). V2
+# divides by 1.6; off keeps the legacy (atr/spot)*sqrt(pi/2). Default False.
+GATES_SIGMA_FROM_ATR_V2 = _env_bool("GATES_SIGMA_FROM_ATR_V2", False)
 # How long a feed-outage stale spot/ATR may be reused before the gates fail
 # closed. 300s = 5 min of stale-ok: a transient Binance blip does not knock the
 # bot out of the market, but a long outage still blocks entries visibly.
