@@ -87,8 +87,8 @@ Recommended interpretation for the paper engine:
   not subscribe to it.
 - US private WS (`/v1/ws/private`, referenced in the US rate-limit guidance)
   pushes position/balance changes on settlement. The **paper** engine has no
-  real venue position to receive on; `polymarket_ws.py` exists but is not
-  guaranteed to carry US settlement events and is out of scope.
+  real venue position to receive on; the WebSocket worker was removed (A11)
+  because nothing used it and REST polling covers the paper engine.
 - **Decision:** the paper monitor uses REST polling only. WebSocket can be an
   R6 fast-path for live deployment later. REST remains the source of truth
   and the reconciliation path.
