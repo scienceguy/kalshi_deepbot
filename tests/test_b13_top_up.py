@@ -24,8 +24,9 @@ TICKER = "KXBTC15M-26NOV15-45"
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch):
-    """Isolate trader.state; DRY_RUN=true routes sizing to the paper bankroll."""
-    monkeypatch.setattr(config, "DRY_RUN", True)
+    """Isolate trader.state. Live mode: B14 made exchange-position adoption
+    live-only, so the top-up guard is exercised against the exchange payload."""
+    monkeypatch.setattr(config, "DRY_RUN", False)
     monkeypatch.setattr(config, "EXIT_ENABLED", False)
     monkeypatch.setattr(trader.state, "positions", {})
     monkeypatch.setattr(trader.state, "position_risk", {})
@@ -65,6 +66,8 @@ def _client(positions, orders=None):
     client.get_positions.return_value = positions
     client.get_orders.return_value = orders or []
     client.get_market.return_value = {"expiration_value": 1.0}
+    client.get_shard_balance.return_value = 100.0  # live mode sizes against the shard
+    client.get_balance.return_value = 100.0        # live mode risk update reads the total balance
     return client
 
 
@@ -153,9 +156,6 @@ def test_manage_exits_partial_fill_stamps_last_exit_ts(monkeypatch):
     monkeypatch.setattr(config, "EXIT_TAKE_PROFIT_CENTS", 3)
     monkeypatch.setattr(config, "EXIT_STOP_LOSS_CENTS", 25)
     monkeypatch.setattr(config, "EXIT_MIN_MINUTES_LEFT", 1.0)
-    # Live path for the fill math only: DRY_RUN would assume a full fill and
-    # pop the position before the partial-fill branch could run.
-    monkeypatch.setattr(config, "DRY_RUN", False)
     monkeypatch.setattr(trader, "_book_exit", lambda *a, **k: None)
     trader._manage_exits(client)
     pos = trader.state.positions[TICKER]

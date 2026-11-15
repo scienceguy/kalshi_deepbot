@@ -563,11 +563,15 @@ def _touch_window(now: datetime, cash: float, exposure: float = 0.0):
     if state.window["id"] == wid:
         if cash > state.window["start_cash"] + 1e-9:
             state.window["start_cash"] = cash
+            # B14: branch on equity (cash + exposure), matching
+            # tradable_balance_limit — raw cash alone understates a drawn-down
+            # account and overstates a leveraged one.
+            # reviewed: refresh branch uses equity, consistent with tradable_balance_limit (B14)
             state.window["budget"] = (
-                tradable_balance_limit(cash, exposure) if cash < 10.0
+                tradable_balance_limit(cash, exposure) if (cash + exposure) < 10.0
                 else cash * config.WINDOW_TRADE_PCT
             )
-            state.window["reserved_cash"] = 0.0 if cash < 10.0 else max(0.0, cash * config.CASH_RESERVED_PCT)
+            state.window["reserved_cash"] = 0.0 if (cash + exposure) < 10.0 else max(0.0, cash * config.CASH_RESERVED_PCT)
             log.info(
                 "Window budget refreshed — cash grew to $%.2f, budget=$%.2f reserved=$%.2f",
                 cash, state.window["budget"], state.window["reserved_cash"],
@@ -597,7 +601,8 @@ def _touch_window(now: datetime, cash: float, exposure: float = 0.0):
     # reviewed: on micro-balances under $10, cap the window budget at 60% of
     # equity (tradable_balance_limit) leaving a 40% cash reserve instead of
     # deploying 100% (the exposure cliff).
-    if cash < 10.0:
+    # reviewed: micro-balance branch uses equity (cash + exposure), consistent with tradable_balance_limit (B14)
+    if (cash + exposure) < 10.0:
         state.window["budget"] = tradable_balance_limit(cash, exposure)
         state.window["reserved_cash"] = 0.0
     else:
@@ -1889,8 +1894,11 @@ def cycle(client: KalshiClient):
         if qticker:
             queued_tickers.add(qticker)
 
+    # B14: a dry run never adopts or tops up LIVE exchange positions — the
+    # local DB is mode-isolated, so skipping adoption here is cheap defense
+    # in depth against a mode mix-up.
     # reviewed: iterate over positions safely when positions is None on API fetch failure
-    for p in (positions or []):
+    for p in ([] if config.DRY_RUN else (positions or [])):
         tk = p.get("ticker", "")
         if "15M" not in tk.upper():  # reviewed: only track 15M binary crypto contract positions
             continue
@@ -2594,7 +2602,8 @@ def cycle(client: KalshiClient):
         signals = llm_filtered
 
     # Pre-entry gates: ATR hurdle, fee-adjusted EV, time-decay cushion.
-    # Shadow mode (default) logs would-block decisions without blocking.
+    # Shadow mode (GATES_SHADOW_MODE, default off) logs would-block decisions
+    # without blocking; with it off the gates actually deny entries.
     # Warm the feed caches concurrently first: a 9-series cycle would otherwise
     # serialise one spot + one klines fetch per candidate.
     gates.prefetch({a for sig in signals if (a := gates.asset_for(sig.market))})
@@ -3206,13 +3215,11 @@ def main():
     _replay_settlement_queue(client)
 
     if args.once:
-        trades_before = state.trades_placed
+        # B14: cycle() owns consecutive_no_trade_cycles (resets on placement,
+        # counts a miss otherwise). The old post-hoc fill-based recompute is
+        # deleted — it double-counted a placed-but-unfilled maker order as a
+        # no-trade cycle.
         cycle(client)
-        # reviewed: update consecutive no trade cycles counter based on whether trades were placed
-        if state.trades_placed > trades_before:
-            state.consecutive_no_trade_cycles = 0
-        else:
-            state.consecutive_no_trade_cycles += 1
         client.close()
         return
 

@@ -4,7 +4,7 @@ Single-operator live-trading bot for Kalshi 15-minute binary crypto markets.
 
 ## Overview
 
-Places favourite-maker limit orders (two-sided YES/NO at 82–93c), evaluates signals via an LLM with 7-layer fallback, writes signals/orders/bot-state to Supabase, and routes settlement P&L through n8n webhooks.
+Places favourite-maker limit orders (two-sided YES/NO at 92–99c), evaluates signals via an LLM with 7-layer fallback, writes signals/orders/bot-state to Supabase, and routes settlement P&L through n8n webhooks.
 
 ## Quick Start
 
