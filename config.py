@@ -476,7 +476,7 @@ HEDGE_MAX_NO_ENTRY_CENTS = _env_int("HEDGE_MAX_NO_ENTRY_CENTS", 88)
 # DISABLED for final-minute taker strategy: hold to BRTI settlement.
 # The 60-second BRTI average is the alpha source; exiting early loses it.
 EXIT_ENABLED = _env_bool("EXIT_ENABLED", False)
-EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 20)  # bid moved +20c vs entry
+EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 20)  # bid moved +20c vs entry. Payoff asymmetry (B12): the stop has room below the entry, but a bid caps at 99c — at the 92c+ entry band this target is unreachable and only the stop can fire.
 EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 25)      # 25c stop loss gives full variance buffer
 EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 1.0)  # don't dump into a dead book
 
@@ -777,6 +777,18 @@ def validate_bands():
     Intended to be called by trader.py at startup alongside validate_credentials().
     """
     errors = []
+    # B12: payoff asymmetry — a bid cannot exceed 99c, so a take-profit this
+    # far above a high-entry favourite band can never trigger; the stop loss
+    # (room below the entry) is the only live exit. Warn only: refusing would
+    # break operators who keep the bound target for reporting symmetry.
+    if MIN_YES_PRICE_CENTS + EXIT_TAKE_PROFIT_CENTS > 99:
+        log.warning(
+            "EXIT_TAKE_PROFIT_CENTS=%d is unreachable at MIN_YES_PRICE_CENTS=%d "
+            "(%d + %d > 99): a bid cannot exceed 99c, so only the %dc stop loss "
+            "can ever fire. Lower EXIT_TAKE_PROFIT_CENTS to %d or the entry band.",
+            EXIT_TAKE_PROFIT_CENTS, MIN_YES_PRICE_CENTS,
+            MIN_YES_PRICE_CENTS, EXIT_TAKE_PROFIT_CENTS,
+            EXIT_STOP_LOSS_CENTS, 99 - MIN_YES_PRICE_CENTS)
     if MIN_YES_PRICE_CENTS > MAX_YES_PRICE_CENTS:
         errors.append(
             f"MIN_YES_PRICE_CENTS ({MIN_YES_PRICE_CENTS}) > MAX_YES_PRICE_CENTS ({MAX_YES_PRICE_CENTS}). "

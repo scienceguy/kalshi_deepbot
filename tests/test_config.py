@@ -5,6 +5,7 @@ into live mode when given an unparseable value; it must raise ValueError
 instead of silently falling back to the default.
 """
 import importlib
+import logging
 
 import config
 import pytest
@@ -97,3 +98,61 @@ def test_llm_fail_open_allowlist_rejects_garbage(monkeypatch):
     assert cfg.LLM_EVAL_FAIL_OPEN is False
     cfg = _reload_with(monkeypatch, LLM_EVAL_FAIL_OPEN="true")
     assert cfg.LLM_EVAL_FAIL_OPEN is True
+
+
+# ── B12: exit thresholds unreachable at a high entry band (config validation) ─
+
+def test_exit_take_profit_unreachable_warns(monkeypatch, caplog):
+    """Acceptance: default config with EXIT_ENABLED=true warns when the
+    take-profit can never trigger (92c entry + 20c target > 99c bid ceiling).
+    The only live exit would be the stop loss."""
+    cfg = _reload_with(monkeypatch,
+                       EXIT_ENABLED="true",
+                       MIN_YES_PRICE_CENTS="92",
+                       ENTRY_BAND_MIN="92",
+                       EXIT_TAKE_PROFIT_CENTS="20")
+    with caplog.at_level(logging.WARNING, logger="config"):
+        cfg.validate_bands()
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("EXIT_TAKE_PROFIT_CENTS" in m and "99" in m for m in messages), messages
+
+
+def test_exit_take_profit_in_range_passes_silently(monkeypatch, caplog):
+    """Acceptance: an in-range take-profit (92c + 7c = 99c, exactly reachable)
+    validates without the unreachable warning."""
+    cfg = _reload_with(monkeypatch,
+                       EXIT_ENABLED="true",
+                       MIN_YES_PRICE_CENTS="92",
+                       ENTRY_BAND_MIN="92",
+                       EXIT_TAKE_PROFIT_CENTS="7")
+    with caplog.at_level(logging.WARNING, logger="config"):
+        cfg.validate_bands()
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("EXIT_TAKE_PROFIT_CENTS" in m for m in messages), messages
+
+
+def test_exit_take_profit_warning_fires_even_when_disabled(monkeypatch, caplog):
+    """The misconfiguration is worth flagging even with EXIT_ENABLED=false —
+    the operator opts into a silently capped exit without knowing."""
+    cfg = _reload_with(monkeypatch,
+                       EXIT_ENABLED="false",
+                       MIN_YES_PRICE_CENTS="92",
+                       ENTRY_BAND_MIN="92",
+                       EXIT_TAKE_PROFIT_CENTS="20")
+    with caplog.at_level(logging.WARNING, logger="config"):
+        cfg.validate_bands()
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("EXIT_TAKE_PROFIT_CENTS" in m for m in messages), messages
+
+
+def test_exit_take_profit_ok_at_lower_band_no_warning(monkeypatch, caplog):
+    """A lower entry band with a roomy target validates cleanly."""
+    cfg = _reload_with(monkeypatch,
+                       EXIT_ENABLED="true",
+                       MIN_YES_PRICE_CENTS="50",
+                       ENTRY_BAND_MIN="50",
+                       EXIT_TAKE_PROFIT_CENTS="20")
+    with caplog.at_level(logging.WARNING, logger="config"):
+        cfg.validate_bands()
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("EXIT_TAKE_PROFIT_CENTS" in m for m in messages), messages
