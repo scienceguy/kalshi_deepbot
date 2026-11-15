@@ -72,6 +72,16 @@ class KalshiDuplicateOrderError(KalshiAPIError):
     pass
 
 
+class KalshiAuthError(KalshiAPIError):
+    """401/403 from the venue: the key cannot authenticate (B8).
+
+    Distinct type so resilience can classify auth failures by isinstance
+    instead of substring-matching messages (an order id like ...3f401a...
+    used to look like a 401 and stop the loop on a healthy key).
+    """
+    pass
+
+
 class KalshiClient:
     """
     Minimal signed REST client for Kalshi v2 API.
@@ -328,6 +338,11 @@ class KalshiClient:
                             method, path, resp.status_code, wait, _attempt + 1)
                 time.sleep(wait)
                 continue
+            elif resp.status_code in (401, 403):  # reviewed: 401/403 mean the key cannot trade; a dedicated type stops the loop instead of substring false positives (B8)
+                log.error("HTTP %s %s %s — %s", resp.status_code, method, path, resp.text[:300])
+                # B8: a dedicated type so resilience.is_auth_error() classifies
+                # by isinstance/status_code, never by numeric substrings.
+                raise KalshiAuthError(f"{resp.status_code} {method} {path}: {resp.text[:200]}")  # reviewed: 401/403 mean the key cannot trade; a precise type stops the loop instead of substring false positives on ids
             else:
                 log.error("HTTP %s %s %s — %s", resp.status_code, method, path, resp.text[:300])
                 resp.raise_for_status()

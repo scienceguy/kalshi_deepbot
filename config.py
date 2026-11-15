@@ -612,6 +612,9 @@ KALSHI_REQUEST_BUDGET_PER_CYCLE = _env_int("KALSHI_REQUEST_BUDGET_PER_CYCLE", 40
 KALSHI_POOL_MAXSIZE = _env_int("KALSHI_POOL_MAXSIZE", 20)
 CYCLE_TIMEOUT_SECONDS = _env_int("CYCLE_TIMEOUT_SECONDS", 30)
 CLIENT_MAX_REBUILDS = _env_int("CLIENT_MAX_REBUILDS", 20)
+# Opt-in: exit the process when client rebuilds are exhausted. Default off —
+# a long outage keeps retrying at max backoff instead of ending the loop (B8).
+CLIENT_MAX_REBUILDS_EXIT = _env_bool("CLIENT_MAX_REBUILDS_EXIT", False)
 
 # ═════════════════════════════════════════════════════════════════════
 # LLM (optional, Vertex AI + NVIDIA + free provider fallback)

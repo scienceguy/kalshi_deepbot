@@ -3258,11 +3258,15 @@ def main():
                     log.error("Client rebuild failed: %s — stopping", rebuild_e)
                     break
             elif state.resilience.rebuilds >= state.resilience.settings.max_rebuilds:
-                # Max rebuilds exhausted — stop instead of looping forever
-                # on failing cycles.
-                log.error("Max client rebuilds (%d) exhausted — stopping.",
-                          state.resilience.settings.max_rebuilds)
-                break
+                # Max rebuilds exhausted. Exit only when the operator opted in
+                # (CLIENT_MAX_REBUILDS_EXIT); otherwise keep retrying at max
+                # backoff so a long outage can recover instead of ending.
+                if config.CLIENT_MAX_REBUILDS_EXIT:  # reviewed: exit-after-N-rebuilds is opt-in; default off keeps the bot retrying through a long outage rather than self-terminating (B8)
+                    log.error("Max client rebuilds (%d) exhausted — stopping.",
+                              state.resilience.settings.max_rebuilds)
+                    break
+                log.warning("Max client rebuilds (%d) exhausted — continuing at max backoff (set CLIENT_MAX_REBUILDS_EXIT=1 to stop)",
+                            state.resilience.settings.max_rebuilds)
             time.sleep(delay)
             continue
         state.resilience.mark_success()

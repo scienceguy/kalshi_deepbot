@@ -8,6 +8,7 @@ import os
 from dataclasses import dataclass, field
 
 import config
+from kalshi_client import KalshiAuthError
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class CycleSupervisor:
         self.errors_in_a_row = 0
         self.last_error_type: str | None = None
         self.last_error_message: str | None = None
+        self.last_error: Exception | None = None
         self.error_types: dict[str, int] = {}
         self.rebuilds = 0
 
@@ -48,6 +50,7 @@ class CycleSupervisor:
         self.errors_in_a_row += 1
         self.last_error_type = type(exc).__name__
         self.last_error_message = str(exc)
+        self.last_error = exc
         self.error_types[self.last_error_type] = self.error_types.get(self.last_error_type, 0) + 1
         # Exponential backoff: 1st failure → base, 2nd → 2×base, 3rd → 4×base, …
         # Capped at max_backoff so retries never grow unbounded.
@@ -69,15 +72,23 @@ class CycleSupervisor:
     def is_auth_error(self) -> bool:
         """Return True if the last recorded error was authentication-related.
 
-        Only 401/403 and explicit auth/permission strings count. A plain
-        HTTPError (429 rate limit, 5xx, 404...) is NOT an auth error — it
-        must trigger backoff/retry, not kill the bot.
+        Structured checks only: a KalshiAuthError, or any exception carrying
+        an HTTP 401/403 status_code. The legacy substring fallback keeps only
+        'auth'/'permission' — numeric substrings like '401'/'403' matched
+        order ids such as '...3f401a...' and stopped the loop on a healthy
+        key (B8). A plain HTTPError (429 rate limit, 5xx, 404...) is NOT an
+        auth error — it must trigger backoff/retry, not kill the bot.
         """
-        if self.last_error_type is None:
+        exc = self.last_error
+        if exc is None:
             return False
-        haystack = f"{self.last_error_type} {self.last_error_message or ''}".lower()
-        return ("auth" in haystack or "permission" in haystack
-                or "401" in haystack or "403" in haystack)
+        if isinstance(exc, KalshiAuthError):
+            return True
+        status = getattr(exc, "status_code", None)
+        if status in (401, 403):
+            return True
+        haystack = f"{type(exc).__name__} {exc}".lower()
+        return "auth" in haystack or "permission" in haystack
 
     def should_rebuild_client(self) -> bool:
         return (self.errors_in_a_row >= max(1, self.settings.rebuild_threshold)
@@ -90,6 +101,7 @@ class CycleSupervisor:
         self.errors_in_a_row = 0
         self.last_error_type = None
         self.last_error_message = None
+        self.last_error = None
         self.rebuilds += 1
 
 
