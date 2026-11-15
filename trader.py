@@ -1035,7 +1035,16 @@ def _replay_settlement_queue(client=None):
     remaining = []  # Initialize early for pending resolution loop
     for entry in queue:
         payload = entry.get("payload", {})
-        if payload.get("pnl_dollars") is None:
+        if payload.get("action") == "exit":  # reviewed: exits never resolve from the venue settlement; they book at their own exit price
+            resolved = _resolve_exit_payload(payload)
+            if resolved is None:  # reviewed: legacy row lacks what the exit math needs; keep it queued, never fabricate a P&L
+                if payload.get("pnl_dollars") is None:  # reviewed: no stored P&L and no resolving data; leave it queued for the next replay
+                    remaining.append(entry)
+                    continue
+                resolved_entries.append((entry, payload))
+            else:
+                resolved_entries.append((entry, resolved))
+        elif payload.get("pnl_dollars") is None:  # reviewed: settlements still resolve from the venue; exits never reach here
             pending_entries.append((entry, payload))
         else:
             resolved_entries.append((entry, payload))
@@ -1103,18 +1112,34 @@ def _replay_settlement_queue(client=None):
             ticker = payload.get("ticker", "")
             
             # Compute settle_key for all entries (needed for webhook even if duplicate)
-            # reviewed: key on full ticker to prevent multi-strike collisions on same event
-            settle_key = f"settle:{ticker}:{order_id}"
+            if payload.get("action") == "exit":  # reviewed: exits reuse _book_exit's exit key so a partially applied exit cannot double-book
+                settle_key = _exit_key(
+                    ticker, payload.get("exit_order_id", ""), order_id,
+                    payload.get("contracts", 0),
+                    int(payload.get("fill_price_cents") or 0))
+                fee_dollars = payload.get("fee_dollars")
+                if fee_dollars is None:  # reviewed: pre-fee fee rows recompute from the exit math; stored fees are trusted as-is
+                    fee_dollars = _exit_pnl_math(
+                        float(payload.get("contracts", 0)),
+                        payload.get("entry_price_cents",
+                                    payload.get("entry_price", 0)),
+                        int(payload.get("fill_price_cents") or 0),
+                        bool(payload.get("entry_was_taker", config.AGGRESSIVE_FILL)),
+                        bool(payload.get("paper", config.DRY_RUN)))[1]
+            else:
+                # reviewed: key on full ticker to prevent multi-strike collisions on same event
+                settle_key = f"settle:{ticker}:{order_id}"
+                fee_dollars = _entry_fee_dollars(
+                    payload.get("contracts", 0),
+                    payload.get("entry_price_cents",
+                                payload.get("entry_price", 0)),
+                    payload.get("entry_was_taker", False))
 
             # Step 1: Apply to local pnl_ledger FIRST (idempotency key prevents double-count)
             if pnl is not None:
                 applied = get_local_db().apply_settlement_pnl(
                     settle_key, ticker, pnl,
-                    fee_dollars=_entry_fee_dollars(
-                        payload.get("contracts", 0),
-                        payload.get("entry_price_cents",
-                                    payload.get("entry_price", 0)),
-                        payload.get("entry_was_taker", False)),
+                    fee_dollars=fee_dollars,
                     source="local")
                 # applied is True=new, False=duplicate, None=DB error.
                 # Never credit PnL when the ledger write failed (None).
@@ -1196,6 +1221,57 @@ def _exit_quote(client, ticker: str):
     return yes_bid, no_bid, minutes_left
 
 
+def _exit_key(ticker: str, exit_order_id: str, order_id: str,
+              filled: float, exit_cents: int) -> str:
+    """Idempotency key for an early exit — shared by _book_exit and replay."""
+    return f"exit:{ticker}:{exit_order_id or order_id}:{filled}:{exit_cents}"
+
+
+def _exit_pnl_math(filled: float, entry_cents: float, exit_cents: int,
+                   entry_taker: bool, is_paper: bool) -> tuple:
+    """(realized_pnl, fees_dollars, won) for an early exit.
+
+    One definition shared by _book_exit and the settlement-queue replay, so a
+    failed exit books exactly what the live path would have booked. The entry
+    pays a taker fee only when it crossed the ask (AGGRESSIVE_FILL); the exit
+    always takes live, and paper follows PAPER_TAKER_EXIT_FEE.
+    """
+    exit_price = exit_cents / 100.0
+    exit_taker = bool(config.PAPER_TAKER_EXIT_FEE) if is_paper else True
+    buy_cost = fees.buy_cash_out(filled, entry_cents / 100.0, taker=entry_taker)
+    sell_revenue = fees.sell_cash_in(filled, exit_price, taker=exit_taker)
+    # Report the effective fees (what the cent-grid cost actually contains),
+    # not the raw model fee, so the order row agrees with the P&L.
+    entry_fee = (buy_cost - filled * entry_cents / 100.0) if entry_taker else 0.0
+    exit_fee = (filled * exit_price - sell_revenue) if exit_taker else 0.0
+    realized_pnl = sell_revenue - buy_cost
+    return realized_pnl, entry_fee + exit_fee, realized_pnl > 0
+
+
+def _resolve_exit_payload(payload: dict) -> dict | None:
+    """Fill pnl_dollars/outcome_won for a queued exit from its own fields.
+
+    Returns None when the row lacks what the exit math needs (caller keeps it
+    queued). Never consults the venue: an exit books at its own exit price.
+    """
+    contracts = payload.get("contracts", 0)
+    entry_cents = payload.get("entry_price_cents", payload.get("entry_price", 0))
+    exit_cents = payload.get("fill_price_cents")
+    if not contracts or not entry_cents or exit_cents is None:  # reviewed: a row missing exit-math inputs stays queued; a fabricated P&L is worse than a retry
+        return None
+    pnl, fee_dollars, won = _exit_pnl_math(
+        float(contracts), entry_cents, int(exit_cents),
+        bool(payload.get("entry_was_taker", config.AGGRESSIVE_FILL)),
+        bool(payload.get("paper", config.DRY_RUN)))
+    return {
+        **payload,
+        "status": "settled",
+        "outcome_won": won,
+        "pnl_dollars": pnl,
+        "fee_dollars": fee_dollars,
+    }
+
+
 def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, reason: str, exit_order_id: str = ""):
     """Book realized P&L for an early exit.
 
@@ -1208,23 +1284,13 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     order_id = pos.get("order_id", ticker)
     is_paper = bool(pos.get("paper"))
 
-    exit_price = exit_cents / 100.0
     # Entry and exit are priced by the same rule live uses: the entry pays a
     # taker fee only when we crossed the ask (AGGRESSIVE_FILL), and the exit
     # pays the taker fee because selling into the book is a taker action. A
     # dry run now matches that exactly instead of assuming a fee-free entry.
     entry_taker = bool(pos.get("entry_taker", config.AGGRESSIVE_FILL))
-    # reviewed: paper may keep the legacy free-exit model via PAPER_TAKER_EXIT_FEE; live exits always take
-    exit_taker = bool(config.PAPER_TAKER_EXIT_FEE) if is_paper else True
-    buy_cost = fees.buy_cash_out(filled, entry_price / 100.0, taker=entry_taker)
-    sell_revenue = fees.sell_cash_in(filled, exit_price, taker=exit_taker)
-    # Report the effective fees (what the cent-grid cost actually contains),
-    # not the raw model fee, so the order row agrees with the P&L.
-    entry_fee = (buy_cost - filled * entry_price / 100.0) if entry_taker else 0.0
-    exit_fee = (filled * exit_price - sell_revenue) if exit_taker else 0.0
-    fees_dollars = entry_fee + exit_fee
-    realized_pnl = sell_revenue - buy_cost
-    won = sell_revenue > buy_cost
+    realized_pnl, fees_dollars, won = _exit_pnl_math(
+        filled, entry_price, exit_cents, entry_taker, is_paper)
 
     state.risk.record_trade_outcome(won, realized_pnl)
     if not won:
@@ -1234,8 +1300,7 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
 
     # Use exit_order_id in key to distinguish partial exits (different exit orders)
     # If no exit_order_id provided, fall back to entry order_id for backward compat
-    key_order_id = exit_order_id or order_id
-    key = f"exit:{ticker}:{key_order_id}:{filled}:{exit_cents}"
+    key = _exit_key(ticker, exit_order_id, order_id, filled, exit_cents)
     pnl_to_add = 0.0
     applied = None
     try:
@@ -1458,21 +1523,28 @@ def _manage_exits(client):
         try:
             _book_exit(client, ticker, pos, int(bid), filled, reason, exit_oid)
         except Exception as e:
-            # reviewed: on _book_exit failure, enqueue exit record for replay so P&L is not lost
+            # reviewed: on _book_exit failure, compute the exit P&L at the exit bid and enqueue it with the exit key — a None pnl would be replayed at the settlement price under a settle: key
             log.warning("_book_exit failed for %s — enqueueing exit record for replay: %s", ticker, e)
+            entry_taker = bool(pos.get("entry_taker", config.AGGRESSIVE_FILL))
+            is_paper = bool(pos.get("paper"))
+            exit_cents = int(bid)
+            pnl_now, fees_now, won_now = _exit_pnl_math(
+                filled, entry, exit_cents, entry_taker, is_paper)
             _enqueue_settlement({
                 "action": "exit",
                 "order_id": order_id,
                 "exit_order_id": exit_oid,
                 "status": "settled",
-                "fill_price_cents": int(bid),
-                "outcome_won": None,  # will be determined on replay
-                "pnl_dollars": None,  # will be computed on replay
+                "fill_price_cents": exit_cents,
+                "outcome_won": won_now,
+                "pnl_dollars": pnl_now,
+                "fee_dollars": fees_now,
                 "ticker": ticker,
                 "side": side,
                 "contracts": filled,
                 "entry_price_cents": entry,
-                "entry_was_taker": bool(pos.get("entry_taker", config.AGGRESSIVE_FILL)),
+                "entry_was_taker": entry_taker,
+                "paper": is_paper,
                 "exit_reason": reason,
             })
         client.invalidate_markets(series_ticker=ticker.split("-")[0])

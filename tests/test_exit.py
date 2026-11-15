@@ -199,3 +199,119 @@ class TestBookExit:
         risk.record_trade_outcome.assert_called_once()
         assert risk.record_trade_outcome.call_args[0][0] is False
         risk.record_market_loss.assert_called_once()
+
+
+# ── B1: exit replay must book the exit price, not the settlement price ──────
+
+def test_failed_exit_enqueues_computed_pnl_with_exit_key(monkeypatch, tmp_path):
+    """A _book_exit failure must enqueue the exit P&L computed at the exit bid.
+
+    Regression (B1): the enqueue used pnl_dollars=None, so replay resolved the
+    entry at the market's *settlement* price under a settle: key instead of the
+    exit bid under the exit: key — wrong P&L and a different idempotency key.
+    """
+    import json
+    import fees
+
+    qfile = tmp_path / "q.json"
+    monkeypatch.setattr(trader, "SETTLEMENT_QUEUE_FILE", qfile)
+    monkeypatch.setattr(trader.config, "EXIT_ENABLED", True)
+    monkeypatch.setattr(trader.config, "EXIT_TAKE_PROFIT_CENTS", 20)
+    monkeypatch.setattr(trader.config, "EXIT_MIN_MINUTES_LEFT", 1.0)
+    monkeypatch.setattr(trader, "_exit_quote", lambda c, t: (52, 47, 5.0))
+
+    def _boom(*a, **k):
+        raise RuntimeError("ledger unavailable")
+
+    monkeypatch.setattr(trader, "_book_exit", _boom)
+    trader.state.positions.clear()
+    trader.state.positions["KXBTC15M-1"] = _pos(30)
+
+    client = MagicMock()
+    client.sell_position.return_value = {"order": {"order_id": "exit-oid",
+                                                   "status": "executed"}}
+    trader._manage_exits(client)
+    trader.state.positions.clear()
+
+    queue = json.loads(qfile.read_text())
+    assert len(queue) == 1
+    payload = queue[0]["payload"]
+    expected = (fees.sell_cash_in(2, 0.52, taker=True)
+                - fees.buy_cash_out(2, 0.30, taker=False))
+    assert payload["action"] == "exit"
+    assert payload["pnl_dollars"] == pytest.approx(expected, abs=1e-9)
+    assert payload["outcome_won"] is True
+    assert payload["fill_price_cents"] == 52
+    assert payload["entry_price_cents"] == 30
+    assert payload["contracts"] == 2
+    assert payload["entry_was_taker"] is False
+
+
+def test_replay_exit_books_at_exit_key_not_settlement(monkeypatch, tmp_path):
+    """Replaying an exit uses the exit: idempotency key and never fetches the
+    settlement price (B1)."""
+    import json
+    import fees
+
+    expected = (fees.sell_cash_in(2, 0.52, taker=True)
+                - fees.buy_cash_out(2, 0.30, taker=False))
+    qfile = tmp_path / "q.json"
+    qfile.write_text(json.dumps([{"order_id": "ord-1", "payload": {
+        "action": "exit", "order_id": "ord-1", "exit_order_id": "exit-oid",
+        "status": "settled", "fill_price_cents": 52, "outcome_won": True,
+        "pnl_dollars": expected, "fee_dollars": 0.04,
+        "ticker": "KXBTC15M-1", "side": "yes", "contracts": 2,
+        "entry_price_cents": 30, "entry_was_taker": False, "paper": False}}]))
+    monkeypatch.setattr(trader, "SETTLEMENT_QUEUE_FILE", qfile)
+    monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
+    monkeypatch.setattr(trader.state, "session_pnl", 0.0)
+    client = MagicMock()
+    client.get_market.side_effect = AssertionError(
+        "exit replay must not fetch the settlement price")
+    ldb = MagicMock()
+    ldb.apply_settlement_pnl.return_value = True
+    monkeypatch.setattr(trader, "get_local_db", lambda: ldb)
+    monkeypatch.setattr(trader, "get_supabase_client",
+                        lambda: MagicMock(set_bot_state_batch=MagicMock(return_value=True)))
+
+    trader._replay_settlement_queue(client)
+
+    key = ldb.apply_settlement_pnl.call_args[0][0]
+    assert key.startswith("exit:KXBTC15M-1:exit-oid:2:52")
+    assert trader.state.session_pnl == pytest.approx(expected, abs=1e-9)
+    assert json.loads(qfile.read_text()) == []  # drained
+
+
+def test_replay_legacy_exit_none_pnl_resolves_from_payload(monkeypatch, tmp_path):
+    """A pre-fix queue row with pnl_dollars=None still books from its own exit
+    fields, never from the venue settlement (B1)."""
+    import json
+    import fees
+
+    expected = (fees.sell_cash_in(2, 0.52, taker=True)
+                - fees.buy_cash_out(2, 0.30, taker=False))
+    qfile = tmp_path / "q.json"
+    qfile.write_text(json.dumps([{"order_id": "ord-1", "payload": {
+        "action": "exit", "order_id": "ord-1", "exit_order_id": "exit-oid",
+        "status": "settled", "fill_price_cents": 52, "outcome_won": None,
+        "pnl_dollars": None, "ticker": "KXBTC15M-1", "side": "yes",
+        "contracts": 2, "entry_price_cents": 30, "entry_was_taker": False,
+        "paper": False}}]))
+    monkeypatch.setattr(trader, "SETTLEMENT_QUEUE_FILE", qfile)
+    monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
+    monkeypatch.setattr(trader.state, "session_pnl", 0.0)
+    client = MagicMock()
+    client.get_market.side_effect = AssertionError(
+        "legacy exit replay must not fetch the settlement price")
+    ldb = MagicMock()
+    ldb.apply_settlement_pnl.return_value = True
+    monkeypatch.setattr(trader, "get_local_db", lambda: ldb)
+    monkeypatch.setattr(trader, "get_supabase_client",
+                        lambda: MagicMock(set_bot_state_batch=MagicMock(return_value=True)))
+
+    trader._replay_settlement_queue(client)
+
+    key = ldb.apply_settlement_pnl.call_args[0][0]
+    assert key.startswith("exit:KXBTC15M-1:exit-oid:2:52")
+    assert trader.state.session_pnl == pytest.approx(expected, abs=1e-9)
+    assert json.loads(qfile.read_text()) == []  # drained
