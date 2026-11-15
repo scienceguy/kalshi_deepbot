@@ -664,6 +664,30 @@ def _order_count(o):
     return 0
 
 
+def _order_initial_count(o):
+    """Initial (original) contract count from an order record (new + legacy)."""
+    for k in ("initial_count_fp", "count", "quantity"):
+        v = o.get(k)
+        if v in (None, "", 0, "0", "0.00"):  # reviewed: a blank/zero field is not a count; fall through to the next shape or 0
+            continue
+        try:
+            return float(float(v))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _order_remaining_count(o):
+    """Unfilled contract count: remaining_count_fp when present, else initial - fill."""
+    v = o.get("remaining_count_fp")
+    if v not in (None, "", 0, "0", "0.00"):  # reviewed: venue-reported remaining wins; never subtract the fill from it again
+        try:
+            return max(0.0, float(float(v)))
+        except (TypeError, ValueError):
+            pass
+    return max(0.0, _order_initial_count(o) - _order_fill_count(o))
+
+
 def _order_price_dollars(o):
     """Price per contract in dollars for a resting order (new + legacy)."""
     side = o.get("outcome_side") or o.get("side") or ""
@@ -1746,17 +1770,16 @@ def cycle(client: KalshiClient):
             if not oid:
                 continue
             live_ids.add(oid)
-            count = _order_count(o)
+            remaining = _order_remaining_count(o)
             price_dollars = _order_price_dollars(o)
             created = o.get("created_time", "")
-            if not price_dollars or not count:
+            if not price_dollars or not remaining:  # reviewed: a zero-priced or zero-remaining resting order reserves no cash; skip it
                 continue
             # New schema quotes the order's yes/no price in dollars directly.
             ticker = o.get("ticker", "")
-            # Reserve only the unfilled remainder. A partially-filled maker
-            # order also shows up in get_positions(), so reserving its full
-            # size would double-count the filled contracts against cash.
-            remaining = max(0.0, count - _order_fill_count(o))
+            # Remaining is already the unfilled remainder: venue-reported
+            # remaining_count_fp, or initial minus fill. Subtracting the fill
+            # count again would under-reserve cash on partial fills.
             if remaining <= 0.0:
                 state.resting_value.pop(oid, None)
                 continue
@@ -2873,7 +2896,7 @@ def main():
         resting_orders = client.get_orders(status="resting")
         for o in resting_orders:
             oid = o.get("order_id") or o.get("id")
-            count = _order_count(o)
+            count = _order_remaining_count(o)
             if not oid or not count:
                 continue
             # New schema quotes yes/no price in dollars directly; the legacy

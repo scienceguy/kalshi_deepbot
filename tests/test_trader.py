@@ -523,6 +523,25 @@ class TestPositionHelpers:
     def test_order_fill_count_missing(self):
         assert trader._order_fill_count({}) == 0.0
 
+    def test_order_remaining_count_prefers_reported_remaining(self):
+        # Regression: {initial: 10, fill: 4, remaining: 6} must reserve 6
+        # contracts, not 6-4=2 (fills subtracted twice).
+        o = {"initial_count_fp": "10.00", "fill_count_fp": "4.00",
+             "remaining_count_fp": "6.00"}
+        assert trader._order_remaining_count(o) == 6.0
+
+    def test_order_remaining_count_reserves_full_unfilled_value(self):
+        o = {"initial_count_fp": "10.00", "fill_count_fp": "4.00",
+             "remaining_count_fp": "6.00", "yes_price_dollars": "0.95"}
+        remaining = trader._order_remaining_count(o)
+        assert remaining * trader._order_price_dollars(o) == pytest.approx(5.70)
+
+    def test_order_remaining_count_legacy_shape(self):
+        assert trader._order_remaining_count({"count": "10", "filledCount": "4"}) == 6.0
+
+    def test_order_remaining_count_never_negative(self):
+        assert trader._order_remaining_count({"count": "3", "filledCount": "9"}) == 0.0
+
 
 def test_pre_trade_check_survives_failed_open_llm_eval(fresh_state, mock_client, monkeypatch):
     """A failed LLM eval with fail-open on must not crash the cycle.
