@@ -457,3 +457,23 @@ def test_get_market_settlement_returns_value_on_success(monkeypatch):
 
     assert res == {"slug": "test-slug", "settlement": 1.0}
     assert mock_client.markets.settlement.call_count == 1
+
+def test_get_open_orders_raises_on_failure(monkeypatch):
+    """A venue failure must raise, not return [] — reconcile would otherwise
+    read it as 'all orders cancelled' and release committed cash."""
+    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda: None)
+    mock_client = MagicMock()
+    mock_client.orders.list.side_effect = RuntimeError("timeout")
+    monkeypatch.setattr(polymarket_us_client, "_get_authenticated_client", lambda: mock_client)
+
+    with pytest.raises(RuntimeError):
+        polymarket_us_client.get_open_orders()
+
+
+def test_get_open_orders_returns_empty_only_when_venue_is_empty(monkeypatch):
+    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda: None)
+    mock_client = MagicMock()
+    mock_client.orders.list.return_value = {"orders": []}
+    monkeypatch.setattr(polymarket_us_client, "_get_authenticated_client", lambda: mock_client)
+
+    assert polymarket_us_client.get_open_orders() == []

@@ -224,15 +224,16 @@ class PolyUSPaperTrader:
 
     def _track_daily_realized(self, pnl: float) -> None:
         """Update daily realized loss and set halt if limit exceeded."""
-        if pnl >= 0:
-            return
         today = self._daily_loss_key()
-        stored_date = self.state.get("daily_loss_date", today)
-        if stored_date != today:
-            # New day — reset counter
+        if self.state.get("daily_loss_date", today) != today:
+            # New day — reset the counter before judging this P&L, otherwise a
+            # winning first trade of the day leaves yesterday's loss standing
+            # and the next loss halts entries early.
             self.state["daily_loss_date"] = today
             self.state["daily_realized_loss"] = 0.0
             self.state["daily_loss_halted"] = False
+        if pnl >= 0:
+            return
         daily_loss = float(self.state.get("daily_realized_loss", 0.0) or 0.0)
         daily_loss = round(daily_loss + abs(pnl), 4)
         self.state["daily_realized_loss"] = daily_loss
@@ -306,12 +307,20 @@ class PolyUSPaperTrader:
         with open(self.ledger_file, "a") as f:
             f.write(json.dumps(record) + "\n")
 
-    def _held_position_qty(self, slug: str) -> float:
-        """Best-effort held contract qty for a slug from the portfolio endpoint."""
+    def _held_position_qty(self, slug: str):
+        """Held contract qty for a slug, or None when the venue cannot answer.
+
+        None is distinct from 0.0 on purpose: reconcile treats "not held" as
+        "order cancelled", so a venue failure must not look like zero held or
+        a live order's reserved cash is released while the position exists.
+        Rows with no recognisable slug are skipped — they are not evidence
+        about this market.
+        """
         try:
             res = polymarket_us_client.get_portfolio_positions() or {}
-        except Exception:
-            return 0.0
+        except Exception as e:
+            log.warning("Live reconcile: get_portfolio_positions failed: %s", e)
+            return None
         rows = []
         if isinstance(res, list):
             rows = res
@@ -326,7 +335,9 @@ class PolyUSPaperTrader:
             if not isinstance(r, dict):
                 continue
             r_slug = r.get("marketSlug") or r.get("slug") or r.get("market")
-            if r_slug and r_slug != slug:
+            if not r_slug:
+                continue  # row without a slug says nothing about this market
+            if r_slug != slug:
                 continue
             try:
                 total += float(r.get("qty") or r.get("quantity") or 0)
@@ -376,6 +387,8 @@ class PolyUSPaperTrader:
                 continue
             # Order resolved: filled (if still held) or cancelled by venue/expiry.
             held = self._held_position_qty(o.get("slug", ""))
+            if held is None:
+                continue  # venue didn't answer — leave the order resting, retry next cycle
             filled_qty = int(min(float(o.get("qty", 0) or 0), held)) if held > 0 else 0
             if filled_qty > 0 and not any(p.get("order_id") == oid for p in self.state.get("positions") or []):
                 fill_price = float(o.get("price") or 0.0)
@@ -1423,6 +1436,9 @@ def main():
             return
 
         cycle_failures = 0
+        # Type=notify unit: init (state, lock, signals) is done; systemd may
+        # now consider the service started and enforce WatchdogSec.
+        systemd_notify("READY=1")
         while not _stop_requested:
             try:
                 trader.cycle()

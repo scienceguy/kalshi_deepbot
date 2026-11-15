@@ -391,15 +391,17 @@ def place_maker_order(slug: str, side: str, price_dollars: float,
 
 
 def get_open_orders() -> list:
-    """List open Polymarket US orders."""
+    """List open Polymarket US orders.
+
+    Raises on venue/API failure. An empty list must mean "the venue reported
+    zero open orders" — callers (reconcile) treat an absent order as
+    cancelled, so a swallowed error here would release reserved cash for an
+    order that may still be live.
+    """
     _enforce_rate_limit()
     client = _get_authenticated_client()
-    try:
-        resp = client.orders.list()
-        return resp.get("orders", []) or []
-    except Exception as e:
-        log.warning("Poly get_open_orders failed: %s", e)
-        return []
+    resp = client.orders.list()
+    return resp.get("orders", []) or []
 
 
 def cancel_order(order_id: str, market_slug: str = "") -> bool:
@@ -411,10 +413,14 @@ def cancel_order(order_id: str, market_slug: str = "") -> bool:
     _enforce_rate_limit()
     client = _get_authenticated_client()
     if not market_slug:
-        for o in get_open_orders():
-            if o.get("id") == order_id:
-                market_slug = o.get("marketSlug", "")
-                break
+        try:
+            for o in get_open_orders():
+                if o.get("id") == order_id:
+                    market_slug = o.get("marketSlug", "")
+                    break
+        except Exception as e:
+            log.warning("Poly cancel_order %s failed: could not list open orders: %s", order_id, e)
+            return False
     if not market_slug:
         log.warning("Poly cancel_order %s failed: market_slug required and not found in open orders", order_id)
         return False

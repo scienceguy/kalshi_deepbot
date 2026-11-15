@@ -600,6 +600,52 @@ def test_main_refuses_live_without_confirm_env(monkeypatch):
     assert exc.value.code != 0
 
 
+def test_live_reconcile_bails_when_open_orders_fail(temp_trader):
+    """A failed open-order listing must not look like 'every order cancelled':
+    the resting order and its reserved cash stay untouched."""
+    temp_trader.live_mode = True
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+    opp = {"slug": "venue-down-1", "question": "Q", "side": "yes", "price": 0.95}
+    with patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-DOWN-1"}):
+        assert temp_trader.execute_paper_trade(opp) is True
+    reserved = temp_trader.state["resting_orders"][0]["cost"]
+    with patch("polymarket_us_client.get_open_orders",
+               side_effect=RuntimeError("timeout")):
+        assert temp_trader.reconcile_live_orders() is False
+    assert temp_trader.state["cash"] == round(35.0 - reserved, 4)
+    assert len(temp_trader.state["resting_orders"]) == 1
+    assert temp_trader.state["resting_orders"][0]["state"] == "resting"
+
+
+def test_held_position_qty_distinguishes_failure_and_ignores_unknown_slug(temp_trader):
+    """None means 'venue did not answer'; slugless rows are not evidence for
+    this market and must not be counted as held."""
+    with patch("polymarket_us_client.get_portfolio_positions",
+               side_effect=RuntimeError("boom")):
+        assert temp_trader._held_position_qty("sl-1") is None
+    with patch("polymarket_us_client.get_portfolio_positions",
+               return_value={"positions": [{"qty": 7}, {"marketSlug": "sl-1", "qty": 2}]}):
+        assert temp_trader._held_position_qty("sl-1") == 2
+
+
+def test_daily_realized_loss_day_rollover_precedes_win_short_circuit(temp_trader):
+    """The first event of a new UTC day resets yesterday's loss even when that
+    event is a win, so the next loss cannot halt entries early."""
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    temp_trader.state["daily_loss_date"] = yesterday
+    temp_trader.state["daily_realized_loss"] = 6.0
+    temp_trader.state["daily_loss_halted"] = True
+    temp_trader._track_daily_realized(0.5)  # a win, first event of the day
+    assert temp_trader.state["daily_realized_loss"] == 0.0
+    assert temp_trader.state["daily_loss_halted"] is False
+    temp_trader._track_daily_realized(-4.0)
+    assert temp_trader.state["daily_realized_loss"] == 4.0
+    assert temp_trader.state["daily_loss_halted"] is False
+
+
 def test_daily_realized_loss_limit_halts_entries(temp_trader):
     """A realized loss crossing POLY_DAILY_LOSS_LIMIT_DOLLARS halts new entries
     until the next UTC day."""

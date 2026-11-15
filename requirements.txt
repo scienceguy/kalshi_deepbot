@@ -1,21 +1,27 @@
-requests==2.31.0
-cryptography==41.0.0
-pandas==2.2.0
-pyarrow==14.0.1
-
-# Required by crossvenue.py and ladder_strategy.py (CDF interpolation).
+# Runtime — imported by the trading loop and the modules it loads.
+requests>=2.31.0
+cryptography>=41.0.0
 numpy>=1.24
+pandas>=2.1
+pyarrow>=14.0.1
+polymarket-us>=2.4.1        # polymarket_us_client.py (US venue SDK)
+python-dateutil>=2.9        # backtest_real.py
+polars>=1.0                 # scripts/ dataset loaders (HF parquet)
+huggingface_hub>=0.20       # hf_backtest.py, dataset loaders
+scipy>=1.11                 # scripts/hf_fairvalue.py
 
-# Optional - only needed for --ml-model / ml_model.py / train_xgboost.py.
-# The trading loop imports it lazily and runs without it.
+# Optional — ml_model.py / train_xgboost.py detect these at import and the
+# trading loop runs without them (the ML gate is opt-in via --ml-model).
 # torch
+# xgboost
 
-# Required by hf_backtest.py (Hugging Face dataset loader).
-huggingface_hub>=0.20
+# Optional — binance_feed.stream_trades (live WS streaming). The trading loop
+# uses the REST path and does not need this.
+# websockets>=12
 
-# Optional — only needed for kalshi_price_data_client.py
+# Optional — legacy/kalshi_price_data_client.py only.
 # kalshi-price-data
 
-# Optional — only needed for binance_feed.stream_trades (live streaming).
-# The trading loop uses the REST path and does not need this.
-# websockets>=12
+# Test + pre-commit gates (scripts/verify_*.py). Not needed to run the bot.
+pytest>=7.4
+pyflakes>=3.1
