@@ -364,6 +364,16 @@ GATES_STALE_OK_SECONDS = _env_int("GATES_STALE_OK_SECONDS", 300)
 # a crash. 30s keeps the local→online gap small without hammering Supabase.
 LOCAL_DB_SYNC_INTERVAL = _env_float("LOCAL_DB_SYNC_INTERVAL", 30.0)
 
+# Sync circuit breaker: opens after N consecutive Supabase sync failures so
+# the background thread stops hammering a dead Supabase. Cooldown seconds
+# before a half-open probe is allowed. D2 hardening.
+LOCAL_DB_SYNC_BREAKER_MAX_FAILURES = _env_int("LOCAL_DB_SYNC_BREAKER_MAX_FAILURES", 5)
+LOCAL_DB_SYNC_BREAKER_COOLDOWN_SECONDS = _env_float("LOCAL_DB_SYNC_BREAKER_COOLDOWN_SECONDS", 300.0)
+
+# Per-row sync retry: max attempts before a row is marked dead (skipped by
+# future sync cycles) to prevent permanently failed rows from blocking sync.
+LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS = _env_int("LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS", 10)
+
 # Per-host bot_state namespace. Two dry-run traders (a VPS one and a local
 # boot-started one) write the SAME Supabase bot_state keys, so `balance` and
 # `session_pnl` flip-flopped between them (last-writer-wins) and the audit trail
