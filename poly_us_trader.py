@@ -213,6 +213,7 @@ class PolyUSPaperTrader:
             "ruin_halted": False,
             "milestones_reached": [float(initial_cash)],
             "window_spent": 0.0,
+            "cycles": 0,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         # A reset starts a new bankroll epoch; pre-epoch P&L is recomputed from
@@ -342,6 +343,7 @@ class PolyUSPaperTrader:
             "settlements_count": 0,
             "settled_realized_pnl": 0.0,
             "ledger_realized_pnl": 0.0,
+            "cycles": 0,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         if self.state_file.exists():
@@ -351,6 +353,9 @@ class PolyUSPaperTrader:
                     # Older state files predate the lifetime stats; default them.
                     for k, v in fresh.items():
                         data.setdefault(k, v)
+                    # Normalise stale nulls left by older code paths (e.g. cycles stored as None).
+                    if data.get("cycles") is None:
+                        data["cycles"] = 0
                     self._reconcile_ledger(data)
                     # Persist the epoch baseline: without this a restart before
                     # the first cycle's save re-baselines the epoch timestamp.
