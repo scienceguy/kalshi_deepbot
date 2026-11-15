@@ -346,11 +346,11 @@ def preview_order(slug: str, side: str, price_dollars: float,
 
 
 def place_maker_order(slug: str, side: str, price_dollars: float,
-                      contracts: int) -> dict | None:
+                      contracts: int, preview: bool = True) -> dict | None:
     """Place a fee-free maker limit order on Polymarket US.
 
     Uses ``participateDontInitiate=True`` so the order provides liquidity and
-    pays no taker fee. Intended for favourite-maker entries at 75-99c.
+    pays no taker fee. Intended for favourite-maker entries at 92-99c.
 
     Args:
         slug: Polymarket US market slug (e.g. ``cpc-btc-updown-15m-...``).
@@ -363,7 +363,7 @@ def place_maker_order(slug: str, side: str, price_dollars: float,
         should decide whether to actually create; this function always attempts
         the create after a successful preview.
     """
-    if preview_order(slug, side, price_dollars, contracts) is None:
+    if preview and preview_order(slug, side, price_dollars, contracts) is None:
         return None
 
     _enforce_rate_limit()

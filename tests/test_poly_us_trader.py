@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 
 import json
 import os
+import sys
 import pytest
 
 # poly_us_trader imports polymarket_us_client, which imports the polymarket_us
@@ -524,8 +525,95 @@ def test_live_mode_places_real_order(temp_trader):
     with patch("polymarket_us_client.place_maker_order", return_value={"id": "ORDER123"}) as mock_place:
         ok = temp_trader.execute_paper_trade(opp)
         assert ok is True
-        mock_place.assert_called_once_with("test-live-slug", "no", 0.99, 1)
-        assert temp_trader.state["positions"][-1]["order_id"] == "ORDER123"
+        mock_place.assert_called_once_with("test-live-slug", "no", 0.99, 1, preview=False)
+        # Live orders sit in a `resting` record with cash reserved until confirmed fill (R3)
+        assert temp_trader.state["resting_orders"][-1]["order_id"] == "ORDER123"
+        assert temp_trader.state["resting_orders"][-1]["state"] == "resting"
+        assert temp_trader.state["positions"] == []
+
+
+# ── R3: live resting-order reconcile + confirm gate ──────────────────────────
+
+def test_live_resting_order_cancelled_after_ttl_releases_cash(temp_trader):
+    """An order that never fills is cancelled after the TTL and the reservation
+    is released; cash and positions end unchanged."""
+    temp_trader.live_mode = True
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+    opp = {"slug": "ttl-test", "question": "Q", "side": "yes", "price": 0.95}
+    with patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-TTL-1"}):
+        assert temp_trader.execute_paper_trade(opp) is True
+    assert temp_trader.state["resting_orders"] and not temp_trader.state["positions"]
+    reserved = temp_trader.state["resting_orders"][0]["cost"]
+    cash_after_place = temp_trader.state["cash"]
+    assert cash_after_place == round(35.0 - reserved, 4)
+    # Force the order to look stale (placed well past the TTL).
+    temp_trader.state["resting_orders"][0]["placed_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=910)).isoformat()
+    with patch("polymarket_us_client.get_open_orders",
+               return_value=[{"id": "OID-TTL-1", "marketSlug": "ttl-test"}]), \
+         patch("polymarket_us_client.cancel_order", return_value=True) as mock_cancel, \
+         patch("polymarket_us_client.get_portfolio_positions", return_value={"positions": []}):
+        assert temp_trader.reconcile_live_orders() is True
+    assert mock_cancel.called
+    assert temp_trader.state["cash"] == pytest.approx(35.0)
+    assert temp_trader.state["positions"] == []
+    assert temp_trader.state["resting_orders"] == []
+
+
+def test_live_partial_fill_books_filled_qty_only(temp_trader):
+    """Only the venue-confirmed filled quantity is booked; the unfilled
+    reservation is released."""
+    temp_trader.live_mode = True
+    temp_trader.state["cash"] = 100.0
+    temp_trader.state["window_budget"] = 3.0
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+    opp = {"slug": "partial-fill-1", "question": "Q", "side": "no", "price": 0.95}
+    with patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-PART-1"}):
+        assert temp_trader.execute_paper_trade(opp) is True
+    reserved = temp_trader.state["resting_orders"][0]["cost"]
+    # Venue resolved the order, but only 1 contract is actually held.
+    with patch("polymarket_us_client.get_open_orders", return_value=[]), \
+         patch("polymarket_us_client.get_portfolio_positions",
+               return_value={"positions": [{"marketSlug": "partial-fill-1", "qty": 1}]}):
+        assert temp_trader.reconcile_live_orders() is True
+    pos = [p for p in temp_trader.state["positions"] if p["order_id"] == "OID-PART-1"]
+    assert pos and pos[0]["qty"] == 1
+    fill_price = pos[0]["price"]
+    assert temp_trader.state["cash"] == pytest.approx(100.0 - pos[0]["cost"])
+    assert temp_trader.state["resting_orders"] == []
+    # Unfilled part of the reservation was released back into available cash.
+    assert temp_trader.state["cash"] == round(100.0 - reserved + (reserved - pos[0]["cost"]), 4)
+
+
+def test_main_refuses_live_without_confirm_env(monkeypatch):
+    """--live without POLY_CONFIRM_LIVE=true exits non-zero (R3)."""
+    import sys as _sys
+    import poly_us_trader
+    monkeypatch.setattr(config, "POLY_CONFIRM_LIVE", False)
+    monkeypatch.setattr(_sys, "argv", ["poly_us_trader.py", "--live"])
+    with pytest.raises(SystemExit) as exc:
+        poly_us_trader.main()
+    assert exc.value.code != 0
+
+
+def test_daily_realized_loss_limit_halts_entries(temp_trader):
+    """A realized loss crossing POLY_DAILY_LOSS_LIMIT_DOLLARS halts new entries
+    until the next UTC day."""
+    temp_trader.state["daily_loss_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    temp_trader.state["daily_realized_loss"] = 4.0
+    temp_trader._track_daily_realized(-1.5)  # crosses the 5.0 limit
+    assert temp_trader._daily_loss_halted() is True
+    # A win does not re-open entries; only the day rollover does.
+    temp_trader._track_daily_realized(1.0)
+    assert temp_trader._daily_loss_halted() is True
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
+    temp_trader.state["daily_loss_date"] = tomorrow
+    assert temp_trader._daily_loss_halted() is False
+    assert temp_trader.state["daily_realized_loss"] == 0.0
 
 
 def test_preview_order_always_calls_api_even_without_auth_client(temp_trader):

@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import os
+import signal
 import sys
 import time
 from datetime import datetime, timezone
@@ -47,6 +48,16 @@ POLY_US_LOG_FILE = DATA_DIR / "poly_us_dry.log"
 LOCK_FILE = Path(__file__).resolve().parent / ".lock_poly"
 
 log = logging.getLogger("poly_us_trader")
+
+# R17: SIGTERM/SIGINT set this flag; the main loop exits cleanly after the
+# current cycle instead of dying mid-write (state/ledger stay consistent).
+_stop_requested = False
+
+
+def _request_stop(signum, frame):
+    global _stop_requested
+    _stop_requested = True
+
 
 
 def market_end_dt(market: dict):
@@ -207,6 +218,43 @@ class PolyUSPaperTrader:
         log.info("Reset Polymarket US paper state with initial bankroll $%.2f", initial_cash)
         return state
 
+    def _daily_loss_key(self) -> str:
+        """Return today's date key (YYYY-MM-DD) for daily loss tracking."""
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def _track_daily_realized(self, pnl: float) -> None:
+        """Update daily realized loss and set halt if limit exceeded."""
+        if pnl >= 0:
+            return
+        today = self._daily_loss_key()
+        stored_date = self.state.get("daily_loss_date", today)
+        if stored_date != today:
+            # New day — reset counter
+            self.state["daily_loss_date"] = today
+            self.state["daily_realized_loss"] = 0.0
+            self.state["daily_loss_halted"] = False
+        daily_loss = float(self.state.get("daily_realized_loss", 0.0) or 0.0)
+        daily_loss = round(daily_loss + abs(pnl), 4)
+        self.state["daily_realized_loss"] = daily_loss
+        limit = float(getattr(config, "POLY_DAILY_LOSS_LIMIT_DOLLARS", 5.0))
+        if not self.state.get("daily_loss_halted") and daily_loss >= limit:
+            self.state["daily_loss_halted"] = True
+            log.warning("Daily realized loss $%.2f >= limit $%.2f — halting new entries (auto-clears next day)",
+                        daily_loss, limit)
+
+    def _daily_loss_halted(self) -> bool:
+        """True when today's realized loss already hit the daily limit.
+
+        Also performs the day rollover so the halt clears automatically at the
+        next UTC day even if no settlement event fires.
+        """
+        today = self._daily_loss_key()
+        if self.state.get("daily_loss_date", today) != today:
+            self.state["daily_loss_date"] = today
+            self.state["daily_realized_loss"] = 0.0
+            self.state["daily_loss_halted"] = False
+        return bool(self.state.get("daily_loss_halted", False))
+
     def _load_state(self, initial_cash: float) -> dict:
         fresh = {
             "start_balance": initial_cash,
@@ -257,6 +305,109 @@ class PolyUSPaperTrader:
         self.ledger_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.ledger_file, "a") as f:
             f.write(json.dumps(record) + "\n")
+
+    def _held_position_qty(self, slug: str) -> float:
+        """Best-effort held contract qty for a slug from the portfolio endpoint."""
+        try:
+            res = polymarket_us_client.get_portfolio_positions() or {}
+        except Exception:
+            return 0.0
+        rows = []
+        if isinstance(res, list):
+            rows = res
+        elif isinstance(res, dict):
+            for k in ("positions", "data", "results"):
+                v = res.get(k)
+                if isinstance(v, list):
+                    rows = v
+                    break
+        total = 0.0
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            r_slug = r.get("marketSlug") or r.get("slug") or r.get("market")
+            if r_slug and r_slug != slug:
+                continue
+            try:
+                total += float(r.get("qty") or r.get("quantity") or 0)
+            except (TypeError, ValueError):
+                pass
+        return total
+
+    def reconcile_live_orders(self) -> bool:
+        """R3: reconcile live resting orders against venue fills.
+
+        - Order gone from the open list and no longer held -> cancelled, release
+          the reserved cash back into available cash.
+        - Order gone and still held -> fill confirmed (partial): book the filled
+          quantity's position and release the reservation for the unfilled part.
+        - Open order older than POLY_RESTING_ORDER_TTL_SECONDS -> cancel and
+          release the reservation.
+        """
+        if not self.live_mode:
+            return False
+        try:
+            open_orders = polymarket_us_client.get_open_orders() or []
+        except Exception as e:
+            log.warning("Live reconcile: get_open_orders failed: %s", e)
+            return False
+        open_ids = {o.get("id") for o in open_orders if o.get("id")}
+        now = datetime.now(timezone.utc)
+        ttl_seconds = float(getattr(config, "POLY_RESTING_ORDER_TTL_SECONDS", 900))
+        cancelled_any = False
+        for o in list(self.state.get("resting_orders") or []):
+            if o.get("state") != "resting":
+                continue
+            oid = o.get("order_id")
+            if not oid:
+                continue
+            placed = datetime.fromisoformat(o.get("placed_at") or now.isoformat())
+            if (oid in open_ids and o.get("window_ts") == self.state.get("current_window_ts")
+                    and (now - placed).total_seconds() < ttl_seconds):
+                continue  # still resting, same window, not stale
+            if oid in open_ids:
+                cancelled = polymarket_us_client.cancel_order(oid, o.get("slug", ""))
+                if cancelled:
+                    o["state"] = "cancelled"
+                    release_cost = float(o.get("cost", 0.0) or 0.0)
+                    self.state["cash"] = round(self.state["cash"] + release_cost, 4)
+                    self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - release_cost, 4))
+                    log.info("Live order %s cancelled (TTL) on %s — reserved cash released", oid, o.get("slug", ""))
+                continue
+            # Order resolved: filled (if still held) or cancelled by venue/expiry.
+            held = self._held_position_qty(o.get("slug", ""))
+            filled_qty = int(min(float(o.get("qty", 0) or 0), held)) if held > 0 else 0
+            if filled_qty > 0 and not any(p.get("order_id") == oid for p in self.state.get("positions") or []):
+                fill_price = float(o.get("price") or 0.0)
+                fill_cost = round(filled_qty * fill_price, 4)
+                self.state["cash"] = round(self.state["cash"] + (float(o.get("cost", 0.0) or 0.0) - fill_cost), 4)
+                self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - (float(o.get("cost", 0.0) or 0.0) - fill_cost), 4))
+                self.state["positions"].append({
+                    "slug": o.get("slug", ""),
+                    "question": o.get("question", ""),
+                    "side": o.get("side", ""),
+                    "price": fill_price,
+                    "fill_price": fill_price,
+                    "displayed_price": fill_price,
+                    "fee": float(o.get("fee", 0.0) or 0.0),
+                    "source": o.get("source", ""),
+                    "qty": filled_qty,
+                    "cost": fill_cost,
+                    "order_id": oid,
+                    "category": o.get("category", ""),
+                    "opened_at": o.get("placed_at"),
+                })
+            if filled_qty > 0:
+                o["state"] = "filled"
+            else:
+                o["state"] = "cancelled"
+                release_cost = float(o.get("cost", 0.0) or 0.0)
+                self.state["cash"] = round(self.state["cash"] + release_cost, 4)
+                self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - release_cost, 4))
+                cancelled_any = True
+                log.info("Live order %s resolved with no held position -> cancelled, reserved cash released", oid)
+        self.state["resting_orders"] = [o for o in self.state.get("resting_orders") or [] if o.get("state") == "resting"]
+        return True
 
     def scan_markets(self) -> list:
         """Scan open active markets across crypto and active categories."""
@@ -426,12 +577,13 @@ class PolyUSPaperTrader:
             outcome = 1 if settlement >= 0.5 else 0  # 1 = Yes won
             try:
                 self.cal_monitor.reconcile_settlement(slug, outcome)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("Settlement calibration reconcile failed for %s: %s", slug, e)
             self.state["cash"] = round(self.state["cash"] + total_payout, 4)
             self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
             self.state["lifetime_realized_pnl"] = round(
                 float(self.state.get("lifetime_realized_pnl", 0.0) or 0.0) + pnl, 4)
+            self._track_daily_realized(pnl)  # <-- daily loss tracking
             # Move this position's unrealized into realized so total_pnl stays consistent.
             pos_unreal = float(pos.get("unrealized_pnl", 0.0) or 0.0)
             self.state["unrealized_pnl"] = round(self.state.get("unrealized_pnl", 0.0) - pos_unreal, 4)
@@ -709,6 +861,11 @@ class PolyUSPaperTrader:
         if self.state.get("ruin_halted"):
             log.info("Ruin halt active — refusing new entries (manual --reset required)")
             return False
+        # Daily realized loss halt (R3): refuse new entries once today's realized
+        # P&L reaches POLY_DAILY_LOSS_LIMIT_DOLLARS.
+        if self._daily_loss_halted():
+            log.info("Daily realized loss limit reached — refusing new entries until next day")
+            return False
 
         # Check if already in this market
         if any(p["slug"] == slug for p in self.state["positions"]):
@@ -768,33 +925,61 @@ class PolyUSPaperTrader:
 
         order_id = None
         if getattr(self, "live_mode", False):
-            resp = polymarket_us_client.place_maker_order(slug, side, price, qty)
+            # preview_order above validated the order at fill_price; place at the
+            # same price so the booked resting record matches the venue quote.
+            resp = polymarket_us_client.place_maker_order(slug, side, fill_price, qty,
+                                                          preview=False)
             if not resp or not resp.get("id"):
-                log.warning("Live order placement failed for %s %s @ %.2f", slug, side, price)
+                log.warning("Live order placement failed for %s %s @ %.2f", slug, side, fill_price)
                 return False
             order_id = resp.get("id")
             log.info("Live maker order placed: %s (id=%s)", slug, order_id)
 
-        # Execute simulated or live fill
-        self.state["cash"] = round(self.state["cash"] - cost, 4)
-        self.state["window_spent"] = round(window_spent + cost, 4)
-        self.state["trades_count"] += 1
-        pos = {
-            "slug": slug,
-            "question": opp["question"],
-            "side": side,
-            "price": fill_price,
-            "fill_price": fill_price,
-            "displayed_price": price,
-            "fee": entry_fee,
-            "source": opp.get("source", ""),
-            "qty": qty,
-            "cost": cost,
-            "order_id": order_id,
-            "category": opp.get("category", ""),
-            "opened_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self.state["positions"].append(pos)
+        if getattr(self, "live_mode", False):
+            # Live mode: book the position only after a confirmed fill. The order
+            # sits in a `resting` record with cash reserved until reconciliation
+            # confirms the fill (R3).
+            self.state["cash"] = round(self.state["cash"] - cost, 4)
+            self.state["window_spent"] = round(window_spent + cost, 4)
+            self.state["trades_count"] += 1
+            self.state.setdefault("resting_orders", []).append({
+                "order_id": order_id,
+                "slug": slug,
+                "question": opp["question"],
+                "side": side,
+                "price": fill_price,
+                "qty": qty,
+                "cost": cost,
+                "fee": entry_fee,
+                "source": opp.get("source", ""),
+                "category": opp.get("category", ""),
+                "state": "resting",
+                "placed_at": datetime.now(timezone.utc).isoformat(),
+                "window_ts": self.state.get("current_window_ts"),
+            })
+            log.info("Live order resting: %s (id=%s) — cash reserved, position booked on confirmed fill",
+                     slug, order_id)
+        else:
+            # Paper mode: fill modelled at BBO (R5), position booked immediately.
+            self.state["cash"] = round(self.state["cash"] - cost, 4)
+            self.state["window_spent"] = round(window_spent + cost, 4)
+            self.state["trades_count"] += 1
+            pos = {
+                "slug": slug,
+                "question": opp["question"],
+                "side": side,
+                "price": fill_price,
+                "fill_price": fill_price,
+                "displayed_price": price,
+                "fee": entry_fee,
+                "source": opp.get("source", ""),
+                "qty": qty,
+                "cost": cost,
+                "order_id": order_id,
+                "category": opp.get("category", ""),
+                "opened_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.state["positions"].append(pos)
         # Task 2: record entry for rolling Brier calibration (model p, z, price band).
         try:
             minutes_left = opp.get("hours_left")
@@ -877,6 +1062,11 @@ class PolyUSPaperTrader:
 
         self.check_settlements(market_map)
 
+        # Live mode: reconcile resting orders against venue fills (R3) — book
+        # only confirmed filled quantity, cancel stale ones, release reserved cash.
+        if self.live_mode:
+            self.reconcile_live_orders()
+
         # In paper mode, rotate out any stale long-dated positions (>24h) to free cash for active intraday compounding
         now = datetime.now(timezone.utc)
         active_positions = []
@@ -908,6 +1098,7 @@ class PolyUSPaperTrader:
                 self.state["realized_pnl"] = round(self.state["realized_pnl"] + pnl, 4)
                 self.state["lifetime_realized_pnl"] = round(
                     float(self.state.get("lifetime_realized_pnl", 0.0) or 0.0) + pnl, 4)
+                self._track_daily_realized(pnl)  # <-- daily loss tracking
                 log.info(
                     "🔄 ROTATED long-dated position %s (>24h) | Exit=$%.4f Fee=$%.4f Payout=$%.2f PnL=$%+.2f -> Freed cash=$%.2f",
                     slug, exit_price, exit_fee, payout, pnl, self.state["cash"]
@@ -1173,6 +1364,12 @@ def main():
     parser.add_argument("--live", action="store_true", help="Enable live trading mode (places real maker orders via Polymarket US API)")
     args = parser.parse_args()
 
+    # R3: refuse --live unless POLY_CONFIRM_LIVE=true (exit non-zero).
+    if args.live and not getattr(config, "POLY_CONFIRM_LIVE", False):
+        log.error("Polymarket US paper mode --live requires POLY_CONFIRM_LIVE=true; refusing.")
+        parser.print_help()
+        sys.exit(2)
+
     init_cash = args.reset if args.reset is not None else 35.0
     trader = PolyUSPaperTrader(initial_cash=init_cash, reset=args.reset is not None, live_mode=args.live)
 
@@ -1213,21 +1410,38 @@ def main():
         return
 
     lock_fd = acquire_instance_lock(LOCK_FILE)
+    # R17: SIGTERM/SIGINT -> clean shutdown after the current cycle finishes.
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _request_stop)
+        except (ValueError, OSError):
+            pass  # not main thread / unsupported platform: KeyboardInterrupt still works
     try:
         log.info("Starting Polymarket US Paper Trader with $%.2f Bankroll", trader.state["start_balance"])
         if args.once:
             trader.cycle()
             return
 
-        while True:
+        cycle_failures = 0
+        while not _stop_requested:
             try:
                 trader.cycle()
+                cycle_failures = 0
             except KeyboardInterrupt:
                 log.info("Polymarket US paper trader stopped by user.")
                 break
             except Exception as e:
-                log.error("Cycle error: %s", e)
+                cycle_failures += 1
+                # R17: back off exponentially on repeated failures so a venue
+                # outage does not hammer the API at full cadence.
+                backoff = min(args.interval * (2 ** (cycle_failures - 1)), 300)
+                log.error("Cycle error (%d consecutive, backing off %.0fs): %s",
+                          cycle_failures, backoff, e)
+                time.sleep(backoff)
+                continue
             time.sleep(args.interval)
+        if _stop_requested:
+            log.info("Stop signal received — shutting down cleanly.")
     finally:
         if lock_fd is not None:
             try:

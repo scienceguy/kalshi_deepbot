@@ -153,6 +153,13 @@ PM_ALLOW_UNMODELLED = _env_bool("PM_ALLOW_UNMODELLED", False)
 # Evaluated on realized/drawdown basis, never on instantaneous MTM.
 POLY_RUIN_REALIZED_LOSS_DOLLARS = _env_float("POLY_RUIN_REALIZED_LOSS_DOLLARS", 10.0)
 POLY_MAX_DRAWDOWN_DOLLARS = _env_float("POLY_MAX_DRAWDOWN_DOLLARS", 15.0)
+# Daily realized loss limit (R3): refuse new entries once today's realized P&L
+# reaches this negative amount.
+POLY_DAILY_LOSS_LIMIT_DOLLARS = _env_float("POLY_DAILY_LOSS_LIMIT_DOLLARS", 5.0)
+# Confirm that live trading mode (--live) requires explicit consent via this flag.
+POLY_CONFIRM_LIVE = _env_bool("POLY_CONFIRM_LIVE", False)
+# Resting order TTL (seconds) before auto-cancel (R3).
+POLY_RESTING_ORDER_TTL_SECONDS = _env_int("POLY_RESTING_ORDER_TTL_SECONDS", 900)
 
 # ═════════════════════════════════════════════════════════════════════
 # MARKET TARGETING (from kalshi_live_bot — expanded series list)
