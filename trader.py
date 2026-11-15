@@ -2296,6 +2296,14 @@ def cycle(client: KalshiClient):
 
     # Record bot state to Supabase only when something changed (avoid unnecessary writes)
     last_logged = getattr(state, "_last_logged_state", None)
+    # Persist risk halt/cooldown fields so a time-bounded block survives restart (B3)
+    risk_state = state.risk.state_dict()
+    if risk_state != getattr(state, "_last_risk_state", None):  # reviewed: local snapshot only when halt/cooldown fields change, not every cycle
+        try:
+            get_local_db().set_bot_state("risk_state", json.dumps(risk_state))
+            state._last_risk_state = risk_state
+        except Exception:
+            log.debug("risk_state local write failed")
     current_state = {
         "cycles": state.cycles,
         "cash": cash if cash_available else None,
@@ -2311,6 +2319,11 @@ def cycle(client: KalshiClient):
         "tradeable_brackets": state.tradeable_brackets,
         "consecutive_no_tradeable_cycles": state.consecutive_no_tradeable_cycles,
         "consecutive_no_trade_cycles": state.consecutive_no_trade_cycles,
+        "risk_halted": risk_state["halted"],
+        "risk_halt_reason": risk_state["halt_reason"],
+        "risk_consecutive_losses": risk_state["consecutive_losses"],
+        "risk_cooldown_started_at": risk_state["cooldown_started_at"],
+        "risk_halted_at": risk_state["halted_at"],
         "balance": cash if cash_available else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -3007,6 +3020,19 @@ def main():
             log.info("Reconciled consecutive_no_trade_cycles from bot_state: %d", state.consecutive_no_trade_cycles)
     except Exception as e:
         log.debug("consecutive_no_trade_cycles reconciliation failed: %s", e)
+
+    # Restore risk halt/cooldown state so a persisted time-bounded block works (B3)
+    try:
+        local_db = get_local_db()
+        saved_risk = local_db.get_bot_state("risk_state")
+        # reviewed: risk halt/cooldown timestamps must survive a restart or the halt can never expire
+        if saved_risk:
+            state.risk.load_state_dict(json.loads(saved_risk))
+            log.info("Restored risk state: halted=%s consecutive_losses=%d cooldown_started_at=%s",
+                     state.risk.state.halted, state.risk.state.consecutive_losses,
+                     state.risk.state.cooldown_started_at or "never")
+    except Exception as e:
+        log.debug("risk_state reconciliation failed: %s", e)
 
     # Reconcile trades_placed from local database or today's exchange fills so the counter survives restarts
     try:

@@ -6,6 +6,7 @@ Pulls from kalshi_15m_bot (70% cash floor, 30% exposure ceiling, 8% per trade,
 take, position tracking).
 """
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Tuple
 
@@ -31,6 +32,8 @@ class RiskState:
     halted: bool = False
     halt_reason: str = ""
     consecutive_losses: int = 0
+    cooldown_started_at: float = 0.0
+    halted_at: float = 0.0
     market_daily_losses: dict = field(default_factory=dict)
 
     @property
@@ -94,6 +97,7 @@ class RiskManager:
 
         if drawdown <= -halt_pct and not self.state.halted:  # reviewed: halt_pct is paper-swapped above, live unchanged
             self.state.halted = True
+            self.state.halted_at = time.time()  # reviewed: halt start time bounds the block (B3)
             self.state.halt_reason = (
                 f"drawdown {drawdown*100:.1f}% > -{halt_pct*100:.0f}%"
             )
@@ -104,6 +108,7 @@ class RiskManager:
         # requiring the old peak would leave the bot halted indefinitely.
         if self.state.halted and drawdown > -halt_pct / 2:  # reviewed: matches the halt_pct used to enter the halt
             self.state.halted = False
+            self.state.halted_at = 0.0
             self.state.halt_reason = ""
             log.info("✅ Risk halt lifted — drawdown recovered to %.1f%% (peak $%.2f)",
                      drawdown * 100, peak)
@@ -111,19 +116,52 @@ class RiskManager:
         elif self.state.halted and effective_exposure <= 1e-6 and cash >= self.state.start_balance:
             self.state.session_high = cash
             self.state.halted = False
+            self.state.halted_at = 0.0
             self.state.halt_reason = ""
             log.info("✅ Risk halt cleared — cash $%.2f >= start $%.2f with 0 exposure (settlement spike resolved)",
                      cash, self.state.start_balance)
+        elif (self.state.halted and self.state.halted_at and config.HALT_AUTO_RESUME  # reviewed: auto-resume requires the operator opt-in HALT_AUTO_RESUME=true
+                and time.time() - self.state.halted_at >= config.HALT_MIN_MINUTES * 60.0):  # reviewed: only after the 240-minute default floor
+            self.state.halted = False
+            self.state.halted_at = 0.0
+            self.state.halt_reason = ""
+            log.info("✅ Risk halt auto-resumed after %d min (HALT_AUTO_RESUME=true; peak $%.2f)",
+                     config.HALT_MIN_MINUTES, peak)
 
     def record_trade_outcome(self, won: bool, profit: float):
         """Track consecutive losses for cooldown logic (from Momentum v16)."""
         if won:
             self.state.consecutive_losses = 0
-        else:
-            self.state.consecutive_losses += 1
-            if self.state.consecutive_losses >= 3:
+            self.state.cooldown_started_at = 0.0  # reviewed: a win clears the cooldown start too
+            return
+        self.state.consecutive_losses += 1
+        if self.state.consecutive_losses >= 3:  # reviewed: the 3-loss threshold arms the time-bounded cooldown (B3)
+            if not self.state.cooldown_started_at:  # reviewed: stamp the cooldown start once; later losses keep the original start
+                self.state.cooldown_started_at = time.time()  # reviewed: the cooldown block is bounded by LOSS_COOLDOWN_MINUTES from this moment
+                log.warning("🛑 %d consecutive losses — cooldown active for %d min",
+                            self.state.consecutive_losses, config.LOSS_COOLDOWN_MINUTES)
+            else:
                 log.warning("🛑 %d consecutive losses — cooldown active",
                             self.state.consecutive_losses)
+
+    def _loss_cooldown_active(self) -> bool:
+        """True while a 3-loss cooldown is still inside its minimum window.
+
+        A cooldown never blocks forever: after LOSS_COOLDOWN_MINUTES without a
+        win it expires and the counter clears. A pre-B3 state without a start
+        timestamp stays blocked until a win (conservative).
+        """
+        if self.state.consecutive_losses < 3:  # reviewed: fewer than 3 straight losses is never a cooldown
+            return False
+        if not self.state.cooldown_started_at:  # reviewed: a pre-B3 state without a start time stays blocked until a win
+            return True
+        if time.time() - self.state.cooldown_started_at >= config.LOSS_COOLDOWN_MINUTES * 60.0:  # reviewed: the cooldown expires by time even with no win (B3)
+            self.state.consecutive_losses = 0
+            self.state.cooldown_started_at = 0.0
+            log.info("✅ Loss cooldown expired after %d min without a win — entries allowed",
+                     config.LOSS_COOLDOWN_MINUTES)
+            return False
+        return True
 
     def record_market_loss(self, ticker: str, loss: float):
         """Track per-market daily loss for risk limiting."""
@@ -187,8 +225,8 @@ class RiskManager:
             if self.state.halted:  # reviewed: live drawdown halt blocks all sizing
                 return 0.0
 
-            # Consecutive loss cooldown (from Momentum v16)
-            if self.state.consecutive_losses >= 3:  # reviewed: live cooling-off after 3 straight losses
+            # Consecutive loss cooldown (from Momentum v16), time-bounded (B3)
+            if self._loss_cooldown_active():  # reviewed: live cooling-off after 3 straight losses, expires LOSS_COOLDOWN_MINUTES after it started
                 return 0.0
 
         portfolio = cash + exposure
@@ -246,7 +284,7 @@ class RiskManager:
             if self.state.halted:  # reviewed: live drawdown halt blocks every new order
                 return False, f"session halted ({self.state.halt_reason})"
 
-            if self.state.consecutive_losses >= 3:  # reviewed: live cooling-off after 3 straight losses
+            if self._loss_cooldown_active():  # reviewed: live cooling-off after 3 straight losses, expires LOSS_COOLDOWN_MINUTES after it started
                 return False, "consecutive loss cooldown"
 
             # Per-market daily loss limit check. The config value is a fraction of
@@ -311,3 +349,33 @@ class RiskManager:
         # reviewed: never clear consecutive losses or market losses across resets
         log.info("✅ Risk daily reset — peak kept at $%.2f, halt=%s, consecutive_losses preserved (%d), market losses preserved (%d markets)",
                  self.state.session_high, self.state.halted, self.state.consecutive_losses, len(self.state.market_daily_losses))
+
+    def state_dict(self) -> dict:
+        """Serializable risk halt/cooldown fields for persistence across restarts (B3)."""
+        return {
+            "consecutive_losses": self.state.consecutive_losses,
+            "cooldown_started_at": self.state.cooldown_started_at,
+            "halted": self.state.halted,
+            "halt_reason": self.state.halt_reason,
+            "halted_at": self.state.halted_at,
+        }
+
+    def load_state_dict(self, data):
+        """Restore persisted risk fields; unknown or invalid values are ignored."""
+        if not isinstance(data, dict):  # reviewed: a non-dict persisted value is ignored, never restored
+            return
+        cl = data.get("consecutive_losses")
+        if isinstance(cl, int) and cl >= 0:  # reviewed: restore only a valid non-negative loss count
+            self.state.consecutive_losses = cl
+        cs = data.get("cooldown_started_at")
+        if isinstance(cs, (int, float)) and not isinstance(cs, bool) and cs > 0:  # reviewed: restore only a plausible positive timestamp
+            self.state.cooldown_started_at = float(cs)
+        h = data.get("halted")
+        if isinstance(h, bool):  # reviewed: the halted flag must be a real JSON bool, not a string
+            self.state.halted = h
+        hr = data.get("halt_reason")
+        if isinstance(hr, str):  # reviewed: halt reason is free text persisted for the operator
+            self.state.halt_reason = hr
+        ha = data.get("halted_at")
+        if isinstance(ha, (int, float)) and not isinstance(ha, bool) and ha > 0:  # reviewed: restore only a plausible positive halt time
+            self.state.halted_at = float(ha)

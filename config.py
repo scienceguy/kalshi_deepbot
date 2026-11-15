@@ -511,6 +511,15 @@ PAPER_EXPOSURE_CEILING_PCT = _env_float("PAPER_EXPOSURE_CEILING_PCT", 0.30)
 PAPER_PER_TRADE_PCT = _env_float("PAPER_PER_TRADE_PCT", 0.12)
 PAPER_MIN_CASH_ABSOLUTE = _env_float("PAPER_MIN_CASH_ABSOLUTE", 0.02)
 DRAWDOWN_HALT_PCT = _env_float("DRAWDOWN_HALT_PCT", 0.08)
+# Time bounds for the consecutive-loss cooldown and the drawdown halt (B3):
+# without them a 3-loss cooldown blocked entries until a win that could never
+# come while blocked, and a drawdown halt could only lift on equity recovery
+# that new entries could not produce. Conservative defaults: 60-minute
+# cooldown; a 240-minute halt floor that still needs an operator resume
+# unless HALT_AUTO_RESUME=true.
+LOSS_COOLDOWN_MINUTES = _env_int("LOSS_COOLDOWN_MINUTES", 60)
+HALT_MIN_MINUTES = _env_int("HALT_MIN_MINUTES", 240)
+HALT_AUTO_RESUME = _env_bool("HALT_AUTO_RESUME", False)
 # Paper-mode guard relaxation (operator directive 2026-11-13: "drop the guards
 # for now so we can better understand the behavior, we can always reset the dry
 # run balance"). When PAPER_GUARDS_ENABLED is false, a DRY_RUN ignores the

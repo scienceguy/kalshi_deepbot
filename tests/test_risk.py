@@ -98,4 +98,89 @@ def test_reset_daily_keeps_the_peak_and_the_halt():
     r.reset_daily()
     assert r.state.session_high == 150.0  # peak carried over
     assert r.state.halted is True         # halt lasts until the drawdown recovers
+
+
+def test_consecutive_loss_cooldown_expires_after_configured_minutes(monkeypatch):
+    """B3: a 3-loss cooldown clears after LOSS_COOLDOWN_MINUTES with no win."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    r = RiskManager()
+    r.initialize(100.0)
+    for _ in range(3):
+        r.record_trade_outcome(False, -1.0)
+    assert r.state.cooldown_started_at == 1000.0
+    allowed, reason = r.check(100.0, 0.0, 1.0, "TESTTICKER")
+    assert allowed is False and "cooldown" in reason
+    clock["t"] += (config.LOSS_COOLDOWN_MINUTES + 1) * 60.0
+    allowed, reason = r.check(100.0, 0.0, 1.0, "TESTTICKER")
+    assert allowed is True
+    assert r.state.consecutive_losses == 0
+
+
+def test_legacy_cooldown_without_timestamp_stays_blocked(monkeypatch):
+    """B3: a pre-B3 state with no start time stays blocked until a win."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    clock["t"] += 10 * 3600.0
+    r = RiskManager()
+    r.state.consecutive_losses = 3
+    r.state.cooldown_started_at = 0.0
+    assert r.max_trade_dollars(100.0, 0.0) == 0.0
+
+
+def test_drawdown_halt_does_not_auto_resume_by_default(monkeypatch):
+    """B3: a drawdown halt needs an operator resume unless HALT_AUTO_RESUME=true."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "HALT_AUTO_RESUME", False)
+    r = RiskManager()
+    r.initialize(100.0)
+    r.update_balance(cash=60.0, exposure=0.0)  # -40% drawdown trips the halt
+    assert r.state.halted is True
+    clock["t"] += (config.HALT_MIN_MINUTES + 1) * 60.0
+    r.update_balance(cash=60.0, exposure=0.0)
+    assert r.state.halted is True
+
+
+def test_drawdown_halt_auto_resumes_with_flag_after_min_minutes(monkeypatch):
+    """B3: HALT_AUTO_RESUME=true lifts the halt after HALT_MIN_MINUTES."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "HALT_AUTO_RESUME", True)
+    r = RiskManager()
+    r.initialize(100.0)
+    r.update_balance(cash=60.0, exposure=0.0)
+    assert r.state.halted is True
+    clock["t"] += (config.HALT_MIN_MINUTES + 1) * 60.0
+    r.update_balance(cash=60.0, exposure=0.0)
+    assert r.state.halted is False
+    assert r.state.halted_at == 0.0
+
+
+def test_risk_state_persists_across_restart(monkeypatch):
+    """B3: halt/cooldown fields survive a save/load round trip."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    r = RiskManager()
+    r.initialize(100.0)
+    for _ in range(3):
+        r.record_trade_outcome(False, -1.0)
+    r.update_balance(cash=60.0, exposure=0.0)
+    saved = r.state_dict()
+    r2 = RiskManager()
+    r2.load_state_dict(saved)
+    assert r2.state.consecutive_losses == 3
+    assert r2.state.halted is True
+    assert r2.state.cooldown_started_at == pytest.approx(1000.0)
+    assert r2.state.halted_at == pytest.approx(1000.0)
     assert r.state.consecutive_losses == 3  # consecutive losses preserved across daily resets
