@@ -982,5 +982,17 @@ def test_startup_reconciles_state_against_ledger(tmp_path):
 
     assert trader.state["ledger_realized_pnl"] == pytest.approx(-0.90)
     assert trader.state["ledger_settlements"] == 2
-    assert trader.state["ledger_realized_gap"] == pytest.approx(0.90)
+    # The gap is the invariant state_realized + pre_epoch - ledger: a fresh
+    # epoch folds the whole prior ledger into pre_epoch, so the gap is zero,
+    # not the -0.90 that used to be reported as an unexplained mismatch.
+    assert trader.state["pre_epoch_realized_pnl"] == pytest.approx(-0.90)
+    assert trader.state["ledger_realized_gap"] == pytest.approx(0.0)
     assert trader.state["settlements_count"] == 2
+
+    # Reloading must not re-baseline: pre_epoch is frozen at first reconcile.
+    with patch("poly_us_trader.STATE_FILE", state_file), \
+         patch("poly_us_trader.LEDGER_FILE", ledger_file):
+        again = PolyUSPaperTrader(initial_cash=35.0)
+    assert again.state["epoch_started_at"] == trader.state["epoch_started_at"]
+    assert again.state["pre_epoch_realized_pnl"] == pytest.approx(-0.90)
+    assert again.state["ledger_realized_gap"] == pytest.approx(0.0)

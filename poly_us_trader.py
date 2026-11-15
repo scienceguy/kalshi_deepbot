@@ -207,6 +207,10 @@ class PolyUSPaperTrader:
             "window_spent": 0.0,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        # A reset starts a new bankroll epoch; pre-epoch P&L is recomputed from
+        # the ledger by _reconcile_ledger().
+        state.pop("epoch_started_at", None)
+        state.pop("pre_epoch_realized_pnl", None)
         self._reconcile_ledger(state)
         self._save_state(state)
         self.state = state
@@ -294,7 +298,16 @@ class PolyUSPaperTrader:
         state["settlements_count"] = max(int(state.get("settlements_count", 0) or 0),
                                          settled_count)
         state_realized = float(state.get("realized_pnl", 0.0) or 0.0)
-        gap = round(state_realized - ledger_realized, 4)
+        # Every bankroll baseline starts somewhere. On the first reconciled run
+        # for this state file the baseline begins now; whatever the ledger
+        # already recorded predates it. Keeping that split means a refilled
+        # bankroll (the old auto-reset) can never read as a break-even curve.
+        if "epoch_started_at" not in state:
+            state["epoch_started_at"] = datetime.now(timezone.utc).isoformat()
+            state["pre_epoch_realized_pnl"] = round(ledger_realized - state_realized, 4)
+        pre_epoch = float(state.get("pre_epoch_realized_pnl", 0.0) or 0.0)
+        # Invariant: pre-epoch P&L + this epoch's realized P&L == the ledger.
+        gap = round(state_realized + pre_epoch - ledger_realized, 4)
         state["ledger_realized_gap"] = gap
         if abs(gap) >= 0.005:
             log.warning(
@@ -331,6 +344,9 @@ class PolyUSPaperTrader:
                     for k, v in fresh.items():
                         data.setdefault(k, v)
                     self._reconcile_ledger(data)
+                    # Persist the epoch baseline: without this a restart before
+                    # the first cycle's save re-baselines the epoch timestamp.
+                    self._save_state(data)
                     return data
                 raise ValueError("state file missing required keys (cash/positions)")
             except Exception as e:
@@ -1477,6 +1493,9 @@ def main():
               f"(settled P&L ${float(state.get('settled_realized_pnl', 0.0) or 0.0):+.2f})")
         print(f"Ledger Reconciliation: ledger realized ${float(state.get('ledger_realized_pnl', 0.0) or 0.0):+.2f} "
               f"vs state ${realized:+.2f} (gap ${float(state.get('ledger_realized_gap', 0.0) or 0.0):+.2f})")
+        if state.get("pre_epoch_realized_pnl"):
+            print(f"Pre-epoch ledger P&L (before this ${state.get('start_balance', 0.0):.2f} baseline "
+                  f"started {state.get('epoch_started_at')}): ${float(state['pre_epoch_realized_pnl']):+.2f}")
         print(f"Milestones Reached: {state.get('milestones_reached', [init_cash])}")
         for p in positions:
             cat = f"[{p['category']}] " if p.get("category") else ""
