@@ -55,6 +55,9 @@ log = logging.getLogger("poly_us_trader")
 _SCAN_PAGE_SIZE = 100
 _SCAN_MAX_PAGES = 10
 
+# A9: run-path lock retries (systemd restart races); --reset uses a single try.
+_LOCK_ATTEMPTS = 5
+
 # R17: SIGTERM/SIGINT set this flag; the main loop exits cleanly after the
 # current cycle instead of dying mid-write (state/ledger stay consistent).
 _stop_requested = False
@@ -1938,6 +1941,68 @@ def acquire_instance_lock(lock_path: Path, attempts: int = 5, retry_delay: float
     return None
 
 
+def _read_state_for_status(state_file: Path, init_cash: float) -> dict:
+    """A9: strictly read-only state load for --status.
+
+    Never constructs clients, never saves state, never quarantines: an
+    unreadable file is reported and left exactly where it is.
+    """
+    if state_file.exists():
+        try:
+            data = json.loads(state_file.read_text())
+            if "cash" in data and "positions" in data:
+                return data
+            raise ValueError("state file missing required keys (cash/positions)")
+        except Exception as e:
+            print(f"state unreadable: {state_file} ({e})")
+    else:
+        print(f"state unreadable: {state_file} (not found)")
+    return {"start_balance": init_cash, "cash": init_cash, "positions": [],
+            "realized_pnl": 0.0, "unrealized_pnl": 0.0}
+
+
+def _print_status(state: dict, init_cash: float) -> None:
+    positions = state.get("positions", [])
+    total_mtm = sum(p.get("mtm_value", p.get("cost", 0.0)) for p in positions)
+    total_equity = round(state.get("cash", init_cash) + total_mtm, 2)
+    realized = state.get("realized_pnl", 0.0)
+    unrealized = state.get("unrealized_pnl", 0.0)
+    total_pnl = state.get("total_pnl", round(realized + unrealized, 4))
+    print("=== Polymarket US Paper Trader ===")
+    print(f"Start Balance:  ${state.get('start_balance', init_cash):.2f}")
+    print(f"Total Equity:   ${total_equity:.2f}")
+    print(f"Available Cash: ${state.get('cash', init_cash):.2f}")
+    print(f"Open Positions: {len(positions)} (${total_mtm:.2f} MTM)")
+    print(f"Available Markets: {state.get('available_markets_count', 0)}")
+    print(f"Tradable Brackets: {state.get('tradeable_brackets_count', 0)}")
+    w_budget = state.get('window_budget', round(total_equity * 0.03, 2))
+    w_spent = state.get('window_spent', 0.0)
+    print(f"Window Budget:  ${w_budget:.2f} (Spent: ${w_spent:.2f}, Left: ${max(0.0, w_budget - w_spent):.2f})")
+    print(f"Realized P&L:   ${realized:+.2f}")
+    print(f"Unrealized P&L: ${unrealized:+.2f}")
+    print(f"Total Net P&L:  ${total_pnl:+.2f}")
+    print(f"Lifetime Realized P&L: ${state.get('lifetime_realized_pnl', realized):+.2f} "
+          f"(never cleared by resets)")
+    print(f"Peak Equity:    ${state.get('peak_equity', total_equity):.2f} | "
+          f"Max Drawdown: ${state.get('max_drawdown', 0.0):.2f} | "
+          f"Ruin Events: {state.get('ruin_events', 0)} | "
+          f"Ruin Halted: {bool(state.get('ruin_halted', False))}")
+    print(f"Trades Count:   {state.get('trades_count', 0)}")
+    print(f"Settlements:    {state.get('settlements_count', 0)} "
+          f"(settled P&L ${float(state.get('settled_realized_pnl', 0.0) or 0.0):+.2f})")
+    print(f"Ledger Reconciliation: ledger realized ${float(state.get('ledger_realized_pnl', 0.0) or 0.0):+.2f} "
+          f"vs state ${realized:+.2f} (gap ${float(state.get('ledger_realized_gap', 0.0) or 0.0):+.2f})")
+    if state.get("pre_epoch_realized_pnl"):
+        print(f"Pre-epoch ledger P&L (before this ${state.get('start_balance', 0.0):.2f} baseline "
+              f"started {state.get('epoch_started_at')}): ${float(state['pre_epoch_realized_pnl']):+.2f}")
+    print(f"Milestones Reached: {state.get('milestones_reached', [init_cash])}")
+    for p in positions:
+        cat = f"[{p['category']}] " if p.get("category") else ""
+        cur_p = p.get("current_price", p["price"])
+        u_pnl = p.get("unrealized_pnl", 0.0)
+        print(f"  - {cat}{p['slug']} | {p['side'].upper()} {p['qty']}x @ ${p['price']:.2f} -> Cur: ${cur_p:.2f} (cost: ${p['cost']:.2f}, MTM: ${p.get('mtm_value', p['cost']):.2f}, Unrealized: ${u_pnl:+.2f})")
+
+
 def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -1963,52 +2028,22 @@ def main():
         sys.exit(2)
 
     init_cash = args.reset if args.reset is not None else 35.0
-    trader = PolyUSPaperTrader(initial_cash=init_cash, reset=args.reset is not None, live_mode=args.live)
 
+    # A9: --status is strictly read-only — no lock, no clients, no state
+    # writes, no quarantine. It reads the file and prints, nothing else.
     if args.status:
-        state = trader.state
-        positions = state.get("positions", [])
-        total_mtm = sum(p.get("mtm_value", p.get("cost", 0.0)) for p in positions)
-        total_equity = round(state.get("cash", init_cash) + total_mtm, 2)
-        realized = state.get("realized_pnl", 0.0)
-        unrealized = state.get("unrealized_pnl", 0.0)
-        total_pnl = state.get("total_pnl", round(realized + unrealized, 4))
-        print("=== Polymarket US Paper Trader ===")
-        print(f"Start Balance:  ${state.get('start_balance', init_cash):.2f}")
-        print(f"Total Equity:   ${total_equity:.2f}")
-        print(f"Available Cash: ${state.get('cash', init_cash):.2f}")
-        print(f"Open Positions: {len(positions)} (${total_mtm:.2f} MTM)")
-        print(f"Available Markets: {state.get('available_markets_count', 0)}")
-        print(f"Tradable Brackets: {state.get('tradeable_brackets_count', 0)}")
-        w_budget = state.get('window_budget', round(total_equity * 0.03, 2))
-        w_spent = state.get('window_spent', 0.0)
-        print(f"Window Budget:  ${w_budget:.2f} (Spent: ${w_spent:.2f}, Left: ${max(0.0, w_budget - w_spent):.2f})")
-        print(f"Realized P&L:   ${realized:+.2f}")
-        print(f"Unrealized P&L: ${unrealized:+.2f}")
-        print(f"Total Net P&L:  ${total_pnl:+.2f}")
-        print(f"Lifetime Realized P&L: ${state.get('lifetime_realized_pnl', realized):+.2f} "
-              f"(never cleared by resets)")
-        print(f"Peak Equity:    ${state.get('peak_equity', total_equity):.2f} | "
-              f"Max Drawdown: ${state.get('max_drawdown', 0.0):.2f} | "
-              f"Ruin Events: {state.get('ruin_events', 0)} | "
-              f"Ruin Halted: {bool(state.get('ruin_halted', False))}")
-        print(f"Trades Count:   {state.get('trades_count', 0)}")
-        print(f"Settlements:    {state.get('settlements_count', 0)} "
-              f"(settled P&L ${float(state.get('settled_realized_pnl', 0.0) or 0.0):+.2f})")
-        print(f"Ledger Reconciliation: ledger realized ${float(state.get('ledger_realized_pnl', 0.0) or 0.0):+.2f} "
-              f"vs state ${realized:+.2f} (gap ${float(state.get('ledger_realized_gap', 0.0) or 0.0):+.2f})")
-        if state.get("pre_epoch_realized_pnl"):
-            print(f"Pre-epoch ledger P&L (before this ${state.get('start_balance', 0.0):.2f} baseline "
-                  f"started {state.get('epoch_started_at')}): ${float(state['pre_epoch_realized_pnl']):+.2f}")
-        print(f"Milestones Reached: {state.get('milestones_reached', [init_cash])}")
-        for p in positions:
-            cat = f"[{p['category']}] " if p.get("category") else ""
-            cur_p = p.get("current_price", p["price"])
-            u_pnl = p.get("unrealized_pnl", 0.0)
-            print(f"  - {cat}{p['slug']} | {p['side'].upper()} {p['qty']}x @ ${p['price']:.2f} -> Cur: ${cur_p:.2f} (cost: ${p['cost']:.2f}, MTM: ${p.get('mtm_value', p['cost']):.2f}, Unrealized: ${u_pnl:+.2f})")
+        _print_status(_read_state_for_status(STATE_FILE, init_cash), init_cash)
         return
 
-    lock_fd = acquire_instance_lock(LOCK_FILE)
+    # A9: take the single-instance lock BEFORE constructing the trader, whose
+    # constructor loads, reconciles and saves the state file. A second instance
+    # therefore cannot rewrite state on the way to losing the lock, and
+    # --reset refuses immediately while a bot holds it.
+    lock_fd = acquire_instance_lock(
+        LOCK_FILE, attempts=1 if args.reset is not None else _LOCK_ATTEMPTS)
+    trader = PolyUSPaperTrader(initial_cash=init_cash,
+                               reset=args.reset is not None, live_mode=args.live)
+
     # R17: SIGTERM/SIGINT -> clean shutdown after the current cycle finishes.
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:

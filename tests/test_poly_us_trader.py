@@ -1579,3 +1579,112 @@ def test_cycle_warns_over_request_budget(temp_trader, monkeypatch, caplog):
         with caplog.at_level("WARNING"):
             temp_trader.cycle()
     assert "request budget" in caplog.text.lower()
+
+
+# ── A9: lock before state, strict read-only --status, refuse --reset ─────────
+
+def _seed_state(path, **overrides):
+    data = {"start_balance": 35.0, "cash": 12.5, "positions": [],
+            "realized_pnl": 0.0, "trades_count": 0}
+    data.update(overrides)
+    path.write_text(json.dumps(data))
+    return data
+
+
+def test_reset_refused_when_lock_held_and_state_unchanged(tmp_path, monkeypatch):
+    """A9: --reset must take the lock first and refuse when a bot holds it."""
+    import fcntl
+    import sys as _sys
+    import poly_us_trader
+    state = tmp_path / "state.json"
+    _seed_state(state)
+    monkeypatch.setattr(poly_us_trader, "STATE_FILE", state)
+    monkeypatch.setattr(poly_us_trader, "LEDGER_FILE", tmp_path / "ledger.jsonl")
+    monkeypatch.setattr(poly_us_trader, "LOCK_FILE", tmp_path / ".lock_poly")
+    monkeypatch.setattr(poly_us_trader, "POLY_US_LOG_FILE", tmp_path / "dry.log")
+    get_client = MagicMock()
+    monkeypatch.setattr(poly_us_trader.polymarket_us_client, "_get_client", get_client)
+    fd = poly_us_trader.acquire_instance_lock(poly_us_trader.LOCK_FILE, attempts=1)
+    try:
+        monkeypatch.setattr(_sys, "argv", ["poly_us_trader.py", "--reset"])
+        with pytest.raises(SystemExit) as exc:
+            poly_us_trader.main()
+        assert exc.value.code != 0
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    assert json.loads(state.read_text())["cash"] == 12.5
+    get_client.assert_not_called()
+
+
+def test_run_refuses_when_lock_held_before_touching_state(tmp_path, monkeypatch):
+    """A9: the run path takes the lock before the constructor rewrites state."""
+    import fcntl
+    import sys as _sys
+    import poly_us_trader
+    state = tmp_path / "state.json"
+    _seed_state(state)
+    before = state.read_bytes()
+    monkeypatch.setattr(poly_us_trader, "STATE_FILE", state)
+    monkeypatch.setattr(poly_us_trader, "LEDGER_FILE", tmp_path / "ledger.jsonl")
+    monkeypatch.setattr(poly_us_trader, "LOCK_FILE", tmp_path / ".lock_poly")
+    monkeypatch.setattr(poly_us_trader, "_LOCK_ATTEMPTS", 1)
+    monkeypatch.setattr(poly_us_trader, "POLY_US_LOG_FILE", tmp_path / "dry.log")
+    get_client = MagicMock()
+    monkeypatch.setattr(poly_us_trader.polymarket_us_client, "_get_client", get_client)
+    fd = poly_us_trader.acquire_instance_lock(poly_us_trader.LOCK_FILE, attempts=1)
+    try:
+        monkeypatch.setattr(_sys, "argv", ["poly_us_trader.py"])
+        with pytest.raises(SystemExit) as exc:
+            poly_us_trader.main()
+        assert exc.value.code != 0
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    assert state.read_bytes() == before
+    get_client.assert_not_called()
+    assert not (tmp_path / "ledger.jsonl").exists()
+
+
+def test_status_on_corrupt_state_is_read_only(tmp_path, monkeypatch, capsys):
+    """A9: --status never quarantines, never saves, never builds a client."""
+    import sys as _sys
+    import poly_us_trader
+    state = tmp_path / "state.json"
+    state.write_text("{not json")
+    monkeypatch.setattr(poly_us_trader, "STATE_FILE", state)
+    monkeypatch.setattr(poly_us_trader, "LEDGER_FILE", tmp_path / "ledger.jsonl")
+    monkeypatch.setattr(poly_us_trader, "LOCK_FILE", tmp_path / ".lock_poly")
+    monkeypatch.setattr(poly_us_trader, "POLY_US_LOG_FILE", tmp_path / "dry.log")
+    get_client = MagicMock()
+    monkeypatch.setattr(poly_us_trader.polymarket_us_client, "_get_client", get_client)
+    monkeypatch.setattr(_sys, "argv", ["poly_us_trader.py", "--status"])
+    poly_us_trader.main()
+    assert state.read_text() == "{not json"
+    assert list(tmp_path.glob("*.corrupt-*")) == []
+    assert not (tmp_path / "ledger.jsonl").exists()
+    get_client.assert_not_called()
+    assert "state unreadable" in capsys.readouterr().out.lower()
+
+
+def test_status_does_not_take_the_lock(tmp_path, monkeypatch, capsys):
+    """A9: a read-only --status works while another instance holds the lock."""
+    import fcntl
+    import sys as _sys
+    import poly_us_trader
+    state = tmp_path / "state.json"
+    _seed_state(state)
+    monkeypatch.setattr(poly_us_trader, "STATE_FILE", state)
+    monkeypatch.setattr(poly_us_trader, "LEDGER_FILE", tmp_path / "ledger.jsonl")
+    monkeypatch.setattr(poly_us_trader, "POLY_US_LOG_FILE", tmp_path / "dry.log")
+    lock = tmp_path / ".lock_poly"
+    monkeypatch.setattr(poly_us_trader, "LOCK_FILE", lock)
+    fd = poly_us_trader.acquire_instance_lock(lock, attempts=1)
+    try:
+        monkeypatch.setattr(_sys, "argv", ["poly_us_trader.py", "--status"])
+        poly_us_trader.main()  # must not raise SystemExit despite the held lock
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    out = capsys.readouterr().out
+    assert "Total Equity" in out
