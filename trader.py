@@ -180,10 +180,10 @@ def get_raw_supabase_client():
 
 WINDOW_EPSILON = 0.01
 
-SETTLEMENT_QUEUE_FILE = Path(__file__).resolve().parent / "settlement_queue.json"
-SETTLED_SINCE_FILE = Path(__file__).resolve().parent / "settled_since.json"
+SETTLEMENT_QUEUE_FILE = config.SUPERBOT_DATA_DIR / "settlement_queue.json"
+SETTLED_SINCE_FILE = config.SUPERBOT_DATA_DIR / "settled_since.json"
 PAPER_POSITIONS_FILE = Path(os.environ.get("PAPER_POSITIONS_FILE")
-                            or (Path(__file__).resolve().parent / "paper_positions.json"))
+                            or config.SUPERBOT_DATA_DIR / "paper_positions.json")
 
 
 def _load_paper_positions() -> dict:
@@ -376,6 +376,9 @@ class BotState:
             cash, exposure, sig.dollar_risk, ticker, total_value,
             resting_orders_value=sum(v["dollars"] for v in self.resting_value.values()),
             paper=config.DRY_RUN,
+            win_prob=getattr(sig, "win_prob", 0.5),
+            entry_price_cents=sig.entry_price,
+            market=market,
         )
         if not allowed:
             log.info("RISK BLOCK %s — %s", ticker, reason)
@@ -650,7 +653,7 @@ def _touch_window(now: datetime, cash: float, exposure: float = 0.0):
 
 def _load_dry_state():
     try:
-        ds = Path(__file__).resolve().parent / "dry_state.json"
+        ds = config.SUPERBOT_DATA_DIR / "dry_state.json"
         if ds.exists():
             with open(ds) as f:
                 return float(json.load(f).get("cash", 0.0))
@@ -661,7 +664,7 @@ def _load_dry_state():
 
 def _save_dry_state(cash: float):
     try:
-        ds = Path(__file__).resolve().parent / "dry_state.json"
+        ds = config.SUPERBOT_DATA_DIR / "dry_state.json"
         with open(ds, "w") as f:
             json.dump({"cash": round(cash, 4)}, f)
     except Exception as e:
@@ -1255,6 +1258,9 @@ def _replay_settlement_queue(client=None):
                     pnl_to_add = pnl
                     new_session_pnl = state.session_pnl + pnl_to_add
 
+                    # Update daily P&L for circuit breaker (Pillar B)
+                    state.risk.update_daily_pnl(pnl_to_add)
+
                     # Credit paper ledger for dry-run compounding (matches the
                     # settlement path at trader.py:1279-1281). Keeps paper_state.json
                     # and pnl_ledger in sync even when settlements are replayed.
@@ -1440,6 +1446,10 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     if applied:
         new_session_pnl = state.session_pnl + pnl_to_add
         state.session_pnl = new_session_pnl
+
+        # Update daily P&L for circuit breaker (Pillar B)
+        state.risk.update_daily_pnl(pnl_to_add)
+
         # Persist to BOTH Supabase and local DB bot_state so startup
         # reconciliation always finds the latest value.
         try:
@@ -2274,6 +2284,10 @@ def cycle(client: KalshiClient):
             if applied:
                 new_session_pnl = state.session_pnl + pnl_to_add
                 state.session_pnl = new_session_pnl
+
+                # Update daily P&L for circuit breaker (Pillar B)
+                state.risk.update_daily_pnl(pnl_to_add)
+
                 # Persist to BOTH Supabase and local DB bot_state so startup
                 # reconciliation always finds the latest value. Writing to local
                 # DB first means a Supabase outage can't lose the credit.
@@ -3013,7 +3027,7 @@ def main():
         sys.exit(1)
 
     # reviewed: entry point only — the lock below is taken before any trading
-    lock_path = Path(__file__).resolve().parent / INSTANCE_LOCK_NAME
+    lock_path = config.SUPERBOT_DATA_DIR / INSTANCE_LOCK_NAME
     # Hold the fd for the process lifetime; it is the lock.
     lock_fd = acquire_instance_lock(lock_path)
 

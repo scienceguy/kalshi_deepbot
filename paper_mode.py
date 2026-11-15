@@ -29,7 +29,7 @@ log = logging.getLogger("paper_mode")
 
 STATE_FILE = Path(os.environ.get(
     "PAPER_STATE_FILE",
-    Path(__file__).resolve().parent / "paper_state.json",
+    config.SUPERBOT_DATA_DIR / "paper_state.json",
 ))
 
 _state = None

@@ -47,13 +47,13 @@ try:
 except Exception:  # torch or ml_model unavailable -> ML gate disabled
     MLFairValue = None
 
-# One anchor for every runtime path: the repo's local_data/ directory. Launching
-# from any CWD writes the same files (R13).
-DATA_DIR = Path(__file__).resolve().parent / "local_data"
+# One anchor for every runtime path: SUPERBOT_DATA_DIR (repo-local local_data/
+# by default). Launching from any CWD writes the same files (R13).
+DATA_DIR = config.SUPERBOT_DATA_DIR / "poly_us"
 STATE_FILE = DATA_DIR / "poly_us_state.json"
 LEDGER_FILE = DATA_DIR / "poly_us_paper_ledger.jsonl"
 POLY_US_LOG_FILE = DATA_DIR / "poly_us_dry.log"
-LOCK_FILE = Path(__file__).resolve().parent / ".lock_poly"
+LOCK_FILE = config.SUPERBOT_DATA_DIR / ".lock_poly"
 
 # B19: operator-visibility reporter, created lazily inside cycle().
 _poly_state_reporter = None

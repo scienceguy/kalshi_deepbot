@@ -116,6 +116,19 @@ def _env_str(name, default):
 
 
 # ═════════════════════════════════════════════════════════════════════
+# DATA DIRECTORY (V1: SUPERBOT_DATA_DIR isolation)
+# ═════════════════════════════════════════════════════════════════════
+# Single root for all runtime data files: state, ledgers, locks, logs, the
+# local SQLite DB and the outbox. Default keeps today's behavior (repo-local
+# local_data/). Set SUPERBOT_DATA_DIR to a temp dir to run an isolated
+# canary instance that never touches production runtime files.
+SUPERBOT_DATA_DIR = Path(
+    os.environ.get("SUPERBOT_DATA_DIR")
+    or Path(__file__).resolve().parent / "local_data"
+)
+SUPERBOT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# ═════════════════════════════════════════════════════════════════════
 # CREDENTIALS
 # ═════════════════════════════════════════════════════════════════════
 KALSHI_KEY_ID = os.environ.get("KALSHI_KEY_ID", "")
@@ -361,11 +374,11 @@ LOCAL_DB_SYNC_INTERVAL = _env_float("LOCAL_DB_SYNC_INTERVAL", 30.0)
 BOT_STATE_HOST = _env_str("BOT_STATE_HOST", "")
 MARKOUT_LOG_FILE = Path(
     os.environ.get("MARKOUT_LOG_FILE")
-    or Path(__file__).resolve().parent / "markout_log.jsonl"
+    or SUPERBOT_DATA_DIR / "markout_log.jsonl"
 )
 GATES_LOG_FILE = Path(
     os.environ.get("GATES_LOG_FILE")
-    or Path(__file__).resolve().parent / "gates_log.jsonl"
+    or SUPERBOT_DATA_DIR / "gates_log.jsonl"
 )
 
 # ═════════════════════════════════════════════════════════════════════
@@ -556,7 +569,28 @@ MARKET_LOSS_WINDOW_HOURS = _env_float("MARKET_LOSS_WINDOW_HOURS", 24.0)
 # How often to re-fetch per-series fee models (GET /series) while running (B6).
 SERIES_FEE_REFRESH_HOURS = _env_float("SERIES_FEE_REFRESH_HOURS", 6.0)
 
+
+# ══════════════════════════════════════════════════════════════════════
+# FINANCIAL GUARDRAILS (Hardening Pillar B)
 # ═════════════════════════════════════════════════════════════════════
+# Daily loss circuit breaker: halt all trading + cancel open orders if daily
+# P&L drops below this fraction of starting balance (e.g., 0.05 = 5% daily loss limit).
+DAILY_LOSS_LIMIT_PCT = _env_float("DAILY_LOSS_LIMIT_PCT", 0.05)
+# Max exposure per single ticker as fraction of total portfolio (cash + exposure).
+MAX_POSITION_PER_TICKER_PCT = _env_float("MAX_POSITION_PER_TICKER_PCT", 0.15)
+# Max total open exposure as fraction of total portfolio.
+MAX_POSITION_TOTAL_PCT = _env_float("MAX_POSITION_TOTAL_PCT", 0.30)
+# Fractional Kelly multiplier (0.25 = quarter-Kelly, 0.5 = half-Kelly).
+KELLY_FRACTION = _env_float("KELLY_FRACTION", 0.25)
+# Minimum EV edge after fees required to trade (5% = 0.05).
+MIN_EV_EDGE_PCT = _env_float("MIN_EV_EDGE_PCT", 0.05)
+# Maximum spread in cents for liquidity protection (reject wide-spread orders).
+MAX_SPREAD_CENTS = _env_int("MAX_SPREAD_CENTS", 10)
+# Minimum orderbook depth (contracts) on the side we're buying for liquidity check.
+MIN_DEPTH_CONTRACTS = _env_float("MIN_DEPTH_CONTRACTS", 10.0)
+
+# ═════════════════════════════════════════════════════════════════════
+# STABILITY CHECK (from kalshi_live_bot — doubles EV per backtests)
 # STABILITY CHECK (from kalshi_live_bot — doubles EV per backtests)
 # ═════════════════════════════════════════════════════════════════════
 STABILITY_ENABLED = _env_bool("STABILITY_ENABLED", True)
@@ -689,7 +723,7 @@ EXCHANGE_PRICE_CACHE_SECONDS = _env_int("EXCHANGE_PRICE_CACHE_SECONDS", 30)
 # LOGGING / VERSION
 # ═════════════════════════════════════════════════════════════════════
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
-LOG_FILE = Path(__file__).resolve().parent / "bot.log"
+LOG_FILE = SUPERBOT_DATA_DIR / "bot.log"
 # 50MB per file, 3 rotated backups = 150MB cap (reliable headroom for VPS and mobile storage)
 LOG_MAX_BYTES = _env_int("LOG_MAX_BYTES", 50 * 1024 * 1024)
 LOG_BACKUP_COUNT = _env_int("LOG_BACKUP_COUNT", 3)
@@ -863,6 +897,35 @@ def validate_bands():
     if not 1 <= ENTRY_ASK_MAX_CENTS <= 99:
         errors.append(
             f"ENTRY_ASK_MAX_CENTS ({ENTRY_ASK_MAX_CENTS}) must be in [1, 99]."
+        )
+    # Financial Guardrails validation (Pillar B)
+    if not 0.0 < DAILY_LOSS_LIMIT_PCT <= 1.0:
+        errors.append(
+            f"DAILY_LOSS_LIMIT_PCT ({DAILY_LOSS_LIMIT_PCT}) must be in (0, 1]."
+        )
+    if not 0.0 < MAX_POSITION_PER_TICKER_PCT <= 1.0:
+        errors.append(
+            f"MAX_POSITION_PER_TICKER_PCT ({MAX_POSITION_PER_TICKER_PCT}) must be in (0, 1]."
+        )
+    if not 0.0 < MAX_POSITION_TOTAL_PCT <= 1.0:
+        errors.append(
+            f"MAX_POSITION_TOTAL_PCT ({MAX_POSITION_TOTAL_PCT}) must be in (0, 1]."
+        )
+    if not 0.0 < KELLY_FRACTION <= 1.0:
+        errors.append(
+            f"KELLY_FRACTION ({KELLY_FRACTION}) must be in (0, 1]."
+        )
+    if not 0.0 <= MIN_EV_EDGE_PCT <= 1.0:
+        errors.append(
+            f"MIN_EV_EDGE_PCT ({MIN_EV_EDGE_PCT}) must be in [0, 1]."
+        )
+    if not 0 < MAX_SPREAD_CENTS < 100:
+        errors.append(
+            f"MAX_SPREAD_CENTS ({MAX_SPREAD_CENTS}) must be in (0, 100)."
+        )
+    if MIN_DEPTH_CONTRACTS < 0:
+        errors.append(
+            f"MIN_DEPTH_CONTRACTS ({MIN_DEPTH_CONTRACTS}) must be >= 0."
         )
     if errors:
         raise ValueError("Configuration invalid:\n" + "\n".join(errors))

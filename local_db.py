@@ -48,8 +48,10 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-# Local database path
+# Local database path — falls back to SUPERBOT_DATA_DIR (V1), then repo-local
+# local_data/ to preserve current behavior when neither is set.
 DB_DIR = Path(os.environ.get("SUPERBOT_LOCAL_DB_DIR")
+              or config.SUPERBOT_DATA_DIR
               or Path(__file__).resolve().parent / "local_data")
 DB_DIR.mkdir(exist_ok=True)
 
