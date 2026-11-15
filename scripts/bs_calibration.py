@@ -29,11 +29,14 @@ Usage:
 import argparse
 import csv
 import json
+import logging
 import math
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from statistics import NormalDist
+
+log = logging.getLogger(__name__)
 
 _N = NormalDist()
 MINUTES_PER_YEAR = 365.0 * 24.0 * 60.0  # 525600
@@ -401,9 +404,58 @@ class RollingCalibrationMonitor(CalibrationVerifier):
     PRICE_BAND_MIN = 0.92
     PRICE_BAND_MAX = 0.99
 
+    # ── A1: time-bounded halt + probe + shadow calibration ──
+    # Halt duration in minutes before entries resume at probe size.
+    CAL_HALT_MINUTES = 240
+    # Fraction of normal position size while probing after a halt expires.
+    CAL_PROBE_SIZE_FRACTION = 0.5
+    # Number of new settled probe outcomes needed to fully clear a halted state.
+    CAL_PROBE_OUTCOMES_N = 5
+    # Wilson z-score for 95% confidence lower bound.
+    WILSON_Z = 1.959963984540054
+
     def __init__(self, ledger_path="local_data/bs_calibration_ledger.jsonl"):
         super().__init__(ledger_path)
         self.brier_history = []  # list of (ts, brier) for drift detection
+        # Halt state (persisted via ledger entries of type "halt_event").
+        self.halt_started_at = None   # epoch seconds when halt began
+        self.halt_reason = None       # reason text when halt began
+        self.probe_outcomes_count = 0 # settled probe outcomes since halt expiry
+        self.in_probe = False         # True after halt expiry, before probe clears
+        self._halt_state_dirty = False
+        self.shadow_log = []          # list of dicts: candidates skipped due to halt
+
+    def _halt_state_persist(self):
+        """Append halt/probe state to the ledger so it survives restarts."""
+        rec = {
+            "type": "halt_event",
+            "halt_started_at": self.halt_started_at,
+            "halt_reason": self.halt_reason,
+            "in_probe": self.in_probe,
+            "probe_outcomes_count": self.probe_outcomes_count,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._append(rec)
+
+    @staticmethod
+    def _wilson_lower_bound(wins: int, n: int, z: float) -> float:
+        """Wilson score lower bound for a binomial proportion (raw, no floor).
+
+        The caller compares this against its configured floor.
+        """
+        if n == 0:
+            return 0.0
+        phat = wins / n
+        denom = 1.0 + z * z / n
+        center = phat + z * z / (2.0 * n)
+        radius = z * math.sqrt(phat * (1.0 - phat) / n + z * z / (4.0 * n * n)) / denom
+        return (center - radius) / denom
+
+    def _halt_expired(self, now: float) -> bool:
+        """True if the halt has been running longer than CAL_HALT_MINUTES."""
+        if self.halt_started_at is None:
+            return False
+        return (now - self.halt_started_at) > self.CAL_HALT_MINUTES * 60.0
 
     def snapshot_rolling(self):
         """Calibration metrics over the rolling window (last 50 settled) + trailing 10."""
@@ -473,27 +525,136 @@ class RollingCalibrationMonitor(CalibrationVerifier):
             "open_positions": len(self.entries),
         }
 
-    def circuit_breaker(self):
+    def circuit_breaker(self, brier_min_samples=20, wr_min_samples=30,
+                        wr_floor=0.95, halt_minutes=240,
+                        probe_size_fraction=0.5, probe_outcomes_n=5):
         """
-        Automated halt decision for new entries.
+        Automated halt decision for new entries (A1).
 
-        Returns (halt: bool, reason: str). Halts when:
-          * rolling Brier (last 50) > 0.150, OR
-          * trailing 10-trade win rate < 95%.
+        Returns (halt: bool, reason: str, probe: bool).
+        Halts when:
+          * rolling Brier > BRIER_HALT_THRESHOLD (only with >= brier_min_samples rows), OR
+          * Wilson lower bound of trailing win rate < wr_floor
+            (only with >= wr_min_samples trades).
+
+        A halt is time-bounded: after halt_minutes it expires and entries
+        resume at probe_size_fraction size until probe_outcomes_n new settled
+        probe outcomes clear it fully.
         """
         snap = self.snapshot_rolling()
         if snap["n"] == 0:
-            return False, "no settled data yet"
+            return False, "no settled data yet", False
+
         reasons = []
         brier = snap["rolling_brier"]
-        if brier is not None and brier > self.BRIER_HALT_THRESHOLD:
-            reasons.append(f"rolling Brier {brier:.4f} > {self.BRIER_HALT_THRESHOLD}")
+        n = snap["n"]
+        now = datetime.now(timezone.utc).timestamp()
+
+        # Restore halt state from a previously persisted halt_event.
+        self._restore_halt_state()
+
+        # If already halted, check expiry / probe progression.
+        if self.halt_started_at is not None:
+            if self._halt_expired(now):
+                # Halt expired: enter probe mode if not already.
+                if not self.in_probe:
+                    self.in_probe = True
+                    self.probe_outcomes_count = 0
+                    self._halt_state_persist()
+                    log.info(
+                        "CALIBRATION HALT EXPIRED after %d min: entering probe mode "
+                        "(size fraction=%.2f, need %d probe outcomes to clear)",
+                        halt_minutes, probe_size_fraction, probe_outcomes_n,
+                    )
+                # Probe mode: allow entries at reduced size; clear after N outcomes.
+                if self.probe_outcomes_count >= probe_outcomes_n:
+                    self.halt_started_at = None
+                    self.halt_reason = None
+                    self.in_probe = False
+                    self.probe_outcomes_count = 0
+                    self._halt_state_persist()
+                    log.info("CALIBRATION HALT CLEARED: probe outcomes sufficient, resuming normal size")
+                    return False, "calibration within limits (halt cleared)", False
+                return True, (
+                    f"halt expired, probing (size fraction={probe_size_fraction:.2f}, "
+                    f"outcomes {self.probe_outcomes_count}/{probe_outcomes_n})"
+                ), True
+
+            # Still within halt window.
+            remaining = int((self.halt_started_at + halt_minutes * 60 - now) / 60)
+            return True, f"calibration halted ({self.halt_reason}; ~{remaining} min remaining)", False
+
+        # Not currently halted: evaluate trip conditions with minimum samples.
+        if brier is not None and n >= brier_min_samples and brier > self.BRIER_HALT_THRESHOLD:
+            reasons.append(f"rolling Brier {brier:.4f} > {self.BRIER_HALT_THRESHOLD} (n={n} >= {brier_min_samples})")
+
         wr = snap["trailing_10_win_rate"]
-        if wr is not None and wr < self.WIN_RATE_HALT_THRESHOLD:
-            reasons.append(
-                f"trailing 10 win rate {wr:.2%} < {self.WIN_RATE_HALT_THRESHOLD:.0%}"
+        trailing_n = snap["trailing_10_n"]
+        if wr is not None and n >= wr_min_samples:
+            # Wilson lower bound vs floor, instead of raw win rate cut.
+            # Use the trailing rows from the rolling snapshot (last TRAILING_WIN_N).
+            settled = self.settled[-self.TRAILING_WIN_N:]
+            rows2 = []
+            for r in settled:
+                if r.get("outcome") is None or r.get("predicted_p") is None:
+                    continue
+                rows2.append(r)
+            wins = sum(r["win"] for r in rows2)
+            wr_lower = self._wilson_lower_bound(wins, trailing_n, self.WILSON_Z)
+            if wr_lower < wr_floor:
+                reasons.append(
+                    f"trailing {trailing_n} win-rate Wilson LB {wr_lower:.2%} < {wr_floor:.0%} "
+                    f"(raw {wr:.2%}, total n={n} >= {wr_min_samples})"
+                )
+
+        if reasons:
+            self.halt_started_at = now
+            self.halt_reason = "; ".join(reasons)
+            self.in_probe = False
+            self.probe_outcomes_count = 0
+            self._halt_state_persist()
+            log.warning(
+                "CALIBRATION HALT STARTED: %s (will expire after %d min, then probe at %.2fx size)",
+                self.halt_reason, halt_minutes, probe_size_fraction,
             )
-        return (len(reasons) > 0, "; ".join(reasons) if reasons else "calibration within limits")
+            return True, self.halt_reason, False
+
+        return False, "calibration within limits", False
+
+    def _restore_halt_state(self):
+        """Restore halt/probe state from the most recent halt_event ledger entry."""
+        # Scan settled ledger entries in reverse for the last halt_event.
+        for rec in reversed(self.settled):
+            if rec.get("type") == "halt_event":
+                self.halt_started_at = rec.get("halt_started_at")
+                self.halt_reason = rec.get("halt_reason")
+                self.in_probe = rec.get("in_probe", False)
+                self.probe_outcomes_count = rec.get("probe_outcomes_count", 0)
+                break
+
+    def probe_outcome_settled(self):
+        """Call when a probe-entry settlement resolves; increments probe counter."""
+        if self.in_probe:
+            self.probe_outcomes_count += 1
+            self._halt_state_persist()
+
+    def shadow_log_candidate(self, slug: str, side: str, price: float,
+                             predicted_p: float, z: float, reason: str):
+        """Log a candidate that passed the gates but was not traded due to a halt."""
+        entry = {
+            "slug": slug,
+            "side": side,
+            "price": price,
+            "predicted_p": predicted_p,
+            "z": z,
+            "reason": reason,
+            "logged_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.shadow_log.append(entry)
+        log.debug(
+            "CALIBRATION SHADOW: skipped %s %s @ %.4f (p=%.4f, z=%.2f) — %s",
+            slug, side, price, predicted_p, z, reason,
+        )
 
 
 class AdaptiveVolatilityScaler:

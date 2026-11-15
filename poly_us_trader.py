@@ -101,13 +101,27 @@ def _fee_cents(price_dollars: float) -> float:
     return _taker_fee(1.0, price_dollars) * 100.0
 
 
-def _fill_buy_price(displayed: float, ask) -> float:
-    """Paper fill at the best ask (displayed mark when the book is unreadable)."""
-    return round(ask if ask is not None else displayed, 4)
+def _fill_buy_price(displayed: float, ask) -> float | None:
+    """Paper fill at the best ask plus slippage ticks.
+
+    Returns None when the book is unreadable — the caller must not trade
+    (A2: never fall back to the displayed mark on an unreadable book).
+    """
+    if ask is None:
+        return None
+    slippage = _slippage_cents() / 100.0  # cents -> dollars
+    return round(ask + slippage, 4)
 
 
-def _fill_sell_price(displayed: float, bid) -> float:
-    return round(bid if bid is not None else displayed, 4)
+def _fill_sell_price(displayed: float, bid) -> float | None:
+    """Paper fill at the best bid minus slippage ticks.
+
+    Returns None when the book is unreadable.
+    """
+    if bid is None:
+        return None
+    slippage = _slippage_cents() / 100.0  # cents -> dollars
+    return round(bid - slippage, 4)
 
 
 def _taker_fee(qty: float, price_dollars: float) -> float:
@@ -155,6 +169,7 @@ class PolyUSPaperTrader:
         self.adjusted_min_z = self.vol_scaler.base_min_z
         self.calibration_halted = False
         self.calibration_reason = "not started"
+        self.calibration_probing = False
 
         # Optional ML fair-value model filter (opt-in via ML_MODEL_PATH).
         self.ml_model = None
@@ -952,7 +967,7 @@ class PolyUSPaperTrader:
         """
         return round(total_balance * 0.03, 2)
 
-    def execute_paper_trade(self, opp: dict) -> bool:
+    def execute_paper_trade(self, opp: dict, probe_size_fraction: float = 1.0) -> bool:
         """Size and execute a paper trade from the bankroll."""
         slug = opp["slug"]
         side = opp["side"]
@@ -995,6 +1010,8 @@ class PolyUSPaperTrader:
         available_cash = max(0.0, self.state["cash"] - min_cash_floor)
         max_trade_dollars = self.compute_tier_size(total_balance)
         max_trade_dollars = min(max_trade_dollars, available_window_budget, available_cash, round(total_balance * 0.03, 2))
+        # Apply probe size fraction when calibrating after a halt (A1).
+        max_trade_dollars = round(max_trade_dollars * probe_size_fraction, 4)
         if max_trade_dollars < 0.90:  # Allow 1 contract at 92-99c on starting $35 bankrolls
             return False
 
@@ -1014,6 +1031,26 @@ class PolyUSPaperTrader:
         else:
             ask = round(1.0 - yes_bid, 4) if yes_bid is not None else None
         fill_price = _fill_buy_price(price, ask)
+        # A2: never fall back to the displayed mark when the book is unreadable.
+        if fill_price is None:
+            self.state["book_unreadable"] = int(self.state.get("book_unreadable", 0)) + 1
+            self._save_state(self.state)
+            log.info("A2 unreadable book for %s %s — skipping trade", slug, side)
+            return False
+
+        # A2: re-check edge at the fill price (best ask + slippage ticks), not the
+        # displayed mark. If the edge no longer clears fee + margin after slippage,
+        # skip the trade (the displayed-mid edge was overstated).
+        ref_prob = float(opp.get("ref_prob") or 0.0)
+        net_edge_cents = (ref_prob - fill_price) * 100.0
+        hurdle_cents = _fee_cents(fill_price) + float(getattr(config, "PM_EDGE_MARGIN_CENTS", 0.5))
+        if net_edge_cents < hurdle_cents:
+            log.info(
+                "A2 edge check failed at fill price: net_edge=%.1fc < hurdle=%.1fc "
+                "(ref_prob=%.4f fill_price=%.4f) — skipping %s %s",
+                net_edge_cents, hurdle_cents, ref_prob, fill_price, slug, side)
+            return False
+
         entry_fee = _taker_fee(qty, fill_price)
         cost = round(qty * fill_price + entry_fee, 4)
         if cost > available_window_budget or cost > available_cash:
@@ -1344,8 +1381,16 @@ class PolyUSPaperTrader:
         snap = self.cal_monitor.snapshot_rolling()
         scale, self.adjusted_sigma, self.adjusted_min_z, drift = self.vol_scaler.scale(
             snap.get("rolling_brier"))
-        halted, reason = self.cal_monitor.circuit_breaker()
+        halted, reason, probing = self.cal_monitor.circuit_breaker(
+            brier_min_samples=config.CAL_BRIER_MIN_SAMPLES,
+            wr_min_samples=config.CAL_WIN_RATE_MIN_SAMPLES,
+            wr_floor=config.CAL_WIN_RATE_FLOOR,
+            halt_minutes=config.CAL_HALT_MINUTES,
+            probe_size_fraction=config.CAL_PROBE_SIZE_FRACTION,
+            probe_outcomes_n=config.CAL_PROBE_OUTCOMES_N,
+        )
         self.calibration_halted = halted
+        self.calibration_probing = probing
         self.calibration_reason = reason
         band_gap = None
         if snap.get("price_band_92_99c"):
@@ -1401,13 +1446,25 @@ class PolyUSPaperTrader:
             len(opportunities), len(new_opps)
         )
         trades_placed = 0
-        if self.calibration_halted:
+        if self.calibration_halted and not self.calibration_probing:
             log.info("CALIBRATION HALTED: %s — no new entries this cycle", self.calibration_reason)
+            # Shadow calibration: log candidates that passed gates but are skipped.
+            for opp in new_opps:
+                self.cal_monitor.shadow_log_candidate(
+                    slug=opp["slug"], side=opp["side"], price=opp["price"],
+                    predicted_p=opp.get("predicted_p", 0.0), z=opp.get("z", 0.0),
+                    reason=self.calibration_reason,
+                )
         else:
+            probe_size = (
+                config.CAL_PROBE_SIZE_FRACTION
+                if (self.calibration_halted and self.calibration_probing)
+                else 1.0
+            )
             for opp in new_opps:
                 if trades_placed >= 2:
                     break
-                if self.execute_paper_trade(opp):
+                if self.execute_paper_trade(opp, probe_size_fraction=probe_size):
                     trades_placed += 1
 
         systemd_notify("WATCHDOG=1")

@@ -10,6 +10,7 @@ import json
 import math
 import os
 import tempfile
+from datetime import datetime, timezone
 
 from scripts.bs_calibration import (
     AdaptiveVolatilityScaler,
@@ -67,30 +68,55 @@ def test_price_band_calibration_92_99c():
 
 
 def test_circuit_breaker_brier_halts():
-    """Halt when rolling Brier > 0.150."""
+    """Halt when rolling Brier > 0.150 with enough samples (>= 20)."""
     with tempfile.TemporaryDirectory() as tmp:
         mon = RollingCalibrationMonitor(ledger_path=_make_ledger(tmp))
-        # p=0.50, outcome=0 -> Brier = 0.25 > 0.150 -> halt.
-        for i in range(10):
+        # p=0.50, outcome=0 -> Brier = 0.25 > 0.150 -> halt (20 trades >= min 20).
+        for i in range(20):
             _settle(mon, f"c{i}", OUTCOME_NO, entry_price=0.50, predicted_p=0.50, z=1.0)
-        halt, reason = mon.circuit_breaker()
+        halt, reason, probe = mon.circuit_breaker(brier_min_samples=20)
         assert halt is True
-        assert "0.150" in reason or "Brier" in reason, reason
+        assert "Brier" in reason, reason
+        assert probe is False
+
+
+def test_circuit_breaker_brier_no_halt_below_min_samples():
+    """No halt when Brier is high but fewer than min_samples rows."""
+    with tempfile.TemporaryDirectory() as tmp:
+        mon = RollingCalibrationMonitor(ledger_path=_make_ledger(tmp))
+        # Only 5 trades with terrible Brier — below min_samples=20 -> no halt.
+        for i in range(5):
+            _settle(mon, f"c{i}", OUTCOME_NO, entry_price=0.50, predicted_p=0.50, z=1.0)
+        halt, reason, probe = mon.circuit_breaker(brier_min_samples=20)
+        assert halt is False, f"unexpected halt: {reason}"
+        assert probe is False
 
 
 def test_circuit_breaker_win_rate_halts():
-    """Halt when trailing 10 win rate < 95%."""
+    """Halt when trailing 10 win rate Wilson LB < floor with enough samples (>= 30)."""
     with tempfile.TemporaryDirectory() as tmp:
         mon = RollingCalibrationMonitor(ledger_path=_make_ledger(tmp))
-        # 10 trades, 8 wins (80% < 95%) with low Brier so only win-rate trips.
-        for i in range(10):
-            outcome = OUTCOME_YES if i < 8 else OUTCOME_NO
-            # p near 1.0 -> small Brier contribution; mix outcomes keeps Brier < 0.150.
+        # 30 trades, 27 wins (90% raw, Wilson LB well below 0.95).
+        for i in range(30):
+            outcome = OUTCOME_YES if i < 27 else OUTCOME_NO
             predicted_p = 0.99 if outcome else 0.01
             _settle(mon, f"w{i}", outcome, entry_price=0.96, predicted_p=predicted_p, z=2.0)
-        halt, reason = mon.circuit_breaker()
-        assert halt is True
-        assert "95%" in reason or "win rate" in reason, reason
+        halt, reason, probe = mon.circuit_breaker(wr_min_samples=30, wr_floor=0.95)
+        assert halt is True, f"expected halt: {reason}"
+        assert "win rate" in reason or "Wilson" in reason, reason
+        assert probe is False
+
+
+def test_circuit_breaker_win_rate_no_halt_below_min_samples():
+    """No halt when win rate is bad but fewer than min_samples trades."""
+    with tempfile.TemporaryDirectory() as tmp:
+        mon = RollingCalibrationMonitor(ledger_path=_make_ledger(tmp))
+        # 5 trades, all lose (0% win rate) — below min_samples=30 -> no halt.
+        for i in range(5):
+            _settle(mon, f"w{i}", OUTCOME_NO, entry_price=0.96, predicted_p=0.97, z=2.0)
+        halt, reason, probe = mon.circuit_breaker(wr_min_samples=30)
+        assert halt is False, f"unexpected halt: {reason}"
+        assert probe is False
 
 
 def test_circuit_breaker_no_halt_when_healthy():
@@ -99,8 +125,9 @@ def test_circuit_breaker_no_halt_when_healthy():
         mon = RollingCalibrationMonitor(ledger_path=_make_ledger(tmp))
         for i in range(12):
             _settle(mon, f"h{i}", OUTCOME_YES, entry_price=0.96, predicted_p=0.97, z=2.0)
-        halt, reason = mon.circuit_breaker()
+        halt, reason, probe = mon.circuit_breaker()
         assert halt is False, reason
+        assert probe is False
         assert "within limits" in reason, reason
 
 
@@ -108,8 +135,9 @@ def test_circuit_breaker_no_data():
     """No halt with no settled data."""
     with tempfile.TemporaryDirectory() as tmp:
         mon = RollingCalibrationMonitor(ledger_path=_make_ledger(tmp))
-        halt, reason = mon.circuit_breaker()
+        halt, reason, probe = mon.circuit_breaker()
         assert halt is False
+        assert probe is False
         assert reason == "no settled data yet"
 
 
@@ -173,3 +201,92 @@ def test_idempotent_resettle_and_persistence(tmp_path):
     mon2 = RollingCalibrationMonitor(ledger_path=ledger)
     snap2 = mon2.snapshot_rolling()
     assert snap2["n"] == 1, f"persisted ledger not loaded: {snap2}"
+
+
+# ── A1: time-bounded halt + probe + shadow calibration tests ──
+
+
+def test_circuit_breaker_halt_expires_after_halt_minutes():
+    """A halt that trips expires after CAL_HALT_MINUTES and enters probe mode."""
+    with tempfile.TemporaryDirectory() as tmp:
+        mon = RollingCalibrationMonitor(ledger_path=_make_ledger(tmp))
+        # Trip the halt with 20 terrible trades.
+        for i in range(20):
+            _settle(mon, f"c{i}", OUTCOME_NO, entry_price=0.50, predicted_p=0.50, z=1.0)
+        halt, reason, probe = mon.circuit_breaker(brier_min_samples=20)
+        assert halt is True
+        assert probe is False
+
+        # Simulate time passing: set halt_started_at to 241 minutes ago.
+        mon.halt_started_at = datetime.now(timezone.utc).timestamp() - (241 * 60)
+        mon.halt_reason = reason
+        mon.in_probe = False
+        mon.probe_outcomes_count = 0
+        mon._halt_state_persist()
+
+        halt, reason2, probe = mon.circuit_breaker(halt_minutes=240)
+        assert halt is True, f"should still be in probe (halted=True): {reason2}"
+        assert probe is True, f"should be probing after expiry: {reason2}"
+        assert "probing" in reason2.lower(), reason2
+
+
+def test_circuit_breaker_probe_clears_after_n_outcomes():
+    """Probe mode clears after CAL_PROBE_OUTCOMES_N new settled outcomes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        mon = RollingCalibrationMonitor(ledger_path=_make_ledger(tmp))
+        # Trip the halt.
+        for i in range(20):
+            _settle(mon, f"c{i}", OUTCOME_NO, entry_price=0.50, predicted_p=0.50, z=1.0)
+        mon.circuit_breaker(brier_min_samples=20)
+
+        # Force into probe mode with 0 outcomes.
+        mon.halt_started_at = datetime.now(timezone.utc).timestamp() - (241 * 60)
+        mon.in_probe = True
+        mon.probe_outcomes_count = 0
+        mon._halt_state_persist()
+
+        # Settle probe outcomes one at a time; each calls probe_outcome_settled.
+        for i in range(5):
+            mon.probe_outcome_settled()
+            halt, reason, probe = mon.circuit_breaker(halt_minutes=240, probe_outcomes_n=5)
+            if i < 4:
+                assert probe is True, f"should still probe after {i+1} outcomes: {reason}"
+            else:
+                assert halt is False, f"should be cleared after 5 outcomes: {reason}"
+                assert probe is False
+
+
+def test_circuit_breaker_shadow_log_candidate():
+    """Shadow log records candidates skipped due to a halt."""
+    with tempfile.TemporaryDirectory() as tmp:
+        mon = RollingCalibrationMonitor(ledger_path=_make_ledger(tmp))
+        mon.shadow_log_candidate(
+            slug="cpc-btc-above-hr-100k", side="yes", price=0.95,
+            predicted_p=0.97, z=2.0, reason="calibration halted: win rate",
+        )
+        assert len(mon.shadow_log) == 1
+        entry = mon.shadow_log[0]
+        assert entry["slug"] == "cpc-btc-above-hr-100k"
+        assert entry["side"] == "yes"
+        assert entry["price"] == 0.95
+        assert entry["predicted_p"] == 0.97
+        assert entry["z"] == 2.0
+        assert "halted" in entry["reason"]
+        assert "logged_at" in entry
+
+
+def test_wilson_lower_bound_conservative():
+    """Wilson LB is below the raw rate for small n and approaches it for large n."""
+    # Small n: Wilson LB should be noticeably lower than raw rate.
+    lb = RollingCalibrationMonitor._wilson_lower_bound(wins=9, n=10, z=1.96)
+    raw = 0.9
+    assert lb < raw, f"Wilson LB {lb} should be < raw {raw} for small n"
+    assert lb >= 0.0
+
+    # With floor comparison at call site: LB below floor means halt.
+    lb2 = RollingCalibrationMonitor._wilson_lower_bound(wins=0, n=30, z=1.96)
+    assert lb2 < 0.95, f"Wilson LB {lb2} should be < 0.95 floor for 0/30"
+
+    # Large n: Wilson LB approaches raw rate.
+    lb3 = RollingCalibrationMonitor._wilson_lower_bound(wins=950, n=1000, z=1.96)
+    assert abs(lb3 - 0.95) < 0.02, f"Wilson LB {lb3} should be near 0.95 for large n"

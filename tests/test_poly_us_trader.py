@@ -93,9 +93,12 @@ def test_execute_paper_trade_updates_bankroll(temp_trader):
         "question": "Sample Question",
         "side": "yes",
         "price": 0.95,
+        "ref_prob": 0.98,   # model prob high enough to clear fee+margin at fill price
     }
     temp_trader.preview_order = MagicMock(return_value=True)
-    temp_trader.execute_paper_trade(opp)
+    book = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.96"}}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        temp_trader.execute_paper_trade(opp)
     assert len(temp_trader.state["positions"]) == 1
     assert temp_trader.state["cash"] < 35.0
     assert temp_trader.state["trades_count"] == 1
@@ -377,9 +380,10 @@ def test_cycle_rotates_stale_long_dated_positions(temp_trader):
          patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
         temp_trader.cycle()
 
-    # Stale position rotated out at the NO bid (0.98), net of the taker fee.
+    # Stale position rotated out at the NO bid minus slippage (0.98 -> 0.97),
+    # net of the taker fee (R5 + A2 slippage).
     assert len(temp_trader.state["positions"]) == 0
-    assert temp_trader.state["cash"] == round(50.0 + 0.98 * 5 - _taker_fee(5, 0.98), 4)
+    assert temp_trader.state["cash"] == round(50.0 + 0.97 * 5 - _taker_fee(5, 0.97), 4)
 
 
 def test_window_budget_blocks_overtrade_in_same_window(temp_trader):
@@ -388,17 +392,21 @@ def test_window_budget_blocks_overtrade_in_same_window(temp_trader):
     temp_trader.state["window_budget"] = 1.05
     temp_trader.state["window_spent"] = 0.0
 
-    opp1 = {"slug": "opp1", "question": "Q1", "side": "yes", "price": 0.95}
+    opp1 = {"slug": "opp1", "question": "Q1", "side": "yes", "price": 0.95,
+            "ref_prob": 0.98}
     temp_trader.preview_order = MagicMock(return_value=True)
-
-    # First trade: 1 contract @ 0.95 = $0.95 -> fits in $1.05 budget
-    ok1 = temp_trader.execute_paper_trade(opp1)
+    book = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.96"}}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        # First trade: 1 contract @ 0.95 = $0.95 -> fits in $1.05 budget
+        ok1 = temp_trader.execute_paper_trade(opp1)
     assert ok1 is True
-    assert temp_trader.state["window_spent"] == round(0.95 + _taker_fee(1, 0.95), 4)
+    assert temp_trader.state["window_spent"] == round(0.97 + _taker_fee(1, 0.97), 4)
 
-    # Second trade in the same window: remaining budget is $1.05 - $0.95 = $0.10 < $0.90 -> BLOCKED!
-    opp2 = {"slug": "opp2", "question": "Q2", "side": "yes", "price": 0.95}
-    ok2 = temp_trader.execute_paper_trade(opp2)
+    # Second trade in the same window: remaining budget is $1.05 - $0.97 = $0.08 < $0.90 -> BLOCKED!
+    opp2 = {"slug": "opp2", "question": "Q2", "side": "yes", "price": 0.95,
+            "ref_prob": 0.98}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        ok2 = temp_trader.execute_paper_trade(opp2)
     assert ok2 is False
     assert len(temp_trader.state["positions"]) == 1
 
@@ -521,11 +529,15 @@ def test_live_mode_places_real_order(temp_trader):
     temp_trader.state["window_spent"] = 0.0
     temp_trader.preview_order = MagicMock(return_value=True)
 
-    opp = {"slug": "test-live-slug", "question": "Live Q", "side": "no", "price": 0.99}
-    with patch("polymarket_us_client.place_maker_order", return_value={"id": "ORDER123"}) as mock_place:
+    opp = {"slug": "test-live-slug", "question": "Live Q", "side": "no", "price": 0.99,
+           "ref_prob": 0.98}
+    # NO side: fill at 1 - YES bid + slippage ticks. YES bid=0.98 → NO fill = 1-0.98+0.01 = 0.03
+    book = {"bbo": {"yes_bid": "0.98", "yes_ask": "0.99"}}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book), \
+         patch("polymarket_us_client.place_maker_order", return_value={"id": "ORDER123"}) as mock_place:
         ok = temp_trader.execute_paper_trade(opp)
         assert ok is True
-        mock_place.assert_called_once_with("test-live-slug", "no", 0.99, 1, preview=False)
+        mock_place.assert_called_once_with("test-live-slug", "no", 0.03, 1, preview=False)
         # Live orders sit in a `resting` record with cash reserved until confirmed fill (R3)
         assert temp_trader.state["resting_orders"][-1]["order_id"] == "ORDER123"
         assert temp_trader.state["resting_orders"][-1]["state"] == "resting"
@@ -542,8 +554,11 @@ def test_live_resting_order_cancelled_after_ttl_releases_cash(temp_trader):
     temp_trader.state["window_budget"] = 1.05
     temp_trader.state["window_spent"] = 0.0
     temp_trader.preview_order = MagicMock(return_value=True)
-    opp = {"slug": "ttl-test", "question": "Q", "side": "yes", "price": 0.95}
-    with patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-TTL-1"}):
+    opp = {"slug": "ttl-test", "question": "Q", "side": "yes", "price": 0.95,
+           "ref_prob": 0.98}
+    book = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.96"}}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book), \
+         patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-TTL-1"}):
         assert temp_trader.execute_paper_trade(opp) is True
     assert temp_trader.state["resting_orders"] and not temp_trader.state["positions"]
     reserved = temp_trader.state["resting_orders"][0]["cost"]
@@ -571,8 +586,11 @@ def test_live_partial_fill_books_filled_qty_only(temp_trader):
     temp_trader.state["window_budget"] = 3.0
     temp_trader.state["window_spent"] = 0.0
     temp_trader.preview_order = MagicMock(return_value=True)
-    opp = {"slug": "partial-fill-1", "question": "Q", "side": "no", "price": 0.95}
-    with patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-PART-1"}):
+    opp = {"slug": "partial-fill-1", "question": "Q", "side": "no", "price": 0.95,
+           "ref_prob": 0.98}
+    book = {"bbo": {"yes_bid": "0.98", "yes_ask": "0.99"}}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book), \
+         patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-PART-1"}):
         assert temp_trader.execute_paper_trade(opp) is True
     reserved = temp_trader.state["resting_orders"][0]["cost"]
     # Venue resolved the order, but only 1 contract is actually held.
@@ -608,8 +626,11 @@ def test_live_reconcile_bails_when_open_orders_fail(temp_trader):
     temp_trader.state["window_budget"] = 1.05
     temp_trader.state["window_spent"] = 0.0
     temp_trader.preview_order = MagicMock(return_value=True)
-    opp = {"slug": "venue-down-1", "question": "Q", "side": "yes", "price": 0.95}
-    with patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-DOWN-1"}):
+    opp = {"slug": "venue-down-1", "question": "Q", "side": "yes", "price": 0.95,
+           "ref_prob": 0.98}
+    book = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.96"}}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book), \
+         patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-DOWN-1"}):
         assert temp_trader.execute_paper_trade(opp) is True
     reserved = temp_trader.state["resting_orders"][0]["cost"]
     with patch("polymarket_us_client.get_open_orders",
@@ -779,24 +800,85 @@ def test_cycle_does_not_rotate_windowEnd_market(temp_trader):
 
 
 def test_buy_fill_records_best_ask(temp_trader):
-    """A buy at displayed 0.95 with best ask 0.96 records a 0.96 fill (R5)."""
+    """A buy at displayed 0.95 with best ask 0.96 records a 0.97 fill (R5 + A2 slippage)."""
     temp_trader.state["cash"] = 35.0
     temp_trader.state["window_budget"] = 1.05
     temp_trader.state["window_spent"] = 0.0
     opp = {"slug": "ask-market", "question": "Q", "side": "yes", "price": 0.95,
-           "source": "crossvenue"}
+           "source": "crossvenue", "ref_prob": 0.98}
     temp_trader.preview_order = MagicMock(return_value=True)
     book = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.96"}}
     with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
         ok = temp_trader.execute_paper_trade(opp)
     assert ok is True
     pos = temp_trader.state["positions"][0]
-    assert pos["fill_price"] == 0.96
+    # fill_price = best ask (0.96) + 1 slippage tick (0.01) = 0.97
+    assert pos["fill_price"] == 0.97
     # Cost is the stake plus the venue taker fee C*p*(1-p)*rate.
-    assert pos["cost"] == round(0.96 + _taker_fee(1, 0.96), 4)
-    assert temp_trader.state["cash"] == round(35.0 - 0.96 - _taker_fee(1, 0.96), 4)
+    assert pos["cost"] == round(0.97 + _taker_fee(1, 0.97), 4)
+    assert temp_trader.state["cash"] == round(35.0 - 0.97 - _taker_fee(1, 0.97), 4)
     ledger = temp_trader.ledger_file.read_text()
     assert '"source": "crossvenue"' in ledger
+
+
+# ── A2: edge at fill price + unreadable book ─────────────────────────────
+
+def test_a2_edge_rejected_at_fill_price_when_spread_eats_it(temp_trader):
+    """3c edge on displayed mid (0.92 vs ref_prob 0.95) but 3c spread means
+    the fill at ask+slippage has no edge left — trade rejected at execution."""
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    # ref_prob=0.95, displayed=0.92 → 3c edge on mid. But ask=0.95, fill=0.96.
+    # net_edge at fill = (0.95 - 0.96)*100 = -1c → rejected.
+    opp = {"slug": "spread-eats-edge", "question": "Q", "side": "yes", "price": 0.92,
+           "ref_prob": 0.95}
+    temp_trader.preview_order = MagicMock(return_value=True)
+    book = {"bbo": {"yes_bid": "0.93", "yes_ask": "0.95"}}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        ok = temp_trader.execute_paper_trade(opp)
+    assert ok is False
+    assert len(temp_trader.state["positions"]) == 0
+
+
+def test_a2_unreadable_book_no_trade_plus_counter(temp_trader):
+    """Unreadable book → no trade and book_unreadable state counter incremented."""
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.state["book_unreadable"] = 0
+    opp = {"slug": "unreadable-book", "question": "Q", "side": "yes", "price": 0.95,
+           "ref_prob": 0.98}
+    temp_trader.preview_order = MagicMock(return_value=True)
+    # Book missing bbo → _book_yes_prices returns (None, None) → ask=None → fill_price=None
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value={}):
+        ok = temp_trader.execute_paper_trade(opp)
+    assert ok is False
+    assert len(temp_trader.state["positions"]) == 0
+    assert temp_trader.state["book_unreadable"] == 1
+    # Second unreadable book increments the counter again.
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value={}):
+        temp_trader.execute_paper_trade(opp)
+    assert temp_trader.state["book_unreadable"] == 2
+
+
+def test_a2_fill_price_includes_slippage_ticks(temp_trader):
+    """fill_price = best ask + slippage tick (1c), not the displayed mark."""
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    opp = {"slug": "slippage-ticks", "question": "Q", "side": "yes", "price": 0.92,
+           "ref_prob": 0.99}   # high ref_prob clears hurdle even at ask+slippage
+    temp_trader.preview_order = MagicMock(return_value=True)
+    book = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.93"}}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        ok = temp_trader.execute_paper_trade(opp)
+    assert ok is True
+    pos = temp_trader.state["positions"][0]
+    # fill_price = 0.93 (ask) + 0.01 (slippage) = 0.94
+    assert pos["fill_price"] == 0.94
+    assert pos["displayed_price"] == 0.92
+    # net_edge = (0.99 - 0.94)*100 = 5c >= hurdle (~0.7c) → trade taken
 
 
 def test_crossvenue_edge_below_modelled_costs_rejected(temp_trader):

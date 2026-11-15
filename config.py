@@ -150,6 +150,24 @@ PM_EDGE_MARGIN_CENTS = _env_float("PM_EDGE_MARGIN_CENTS", 0.5)
 # PM_ALLOW_UNMODELLED=true to also trade markets with no strike/spot (R6).
 PM_ALLOW_UNMODELLED = _env_bool("PM_ALLOW_UNMODELLED", False)
 
+# Calibration circuit breaker (A1): halt new entries when rolling calibration
+# degrades, but only with enough samples, and only time-bounded so a single bad
+# streak cannot permanently stall the engine.
+# Minimum settled rows before the rolling-Brier check is allowed to trip.
+CAL_BRIER_MIN_SAMPLES = _env_int("CAL_BRIER_MIN_SAMPLES", 20)
+# Minimum settled trades before the trailing win-rate check is allowed to trip.
+CAL_WIN_RATE_MIN_SAMPLES = _env_int("CAL_WIN_RATE_MIN_SAMPLES", 30)
+# Wilson lower-bound confidence floor for the trailing win-rate check (0.95 =
+# 95% confidence that the true win rate is at least this high).
+CAL_WIN_RATE_FLOOR = _env_float("CAL_WIN_RATE_FLOOR", 0.95)
+# How long a calibration halt lasts before expiring (minutes). After expiry,
+# entries resume at CAL_PROBE_SIZE_FRACTION size.
+CAL_HALT_MINUTES = _env_int("CAL_HALT_MINUTES", 240)
+# Fraction of normal position size used while probing after a halt expires.
+CAL_PROBE_SIZE_FRACTION = _env_float("CAL_PROBE_SIZE_FRACTION", 0.5)
+# Number of new settled probe outcomes needed to fully clear a halted state.
+CAL_PROBE_OUTCOMES_N = _env_int("CAL_PROBE_OUTCOMES_N", 5)
+
 # Paper ruin limits (R4): halt entries — requiring a manual --reset — when the
 # realized loss or the peak-to-equity drawdown crosses these dollar amounts.
 # Evaluated on realized/drawdown basis, never on instantaneous MTM.
