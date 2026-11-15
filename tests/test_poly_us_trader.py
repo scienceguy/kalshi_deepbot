@@ -932,9 +932,9 @@ def test_check_settlements_tracks_stuck_position_fail_count(temp_trader):
 
 # ── ML gate tests (opt-in via config.ML_MODEL_PATH) ──────────────────────────
 
-def _ml_market():
+def _ml_market(minutes_ahead=120):
     """A market with strike+spot data that reaches the candidate entry path."""
-    end = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end = (datetime.now(timezone.utc) + timedelta(minutes=minutes_ahead)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "slug": "test-ml-candidate",
         "question": "Will BTC exceed strike?",
@@ -945,6 +945,11 @@ def _ml_market():
             "windowEnd": end,
         },
     }
+
+
+def _ml_support():
+    """Training support that covers the helper's 120-minute market."""
+    return {"minutes_left": [1.0, 240.0], "assets": ["BTC"], "venue": "kalshi"}
 
 
 def _fake_cv_edge():
@@ -963,6 +968,7 @@ def _fake_cv_edge():
 def test_ml_gate_denies_low_probability(temp_trader):
     """ML gate denies entry when ML probability for the chosen side is below ML_PROB_MIN."""
     temp_trader.ml_model = MagicMock()
+    temp_trader.ml_model.support = _ml_support()
     temp_trader.ml_model.predict_proba.return_value = 0.40
     temp_trader.adjusted_min_z = 0.0  # bypass cushion-z to isolate the ML gate
     market = _ml_market()
@@ -976,6 +982,7 @@ def test_ml_gate_denies_low_probability(temp_trader):
 def test_ml_gate_allows_high_probability(temp_trader):
     """ML gate allows entry when ML probability for the chosen side is above ML_PROB_MIN."""
     temp_trader.ml_model = MagicMock()
+    temp_trader.ml_model.support = _ml_support()
     temp_trader.ml_model.predict_proba.return_value = 0.80
     temp_trader.adjusted_min_z = 0.0
     market = _ml_market()
@@ -986,6 +993,42 @@ def test_ml_gate_allows_high_probability(temp_trader):
     assert opp is not None
     assert opp["side"] == "yes"
     assert opp["price"] == 0.95
+
+
+def test_ml_gate_skips_out_of_support_market(temp_trader, caplog):
+    """A6: a market outside the training support skips the gate and logs why.
+
+    The mock would deny if scored (p=0.40 < ML_PROB_MIN), so the entry can only
+    survive when the gate is skipped as out-of-support.
+    """
+    temp_trader.ml_model = MagicMock()
+    temp_trader.ml_model.support = _ml_support()
+    temp_trader.ml_model.predict_proba.return_value = 0.40
+    temp_trader.adjusted_min_z = 0.0
+    market = _ml_market(minutes_ahead=600)  # far outside the 1-240 minute support
+    with caplog.at_level("INFO"):
+        with patch("poly_us_trader.crossvenue_edge.evaluate_crossvenue_edge",
+                   return_value=_fake_cv_edge()), \
+             patch("poly_us_trader.crossvenue_edge.get_cached_spot", return_value=100000.0):
+            opp = temp_trader.evaluate_opportunity(market)
+    assert opp is not None
+    assert "ml_out_of_support" in caplog.text
+    temp_trader.ml_model.predict_proba.assert_not_called()
+
+
+def test_ml_gate_skips_without_support_metadata(temp_trader):
+    """A6: a model with no support metadata is never scored (conservative skip)."""
+    temp_trader.ml_model = MagicMock()
+    temp_trader.ml_model.support = None
+    temp_trader.ml_model.predict_proba.return_value = 0.40  # would deny if scored
+    temp_trader.adjusted_min_z = 0.0
+    market = _ml_market()
+    with patch("poly_us_trader.crossvenue_edge.evaluate_crossvenue_edge",
+               return_value=_fake_cv_edge()), \
+         patch("poly_us_trader.crossvenue_edge.get_cached_spot", return_value=100000.0):
+        opp = temp_trader.evaluate_opportunity(market)
+    assert opp is not None
+    temp_trader.ml_model.predict_proba.assert_not_called()
 
 
 def test_ml_gate_skipped_when_no_model(temp_trader):

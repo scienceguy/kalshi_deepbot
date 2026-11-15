@@ -1094,28 +1094,48 @@ class PolyUSPaperTrader:
 
         # ML fair-value confirmatory gate (opt-in via ML_MODEL_PATH).
         # Denies the entry when the ML model assigns too little probability
-        # to the chosen side. Skipped when the model is not loaded or when
-        # spot/strike/minutes are unavailable (graceful degradation).
+        # to the chosen side. A6 placement decision: the model is trained on
+        # Kalshi 15-minute data, so it gates the FALLBACK path only; the
+        # cross-venue main path is governed by its own edge/fee rules.
+        # The row is only scored inside the training support; outside it (or
+        # with no support metadata) the gate is skipped and logged — never a
+        # silent pass.
         if (self.ml_model is not None and cv_edge is not None and long_p is not None
                 and spot and strike_val and hours_left is not None):
-            try:
-                minutes_left = hours_left * 60.0
-                sigma_min = self.adjusted_sigma / math.sqrt(525600.0)
-                row = {
-                    "strike": strike_val,
-                    "kalshi": long_p,        # venue YES mid price (Polymarket)
-                    "fair": cv_edge["ref_prob"],  # GBM fair value
-                    "spread": 0.0,
-                }
-                ml_p = self.ml_model.predict_proba(row, spot, sigma_min, minutes_left)
-                ml_side_p = ml_p if side == "yes" else (1.0 - ml_p)
-                ml_min = getattr(config, "ML_PROB_MIN", 0.50)
-                if ml_side_p < ml_min:
-                    log.debug("ML gate denies %s: side_prob=%.3f < min=%.2f (ml_p=%.3f)",
-                              slug, ml_side_p, ml_min, ml_p)
-                    return None
-            except Exception as e:
-                log.debug("ML gate skipped for %s: %s", slug, e)
+            minutes_left = hours_left * 60.0
+            support = getattr(self.ml_model, "support", None)
+            asset = (symbol or "").upper()
+            for suffix in ("USDT", "USD"):
+                if asset.endswith(suffix):
+                    asset = asset[: -len(suffix)]
+            in_support = (
+                isinstance(support, dict)
+                and isinstance(support.get("minutes_left"), (list, tuple))
+                and len(support["minutes_left"]) == 2
+                and support["minutes_left"][0] <= minutes_left <= support["minutes_left"][1]
+                and asset in [str(a).upper() for a in support.get("assets", [])]
+            )
+            if not in_support:
+                log.info("ml_out_of_support %s: minutes_left=%.0f asset=%s support=%s",
+                         slug, minutes_left, asset or "?", support)
+            else:
+                try:
+                    sigma_min = self.adjusted_sigma / math.sqrt(525600.0)
+                    row = {
+                        "strike": strike_val,
+                        "kalshi": long_p,        # venue YES mid price (Polymarket)
+                        "fair": cv_edge["ref_prob"],  # GBM fair value
+                        "spread": 0.0,
+                    }
+                    ml_p = self.ml_model.predict_proba(row, spot, sigma_min, minutes_left)
+                    ml_side_p = ml_p if side == "yes" else (1.0 - ml_p)
+                    ml_min = getattr(config, "ML_PROB_MIN", 0.50)
+                    if ml_side_p < ml_min:
+                        log.debug("ML gate denies %s: side_prob=%.3f < min=%.2f (ml_p=%.3f)",
+                                  slug, ml_side_p, ml_min, ml_p)
+                        return None
+                except Exception as e:
+                    log.debug("ML gate skipped for %s: %s", slug, e)
 
         return {
             "slug": slug,

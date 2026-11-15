@@ -56,3 +56,46 @@ def test_save_load_roundtrip(tmp_path):
     loaded = m.MLFairValue.load(str(path))
     after = loaded.predict_proba(rows[0], 100000.0, 0.0007, 30.0)
     assert abs(after - before) < 1e-6
+
+
+def test_save_load_persists_support_metadata(tmp_path):
+    """A6: the checkpoint carries the training support it was built with."""
+    rows = [_row(90000), _row(110000)]
+    model = m.train_labeled(rows, epochs=200, lr=0.05, asset="BTC")
+    assert model.support["assets"] == ["BTC"]
+    assert model.support["minutes_left"] == [30.0, 30.0]
+    path = tmp_path / "ml_support.pt"
+    model.save(str(path))
+    loaded = m.MLFairValue.load(str(path))
+    assert loaded.support == model.support
+
+
+def test_load_rejects_mismatched_feature_metadata(tmp_path):
+    """A6: a checkpoint whose feature schema does not match refuses to load."""
+    import torch
+    model = m.MLFairValue()
+    path = tmp_path / "bad_features.pt"
+    torch.save({"state_dict": model.state_dict(),
+                "features": ["only", "three"], "support": None}, path)
+    try:
+        m.MLFairValue.load(str(path))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for mismatched feature schema")
+
+
+def test_load_rejects_invalid_support_metadata(tmp_path):
+    """A6: inverted/implausible support bounds refuse to load."""
+    import torch
+    model = m.MLFairValue()
+    path = tmp_path / "bad_support.pt"
+    torch.save({"state_dict": model.state_dict(),
+                "features": m.FEATURES,
+                "support": {"minutes_left": [10, 5], "assets": ["BTC"]}}, path)
+    try:
+        m.MLFairValue.load(str(path))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for invalid support bounds")

@@ -68,6 +68,10 @@ class MLFairValue(nn.Module):
     def __init__(self, n_in: int = len(FEATURES)):
         super().__init__()
         self.net = nn.Linear(n_in, 1)
+        # Training support: {"minutes_left": [lo, hi], "assets": [...], "venue": ...}.
+        # Persisted in the checkpoint so inference can refuse out-of-distribution
+        # rows (A6). None means "unknown" and callers must skip the gate.
+        self.support = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x).squeeze(-1)
@@ -101,6 +105,7 @@ class MLFairValue(nn.Module):
         torch.save({
             "state_dict": self.state_dict(),
             "features": FEATURES,
+            "support": getattr(self, "support", None),
         }, path)
 
     @classmethod
@@ -108,19 +113,44 @@ class MLFairValue(nn.Module):
         # weights_only=True: checkpoint holds only tensors (state_dict) and a
         # list of strings (features) — both safe under the restricted loader.
         ckpt = torch.load(path, weights_only=True)
-        model = cls(n_in=len(ckpt.get("features", FEATURES)))
+        feats = list(ckpt.get("features", FEATURES))
+        if feats != list(FEATURES):
+            raise ValueError(
+                f"model feature schema mismatch: saved {feats} != current {list(FEATURES)}")
+        support = ckpt.get("support")
+        if support is not None:
+            if not isinstance(support, dict):
+                raise ValueError("model support metadata is not a dict")
+            bounds = support.get("minutes_left")
+            valid_bounds = (
+                isinstance(bounds, (list, tuple)) and len(bounds) == 2
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                        for v in bounds)
+                and 0 <= bounds[0] <= bounds[1]
+            )
+            if not valid_bounds:
+                raise ValueError(f"model support minutes_left is invalid: {bounds!r}")
+            assets = support.get("assets")
+            if not isinstance(assets, list) or not assets:
+                raise ValueError("model support assets are missing")
+        model = cls(n_in=len(feats))
         model.load_state_dict(ckpt["state_dict"])
+        model.support = support
         model.eval()
         return model
 
 
 def train_labeled(rows: List[dict], spot: Optional[float] = None,
                   sigma_min: Optional[float] = None,
-                  epochs: int = 300, lr: float = 0.1) -> MLFairValue:
+                  epochs: int = 300, lr: float = 0.1,
+                  asset: Optional[str] = None,
+                  venue: str = "kalshi") -> MLFairValue:
     """Train on rows that each carry a `settled_yes` label (0 or 1).
 
     Each row may carry its own `spot` and `sigma`; otherwise the scalar
-    fallbacks are used (useful for quick synthetic tests).
+    fallbacks are used (useful for quick synthetic tests). When `asset` is
+    given, the training support (minutes range, asset, venue) is attached so
+    it is saved with the checkpoint and checked at inference.
     """
     model = MLFairValue()
     X = np.stack([
@@ -136,6 +166,13 @@ def train_labeled(rows: List[dict], spot: Optional[float] = None,
     if len(np.unique(y)) < 2:
         raise ValueError("need both YES and NO settled outcomes to train")
     model.fit(X, y, epochs=epochs, lr=lr)
+    if asset:
+        mins = [float(r["minutes_left"]) for r in rows]
+        model.support = {
+            "minutes_left": [min(mins), max(mins)],
+            "assets": [str(asset).upper()],
+            "venue": venue,
+        }
     return model
 
 
@@ -222,7 +259,7 @@ def train_from_history(series: str = "KXBTCD", events: int = 6,
 
     spot = float(np.median(spots_all))
     sigma = float(np.median(sigmas)) if sigmas else 0.0007
-    model = train_labeled(rows, spot, sigma, epochs=epochs, lr=lr)
+    model = train_labeled(rows, spot, sigma, epochs=epochs, lr=lr, asset=asset)
     model.save(out)
     print(f"trained on {len(rows)} rows from {len(evs)} events -> {out}")
     return model
