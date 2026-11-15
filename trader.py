@@ -841,6 +841,9 @@ def _mark_to_market_exposure(positions, markets, client=None):
 # ═════════════════════════════════════════════════════════════════════
 # Settlement queue lock file for read-modify-write atomicity
 SETTLEMENT_LOCK_FILE = SETTLEMENT_QUEUE_FILE.with_suffix(".lock")
+# B15: one instance lock per trader regardless of mode — a dry and a live
+# process must not run together sharing the settlement queue and state files.
+INSTANCE_LOCK_NAME = ".lock_kalshi"
 
 def _load_settlement_queue() -> list:
     """Load pending settlements from the local queue file.
@@ -3388,9 +3391,7 @@ def acquire_instance_lock(lock_path: Path) -> int:
 
 # reviewed: entry point only — the lock below is taken before any trading
 if __name__ == "__main__":
-    is_live = bool(args.live or (not config.DRY_RUN and os.environ.get("KALSHI_CONFIRM_LIVE", "").lower() == "true"))
-    lock_name = ".lock_live" if is_live else ".lock_dry"
-    lock_path = Path(__file__).resolve().parent / lock_name
+    lock_path = Path(__file__).resolve().parent / INSTANCE_LOCK_NAME
     # Hold the fd for the process lifetime; it is the lock.
     lock_fd = acquire_instance_lock(lock_path)
 
