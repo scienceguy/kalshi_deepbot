@@ -479,6 +479,9 @@ EXIT_ENABLED = _env_bool("EXIT_ENABLED", False)
 EXIT_TAKE_PROFIT_CENTS = _env_int("EXIT_TAKE_PROFIT_CENTS", 20)  # bid moved +20c vs entry. Payoff asymmetry (B12): the stop has room below the entry, but a bid caps at 99c — at the 92c+ entry band this target is unreachable and only the stop can fire.
 EXIT_STOP_LOSS_CENTS = _env_int("EXIT_STOP_LOSS_CENTS", 25)      # 25c stop loss gives full variance buffer
 EXIT_MIN_MINUTES_LEFT = _env_float("EXIT_MIN_MINUTES_LEFT", 1.0)  # don't dump into a dead book
+# B13: after any filled exit, suppress the per-cycle contract top-up for this
+# many seconds — a stale positions payload must not resurrect sold contracts.
+EXIT_TOPUP_GRACE_SECONDS = _env_int("EXIT_TOPUP_GRACE_SECONDS", 300)
 
 # ═════════════════════════════════════════════════════════════════════
 # POSITION SIZING (Kelly criterion from kalshi_codex_bot momentum backtests)

@@ -239,6 +239,7 @@ class BotState:
         self.positions: dict = _load_paper_positions()  # ticker -> order_id or "dry"
         self.resting_value: dict = {}      # order_id -> {"dollars": float, "ticker": str}
         self.resting_tickers: set = set()  # tickers with resting orders this cycle
+        self.last_exit_ts: dict = {}       # ticker -> time of last filled exit (B13 top-up grace)
         self.last_cash_log: float = -1.0
         self.session_pnl: float = 0.0
         self.realized_pnl: float = 0.0
@@ -1588,6 +1589,10 @@ def _manage_exits(client):
             log.info("Exit order for %s did not fill — retrying next cycle", ticker)
             continue
 
+        # B13: stamp the exit so the positions-sync top-up refuses to grow
+        # this position back from a stale payload for a grace period.
+        state.last_exit_ts[ticker] = time.time()
+
         # Only remove what was actually sold: an IOC sell can fill partially,
         # and popping the whole position would drop the unsold contracts from
         # local state (they would reappear next cycle at a recomputed basis).
@@ -1896,6 +1901,23 @@ def cycle(client: KalshiClient):
             no_pos = _pos_no(p)
             exch_contracts = floor_contracts(yes_pos or no_pos)
             if exch_contracts > existing.get("contracts", 0):  # reviewed: update contract count and risk on additional exchange fills
+                # B13: an unexplained increase is a stale positions payload (a
+                # partial exit lowered the stored count; the exchange replica
+                # has not caught up). Accept it only when a known resting entry
+                # order covers the increase, and never within the grace period
+                # after a filled exit on this ticker.
+                if tk not in state.resting_tickers:  # reviewed: only adopt an increase a known resting entry order can explain (B13)
+                    log.info(
+                        "Top-up skipped for %s: exchange contracts %d > stored %d "
+                        "but no resting entry order explains it",
+                        tk, exch_contracts, existing.get("contracts", 0))
+                    continue
+                exit_ts = state.last_exit_ts.get(tk, 0.0)  # reviewed: suppress resurrection from a stale payload for a grace period after any exit (B13)
+                if exit_ts and (now - exit_ts) < config.EXIT_TOPUP_GRACE_SECONDS:
+                    log.info(
+                        "Top-up skipped for %s: within %.0fs grace after a filled exit",
+                        tk, config.EXIT_TOPUP_GRACE_SECONDS)
+                    continue
                 exposure = _pos_cost_basis(p)
                 new_entry_price = int(round(exposure * 100 / exch_contracts)) if exch_contracts else existing.get("entry_price", 0)
                 log.info(
