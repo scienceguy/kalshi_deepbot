@@ -311,12 +311,12 @@ class PolyUSPaperTrader:
         state["ledger_realized_gap"] = gap
         if abs(gap) >= 0.005:
             log.warning(
-                "Settlement tracking mismatch: state realized %+.2f vs ledger %+.2f "
+                "Settlement tracking mismatch: state realized %+.2f %+.2f pre-epoch vs ledger %+.2f "
                 "(gap %+.2f, %d settled) — run scripts/poly_ledger_audit.py for detail",
-                state_realized, ledger_realized, gap, settled_count)
+                state_realized, pre_epoch, ledger_realized, gap, settled_count)
         else:
-            log.info("Settlement tracking reconciled: state realized %+.2f == ledger %+.2f (%d settled)",
-                     state_realized, ledger_realized, settled_count)
+            log.info("Settlement tracking reconciled: state realized %+.2f %+.2f pre-epoch == ledger %+.2f (%d settled)",
+                     state_realized, pre_epoch, ledger_realized, settled_count)
 
     def _load_state(self, initial_cash: float) -> dict:
         fresh = {
