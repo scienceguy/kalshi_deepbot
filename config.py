@@ -640,6 +640,10 @@ NVIDIA_MODEL = os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
 LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", True)
 LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.70)
 LLM_EVAL_MIN_CONFIDENCE = _env_float("LLM_EVAL_MIN_CONFIDENCE", 0.80)  # high confidence (>=0.80) required from LLM consensus to hold to expiry
+# B9: fail-open streak that fires the alert hook, and the JSONL ledger that
+# stores llm_prob/hold_conf with settlement outcomes for calibration.
+LLM_FAIL_OPEN_ALERT_STREAK = _env_int("LLM_FAIL_OPEN_ALERT_STREAK", 3)
+LLM_CALIBRATION_FILE = os.environ.get("LLM_CALIBRATION_FILE", "llm_calibration.jsonl")
 # Fail OPEN by default: the LLM is an optional extra check, so a provider
 # outage must not silently stop the bot from trading. Fail-closed turned a
 # single unreachable endpoint into "no orders ever placed".

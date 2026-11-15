@@ -36,6 +36,97 @@ import config
 
 log = logging.getLogger("llm_eval")
 
+# ── B9: output hygiene, fail-open streak alerting, calibration ledger ────────
+# Other agents' content arrives through the shared inbox/checkpoint feed; it
+# must never ride along in a prompt. Absolute balances are gone from the
+# payload too — ratios only, and free text is length-limited with control
+# characters stripped.
+_TEXT_FIELD_LIMIT = 2000
+
+_FAIL_OPEN_STREAK = 0
+FAIL_OPEN_ALERT_HOOK = None  # overridable for tests; default logs an error
+
+
+def _sanitize_text(value, limit=_TEXT_FIELD_LIMIT):
+    """Strip control characters and cap length of a free-text field (B9)."""
+    text = str(value if value is not None else "")
+    text = "".join(c for c in text if ord(c) == 9 or ord(c) >= 32)
+    return text[:limit]
+
+
+def record_outcome(ticker, llm_prob, hold_conf, outcome_won, ts=None):
+    """Append one eval/outcome row to the calibration ledger (JSONL, B9).
+
+    Feeds calibration_report(); a no-op on empty tickers. Callers book this
+    at settlement time, when the outcome is known.
+    """
+    try:
+        prob = float(llm_prob)
+        conf = float(hold_conf)
+    except (TypeError, ValueError):
+        return False
+    row = {"ts": ts if ts is not None else time.time(),
+           "ticker": str(ticker or ""),
+           "llm_prob": prob, "hold_conf": conf,
+           "outcome_won": bool(outcome_won)}
+    path = getattr(config, "LLM_CALIBRATION_FILE", "llm_calibration.jsonl")
+    try:
+        import fcntl
+        with open(path, "a") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            f.write(json.dumps(row) + "\n")
+            f.flush()
+        return True
+    except OSError as e:
+        log.warning("Could not write calibration ledger %s: %s", path, e)
+        return False
+
+
+def calibration_report(min_n=30):
+    """Brier score + per-bucket hit rates over the calibration ledger (B9).
+
+    Returns None when fewer than min_n rows exist or the file is unreadable —
+    no claim of skill without data.
+    """
+    path = getattr(config, "LLM_CALIBRATION_FILE", "llm_calibration.jsonl")
+    try:
+        with open(path) as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    except OSError:
+        return None
+    probs = [(float(r["llm_prob"]), bool(r["outcome_won"])) for r in rows
+             if isinstance(r, dict) and "llm_prob" in r]
+    if len(probs) < min_n:
+        return None
+    brier = sum((p - (1.0 if won else 0.0)) ** 2 for p, won in probs) / len(probs)
+    buckets = {}
+    for p, won in probs:
+        b = min(9, int(p * 10))
+        n, hits = buckets.get(b, (0, 0))
+        buckets[b] = (n + 1, hits + (1 if won else 0))
+    return {"n": len(probs), "brier": round(brier, 6),
+            "buckets": {str(k): {"n": v[0], "hit_rate": round(v[1] / v[0], 4)}
+                        for k, v in sorted(buckets.items())}}
+
+
+def calibration_beats_chance(min_n=30, max_brier=0.25):
+    """True only when the ledger shows skill (n>=min_n, Brier<max_brier) (B9).
+
+    Used to gate the LLM hold-to-expiry confidence override of take-profit:
+    unvalidated LLM outputs must not steer exits.
+    """
+    report = calibration_report(min_n=min_n)
+    return bool(report and report["brier"] < max_brier)
+
+
+def _fail_open_alert(streak):
+    hook = FAIL_OPEN_ALERT_HOOK
+    if callable(hook):
+        hook(streak)
+        return
+    log.error("ALERT: LLM eval failed open %d times in a row (LLM_FAIL_OPEN_ALERT_STREAK) — "
+              "the model is not evaluating; trades are going out unevaluated", streak)
+
 # ── Timeout and retry config ─────────────────────────────────────────────────
 # Uses config._env_int / config._env_float (deduped — do not redefine here).
 REQUEST_TIMEOUT = config._env_int("LLM_REQUEST_TIMEOUT", 5)
@@ -469,8 +560,10 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
 
     Args:
         signal_info: dict with keys like ticker, direction, entry_price,
-                     contracts, dollar_risk, cash, exposure, total_value,
-                     mid, skew, trend, minutes_left, source, strength
+                     contracts, dollar_risk, mid, skew, trend, minutes_left,
+                     source, strength, signal_reason. Absolute balances and
+                     inbox-derived checkpoints are deliberately NOT read:
+                     nothing private or other-agent content goes out (B9).
 
     Returns:
         dict with probability_of_net_profit, confidence_hold_to_expiry,
@@ -497,11 +590,10 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
         "strike_price": signal_info.get("strike_price"),
         "spot_vs_strike_diff": signal_info.get("spot_diff"),
         "minutes_left": signal_info.get("minutes_left", 0),
-        "signal_reason": signal_info.get("signal_reason", ""),
+        "signal_reason": _sanitize_text(signal_info.get("signal_reason", "")),
         "contracts": signal_info.get("contracts", 0),
         "dollar_risk": signal_info.get("dollar_risk", 0.0),
         "skew_cents": signal_info.get("skew", 0),
-        "mempalace_checkpoint": signal_info.get("mempalace_checkpoint", {}),
     })
 
     messages = _build_messages(system_prompt, user_prompt)
@@ -573,18 +665,26 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
 def should_block_trade(signal_info: dict, min_probability: float = 0.65, min_confidence: float = 0.45) -> tuple:
     """
     Determine if a trade should be blocked based on LLM evaluation.
-    
+
     Returns (should_block: bool, eval_result: dict or None).
     Blocks if probability < min_probability OR confidence < min_confidence.
     """
-    
+
     result = evaluate_trade(signal_info)
     if not result:
         if config.LLM_EVAL_FAIL_OPEN:
+            # B9: consecutive fail-opens mean the model is effectively absent;
+            # after LLM_FAIL_OPEN_ALERT_STREAK in a row, fire the alert hook.
+            global _FAIL_OPEN_STREAK
+            _FAIL_OPEN_STREAK += 1
+            streak_limit = int(getattr(config, "LLM_FAIL_OPEN_ALERT_STREAK", 3) or 0)
+            if streak_limit and _FAIL_OPEN_STREAK >= streak_limit:
+                _fail_open_alert(_FAIL_OPEN_STREAK)
             log.warning("NVIDIA LLM eval failed — fail-open, allowing trade")
             return False, None
         return True, None  # Can't evaluate — block by default (fail-safe)
-    
+
+    _FAIL_OPEN_STREAK = 0  # a successful eval clears the streak
     prob = result["probability_of_net_profit"]
     conf = result.get("confidence_hold_to_expiry", 0.0)
 
@@ -595,6 +695,6 @@ def should_block_trade(signal_info: dict, min_probability: float = 0.65, min_con
         log.info(
             "LLM BLOCK %s — prob=%.2f conf=%.2f (min_prob=%.2f min_conf=%.2f)",
             signal_info.get("ticker", "?"), prob, conf,
-            min_probability, config.LLM_EVAL_MIN_CONFIDENCE
+            min_probability, min_confidence
         )
     return should_block, result

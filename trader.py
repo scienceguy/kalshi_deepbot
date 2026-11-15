@@ -87,7 +87,7 @@ from risk import RiskManager  # noqa: E402
 from signals import floor_contracts  # noqa: E402
 import signals as se  # noqa: E402
 from resilience import CycleSupervisor, systemd_notify  # noqa: E402
-from llm_eval import should_block_trade  # noqa: E402
+from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, calibration_beats_chance as _llm_calibration_beats_chance  # noqa: E402
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
 import binance_feed  # noqa: E402  — WebSocket spot streams (start_ws_streams)
@@ -1530,10 +1530,12 @@ def _manage_exits(client):
         except Exception:
             pass
 
-        # reviewed: retrieve LLM hold confidence to decide whether to scalp at +3c or hold to expiry
+        # reviewed: retrieve LLM hold confidence; override needs the calibration ledger to beat chance (B9)
         llm_insight = state.llm_trade_insights.get(ticker.upper(), {})
         hold_conf = llm_insight.get("hold_confidence", 0.0)
-        high_hold_confidence = hold_conf >= 0.80
+        # B9: unvalidated LLM outputs must not steer exits — the override only
+        # engages once the recorded hold_conf/llm_prob ledger beats chance.
+        high_hold_confidence = hold_conf >= 0.80 and _llm_calibration_beats_chance()
 
         delta = bid - entry
         # reviewed: sell immediately when profitable by +3c unless LLM confirms with high confidence to hold to expiry
@@ -2032,6 +2034,16 @@ def cycle(client: KalshiClient):
                 series=fees.series_from_ticker(t))
             won = realized_pnl > 0
 
+            # B9: record llm_prob/hold_conf with the outcome for calibration.
+            # insight persists up to 24h, so an open position's eval is here.
+            _insight = state.llm_trade_insights.get(t.upper())
+            if _insight:  # reviewed: no prior LLM eval for this ticker — nothing to record for calibration (B9)
+                try:
+                    _llm_record_outcome(t, _insight.get("probability"),
+                                        _insight.get("hold_confidence"), won)
+                except Exception:
+                    log.debug("LLM calibration record failed for %s", t)
+
             log.info(
                 "Cleared settled position: %s (side=%s, released $%.2f, realized P&L $%.2f, won=%s)",
                 t, side, reserved, realized_pnl, won,
@@ -2496,9 +2508,10 @@ def cycle(client: KalshiClient):
                     "entry_price": sig.entry_price,
                     "contracts": sig.contracts,
                     "dollar_risk": sig.dollar_risk,
-                    "cash": cash if cash is not None else 0.0,
-                    "exposure": mark_to_market_exposure,
-                    "total_value": total_value,
+                    # B9: ratios only — no absolute balances or inbox-derived
+                    # checkpoints leave this process with the prompt.
+                    "exposure_pct": round(100.0 * mark_to_market_exposure / total_value, 2)
+                    if (total_value or 0) > 0 else None,  # reviewed: zero or unknown equity would divide by zero — send None rather than a fake ratio (B9)
                     "mid_side": mid_side,
                     "mid": sig.market.mid_yes,
                     "spot_price": spot,
@@ -2509,7 +2522,6 @@ def cycle(client: KalshiClient):
                     "source": getattr(sig, 'source', 'unknown'),
                     "strength": sig.strength,
                     "signal_reason": getattr(sig, 'reason', ''),
-                    "mempalace_checkpoint": _local_module.get_latest_checkpoint() if _local_module else {},
                 }
                 should_block, eval_result = should_block_trade(
                     signal_info, min_probability=config.LLM_EVAL_MIN_PROBABILITY,
