@@ -53,7 +53,19 @@ if [ -n "$HITS" ]; then
     exit 1
 fi
 
-# --- 3. Token-corruption guard on staged Python -------------------------------
+# --- 3. Secret scanning with gitleaks (if available) --------------------------
+# Catches a broader class of secrets than the hand-tuned PATTERN above.
+if command -v gitleaks >/dev/null 2>&1; then
+    if ! gitleaks protect --staged --verbose --no-banner; then
+        echo "ERROR: gitleaks detected secrets in staged changes"
+        echo "       Move secrets to ~/.secrets/ and load them at runtime."
+        exit 1
+    fi
+else
+    echo "NOTE: gitleaks not installed; skipping secret scan (install: https://github.com/gitleaks/gitleaks)"
+fi
+
+# --- 4. Token-corruption guard on staged Python -------------------------------
 # The generation channel that writes this tree intermittently splices foreign
 # script into identifiers/strings and ASCII words into numbers ("0.94laub").
 # Those files compile, so tests alone do not catch them. See AGENTS.md
