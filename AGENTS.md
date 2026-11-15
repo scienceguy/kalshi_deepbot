@@ -288,14 +288,13 @@ Host:harness:project = `termux:opencode:kalshi_deepbot`.
 - Do not file secrets or tokens.
 
 Writing drawers when the MCP tools are not exposed in the session:
-- The mempalace MCP server is not registered as a callable tool in every
-  OpenCode session (it is listed in the catalog but `tools.mempalace.*` fails
-  with "Unknown tool namespace"). The server itself writes fine, so drive it
-  over JSON-RPC with `~/bin/mp-call`:
-  `./bin/mp-call mempalace_add_drawer --wing home --room general --content - < note.md`
-  or `./bin/mp-call mempalace_delete_drawer '{"drawer_id":"drawer_..."}'`.
-  Content from stdin (`-`) avoids shell quoting on long notes. Never prints
-  secrets; keep them out of the note as usual.
+- The mempalace MCP server is registered in `~/.opencode/opencode.json` and
+  available as callable `mempalace_*` tools. If they are not exposed in a
+  given session, drive the server directly with `mempalace-mcp` (installed at
+  `~/.local/bin/mempalace-mcp`, add `~/.local/bin` to PATH or use the full path).
+  The MCP server speaks stdio JSON-RPC; use `mempalace status` or the MCP
+  `tools/list` + `tools/call` protocol. Never prints secrets; keep them out of
+  notes as usual.
 
 Coordination (logstream):
 - Always sweep the mempalace inbox at session start, before other work: `mempalace_event_list` to_agent=`termux:opencode:kalshi_deepbot`; act on anything addressed to you.

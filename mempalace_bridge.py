@@ -5,7 +5,8 @@ Replaces synchronous mempalace CLI calls in the trader loop with a background
 bridge: an outbound queue + writer thread for writes (heartbeat, checkpoint,
 status, KG facts) and an inbound subscriber for task requests. Every public
 call is a non-blocking queue put (well under 1ms); the writer thread handles
-CLI latency, retries and circuit breaking.
+library latency, retries and circuit breaking. Talks to MemPalace through the
+installed mempalace Python library (no external CLI).
 
 Usage:
     bridge = MemPalaceBridge("ubuntu:opencode:kalshi_deepbot")
@@ -19,10 +20,8 @@ Usage:
 
 import json
 import logging
+import os
 import queue
-import shlex
-import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -30,24 +29,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from mempalace.logstream import Logstream, LOGSTREAM_DB_FILENAME
+from mempalace.knowledge_graph import KnowledgeGraph
+
 log = logging.getLogger(__name__)
 
-MP_CALL = str(Path.home() / "bin" / "mp-call")
-_MP_TMP = tempfile.gettempdir()
+PALACE_DIR = str(Path.home() / ".mempalace")
+_LOGSTREAM_DB = os.path.join(PALACE_DIR, LOGSTREAM_DB_FILENAME)
+_KG_DB = os.path.join(PALACE_DIR, "knowledge_graph.sqlite3")
 
 # Breaker defaults
 BREAKER_MAX_FAILURES = 5
 BREAKER_COOLDOWN_SECONDS = 30.0
-MP_CALL_TIMEOUT = 2.0  # seconds per CLI call
+
+WRITER_TIMEOUT = 2.0  # seconds per library call (kept for parity with old CLI timeout)
 
 
 class MemPalaceBridge:
     """Background MemPalace bridge — never blocks the trading path.
 
     All public methods are non-blocking queue puts. A writer thread drains
-    the outbound queue and calls mp-call with a 2s timeout and circuit
-    breaker. A subscriber thread keeps a long-lived mp-call logstream wait
-    for inbound task events.
+    the outbound queue and calls the mempalace library with a circuit
+    breaker. A subscriber thread keeps a long-lived logstream wait for
+    inbound task events.
     """
 
     def __init__(self, agent_identity: str):
@@ -180,24 +184,7 @@ class MemPalaceBridge:
             self._breaker_open_until = time.time() + BREAKER_COOLDOWN_SECONDS
             self.metrics["breaker_opens"] += 1
 
-    # -- mp-call invocation ---------------------------------------------
-
-    def _call_mp(self, args: list, timeout: float = MP_CALL_TIMEOUT):
-        """Call ~/bin/mp-call with timeout and circuit breaker."""
-        if not self._breaker_closed():
-            raise RuntimeError("circuit breaker open")
-        quoted = [shlex.quote(a) for a in args]
-        cmd = f"cd {_MP_TMP} && {MP_CALL} " + " ".join(quoted)
-        try:
-            r = subprocess.run(
-                ["bash", "-c", cmd],
-                capture_output=True, text=True, timeout=timeout,
-            )
-            self._breaker_success()
-            return r
-        except subprocess.TimeoutExpired:
-            self._breaker_failure()
-            raise
+    # -- library delivery -----------------------------------------------
 
     def _deliver(self, cmd_type: str, subtype: str, payload: dict,
                  correlation_id: str) -> None:
@@ -208,6 +195,8 @@ class MemPalaceBridge:
 
     def _deliver_status(self, status_type: str, payload: dict,
                         correlation_id: str) -> None:
+        if not self._breaker_closed():
+            raise RuntimeError("circuit breaker open")
         now_iso = datetime.now(timezone.utc).isoformat()
         body_parts = [
             f"status={status_type}",
@@ -216,32 +205,40 @@ class MemPalaceBridge:
         ]
         if payload:
             body_parts.append(f"data={json.dumps(payload)}")
-        r = self._call_mp([
-            "logstream", "append",
-            "--type", "status",
-            "--stream", "project/kalshi_deepbot",
-            "--room", "status",
-            "--topic", f"agent-{status_type}",
-            "--correlation-id", correlation_id,
-            "--from-agent", self.agent_identity,
-            "--to-agent", "*",
-            "--status", "open",
-            "--body", " | ".join(body_parts),
-        ])
-        if r.returncode != 0:
-            log.debug("MemPalace status post RC=%s: %s", r.returncode,
-                      r.stderr[:120])
+        try:
+            ls = Logstream(db_path=_LOGSTREAM_DB)
+            ls.append_event(
+                type="status",
+                stream="project/kalshi_deepbot",
+                room="status",
+                topic=f"agent-{status_type}",
+                correlation_id=correlation_id,
+                from_agent=self.agent_identity,
+                to_agent="*",
+                status="open",
+                body=" | ".join(body_parts),
+            )
+            self._breaker_success()
+        except Exception as e:
+            self._breaker_failure()
+            log.warning("MemPalace status post failed: %s", e)
+            raise
 
     def _deliver_kg(self, subtype: str, payload: dict) -> None:
+        if not self._breaker_closed():
+            raise RuntimeError("circuit breaker open")
         if subtype == "add":
-            r = self._call_mp([
-                "kg", "add",
-                payload["subject"], payload["predicate"], payload["object"],
-                payload.get("source_drawer_id", ""),
-            ])
-            if r.returncode != 0:
-                log.warning("MemPalace kg add RC=%s: %s",
-                            r.returncode, r.stderr[:120])
+            try:
+                kg = KnowledgeGraph(db_path=_KG_DB)
+                kg.add_triple(
+                    payload["subject"], payload["predicate"], payload["object"],
+                    source_drawer_id=payload.get("source_drawer_id", ""),
+                )
+                self._breaker_success()
+            except Exception as e:
+                self._breaker_failure()
+                log.warning("MemPalace kg add failed: %s", e)
+                raise
 
     # -- threads ---------------------------------------------------------
 
@@ -265,29 +262,24 @@ class MemPalaceBridge:
                 log.warning("MemPalace writer error: %s", e)
 
     def _subscriber_loop(self) -> None:
-        """Long-lived inbound subscriber via mp-call logstream wait."""
+        """Long-lived inbound subscriber via mempalace library logstream wait."""
+        ls = Logstream(db_path=_LOGSTREAM_DB)
         while not self._stop.is_set():
             try:
-                r = self._call_mp([
-                    "logstream", "wait",
-                    "--correlation-id", f"sub-{self.agent_identity}",
-                    "--to-agent", self.agent_identity,
-                    "--timeout-ms", "2000",
-                ], timeout=5.0)
-                if r.returncode == 0 and r.stdout.strip():
-                    try:
-                        data = json.loads(r.stdout)
-                        events = data.get("events", [])
-                        for event in events:
-                            try:
-                                self._inbound.put_nowait(event)
-                                self.metrics["inbound_received"] += 1
-                            except queue.Full:
-                                pass  # drop inbound if queue full
-                    except (json.JSONDecodeError, KeyError):
-                        pass
+                event = ls.wait_events(
+                    timeout_ms=2000,
+                    correlation_id=f"sub-{self.agent_identity}",
+                    to_agent=self.agent_identity,
+                )
+                if event is None:
+                    continue  # timeout, no event — poll again
+                try:
+                    self._inbound.put_nowait(event)
+                    self.metrics["inbound_received"] += 1
+                except queue.Full:
+                    pass  # drop inbound if queue full
             except Exception:
-                # Breaker open, CLI down, or transient error — back off
+                # Library error or transient — back off and retry
                 time.sleep(1.0)
                 continue
 
