@@ -929,3 +929,58 @@ def test_ml_model_loads_from_checkpoint():
     assert 0.0 <= p <= 1.0
 
 
+
+
+def _pos(slug, side="no", qty=1, price=0.95):
+    return {"slug": slug, "side": side, "qty": qty, "price": price,
+            "cost": round(qty * price, 4)}
+
+
+def test_unknown_market_end_does_not_strand_position(temp_trader):
+    """A market with no parseable end time is 'unknown', not 'open': the
+    settlement lookup must still be attempted, or the position is stranded."""
+    temp_trader.state["positions"] = [_pos("no-end-slug")]
+    with patch("polymarket_us_client.get_market_settlement",
+               return_value={"slug": "no-end-slug", "settlement": 0.0}):
+        temp_trader.check_settlements(
+            {"no-end-slug": {"slug": "no-end-slug", "status": "MARKET_STATUS_OPEN"}})
+    assert temp_trader.state["positions"] == []
+    assert temp_trader.state["settlements_count"] == 1
+    assert temp_trader.state["settled_realized_pnl"] == pytest.approx(0.05, abs=1e-6)
+
+
+def test_known_open_market_with_future_end_is_held(temp_trader):
+    """The complement: a market we KNOW is open must not be queried or closed."""
+    future = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    temp_trader.state["positions"] = [_pos("still-open-slug")]
+    with patch("polymarket_us_client.get_market_settlement") as mock_settle:
+        temp_trader.check_settlements(
+            {"still-open-slug": {"slug": "still-open-slug", "endDate": future,
+                                 "status": "MARKET_STATUS_OPEN"}})
+    assert not mock_settle.called
+    assert [p["slug"] for p in temp_trader.state["positions"]] == ["still-open-slug"]
+    assert temp_trader.state.get("settlements_count", 0) == 0
+
+
+def test_startup_reconciles_state_against_ledger(tmp_path):
+    """State realized P&L and the ledger must not silently diverge: startup
+    records the ledger's figure, the settlement count and the gap."""
+    state_file = tmp_path / "state.json"
+    ledger_file = tmp_path / "ledger.jsonl"
+    state_file.write_text(json.dumps({
+        "cash": 34.1, "positions": [], "realized_pnl": 0.0, "start_balance": 35.0}))
+    lines = [
+        {"event": "open", "slug": "s1", "cost": 0.95},
+        {"event": "settlement", "slug": "s1", "pnl": -0.95},
+        {"event": "settlement", "slug": "s2", "pnl": 0.05},
+    ]
+    ledger_file.write_text("\n".join(json.dumps(r) for r in lines) + "\n{ torn write\n")
+
+    with patch("poly_us_trader.STATE_FILE", state_file), \
+         patch("poly_us_trader.LEDGER_FILE", ledger_file):
+        trader = PolyUSPaperTrader(initial_cash=35.0)
+
+    assert trader.state["ledger_realized_pnl"] == pytest.approx(-0.90)
+    assert trader.state["ledger_settlements"] == 2
+    assert trader.state["ledger_realized_gap"] == pytest.approx(0.90)
+    assert trader.state["settlements_count"] == 2

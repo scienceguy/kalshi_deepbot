@@ -207,6 +207,7 @@ class PolyUSPaperTrader:
             "window_spent": 0.0,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        self._reconcile_ledger(state)
         self._save_state(state)
         self.state = state
         self._append_ledger({
@@ -256,6 +257,54 @@ class PolyUSPaperTrader:
             self.state["daily_loss_halted"] = False
         return bool(self.state.get("daily_loss_halted", False))
 
+    def _ledger_totals(self):
+        """(net realized P&L, settlement count) recorded in the paper ledger."""
+        total = 0.0
+        settled = 0
+        try:
+            with open(self.ledger_file) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue  # torn write: skip the line, not the whole file
+                    event = rec.get("event")
+                    if event in ("settlement", "rotate_exit", "forfeit"):
+                        total += float(rec.get("pnl") or 0.0)
+                    if event == "settlement":
+                        settled += 1
+        except OSError:
+            return 0.0, 0
+        return round(total, 4), settled
+
+    def _reconcile_ledger(self, state: dict) -> None:
+        """Record the ledger's view of realized P&L and shout on any divergence.
+
+        The state file is authoritative for cash, but the ledger is the audit
+        trail. A gap means a settlement or rotation reached one and not the
+        other — a crash between the two writes, or a bankroll reset that dropped
+        open positions. That must be visible, never silent.
+        """
+        ledger_realized, settled_count = self._ledger_totals()
+        state["ledger_realized_pnl"] = ledger_realized
+        state["ledger_settlements"] = settled_count
+        state["settlements_count"] = max(int(state.get("settlements_count", 0) or 0),
+                                         settled_count)
+        state_realized = float(state.get("realized_pnl", 0.0) or 0.0)
+        gap = round(state_realized - ledger_realized, 4)
+        state["ledger_realized_gap"] = gap
+        if abs(gap) >= 0.005:
+            log.warning(
+                "Settlement tracking mismatch: state realized %+.2f vs ledger %+.2f "
+                "(gap %+.2f, %d settled) — run scripts/poly_ledger_audit.py for detail",
+                state_realized, ledger_realized, gap, settled_count)
+        else:
+            log.info("Settlement tracking reconciled: state realized %+.2f == ledger %+.2f (%d settled)",
+                     state_realized, ledger_realized, settled_count)
+
     def _load_state(self, initial_cash: float) -> dict:
         fresh = {
             "start_balance": initial_cash,
@@ -269,6 +318,9 @@ class PolyUSPaperTrader:
             "ruin_events": 0,
             "ruin_halted": False,
             "milestones_reached": [float(initial_cash)],
+            "settlements_count": 0,
+            "settled_realized_pnl": 0.0,
+            "ledger_realized_pnl": 0.0,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         if self.state_file.exists():
@@ -278,6 +330,7 @@ class PolyUSPaperTrader:
                     # Older state files predate the lifetime stats; default them.
                     for k, v in fresh.items():
                         data.setdefault(k, v)
+                    self._reconcile_ledger(data)
                     return data
                 raise ValueError("state file missing required keys (cash/positions)")
             except Exception as e:
@@ -291,6 +344,7 @@ class PolyUSPaperTrader:
                     self.state_file.replace(quarantine)
                 except OSError as re:
                     log.error("Could not quarantine corrupt state file %s: %s", self.state_file, re)
+        self._reconcile_ledger(fresh)
         self._save_state(fresh)
         return fresh
 
@@ -542,17 +596,19 @@ class PolyUSPaperTrader:
 
             # Check if market has closed, resolved, or passed its windowEnd/endDate
             is_closed = m_info.get("closed", False) if m_info else False
+            end_dt = market_end_dt(m_info) if m_info else None
             if m_info and not is_closed:
                 status = str(m_info.get("status") or "").upper()
                 if status in ("RESOLVED", "RESOLVING", "CLOSED"):
                     is_closed = True
-                else:
-                    end_dt = market_end_dt(m_info)
-                    if end_dt and now >= end_dt:
-                        is_closed = True
+                elif end_dt and now >= end_dt:
+                    is_closed = True
 
-            # If market is still actively trading and not past end date, keep holding
-            if not is_closed and m_info is not None:
+            # Hold only when the market is KNOWN to still be open. A market with
+            # no parseable end time is "unknown", not "open": falling through to
+            # the settlement lookup is the only way a position like that ever
+            # closes, and holding on it strands the position forever.
+            if not is_closed and m_info is not None and end_dt is not None:
                 remaining_positions.append(pos)
                 continue
 
@@ -608,6 +664,9 @@ class PolyUSPaperTrader:
             # Detach the position and persist BEFORE the ledger append so a crash
             # between the two cannot double-credit on the next cycle.
             self.state["positions"] = [p for p in self.state.get("positions", []) if p is not pos]
+            self.state["settlements_count"] = int(self.state.get("settlements_count", 0) or 0) + 1
+            self.state["settled_realized_pnl"] = round(
+                float(self.state.get("settled_realized_pnl", 0.0) or 0.0) + pnl, 4)
             self._save_state(self.state)
             self._append_ledger({
                 "event": "settlement",
@@ -1414,6 +1473,10 @@ def main():
               f"Ruin Events: {state.get('ruin_events', 0)} | "
               f"Ruin Halted: {bool(state.get('ruin_halted', False))}")
         print(f"Trades Count:   {state.get('trades_count', 0)}")
+        print(f"Settlements:    {state.get('settlements_count', 0)} "
+              f"(settled P&L ${float(state.get('settled_realized_pnl', 0.0) or 0.0):+.2f})")
+        print(f"Ledger Reconciliation: ledger realized ${float(state.get('ledger_realized_pnl', 0.0) or 0.0):+.2f} "
+              f"vs state ${realized:+.2f} (gap ${float(state.get('ledger_realized_gap', 0.0) or 0.0):+.2f})")
         print(f"Milestones Reached: {state.get('milestones_reached', [init_cash])}")
         for p in positions:
             cat = f"[{p['category']}] " if p.get("category") else ""
