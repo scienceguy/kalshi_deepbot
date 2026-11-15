@@ -547,6 +547,8 @@ MARKET_DAILY_LOSS_PCT = _env_float("MARKET_DAILY_LOSS_PCT", 0.10)
 # Rolling window (hours) for per-asset realized/unrealized loss tracking (B4).
 # Entries older than the window expire; buckets are keyed by asset, not ticker.
 MARKET_LOSS_WINDOW_HOURS = _env_float("MARKET_LOSS_WINDOW_HOURS", 24.0)
+# How often to re-fetch per-series fee models (GET /series) while running (B6).
+SERIES_FEE_REFRESH_HOURS = _env_float("SERIES_FEE_REFRESH_HOURS", 6.0)
 
 # ═════════════════════════════════════════════════════════════════════
 # STABILITY CHECK (from kalshi_live_bot — doubles EV per backtests)

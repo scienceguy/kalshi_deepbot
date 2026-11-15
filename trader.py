@@ -246,6 +246,7 @@ class BotState:
         self.total_pnl: float = 0.0
         self.cycles: int = 0
         self.trades_placed: int = 0
+        self.last_series_fee_refresh: float = 0.0
         self.running: bool = True
         self.risk = RiskManager()
         self.resilience = CycleSupervisor()
@@ -990,26 +991,30 @@ def _dry_run_fill_count(market, side: str, entry_price_cents: int,
 
 
 def _entry_fee_dollars(contracts: float, entry_price_cents: float,
-                       entry_taker: bool) -> float:
+                       entry_taker: bool, series: str | None = None) -> float:
     """Fee paid to enter, in dollars.
 
     A taker entry (AGGRESSIVE_FILL crossed the ask at placement time) pays
-    Kalshi's fee; a resting maker order pays nothing. ``entry_taker`` records
-    how *this specific trade* was placed, so replay and exit-time fee math
-    cannot drift when the global config changes mid-session. The value is the
-    *effective* fee: what actually leaves the balance above the contract
-    cost, including Kalshi's rounding up to the account's cent grid. One
-    definition so the order row, the settlement math and the paper ledger
-    cannot drift apart.
+    Kalshi's fee; a resting maker order pays nothing on standard series and
+    pays the venue's maker fee on maker-fee series when the order FILLS —
+    never on cancel (B6). ``entry_taker`` records how *this specific trade*
+    was placed, so replay and exit-time fee math cannot drift when the
+    global config changes mid-session. The value is the *effective* fee:
+    what actually leaves the balance above the contract cost, including
+    Kalshi's rounding up to the account's cent grid. One definition so the
+    order row, the settlement math and the paper ledger cannot drift apart.
     """
-    if not entry_taker:  # reviewed: entry_taker is an explicit param; maker entries pay nothing regardless of live AGGRESSIVE_FILL
-        return 0.0
+    if not entry_taker:  # reviewed: entry_taker is an explicit param; maker entries pay nothing on standard series and the maker fill fee on maker-fee series (B6)
+        return fees.maker_fee_dollars(contracts, entry_price_cents / 100.0,
+                                      series=series)
     price = entry_price_cents / 100.0
-    return fees.buy_cash_out(contracts, price, taker=True) - contracts * price
+    mult = fees.taker_multiplier(series) if series else 1.0
+    return fees.buy_cash_out(contracts, price, multiplier=mult, taker=True) - contracts * price
 
 
 def _settle_pnl(contracts: float, entry_price_cents: float,
-                exit_price_dollars: float, entry_taker: bool) -> tuple:
+                exit_price_dollars: float, entry_taker: bool,
+                series: str | None = None) -> tuple:
     """(realized_pnl_dollars, entry_fee_dollars) for a position held to settlement.
 
     ``exit_price_dollars`` is the payout price for OUR side, not the market's
@@ -1017,16 +1022,19 @@ def _settle_pnl(contracts: float, entry_price_cents: float,
     passes ``1 - yes`` (callers in `_resolve_pending_settlement` do this).
 
     The entry is a taker when AGGRESSIVE_FILL crossed the ask at placement
-    time, and a taker pays the fee; a resting maker order pays nothing.
-    Settlement itself is not a trade, so it is always fee-free. Live and
+    time, and a taker pays the fee; a resting maker order pays nothing on a
+    standard series and the maker fill fee on a maker-fee series (B6). Series
+    multipliers apply to both legs; settlement itself is not a trade. Live and
     paper both come through here so the paper curve carries exactly the fee
     live does — previously the paper path booked zero entry fee even while
     taking, which flattered the curve by roughly the whole per-trade edge.
     """
+    mult = fees.taker_multiplier(series) if series else 1.0
     buy_cost = fees.buy_cash_out(contracts, entry_price_cents / 100.0,
-                                 taker=entry_taker)
+                                 multiplier=mult, taker=entry_taker)
     sell_revenue = fees.sell_cash_in(contracts, exit_price_dollars, taker=False)
-    entry_fee = _entry_fee_dollars(contracts, entry_price_cents, entry_taker)
+    entry_fee = _entry_fee_dollars(contracts, entry_price_cents, entry_taker,
+                                   series=series)
     return sell_revenue - buy_cost, entry_fee
 
 
@@ -1054,7 +1062,8 @@ def _resolve_pending_settlement(client, payload):
     entry_price_cents = payload.get("entry_price_cents",
                                     payload.get("entry_price", 0))
     pnl_dollars, _ = _settle_pnl(contracts, entry_price_cents, exit_price,
-                                 payload.get("entry_was_taker", False))
+                                 payload.get("entry_was_taker", False),
+                                 series=fees.series_from_ticker(payload.get("ticker", "")))
     return {
         **payload,
         "status": "settled",
@@ -1147,7 +1156,8 @@ def _replay_settlement_queue(client=None):
         exit_price = (float(settled_yes) / 100.0 if side == "yes"
                       else float(100 - settled_yes) / 100.0)
         pnl_dollars, _ = _settle_pnl(contracts, entry_price_cents, exit_price,
-                                     payload.get("entry_was_taker", False))
+                                     payload.get("entry_was_taker", False),
+                                     series=fees.series_from_ticker(payload.get("ticker", "")))
         resolved_payload = {
             **payload,
             "status": "settled",
@@ -1182,7 +1192,8 @@ def _replay_settlement_queue(client=None):
                                     payload.get("entry_price", 0)),
                         int(payload.get("fill_price_cents") or 0),
                         bool(payload.get("entry_was_taker", config.AGGRESSIVE_FILL)),
-                        bool(payload.get("paper", config.DRY_RUN)))[1]
+                        bool(payload.get("paper", config.DRY_RUN)),
+                        series=fees.series_from_ticker(ticker))[1]
             else:
                 # reviewed: key on full ticker to prevent multi-strike collisions on same event
                 settle_key = f"settle:{ticker}:{order_id}"
@@ -1190,7 +1201,8 @@ def _replay_settlement_queue(client=None):
                     payload.get("contracts", 0),
                     payload.get("entry_price_cents",
                                 payload.get("entry_price", 0)),
-                    payload.get("entry_was_taker", False))
+                    payload.get("entry_was_taker", False),
+                    series=fees.series_from_ticker(ticker))
 
             # Step 1: Apply to local pnl_ledger FIRST (idempotency key prevents double-count)
             if pnl is not None:
@@ -1285,21 +1297,30 @@ def _exit_key(ticker: str, exit_order_id: str, order_id: str,
 
 
 def _exit_pnl_math(filled: float, entry_cents: float, exit_cents: int,
-                   entry_taker: bool, is_paper: bool) -> tuple:
+                   entry_taker: bool, is_paper: bool,
+                   series: str | None = None) -> tuple:
     """(realized_pnl, fees_dollars, won) for an early exit.
 
     One definition shared by _book_exit and the settlement-queue replay, so a
     failed exit books exactly what the live path would have booked. The entry
     pays a taker fee only when it crossed the ask (AGGRESSIVE_FILL); the exit
-    always takes live, and paper follows PAPER_TAKER_EXIT_FEE.
+    always takes live, and paper follows PAPER_TAKER_EXIT_FEE. Series
+    multipliers apply to both legs (B6).
     """
     exit_price = exit_cents / 100.0
     exit_taker = bool(config.PAPER_TAKER_EXIT_FEE) if is_paper else True
-    buy_cost = fees.buy_cash_out(filled, entry_cents / 100.0, taker=entry_taker)
-    sell_revenue = fees.sell_cash_in(filled, exit_price, taker=exit_taker)
+    mult = fees.taker_multiplier(series) if series else 1.0
+    buy_cost = fees.buy_cash_out(filled, entry_cents / 100.0,
+                                 multiplier=mult, taker=entry_taker)
+    sell_revenue = fees.sell_cash_in(filled, exit_price,
+                                     multiplier=mult, taker=exit_taker)
     # Report the effective fees (what the cent-grid cost actually contains),
-    # not the raw model fee, so the order row agrees with the P&L.
-    entry_fee = (buy_cost - filled * entry_cents / 100.0) if entry_taker else 0.0
+    # not the raw model fee, so the order row agrees with the P&L. A maker
+    # entry pays the venue's maker fill fee on maker-fee series (B6).
+    if entry_taker:  # reviewed: taker entry embeds its fee in buy_cost; maker entry pays nothing on standard series or the maker fill fee on maker-fee series
+        entry_fee = buy_cost - filled * entry_cents / 100.0
+    else:
+        entry_fee = fees.maker_fee_dollars(filled, entry_cents / 100.0, series=series)
     exit_fee = (filled * exit_price - sell_revenue) if exit_taker else 0.0
     realized_pnl = sell_revenue - buy_cost
     return realized_pnl, entry_fee + exit_fee, realized_pnl > 0
@@ -1319,7 +1340,8 @@ def _resolve_exit_payload(payload: dict) -> dict | None:
     pnl, fee_dollars, won = _exit_pnl_math(
         float(contracts), entry_cents, int(exit_cents),
         bool(payload.get("entry_was_taker", config.AGGRESSIVE_FILL)),
-        bool(payload.get("paper", config.DRY_RUN)))
+        bool(payload.get("paper", config.DRY_RUN)),
+        series=fees.series_from_ticker(payload.get("ticker", "")))
     return {
         **payload,
         "status": "settled",
@@ -1347,7 +1369,8 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     # dry run now matches that exactly instead of assuming a fee-free entry.
     entry_taker = bool(pos.get("entry_taker", config.AGGRESSIVE_FILL))
     realized_pnl, fees_dollars, won = _exit_pnl_math(
-        filled, entry_price, exit_cents, entry_taker, is_paper)
+        filled, entry_price, exit_cents, entry_taker, is_paper,
+        series=fees.series_from_ticker(ticker))
 
     state.risk.record_trade_outcome(won, realized_pnl)
     if not won:
@@ -1586,7 +1609,8 @@ def _manage_exits(client):
             is_paper = bool(pos.get("paper"))
             exit_cents = int(bid)
             pnl_now, fees_now, won_now = _exit_pnl_math(
-                filled, entry, exit_cents, entry_taker, is_paper)
+                filled, entry, exit_cents, entry_taker, is_paper,
+                series=fees.series_from_ticker(ticker))
             _enqueue_settlement({
                 "action": "exit",
                 "order_id": order_id,
@@ -2004,7 +2028,8 @@ def cycle(client: KalshiClient):
             entry_taker = bool(pos_info.get("entry_taker",
                                             config.AGGRESSIVE_FILL))
             realized_pnl, fees_dollars = _settle_pnl(
-                contracts, entry_price, exit_price, entry_taker)
+                contracts, entry_price, exit_price, entry_taker,
+                series=fees.series_from_ticker(t))
             won = realized_pnl > 0
 
             log.info(
@@ -2664,12 +2689,12 @@ def cycle(client: KalshiClient):
                 
                 if fill_count >= 0.01:  # reviewed: dust-guard — a fill below 0.01 contracts books no exposure and must not create a phantom position
                     # A taker entry (AGGRESSIVE_FILL crosses the ask) pays the
-                    # Kalshi taker fee; a resting maker order pays none. The
-                    # same rule is applied to settlement P&L via _settle_pnl.
-                    fees_dollars = (
-                        fees.taker_fee_dollars(fill_count, sig.entry_price / 100.0)
-                        if config.AGGRESSIVE_FILL  # reviewed: taker entry pays the fee, maker entry does not
-                        else 0.0)
+                    # Kalshi taker fee; a resting maker order pays none on a
+                    # standard series and the maker fill fee at fill time on a
+                    # maker-fee series, never on cancel (B6).
+                    fees_dollars = _entry_fee_dollars(
+                        fill_count, sig.entry_price, config.AGGRESSIVE_FILL,
+                        series=market.series)
                     state._record_filled_order(
                         client, sig, oid, fill_count, "executed", fees_dollars,
                         state.cycles, entry_taker=config.AGGRESSIVE_FILL)
@@ -2709,12 +2734,11 @@ def cycle(client: KalshiClient):
 
                 # reviewed: fill confirmation guard — only book PnL when API confirms fill
                 if confirmed_fill_count is not None and floor_contracts(confirmed_fill_count) > 0:
-                    # Taker entries pay the exchange fee; makers pay nothing.
-                    fees_dollars = (
-                        fees.taker_fee_dollars(confirmed_fill_count,
-                                               sig.entry_price / 100.0)
-                        if config.AGGRESSIVE_FILL  # reviewed: taker entry pays the fee, maker entry does not
-                        else 0.0)
+                    # Taker entries pay the exchange fee; makers pay none on a
+                    # standard series and the maker fill fee on maker-fee ones (B6).
+                    fees_dollars = _entry_fee_dollars(
+                        confirmed_fill_count, sig.entry_price,
+                        config.AGGRESSIVE_FILL, series=sig.market.series)
                     state._record_filled_order(
                         client, sig, oid, confirmed_fill_count, "executed",
                         fees_dollars, state.cycles,
@@ -2809,6 +2833,37 @@ def handle_task(task: dict) -> None:
 _handle_task = handle_task
 
 
+def _refresh_series_fee_models(client, live: bool) -> None:
+    """Fetch per-series fee models and cache them in fees (B6).
+
+    Called at startup (where an unknown fee_type on a targeted series refuses
+    a live start) and every SERIES_FEE_REFRESH_HOURS. Maker-fee series charge
+    resting orders on FILL — never on cancel. A catalogue fetch failure is
+    fatal live (we refuse to trade without fee data) and warning-only in a
+    dry run (the previous cache, or the standard model, keeps applying).
+    """
+    try:
+        models = client.get_series_fee_models()
+    except Exception as e:
+        if live:  # reviewed: a live start without fee data is unpriced risk — refuse; dry runs degrade to the standard model
+            raise
+        log.warning("Series fee catalogue fetch failed: %s — "
+                    "using standard fee model (dry run)", e)
+        return
+    fees.set_series_fees(models)
+    targets = list(getattr(config, "TARGET_SERIES", []) or [])
+    targets += list(getattr(config, "TARGET_SERIES_MAJOR", []) or [])
+    for series in dict.fromkeys(t.upper() for t in targets):
+        info = fees.series_fee_info(series)  # reviewed: only targeted series can refuse a start; a random non-target series never blocks trading
+        if info is None:  # reviewed: series absent from the catalogue falls back to the standard model (conservative, known)
+            log.warning("Series %s not in /series fee catalogue — using standard fee model", series)
+            continue
+        fees.require_known_fee_type(series, info.get("fee_type"), live=live)
+    log.info("Series fee models loaded: %d series (%s)", len(models),
+             ", ".join(f"{k}:{v['fee_type'] or 'standard'} x{v['fee_multiplier']}"
+                        for k, v in sorted(models.items())[:5]))
+
+
 def main():
     mode = "DRY RUN 🔵" if config.DRY_RUN else "LIVE ⚡"
     log.info("=" * 58)
@@ -2883,6 +2938,9 @@ def main():
         log.warning("WebSocket spot streams failed to start: %s — using REST only", e)
 
     client = KalshiClient()
+    # B6: per-series fee models — a live start on an unknown fee_type refuses here.
+    _refresh_series_fee_models(client, live=not config.DRY_RUN)
+    state.last_series_fee_refresh = time.time()
     try:
         # reviewed: on micro-accounts, read total equity (cash + open positions) so startup succeeds during in-flight settlements
         total_equity = client.get_total_equity() if hasattr(client, "get_total_equity") else client.get_balance()
@@ -3130,6 +3188,14 @@ def main():
 
     while state.running:
         cycle_start = time.time()
+        # B6: periodic refresh of per-series fee models; mid-run refreshes keep the
+        # previous cache on failure and never crash a live trader mid-cycle.
+        if time.time() - state.last_series_fee_refresh > config.SERIES_FEE_REFRESH_HOURS * 3600:  # reviewed: fee models change rarely; a stale-but-known cache beats crashing a running live bot
+            try:
+                _refresh_series_fee_models(client, live=False)
+            except Exception as e:
+                log.warning("Series fee refresh failed (keeping previous model): %s", e)
+            state.last_series_fee_refresh = time.time()
         # Sweep the MemPalace inbox for task.request events addressed to this
         # agent before each cycle so the operator can delegate work mid-run.
         try:

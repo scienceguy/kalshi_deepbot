@@ -507,6 +507,30 @@ class KalshiClient:
         data = self._request("GET", "/series", params={"limit": limit})
         return data.get("series", [])
 
+    def get_series_fee_models(self) -> dict:
+        """Parse fee_type/fee_multiplier per series from GET /series (B6).
+
+        Parses defensively: the venue has used both `ticker` and
+        `series_ticker`, and multipliers may arrive as strings. A series with
+        no usable name is skipped. Uncached, read-only, no auth required.
+        """
+        models = {}
+        for s in (self.get_series() or []):
+            if not isinstance(s, dict):  # reviewed: defensive parse of a venue payload — non-dict entries carry no fee info
+                continue
+            ticker = s.get("ticker") or s.get("series_ticker")
+            if not ticker:  # reviewed: no series name at all — skip it, nothing to key the model on
+                continue
+            try:
+                mult = float(s.get("fee_multiplier", 1.0) or 1.0)
+            except (TypeError, ValueError):
+                mult = 1.0
+            models[str(ticker).upper()] = {
+                "fee_type": str(s.get("fee_type", "") or ""),
+                "fee_multiplier": mult,
+            }
+        return models
+
     def invalidate_markets(self, series_ticker: str | None = None,
                            status: str | None = None) -> None:
         """Invalidate cached market data.
