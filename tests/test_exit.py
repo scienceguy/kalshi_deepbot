@@ -21,12 +21,16 @@ def _pos(entry, side="yes", contracts=2):
 
 @pytest.fixture(autouse=True)
 def paper_fills(monkeypatch):
-    """Pin paper mode: these tests assert the dry-run fill and fee path.
+    """Pin paper mode and the maker-entry assumption: these tests assert the
+    dry-run fill path and the maker-entry/taker-exit fee pair.
 
-    The host .env decides DRY_RUN, and a host with DRY_RUN=false flipped the
-    exit path onto the live fill-count branch (4 tests failed only on the VPS).
+    The host .env decides DRY_RUN and AGGRESSIVE_FILL. A host with
+    DRY_RUN=false flipped the exit path onto the live fill-count branch, and
+    AGGRESSIVE_FILL=true added an entry taker fee (0.37 instead of 0.40) —
+    the same 4 tests failed only on the VPS.
     """
     monkeypatch.setattr(trader.config, "DRY_RUN", True)
+    monkeypatch.setattr(trader.config, "AGGRESSIVE_FILL", False)
 
 
 @pytest.fixture
