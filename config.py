@@ -150,6 +150,14 @@ PM_EDGE_MARGIN_CENTS = _env_float("PM_EDGE_MARGIN_CENTS", 0.5)
 # PM_ALLOW_UNMODELLED=true to also trade markets with no strike/spot (R6).
 PM_ALLOW_UNMODELLED = _env_bool("PM_ALLOW_UNMODELLED", False)
 
+# Paper fill model (A3): "taker" (default) fills at the best ask + slippage
+# with the taker fee, matching today's behaviour. "maker" fills only when a
+# later book observation trades through the resting price within the order TTL
+# and charges no fee. Live orders always use price_for_maker_entry (best bid
+# + 1 tick, capped at ask - 1 tick) regardless of this setting, so paper and
+# live models are deliberately distinct. Do not mix models in one state epoch.
+PM_PAPER_FILL_MODEL = _env_str("PM_PAPER_FILL_MODEL", "taker")
+
 # Calibration circuit breaker (A1): halt new entries when rolling calibration
 # degrades, but only with enough samples, and only time-bounded so a single bad
 # streak cannot permanently stall the engine.

@@ -124,6 +124,42 @@ def _fill_sell_price(displayed: float, bid) -> float | None:
     return round(bid - slippage, 4)
 
 
+def price_for_maker_entry(book: dict, side: str) -> float | None:
+    """Maker entry price for a live post-only order.
+
+    For a YES buy: best bid + 1 tick ($0.01), capped at ask - 1 tick — never
+    at or through the ask, so the order can never take liquidity.
+    For a NO sell: best ask - 1 tick, capped at bid + 1 tick — never at or
+    through the bid.
+
+    Returns None when the book is unreadable or no valid maker price exists.
+    (A3: live maker entries must always rest below the ask; paper taker fills
+    at the ask are a different model.)
+    """
+    if not isinstance(book, dict):
+        return None
+    bbo = book.get("bbo") if isinstance(book.get("bbo"), dict) else book
+    tick = 0.01
+    try:
+        bid = float(bbo["yes_bid"])
+        ask = float(bbo["yes_ask"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if bid is None or ask is None or bid >= ask:
+        return None
+    if side == "yes":
+        price = round(bid + tick, 4)
+        cap = round(ask - tick, 4)
+        return price if price <= cap else None
+    else:  # "no"
+        # NO sell as maker: offer at NO bid + tick = (1 - YES ask) + tick,
+        # capped at NO ask - tick = (1 - YES bid) - tick. Never at or through
+        # the NO bid (which would cross the spread and take liquidity).
+        price = round(1.0 - ask + tick, 4)
+        cap = round(1.0 - bid - tick, 4)
+        return price if price <= cap else None
+
+
 def _taker_fee(qty: float, price_dollars: float) -> float:
     """Polymarket taker fee: C x feeRate x p x (1 - p), rounded to 5dp.
 
@@ -182,6 +218,26 @@ class PolyUSPaperTrader:
                 log.warning("Failed to load ML model from %s: %s", ml_path, e)
         elif ml_path and MLFairValue is None:
             log.warning("ML_MODEL_PATH set but ml_model/torch unavailable; ML gate disabled")
+
+        # A3: paper fill model — refuse to mix models in one state epoch.
+        self.paper_fill_model = getattr(config, "PM_PAPER_FILL_MODEL", "taker")
+        if self.paper_fill_model not in ("taker", "maker"):
+            log.warning("PM_PAPER_FILL_MODEL=%r is not 'taker' or 'maker'; defaulting to 'taker'",
+                        self.paper_fill_model)
+            self.paper_fill_model = "taker"
+        # If the persisted state already has positions/orders booked under a
+        # different model, refuse to mix — the operator must --reset first.
+        existing_models = set()
+        for p in self.state.get("positions") or []:
+            m = p.get("paper_fill_model", "taker")  # legacy positions are taker
+            existing_models.add(m)
+        for o in self.state.get("resting_orders") or []:
+            m = o.get("paper_fill_model", "taker" if o.get("state") != "resting" else "taker")
+            existing_models.add(m)
+        if existing_models and self.paper_fill_model not in existing_models and len(existing_models) > 1:
+            log.warning("State already mixes fill models %s; refusing to switch to %s — run --reset first",
+                        sorted(existing_models), self.paper_fill_model)
+            self.paper_fill_model = None  # disable new entries until reset
 
     def reset_state(self, initial_cash: float = 35.0) -> dict:
         """Manual reset to a fresh bankroll (--reset only; the bot never auto-resets).
@@ -464,6 +520,14 @@ class PolyUSPaperTrader:
         now = datetime.now(timezone.utc)
         ttl_seconds = float(getattr(config, "POLY_RESTING_ORDER_TTL_SECONDS", 900))
         cancelled_any = False
+        # A3: per-order fill attribution — subtract quantities already booked
+        # for each slug so a never-filled order isn't booked as filled just
+        # because an earlier order on the same slug was filled.
+        booked_by_slug: dict = {}
+        for p in self.state.get("positions") or []:
+            bs = p.get("slug")
+            if bs:
+                booked_by_slug[bs] = booked_by_slug.get(bs, 0) + float(p.get("qty", 0) or 0)
         for o in list(self.state.get("resting_orders") or []):
             if o.get("state") != "resting":
                 continue
@@ -487,7 +551,8 @@ class PolyUSPaperTrader:
             held = self._held_position_qty(o.get("slug", ""))
             if held is None:
                 continue  # venue didn't answer — leave the order resting, retry next cycle
-            filled_qty = int(min(float(o.get("qty", 0) or 0), held)) if held > 0 else 0
+            slug_held = max(0.0, held - booked_by_slug.get(o.get("slug", ""), 0.0))
+            filled_qty = int(min(float(o.get("qty", 0) or 0), slug_held)) if slug_held > 0 else 0
             if filled_qty > 0 and not any(p.get("order_id") == oid for p in self.state.get("positions") or []):
                 fill_price = float(o.get("price") or 0.0)
                 fill_cost = round(filled_qty * fill_price, 4)
@@ -519,6 +584,91 @@ class PolyUSPaperTrader:
                 log.info("Live order %s resolved with no held position -> cancelled, reserved cash released", oid)
         self.state["resting_orders"] = [o for o in self.state.get("resting_orders") or [] if o.get("state") == "resting"]
         return True
+
+    def reconcile_paper_maker_orders(self, market_map: dict):
+        """A3: fill resting paper maker orders when the book trades through.
+
+        For a YES buy resting at price P: fills if the book's best ask <= P
+        (the market has traded down to our price or below).
+        For a NO sell resting at price P: fills if the book's best bid >= P
+        (the market has traded up to our price or above).
+        No fee is charged on maker fills. Stale orders past the TTL are
+        cancelled and reserved cash released.
+        """
+        now = datetime.now(timezone.utc)
+        ttl_seconds = float(getattr(config, "POLY_RESTING_ORDER_TTL_SECONDS", 900))
+        still_resting = []
+        for o in list(self.state.get("resting_orders") or []):
+            if o.get("paper_fill_model") != "maker" or o.get("state") != "resting":
+                still_resting.append(o)
+                continue
+            slug = o.get("slug", "")
+            side = o.get("side", "")
+            resting_price = float(o.get("price", 0.0) or 0.0)
+            placed = datetime.fromisoformat(o.get("placed_at") or now.isoformat())
+            # TTL: cancel stale resting paper orders.
+            if (now - placed).total_seconds() > ttl_seconds:
+                o["state"] = "cancelled"
+                release_cost = float(o.get("cost", 0.0) or 0.0)
+                self.state["cash"] = round(self.state["cash"] + release_cost, 4)
+                self.state["window_spent"] = max(
+                    0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - release_cost, 4))
+                log.info("Paper maker order %s cancelled (TTL) on %s — reserved cash released",
+                         o.get("order_id"), slug)
+                continue
+            m_info = market_map.get(slug)
+            if not m_info:
+                # No current market data — keep resting.
+                still_resting.append(o)
+                continue
+            # Use the book from market_map if present (e.g. in tests), else
+            # fetch a fresh book for this slug to test the trade-through condition.
+            book_in_map = m_info.get("book")
+            if isinstance(book_in_map, dict) and book_in_map:
+                book = book_in_map
+            else:
+                try:
+                    book = polymarket_us_client.get_market_book(slug)
+                except Exception:
+                    book = {}
+            yes_bid, yes_ask = _book_yes_prices(book)
+            filled = False
+            if side == "yes" and yes_ask is not None and yes_ask <= resting_price:
+                # Book has traded down to our buy price or below.
+                filled = True
+            elif side == "no" and yes_bid is not None and yes_bid >= resting_price:
+                # Book has traded up to our sell price or above.
+                filled = True
+            if filled:
+                qty = int(o.get("qty", 0) or 0)
+                fill_price = resting_price
+                fill_cost = round(qty * fill_price, 4)  # no maker fee
+                self.state["cash"] = round(self.state["cash"] + (float(o.get("cost", 0.0) or 0.0) - fill_cost), 4)
+                self.state["window_spent"] = max(
+                    0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - (float(o.get("cost", 0.0) or 0.0) - fill_cost), 4))
+                self.state["positions"].append({
+                    "slug": slug,
+                    "question": o.get("question", ""),
+                    "side": side,
+                    "price": fill_price,
+                    "fill_price": fill_price,
+                    "displayed_price": fill_price,
+                    "fee": 0.0,
+                    "source": o.get("source", ""),
+                    "qty": qty,
+                    "cost": fill_cost,
+                    "order_id": o.get("order_id"),
+                    "category": o.get("category", ""),
+                    "opened_at": datetime.now(timezone.utc).isoformat(),
+                    "paper_fill_model": "maker",
+                })
+                o["state"] = "filled"
+                log.info("Paper maker order %s filled on %s @ %.4f — no maker fee",
+                         o.get("order_id"), slug, fill_price)
+            else:
+                still_resting.append(o)
+        self.state["resting_orders"] = still_resting
+        self._save_state(self.state)
 
     def scan_markets(self) -> list:
         """Scan open active markets across crypto and active categories."""
@@ -982,9 +1132,18 @@ class PolyUSPaperTrader:
         if self._daily_loss_halted():
             log.info("Daily realized loss limit reached — refusing new entries until next day")
             return False
+        # A3: refuse new entries if the fill model is disabled due to model mixing.
+        if self.paper_fill_model is None:
+            log.info("Fill model disabled (state mixes taker/maker models) — refusing new entries (--reset required)")
+            return False
 
-        # Check if already in this market
+        # Check if already in this market — positions (paper fills) and
+        # resting_orders (live maker orders) both count, so a live cycle can
+        # not stack multiple orders on one slug (A3).
         if any(p["slug"] == slug for p in self.state["positions"]):
+            return False
+        if any(o.get("slug") == slug and o.get("state") == "resting"
+               for o in self.state.get("resting_orders") or []):
             return False
 
         # Cap max concurrent open positions (default 25)
@@ -1019,8 +1178,11 @@ class PolyUSPaperTrader:
         if qty < 1:
             return False
 
-        # Model the paper fill at the venue's best ask (+ slippage ticks), not the
-        # displayed mark (R5). Buying NO pays the NO ask = 1 - YES bid.
+        # Model the fill price and fee. Live orders always use the maker price
+        # (price_for_maker_entry: bid + 1 tick, capped at ask - 1 tick) so a
+        # post-only order never takes liquidity (A3). Paper mode uses the taker
+        # fill (ask + slippage) by default; PM_PAPER_FILL_MODEL=maker records a
+        # resting paper order instead of filling immediately.
         try:
             book = polymarket_us_client.get_market_book(slug)
         except Exception:
@@ -1030,17 +1192,43 @@ class PolyUSPaperTrader:
             ask = yes_ask
         else:
             ask = round(1.0 - yes_bid, 4) if yes_bid is not None else None
-        fill_price = _fill_buy_price(price, ask)
-        # A2: never fall back to the displayed mark when the book is unreadable.
-        if fill_price is None:
-            self.state["book_unreadable"] = int(self.state.get("book_unreadable", 0)) + 1
-            self._save_state(self.state)
-            log.info("A2 unreadable book for %s %s — skipping trade", slug, side)
-            return False
 
-        # A2: re-check edge at the fill price (best ask + slippage ticks), not the
-        # displayed mark. If the edge no longer clears fee + margin after slippage,
-        # skip the trade (the displayed-mid edge was overstated).
+        fill_price = None
+        entry_fee = 0.0
+        if getattr(self, "live_mode", False):
+            # Live: always maker entry — never at or through the ask.
+            maker_price = price_for_maker_entry(book, side)
+            if maker_price is None:
+                self.state["book_unreadable"] = int(self.state.get("book_unreadable", 0)) + 1
+                self._save_state(self.state)
+                log.info("A3 unreadable book for %s %s — skipping live maker order", slug, side)
+                return False
+            fill_price = maker_price
+            entry_fee = 0.0  # makers pay nothing
+        elif self.paper_fill_model == "maker":
+            # Paper maker: resting order at maker price (fills when the book
+            # trades through; no fee). Never at or through the ask.
+            maker_price = price_for_maker_entry(book, side)
+            if maker_price is None:
+                self.state["book_unreadable"] = int(self.state.get("book_unreadable", 0)) + 1
+                self._save_state(self.state)
+                log.info("A3 unreadable book for %s %s — skipping paper maker order", slug, side)
+                return False
+            fill_price = maker_price
+            entry_fee = 0.0  # no maker fee
+        else:
+            # Paper taker (default): fill at best ask + slippage ticks.
+            fill_price = _fill_buy_price(price, ask)
+            # A2: never fall back to the displayed mark when the book is unreadable.
+            if fill_price is None:
+                self.state["book_unreadable"] = int(self.state.get("book_unreadable", 0)) + 1
+                self._save_state(self.state)
+                log.info("A2 unreadable book for %s %s — skipping trade", slug, side)
+                return False
+            entry_fee = _taker_fee(qty, fill_price)
+
+        # A2: re-check edge at the fill price, not the displayed mark. If the
+        # edge no longer clears fee + margin after slippage, skip the trade.
         ref_prob = float(opp.get("ref_prob") or 0.0)
         net_edge_cents = (ref_prob - fill_price) * 100.0
         hurdle_cents = _fee_cents(fill_price) + float(getattr(config, "PM_EDGE_MARGIN_CENTS", 0.5))
@@ -1051,7 +1239,6 @@ class PolyUSPaperTrader:
                 net_edge_cents, hurdle_cents, ref_prob, fill_price, slug, side)
             return False
 
-        entry_fee = _taker_fee(qty, fill_price)
         cost = round(qty * fill_price + entry_fee, 4)
         if cost > available_window_budget or cost > available_cash:
             return False
@@ -1095,10 +1282,35 @@ class PolyUSPaperTrader:
                 "placed_at": datetime.now(timezone.utc).isoformat(),
                 "window_ts": self.state.get("current_window_ts"),
             })
-            log.info("Live order resting: %s (id=%s) — cash reserved, position booked on confirmed fill",
+            log.info("Live maker order resting: %s (id=%s) — cash reserved, position booked on confirmed fill",
+                     slug, order_id)
+        elif self.paper_fill_model == "maker":
+            # Paper maker model: do not fill immediately. Record a resting
+            # paper order; it fills only when a later book observation trades
+            # through the resting price within the order TTL (A3).
+            self.state["cash"] = round(self.state["cash"] - cost, 4)
+            self.state["window_spent"] = round(window_spent + cost, 4)
+            self.state["trades_count"] += 1
+            self.state.setdefault("resting_orders", []).append({
+                "order_id": order_id,
+                "slug": slug,
+                "question": opp["question"],
+                "side": side,
+                "price": fill_price,
+                "qty": qty,
+                "cost": cost,
+                "fee": entry_fee,
+                "source": opp.get("source", ""),
+                "category": opp.get("category", ""),
+                "state": "resting",
+                "placed_at": datetime.now(timezone.utc).isoformat(),
+                "window_ts": self.state.get("current_window_ts"),
+                "paper_fill_model": "maker",
+            })
+            log.info("Paper maker order resting: %s (id=%s) — fills when the book trades through",
                      slug, order_id)
         else:
-            # Paper mode: fill modelled at BBO (R5), position booked immediately.
+            # Paper taker mode (default): fill modelled at BBO (R5), position booked immediately.
             self.state["cash"] = round(self.state["cash"] - cost, 4)
             self.state["window_spent"] = round(window_spent + cost, 4)
             self.state["trades_count"] += 1
@@ -1116,6 +1328,7 @@ class PolyUSPaperTrader:
                 "order_id": order_id,
                 "category": opp.get("category", ""),
                 "opened_at": datetime.now(timezone.utc).isoformat(),
+                "paper_fill_model": "taker",
             }
             self.state["positions"].append(pos)
         # Task 2: record entry for rolling Brier calibration (model p, z, price band).
@@ -1204,6 +1417,11 @@ class PolyUSPaperTrader:
         # only confirmed filled quantity, cancel stale ones, release reserved cash.
         if self.live_mode:
             self.reconcile_live_orders()
+
+        # Paper maker mode: fill resting paper orders when the book trades through
+        # their resting price (no fee, maker fill).
+        if not self.live_mode and self.paper_fill_model == "maker":
+            self.reconcile_paper_maker_orders(market_map)
 
         # In paper mode, rotate out any stale long-dated positions (>24h) to free cash for active intraday compounding
         now = datetime.now(timezone.utc)

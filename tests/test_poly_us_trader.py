@@ -531,13 +531,14 @@ def test_live_mode_places_real_order(temp_trader):
 
     opp = {"slug": "test-live-slug", "question": "Live Q", "side": "no", "price": 0.99,
            "ref_prob": 0.98}
-    # NO side: fill at 1 - YES bid + slippage ticks. YES bid=0.98 → NO fill = 1-0.98+0.01 = 0.03
-    book = {"bbo": {"yes_bid": "0.98", "yes_ask": "0.99"}}
+    # NO side: maker price = NO bid + tick = (1 - YES ask) + tick.
+    # YES bid=0.90, YES ask=0.93 → NO bid=0.07, NO maker = 0.08, capped at NO ask - tick = 0.09 → 0.08
+    book = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.93"}}
     with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book), \
          patch("polymarket_us_client.place_maker_order", return_value={"id": "ORDER123"}) as mock_place:
         ok = temp_trader.execute_paper_trade(opp)
         assert ok is True
-        mock_place.assert_called_once_with("test-live-slug", "no", 0.03, 1, preview=False)
+        mock_place.assert_called_once_with("test-live-slug", "no", 0.08, 1, preview=False)
         # Live orders sit in a `resting` record with cash reserved until confirmed fill (R3)
         assert temp_trader.state["resting_orders"][-1]["order_id"] == "ORDER123"
         assert temp_trader.state["resting_orders"][-1]["state"] == "resting"
@@ -588,7 +589,9 @@ def test_live_partial_fill_books_filled_qty_only(temp_trader):
     temp_trader.preview_order = MagicMock(return_value=True)
     opp = {"slug": "partial-fill-1", "question": "Q", "side": "no", "price": 0.95,
            "ref_prob": 0.98}
-    book = {"bbo": {"yes_bid": "0.98", "yes_ask": "0.99"}}
+    # NO side: maker price = (1 - YES ask) + tick. YES bid=0.90, YES ask=0.93
+    # → NO maker = 0.08 (capped at NO ask - tick = 0.09).
+    book = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.93"}}
     with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book), \
          patch("polymarket_us_client.place_maker_order", return_value={"id": "OID-PART-1"}):
         assert temp_trader.execute_paper_trade(opp) is True
@@ -1089,3 +1092,161 @@ def test_taker_fee_matches_official_table():
     # No fee at the extremes, none at zero size.
     assert _taker_fee(100, 1.0) == 0.0
     assert _taker_fee(0, 0.95) == 0.0
+
+
+# ── A3: paper fills (taker) vs live orders (maker) ────────────────────────
+
+def test_a3_maker_price_always_below_ask():
+    """price_for_maker_entry for YES is always below the ask (never at/through
+    it), and for NO is always above the NO bid (1 - YES ask)."""
+    from poly_us_trader import price_for_maker_entry
+
+    # Wide spread: YES bid=0.90, ask=0.93 → YES maker = 0.91 (bid+tick),
+    # capped at 0.92 (ask-tick).
+    book = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.93"}}
+    p = price_for_maker_entry(book, "yes")
+    assert p is not None
+    assert p == 0.91
+    assert p < 0.93  # strictly below the ask
+
+    # Tight spread (1 tick): bid=0.94, ask=0.95 → YES maker = 0.95, cap = 0.94
+    # → price > cap → None (no valid maker price).
+    book_tight = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.95"}}
+    assert price_for_maker_entry(book_tight, "yes") is None
+
+    # NO side: YES bid=0.90, ask=0.93 → NO bid=0.07, NO ask=0.10
+    # NO maker = 0.07 + 0.01 = 0.08, capped at 0.10 - 0.01 = 0.09 → 0.08
+    p_no = price_for_maker_entry(book, "no")
+    assert p_no is not None
+    assert p_no == 0.08
+    assert p_no > 1.0 - 0.93  # above the NO bid (1 - YES ask)
+
+    # Unreadable book → None.
+    assert price_for_maker_entry({}, "yes") is None
+    assert price_for_maker_entry({"bbo": {}}, "no") is None
+
+
+def test_a3_two_cycles_one_order_per_slug(temp_trader):
+    """In live mode, two cycles on the same slug place one order — the second
+    is blocked because the resting order counts as 'already in this market'."""
+    temp_trader.live_mode = True
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+    book = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.93"}}
+
+    opp = {"slug": "same-slug", "question": "Q", "side": "yes", "price": 0.92,
+           "ref_prob": 0.98}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book), \
+         patch("polymarket_us_client.place_maker_order",
+               side_effect=[{"id": "ORDER1"}, {"id": "ORDER2"}]) as mock_place:
+        ok1 = temp_trader.execute_paper_trade(opp)
+        ok2 = temp_trader.execute_paper_trade(opp)
+
+    assert ok1 is True
+    assert ok2 is False  # second cycle blocked by resting order on same slug
+    assert mock_place.call_count == 1
+    assert len(temp_trader.state["resting_orders"]) == 1
+
+
+def test_a3_earlier_position_does_not_book_never_filled_order(temp_trader):
+    """Reconcile attributes fills per order: an earlier filled position on the
+    same slug must not cause a later never-filled order to be booked as filled."""
+    temp_trader.live_mode = True
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+
+    # Order 1 filled (position already booked from a prior reconcile).
+    temp_trader.state["positions"] = [{
+        "slug": "dup-slug", "question": "Q", "side": "yes", "price": 0.91,
+        "fill_price": 0.91, "displayed_price": 0.91, "fee": 0.0,
+        "source": "", "category": "", "qty": 5, "cost": 4.55,
+        "order_id": "ORDER-1", "opened_at": "2026-01-01T00:00:00+00:00",
+        "paper_fill_model": "taker",
+    }]
+    temp_trader.state["cash"] = 30.45
+
+    # Order 2 never filled — it's still resting but the venue shows 5 held
+    # (all from order 1). Order 2's qty (3) must not be booked as filled.
+    book = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.93"}}
+    temp_trader.state["resting_orders"] = [{
+        "order_id": "ORDER-2", "slug": "dup-slug", "question": "Q", "side": "yes",
+        "price": 0.91, "qty": 3, "cost": 2.73, "fee": 0.0,
+        "source": "", "category": "", "state": "resting",
+        "placed_at": "2026-01-01T00:00:00+00:00",
+    }]
+
+    with patch("poly_us_trader.polymarket_us_client.get_open_orders", return_value=[]), \
+         patch("poly_us_trader.polymarket_us_client.get_portfolio_positions",
+               return_value={"positions": [{"marketSlug": "dup-slug", "qty": 5}]}):
+        assert temp_trader.reconcile_live_orders() is True
+
+    # ORDER-2 resolved with no *additional* held position → cancelled, not filled.
+    # Cancelled orders are removed from resting_orders by the reconcile filter;
+    # ORDER-2's absence means it was resolved. No new position was created.
+    resting_slug_orders = [o for o in temp_trader.state["resting_orders"] if o.get("order_id") == "ORDER-2"]
+    assert not resting_slug_orders, "ORDER-2 should have been cancelled and removed"
+    # Only one position (from ORDER-1).
+    positions = [p for p in temp_trader.state["positions"] if p.get("slug") == "dup-slug"]
+    assert len(positions) == 1
+    assert positions[0]["order_id"] == "ORDER-1"
+
+
+def test_a3_maker_paper_fill_only_on_trade_through(temp_trader):
+    """Paper maker mode (PM_PAPER_FILL_MODEL=maker): execute_paper_trade
+    records a resting order, not a position. It fills only when the book
+    trades through the resting price."""
+    temp_trader.state["cash"] = 35.0
+    temp_trader.state["window_budget"] = 1.05
+    temp_trader.state["window_spent"] = 0.0
+    temp_trader.preview_order = MagicMock(return_value=True)
+    # Force the maker fill model on this trader instance.
+    temp_trader.paper_fill_model = "maker"
+    book = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.93"}}
+
+    opp = {"slug": "maker-paper", "question": "Q", "side": "yes", "price": 0.92,
+           "ref_prob": 0.98}
+    with patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        ok = temp_trader.execute_paper_trade(opp)
+    assert ok is True
+    # No position booked immediately — resting order instead.
+    assert len(temp_trader.state["positions"]) == 0
+    assert len(temp_trader.state["resting_orders"]) == 1
+    resting = temp_trader.state["resting_orders"][0]
+    assert resting["state"] == "resting"
+    assert resting["paper_fill_model"] == "maker"
+    assert resting["price"] == 0.91  # YES bid + tick = 0.90 + 0.01
+
+    # Book hasn't traded through yet (ask=0.93 > resting 0.91) → still resting.
+    temp_trader.reconcile_paper_maker_orders({"maker-paper": {"book": book}})
+    still_resting = [o for o in temp_trader.state["resting_orders"] if o.get("order_id") == resting["order_id"]]
+    assert still_resting and still_resting[0]["state"] == "resting"
+    assert len(temp_trader.state["positions"]) == 0
+
+    # Book trades through: ask drops to 0.91 (<= resting price 0.91).
+    book_filled = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.91"}}
+    temp_trader.reconcile_paper_maker_orders({"maker-paper": {"book": book_filled}})
+    positions = [p for p in temp_trader.state["positions"] if p.get("slug") == "maker-paper"]
+    assert len(positions) == 1
+    assert positions[0]["price"] == 0.91
+    assert positions[0]["fee"] == 0.0  # no maker fee
+    # The resting order dict was updated in place; its state is now "filled".
+    assert resting["state"] == "filled"
+
+
+def test_a3_maker_price_capped_at_ask_minus_tick():
+    """When bid + tick would exceed ask - tick (spread ≤ 2 ticks), no maker
+    price exists — the order cannot rest without crossing."""
+    from poly_us_trader import price_for_maker_entry
+    # Spread = 2 ticks: bid=0.90, ask=0.92 → YES maker = 0.91, cap = 0.91 → 0.91 <= 0.91 → valid
+    book = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.92"}}
+    assert price_for_maker_entry(book, "yes") == 0.91
+    # Spread = 1 tick: no valid maker price
+    book_tight = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.91"}}
+    assert price_for_maker_entry(book_tight, "yes") is None
+    # Crossed book: bid >= ask → None
+    book_crossed = {"bbo": {"yes_bid": "0.95", "yes_ask": "0.94"}}
+    assert price_for_maker_entry(book_crossed, "yes") is None
