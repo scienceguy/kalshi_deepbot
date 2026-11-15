@@ -219,6 +219,28 @@ class LocalDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_pnl_ledger_market ON pnl_ledger(market_ticker, applied_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_pnl_ledger_synced ON pnl_ledger(synced)")
 
+            # event_outbox: durable outbox for n8n deliveries (N1).
+            # critical events are never dropped; telemetry events are drop-oldest
+            # when the backlog exceeds a cap. Status: pending | sent | dead.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS event_outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
+                    type TEXT NOT NULL,
+                    delivery_class TEXT NOT NULL DEFAULT 'critical',
+                    payload_json TEXT NOT NULL,
+                    venue TEXT NOT NULL DEFAULT '',
+                    mode TEXT NOT NULL DEFAULT '',
+                    created_at TEXT DEFAULT (datetime('now')),
+                    attempts INTEGER DEFAULT 0,
+                    next_attempt_at TEXT DEFAULT (datetime('now')),
+                    last_error TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_status ON event_outbox(status, next_attempt_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_event_id ON event_outbox(event_id)")
+
             # Create indexes for common queries
             conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts)")
@@ -626,6 +648,125 @@ class LocalDB:
             except Exception as e:
                 log.warning("delete_pnl_ledger_entry(%s) error: %s", idempotency_key, e)
                 return False
+
+    # ── event_outbox (N1) ──────────────────────────────────────────────
+
+    def insert_outbox_event(self, event_type: str, payload_json: str,
+                            delivery_class: str = "critical",
+                            venue: str = "", mode: str = "",
+                            event_id: Optional[str] = None) -> Optional[int]:
+        """Insert an event into the durable outbox. Returns the row id or None."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                cur = conn.execute("""
+                    INSERT INTO event_outbox
+                        (event_id, type, delivery_class, payload_json, venue, mode)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (event_id, event_type, delivery_class, payload_json, venue, mode))
+                conn.commit()
+                return cur.lastrowid
+            except Exception as e:
+                log.warning("insert_outbox_event(%s) error: %s", event_type, e)
+                return None
+
+    def get_pending_outbox_events(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return pending outbox events whose next_attempt_at <= now, ordered by
+        delivery_class (critical first) then created_at. Critical events are
+        always selected before telemetry."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                now = datetime.now(timezone.utc).isoformat()
+                rows = conn.execute("""
+                    SELECT id, event_id, type, delivery_class, payload_json,
+                           venue, mode, created_at, attempts, next_attempt_at,
+                           last_error, status
+                    FROM event_outbox
+                    WHERE status = 'pending' AND next_attempt_at <= ?
+                    ORDER BY
+                        CASE delivery_class WHEN 'critical' THEN 0 ELSE 1 END,
+                        created_at ASC
+                    LIMIT ?
+                """, (now, limit)).fetchall()
+                return [dict(zip(
+                    ["id", "event_id", "type", "delivery_class", "payload_json",
+                     "venue", "mode", "created_at", "attempts", "next_attempt_at",
+                     "last_error", "status"], row)) for row in rows]
+            except Exception as e:
+                log.warning("get_pending_outbox_events error: %s", e)
+                return []
+
+    def mark_outbox_sent(self, event_id: int) -> bool:
+        """Mark an outbox event as sent."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                conn.execute(
+                    "UPDATE event_outbox SET status = 'sent' WHERE id = ?",
+                    (event_id,),
+                )
+                conn.commit()
+                return True
+            except Exception as e:
+                log.warning("mark_outbox_sent(%s) error: %s", event_id, e)
+                return False
+
+    def mark_outbox_dead(self, event_id: int, last_error: str,
+                         max_attempts: int = 10) -> bool:
+        """Mark an outbox event as dead after max_attempts, or bump attempts
+        and schedule retry with exponential backoff."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                row = conn.execute(
+                    "SELECT attempts FROM event_outbox WHERE id = ?",
+                    (event_id,),
+                ).fetchone()
+                if not row:
+                    return False
+                attempts = row[0] + 1
+                if attempts >= max_attempts:
+                    conn.execute(
+                        "UPDATE event_outbox SET status = 'dead', attempts = ?, "
+                        "last_error = ? WHERE id = ?",
+                        (attempts, last_error, event_id),
+                    )
+                else:
+                    # Exponential backoff: 2^attempts seconds, capped at 1 hour.
+                    backoff = min(2 ** attempts, 3600)
+                    from datetime import timedelta
+                    next_attempt = (
+                        datetime.now(timezone.utc) + timedelta(seconds=backoff)
+                    ).isoformat()
+                    conn.execute(
+                        "UPDATE event_outbox SET attempts = ?, next_attempt_at = ?, "
+                        "last_error = ? WHERE id = ?",
+                        (attempts, next_attempt, last_error, event_id),
+                    )
+                conn.commit()
+                return True
+            except Exception as e:
+                log.warning("mark_outbox_dead(%s) error: %s", event_id, e)
+                return False
+
+    def get_outbox_stats(self) -> Dict[str, int]:
+        """Return counts of outbox events by status and delivery class."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                rows = conn.execute("""
+                    SELECT status, delivery_class, COUNT(*) as cnt
+                    FROM event_outbox
+                    GROUP BY status, delivery_class
+                """).fetchall()
+                stats: Dict[str, int] = {}
+                for status, dclass, cnt in rows:
+                    stats[f"{status}:{dclass}"] = cnt
+                return stats
+            except Exception as e:
+                log.warning("get_outbox_stats error: %s", e)
+                return {}
 
     # ── backtest_runs ───────────────────────────────────────────────────────────
 

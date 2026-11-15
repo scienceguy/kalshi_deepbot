@@ -710,6 +710,15 @@ LLM_MIN_REQUEST_GAP = _env_float("LLM_MIN_REQUEST_GAP", 3.0)  # seconds between 
 N8N_API_KEY = os.environ.get("N8N_API_KEY", "")
 N8N_BASE_URL = os.environ.get("N8N_BASE_URL", "http://127.0.0.1:5678")
 
+# N1 — durable signed bounded n8n outbox.
+# HMAC secret for signing outbound webhooks (read from ~/.secrets/ or env).
+# Keep this out of the repo; the operator sets it in .env or a secrets file.
+SUPERBOT_WEBHOOK_SECRET = os.environ.get("SUPERBOT_WEBHOOK_SECRET", "")
+# Max in-memory telemetry queue size before drop-oldest applies.
+N8N_OUTBOX_MAX_TELEMETRY = _env_int("N8N_OUTBOX_MAX_TELEMETRY", 500)
+# Max delivery attempts before an outbox row is moved to dead.
+N8N_OUTBOX_MAX_ATTEMPTS = _env_int("N8N_OUTBOX_MAX_ATTEMPTS", 10)
+
 # EXCHANGE / ORACLE APIS (cross-reference price feeds)
 # Public endpoints — no auth required. Used to compare Kalshi prediction
 # market prices against underlying spot/oracle prices for arbitrage signals.
