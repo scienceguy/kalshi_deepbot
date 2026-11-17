@@ -200,8 +200,8 @@ def _outbox_sender(db=None, lane: str = "normal"):
     drains coalesced telemetry.
     """
     if db is None:
-        from local_db import LocalDB
-        db = LocalDB()
+        from local_db import get_local_db
+        db = get_local_db()
 
     while True:
         try:
@@ -287,8 +287,8 @@ def outbox_metrics() -> Dict[str, Any]:
         "dropped_total": _telemetry_dropped_get(),
     }
     try:
-        from local_db import LocalDB
-        metrics.update(LocalDB().get_outbox_depth_stats())
+        from local_db import get_local_db
+        metrics.update(get_local_db().get_outbox_depth_stats())
     except Exception as e:
         log.debug("outbox_metrics: local db unavailable: %s", e)
     return metrics
@@ -614,8 +614,8 @@ class N8nClient:
                 return {}
             event_id = str(uuid.uuid4())
             try:
-                from local_db import LocalDB
-                db = LocalDB()
+                from local_db import get_local_db
+                db = get_local_db()
                 db.insert_outbox_event(
                     event_type=event_type,
                     payload_json=json.dumps(data),

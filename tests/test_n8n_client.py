@@ -137,7 +137,7 @@ class TestExecuteWebhook:
                 return 1
 
         fake_db = _FakeDB()
-        monkeypatch.setattr("local_db.LocalDB", lambda *a, **k: fake_db)
+        monkeypatch.setattr("local_db.get_local_db", lambda: fake_db)
         with patch.object(client.session, "request", return_value=mock_resp) as mock_req:
             result = client.execute_webhook(
                 "superbot-trade",

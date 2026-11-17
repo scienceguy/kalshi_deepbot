@@ -249,6 +249,7 @@ def test_circuit_breaker_reopens_after_cooldown_if_still_failing():
 # ── telemetry lane: coalesced, bounded, drop-oldest counted ──────────────
 
 def test_telemetry_coalesces_latest_per_key():
+    n8n_client._telemetry_pending.clear()
     item1 = ("client-a", "superbot.monitor", {"state": "idle", "venue": "kalshi"}, "POST")
     item2 = ("client-b", "superbot.monitor", {"state": "halted", "venue": "kalshi"}, "POST")
     _enqueue_telemetry("superbot.monitor|kalshi", item1)
@@ -272,6 +273,7 @@ def test_telemetry_bounded_drop_oldest_counts_drops():
 
 
 def test_drain_telemetry_empties_pending(monkeypatch):
+    n8n_client._telemetry_pending.clear()
     fired = []
 
     class _FakeClient:
@@ -291,7 +293,7 @@ def test_outbox_metrics_export_keys(tmp_path, monkeypatch):
     db = _db(tmp_path)
     db.insert_outbox_event("risk.halt", '{"reason": "x"}', "critical",
                            "kalshi", "dry", "evt-metrics")
-    monkeypatch.setattr("local_db.LocalDB", lambda *a, **k: db)
+    monkeypatch.setattr("local_db.get_local_db", lambda: db)
     metrics = outbox_metrics()
     for key in ("outbox_depth", "oldest_undelivered_age_s", "dropped_total"):
         assert key in metrics
