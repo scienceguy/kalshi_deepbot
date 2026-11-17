@@ -97,4 +97,7 @@ jobs:
           python scripts/verify_review_marked.py --diff-file "$RUNNER_TEMP/review.diff"
 
       - name: full test suite
+        env:
+          SUPABASE_URL: https://dummy.supabase.co
+          SUPABASE_SERVICE_KEY: dummy-key
         run: python -m pytest tests/ -q
