@@ -249,45 +249,47 @@ def _respond_node(body="={{ $json }}"):
     }
 
 
-WORKFLOWS = [
-    {
-        "name": "SuperBot Backtest",
-        "webhook_path": "superbot-backtest",
-        "node_name": "SuperBot Backtest",
-        "script": os.path.join(BASE_DIR, "backtest.py"),
-        "args": "--quick --limit 50 --top 10 --jobs 2"
-    },
-    {
-        "name": "SuperBot Data Collect",
-        "webhook_path": "superbot-collect",
-        "node_name": "SuperBot Data Collect",
-        "script": os.path.join(BASE_DIR, "legacy", "data_collector.py"),
-        "args": "--series KXBTC15M KXETH15M KXSOL15M KXXRP15M KXDOGE15M --limit 100"
-    },
-    {
-        "name": "SuperBot Trade",
-        "webhook_path": "superbot-trade",
-        "node_name": "SuperBot Trade",
-        "workflow_type": "settlement_processor",
-        "supabase_url": os.environ.get("SUPABASE_URL", ""),
-        "supabase_key": os.environ.get("SUPABASE_SERVICE_KEY", ""),
-    },
-    {
-        "name": "SuperBot Monitor",
-        "webhook_path": "superbot-monitor",
-        "node_name": "SuperBot Monitor",
-        # Acknowledge alerts only. Spawning trader.py here would run a
-        # second cycle that can place orders once DRY_RUN is false.
-        "workflow_type": "ack_only",
-    },
-    {
-        "name": "SuperBot Coordinate",
-        "webhook_path": "superbot-coordinate",
-        "node_name": "SuperBot Coordinate",
-        # Coordination webhook: HMAC-verified receiver before any side effect.
-        "workflow_type": "signed_command",
-        "script": os.path.join(BASE_DIR, "n8n_coordination.py"),
-        "args": "",
+def get_workflows():
+    """Return workflow definitions with env vars evaluated at call time (not import time)."""
+    return [
+        {
+            "name": "SuperBot Backtest",
+            "webhook_path": "superbot-backtest",
+            "node_name": "SuperBot Backtest",
+            "script": os.path.join(BASE_DIR, "backtest.py"),
+            "args": "--quick --limit 50 --top 10 --jobs 2"
+        },
+        {
+            "name": "SuperBot Data Collect",
+            "webhook_path": "superbot-collect",
+            "node_name": "SuperBot Data Collect",
+            "script": os.path.join(BASE_DIR, "legacy", "data_collector.py"),
+            "args": "--series KXBTC15M KXETH15M KXSOL15M KXXRP15M KXDOGE15M --limit 100"
+        },
+        {
+            "name": "SuperBot Trade",
+            "webhook_path": "superbot-trade",
+            "node_name": "SuperBot Trade",
+            "workflow_type": "settlement_processor",
+            "supabase_url": os.environ.get("SUPABASE_URL", ""),
+            "supabase_key": os.environ.get("SUPABASE_SERVICE_KEY", ""),
+        },
+        {
+            "name": "SuperBot Monitor",
+            "webhook_path": "superbot-monitor",
+            "node_name": "SuperBot Monitor",
+            # Acknowledge alerts only. Spawning trader.py here would run a
+            # second cycle that can place orders once DRY_RUN is false.
+            "workflow_type": "ack_only",
+        },
+        {
+            "name": "SuperBot Coordinate",
+            "webhook_path": "superbot-coordinate",
+            "node_name": "SuperBot Coordinate",
+            # Coordination webhook: HMAC-verified receiver before any side effect.
+            "workflow_type": "signed_command",
+            "script": os.path.join(BASE_DIR, "n8n_coordination.py"),
+            "args": "",
     },
 ]
 
@@ -357,7 +359,7 @@ def main():
 
     credential_id = _ensure_credential(client, secret)
 
-    for wf in WORKFLOWS:
+    for wf in get_workflows():
         # The settlement workflow writes the Supabase key into the n8n node.
         # Refuse to install it with empty credentials rather than create a
         # silently broken node; the operator supplies them at injection time.
