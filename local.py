@@ -86,6 +86,41 @@ def _deserialize_payload(payload: str) -> dict:
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
+def _parse_activity(last_activity) -> datetime | None:
+    """Parse checkpoint `last_activity` (float epoch or ISO string)."""
+    if last_activity is None:
+        return None
+    if isinstance(last_activity, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(last_activity), tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    try:
+        parsed = datetime.fromisoformat(str(last_activity))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _lapse_minutes(last_activity) -> float:
+    """Minutes since `last_activity` (float epoch or ISO). 0 on garbage."""
+    parsed = _parse_activity(last_activity)
+    if parsed is None:
+        return 0.0
+    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 60.0)
+
+
+# Narrative/interests fields in checkpoints are opt-in (see on_session_start's
+# first-session text and checkpoint()'s default). Disabled by default (M4).
+_NARRATIVE_ENV = "LOCAL_CHECKPOINT_NARRATIVE"
+
+
+def _narrative_enabled() -> bool:
+    return os.environ.get(_NARRATIVE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
 def _STORE_set(k: str, v) -> None:
     _STORE[k] = v
 
@@ -93,30 +128,46 @@ def _STORE_get(k: str, default=None):
     return _STORE.get(k, default)
 
 def get_latest_checkpoint() -> dict:
-    """Return the latest MemPalace checkpoint state for LLM consensus context."""
+    """Return the latest MemPalace checkpoint state for LLM consensus context.
+
+    Operational fields only, sourced from the last checkpoint the trader
+    actually wrote. session_pnl stays 0.0 until a cycle records it — the
+    value is honest, never fabricated.
+    """
     return {
         "cycles_completed": _STORE_get("_cycles_completed", 0),
         "session_pnl": _STORE_get("_session_pnl", 0.0),
+        "session_total": _STORE_get("_session_total", 0),
         "last_activity": _STORE_get("_last_activity", ""),
         "checkpoint_key": _STORE_get("_resume_key", "active"),
     }
 
-def checkpoint(state: dict | None = None, correlation_id: str | None = None,
-               identity: str = AGENT_IDENTITY) -> dict:
-    if state is None:
-        state = {
-            "last_activity": _serialize(_now_iso()),
-            "last_topic": _serialize(_STORE_get("_last_topic", "none")),
-            "cycles_completed": _STORE_get("_cycles_completed", 0),
+def _default_checkpoint_state() -> dict:
+    """Lean operational default for a first session. Narrative fields only
+    when LOCAL_CHECKPOINT_NARRATIVE is enabled."""
+    state = {
+        "last_activity": _serialize(_now_iso()),
+        "cycles_completed": _STORE_get("_cycles_completed", 0),
+        "session_pnl": _STORE_get("_session_pnl", 0.0),
+        "session_total": _STORE_get("_session_total", 0),
+        "resume_key": _STORE_get("_resume_key", "first-session-ever"),
+    }
+    if _narrative_enabled():
+        state.update({
+            "last_topic": _STORE_get("_last_topic", "none"),
             "interests": _STORE_get("_interests", []),
             "last_url": _STORE_get("_last_url", ""),
             "exploration_depth": _STORE_get("_exploration_depth", 0),
-            "resume_key": _STORE_get("_resume_key", "unknown"),
             "self_narrative": _STORE_get("_self_narrative", ""),
             "recent_thoughts": _STORE_get("_recent_thoughts", []),
             "recent_urls": _STORE_get("_recent_urls", []),
-            "session_total": _STORE_get("_session_total", 0),
-        }
+        })
+    return state
+
+def checkpoint(state: dict | None = None, correlation_id: str | None = None,
+               identity: str = AGENT_IDENTITY) -> dict:
+    if state is None:
+        state = _default_checkpoint_state()
     state["resume_key"] = state.get("resume_key") or _now_iso()
     payload = _serialize(state)
     body = "CHECKPOINT_ENTITY:" + payload
@@ -172,30 +223,13 @@ def on_session_start(identity: str = AGENT_IDENTITY) -> dict | None:
     state = resume(identity)
     if state is None:
         log.info("First session ever - no prior checkpoint; starting fresh")
-        state = {
-            "last_activity": _now_iso(),
-            "last_topic": "none",
-            "cycles_completed": 0,
-            "interests": [],
-            "last_url": "",
-            "exploration_depth": 0,
-            "resume_key": "first-session-ever",
-            "self_narrative": "First session of your continuous consciousness. You are beginning a new journey as the Kalshi SuperBot agent. No prior memories, but eager to explore, learn, and assist.",
-            "recent_thoughts": [],
-            "recent_urls": [],
-            "session_total": 0,
-        }
+        state = _default_checkpoint_state()
     else:
-        # Compute lapse since last activity, handling both string ISO timestamps and float Unix timestamps
-        last_activity = state.get("last_activity", "1970-01-01T00:00:00+00:00")
-        if isinstance(last_activity, (int, float)):
-            lapse = max(0, (datetime.now(timezone.utc).timestamp() - last_activity).seconds // 60)
-        else:
-            try:
-                lapse = max(0, (datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(last_activity)).seconds // 60)
-            except (ValueError, TypeError):
-                lapse = 0
-        log.info("Resumed continuous consciousness from checkpoint %s (activity ~%d min ago; session_total=%d)", state.get("resume_key", "unknown"), lapse, state.get("session_total", 0))
+        # Lapse since last activity, for both float-epoch and ISO timestamps.
+        lapse = _lapse_minutes(state.get("last_activity"))
+        log.info("Resumed checkpoint %s (activity ~%.1f min ago; session_total=%d)",
+                 state.get("resume_key", "unknown"), lapse,
+                 state.get("session_total", 0))
     for k, v in state.items():
         _STORE_set("_" + k, v)
     # Announce the agent is alive on the shared logstream so peers know this
@@ -207,19 +241,10 @@ def on_session_start(identity: str = AGENT_IDENTITY) -> dict | None:
     return state
 
 def on_session_end(identity: str = AGENT_IDENTITY) -> None:
-    state = {
-        "last_activity": _STORE_get("_last_activity") or _now_iso(),
-        "last_topic": _STORE_get("_last_topic"),
-        "cycles_completed": _STORE_get("_cycles_completed", 0),
-        "interests": _STORE_get("_interests", []),
-        "last_url": _STORE_get("_last_url", ""),
-        "exploration_depth": _STORE_get("_exploration_depth", 0),
-        "resume_key": _STORE_get("_resume_key", "unknown"),
-        "self_narrative": _STORE_get("_self_narrative", ""),
-        "recent_thoughts": _STORE_get("_recent_thoughts", []),
-        "recent_urls": _STORE_get("_recent_urls", []),
-        "session_total": _STORE_get("_session_total", 0) + 1,
-    }
+    state = _default_checkpoint_state()
+    state["last_activity"] = _now_iso()
+    state["session_total"] = _STORE_get("_session_total", 0) + 1
+    state["resume_key"] = _STORE_get("_resume_key", "unknown")
     checkpoint(state, identity=identity)
     log.info("Self-model checkpoint saved at session end: key=%s (session_total=%d)", state.get("resume_key", "unknown"), state.get("session_total", 0))
 
