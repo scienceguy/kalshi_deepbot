@@ -25,3 +25,4 @@ scipy>=1.11                 # scripts/hf_fairvalue.py
 # Test + pre-commit gates (scripts/verify_*.py). Not needed to run the bot.
 pytest>=7.4
 pyflakes>=3.1
+mempalace>=0.1.0
