@@ -1089,10 +1089,13 @@ class LocalDB:
 
     # ─── D4: online backups + integrity ────────────────────────────────────
     def integrity_check(self) -> tuple[bool, str]:
-        """PRAGMA integrity_check on a dedicated read connection."""
+        """PRAGMA integrity_check on a dedicated read-write connection.
+
+        Read-only cannot recover a hot WAL: it returned 'unable to open
+        database file' on a healthy image and the startup path mis-read that
+        as image corruption, renaming the live DB to .corrupt.TIMESTAMP."""
         try:
-            conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True,
-                                   timeout=10)
+            conn = sqlite3.connect(self.db_path, timeout=10)
             try:
                 row = conn.execute("PRAGMA integrity_check").fetchone()
                 msg = str(row[0]) if row else "no result"

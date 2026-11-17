@@ -213,3 +213,27 @@ def test_restore_drill_documented_in_runbook():
     assert "## Restore drill (SQLite DBs)" in text
     assert "integrity_check" in text
     assert "test_d4_backup_restore.py" in text
+
+
+def test_integrity_check_opens_read_write_not_ro(tmp_path, monkeypatch):
+    """A read-only open cannot recover a hot WAL; the failure surfaced as
+    'unable to open database file' and fed the false-corruption
+    rename+recreate path (436 .corrupt.* files on the dry trader,
+    2026-11-17). The check must open the DB read-write so SQLite recovers
+    WAL frames on open."""
+    db = local_db.LocalDB(db_path=str(tmp_path / "t.db"), auto_sync=False)
+    ok, msg = db.integrity_check()
+    assert ok, msg
+
+    calls = []
+    real_connect = local_db.sqlite3.connect
+
+    def spy(database, *args, **kwargs):
+        calls.append(str(database))
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(local_db.sqlite3, "connect", spy)
+    ok, msg = db.integrity_check()
+    assert ok, msg
+    assert calls
+    assert not any("mode=ro" in c for c in calls)
