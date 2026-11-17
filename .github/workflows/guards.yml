@@ -18,9 +18,6 @@ jobs:
   guards:
     name: corruption gates
     runs-on: ubuntu-latest
-    env:
-      SUPABASE_URL: https://dummy.supabase.co
-      SUPABASE_SERVICE_KEY: dummy-key
 
     steps:
       - uses: actions/checkout@v4
