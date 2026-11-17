@@ -3167,6 +3167,9 @@ def _run_loop(args):
         log.warning("n8n health check failed — settlement webhooks may not work. "
                     "Bot continues trading without n8n routing.")
     log.info("n8n health check %s", "✓" if n8n_ok else "✗")
+    # N1: warn if n8n is non-loopback or accepts unsigned requests.
+    from n8n_client import n8n_startup_check
+    n8n_startup_check()
 
     # Lazy-load the ML fair-value model if requested (torch import is heavy;
     # only pay the cost when --ml-model is passed). Deliberately NOT auto-loaded:

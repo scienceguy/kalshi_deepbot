@@ -135,28 +135,33 @@ def test_get_outbox_stats(tmp_path):
 # ── n8n_client.py HMAC signing ────────────────────────────────────────
 
 def test_sign_body_deterministic():
-    """_sign_body produces deterministic HMAC-SHA256."""
+    """_sign_body produces deterministic HMAC-SHA256 over ts.nonce.body."""
     config.SUPERBOT_WEBHOOK_SECRET = "test-secret"
-    sig1 = _sign_body("12345", '{"a":1}')
-    sig2 = _sign_body("12345", '{"a":1}')
+    sig1 = _sign_body("12345", '{"a":1}', "n1")
+    sig2 = _sign_body("12345", '{"a":1}', "n1")
     assert sig1 == sig2
     assert len(sig1) == 64  # hex SHA-256
 
 
 def test_sign_body_different_inputs():
-    """Different timestamps or bodies produce different signatures."""
+    """Different timestamps, bodies or nonces produce different signatures."""
     config.SUPERBOT_WEBHOOK_SECRET = "test-secret"
-    s1 = _sign_body("12345", '{"a":1}')
-    s2 = _sign_body("12346", '{"a":1}')
-    s3 = _sign_body("12345", '{"a":2}')
+    s1 = _sign_body("12345", '{"a":1}', "n1")
+    s2 = _sign_body("12346", '{"a":1}', "n1")
+    s3 = _sign_body("12345", '{"a":2}', "n1")
+    s4 = _sign_body("12345", '{"a":1}', "n2")
     assert s1 != s2 != s3
+    assert s1 != s4  # nonce participates in the signature
 
 
-def test_sign_body_empty_secret():
-    """Empty secret still produces a valid signature."""
-    config.SUPERBOT_WEBHOOK_SECRET = ""
-    sig = _sign_body("12345", '{"a":1}')
-    assert len(sig) == 64
+def test_sign_body_empty_secret(monkeypatch):
+    """No configured secret -> RuntimeError, never a signature."""
+    monkeypatch.setattr(config, "SUPERBOT_WEBHOOK_SECRET", "")
+    monkeypatch.delenv("SUPERBOT_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("SUPERBOT_WEBHOOK_SECRET_FILE",
+                       "/nonexistent/superbot_webhook_secret")
+    with pytest.raises(RuntimeError):
+        _sign_body("12345", '{"a":1}', "n1")
 
 
 # ── Fake n8n server for durability tests ─────────────────────────────

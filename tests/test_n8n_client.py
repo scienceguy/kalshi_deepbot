@@ -4,7 +4,7 @@ These tests mock the n8n API responses to avoid making real network calls.
 """
 import pytest
 from unittest.mock import MagicMock, patch
-from n8n_client import N8nClient, load_api_key
+from n8n_client import N8nClient, DEFAULT_BASE_URL, load_api_key
 
 
 class TestLoadApiKey:
@@ -37,7 +37,7 @@ class TestN8nClientInit:
         """Client stores the provided API key."""
         client = N8nClient(api_key="test_key_123")
         assert client.api_key == "test_key_123"
-        assert client.base_url == "http://127.0.0.1:5678"
+        assert client.base_url == DEFAULT_BASE_URL
 
     def test_init_without_api_key_logs_warning(self, monkeypatch, caplog):
         """Client logs warning when no API key is found."""

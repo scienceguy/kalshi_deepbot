@@ -36,7 +36,8 @@ os.environ["ALLOW_NO_BUYS"] = "false"
 # Clear credential env vars so no test can accidentally sign live requests.
 for _k in ("KALSHI_KEY_ID", "KALSHI_KEY_FILE", "KALSHI_PRIVATE_KEY",
            "KALSHIEYE_API_KEY_FILE", "N8N_API_KEY_FILE",
-           "SUPABASE_KEY_FILE", "SUPABASE_JWKS_URL"):
+           "SUPABASE_KEY_FILE", "SUPABASE_JWKS_URL",
+           "SUPERBOT_WEBHOOK_SECRET", "SUPERBOT_WEBHOOK_SECRET_FILE"):
     os.environ.pop(_k, None)
 
 # Redirect every runtime file the bot writes into a throwaway dir BEFORE the
@@ -49,6 +50,11 @@ os.environ["GATES_LOG_FILE"] = os.path.join(_TMP, "gates_log.jsonl")
 os.environ["PAPER_STATE_FILE"] = os.path.join(_TMP, "paper_state.json")
 os.environ["PAPER_POSITIONS_FILE"] = os.path.join(_TMP, "paper_positions.json")
 os.environ["SUPERBOT_LOCAL_DB_DIR"] = os.path.join(_TMP, "local_data")
+os.environ["SUPERBOT_WEBHOOK_SECRET"] = ""
+os.environ["SUPERBOT_WEBHOOK_SECRET_FILE"] = os.path.join(_TMP, "no_such_secret")
+# n8n base URL -> closed port: the outbox sender thread must never touch the
+# real n8n on 127.0.0.1:5678 (V3 hermeticity: no live service dependence).
+os.environ["N8N_BASE_URL"] = "http://127.0.0.1:9"
 
 import config  # noqa: E402
 import local_db  # noqa: E402

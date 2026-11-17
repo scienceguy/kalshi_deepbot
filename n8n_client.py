@@ -14,15 +14,14 @@ N1 — durable signed bounded n8n outbox:
   to n8n with exponential backoff, jitter, and `Retry-After` honouring.
 - Critical events (settlement, halt, fill) are never dropped; telemetry
   events (heartbeat, latency) use drop-oldest when the backlog exceeds a cap.
-- Webhooks are signed with HMAC-SHA256 over `timestamp.body` using
-  `SUPERBOT_WEBHOOK_SECRET`, sent on a separate `requests.Session` that
-  carries no `X-N8N-API-KEY`.
+- Webhooks are signed with HMAC-SHA256 over `{timestamp_ms}.{nonce}.{body}`
+  using `SUPERBOT_WEBHOOK_SECRET`, sent on a separate `requests.Session` that
+  carries no `X-N8N-API-KEY`. The nonce gives replay cover; the receiver
+  verifies it with n8n_webhook_auth.verify_request.
 
 All API endpoints live under http://127.0.0.1:5678/api/v1/.
 """
 
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -39,12 +38,13 @@ import requests
 from requests.adapters import HTTPAdapter
 
 import config
+import n8n_webhook_auth
 from events import Event, make_event, delivery_class, CRITICAL_TYPES, TELEMETRY_TYPES
 
 log = logging.getLogger("n8n_client")
 
 # Default base URL — n8n runs locally on port 5678
-DEFAULT_BASE_URL = "http://127.0.0.1:5678"
+DEFAULT_BASE_URL = os.environ.get("N8N_BASE_URL", "http://127.0.0.1:5678")
 
 # Webhook timeout must be less than CYCLE_TIMEOUT_SECONDS so a webhook
 # can't block a full cycle. Default: cycle timeout minus 5s margin.
@@ -141,20 +141,11 @@ def _deliver_outbox_row(db, row: Dict[str, Any]) -> None:
     event_id = row["id"]
     webhook_path = row["type"]  # event type maps to webhook path
     payload = json.loads(row["payload_json"] or "{}")
-    timestamp = str(int(time.time() * 1000))
-    body = json.dumps(payload, separators=(",", ":"))
-    signature = _sign_body(timestamp, body)
 
     client = N8nClient()  # API methods not needed; only _execute_webhook_signed
     try:
-        client._execute_webhook_signed(
-            webhook_path, payload, "POST",
-            DEFAULT_WEBHOOK_TIMEOUT, 1,
-            extra_headers={
-                "X-Superbot-Timestamp": timestamp,
-                "X-Superbot-Signature": signature,
-            },
-        )
+        client._execute_webhook_signed(webhook_path, payload, "POST",
+                                       DEFAULT_WEBHOOK_TIMEOUT, 1)
         db.mark_outbox_sent(event_id)
         log.debug("Outbox event %s delivered (%s)", event_id, row["type"])
     except Exception as e:
@@ -162,11 +153,13 @@ def _deliver_outbox_row(db, row: Dict[str, Any]) -> None:
         db.mark_outbox_dead(event_id, str(e)[:200], max_attempts=MAX_OUTBOX_ATTEMPTS)
 
 
-def _sign_body(timestamp: str, body: str) -> str:
-    """HMAC-SHA256 over ``timestamp.body`` using SUPERBOT_WEBHOOK_SECRET."""
-    secret = config.SUPERBOT_WEBHOOK_SECRET.encode()
-    message = f"{timestamp}.{body}".encode()
-    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+def _sign_body(timestamp: str, body: str, nonce: str = "") -> str:
+    """HMAC-SHA256 over ``{timestamp}.{nonce}.{body}`` (N1: nonce replay cover).
+
+    Kept for backward compatibility with callers that pass only
+    (timestamp, body): an empty nonce signs ``{timestamp}..{body}``.
+    """
+    return n8n_webhook_auth.sign_body(timestamp, nonce, body)
 
 
 def _start_outbox_sender():
@@ -396,13 +389,23 @@ class N8nClient:
                                 max_retries: int = 3,
                                 extra_headers: Optional[Dict[str, str]] = None
                                 ) -> Dict[str, Any]:
-        """Execute a webhook with HMAC signing on the no-API-key session."""
+        """Execute a webhook with HMAC signing on the no-API-key session.
+
+        Signature covers ``{timestamp_ms}.{nonce}.{body}`` (N1: nonce replay
+        cover); the static shared secret rides in X-Superbot-Key as the
+        n8n webhook headerAuth possession gate.
+        """
         timestamp = str(int(time.time() * 1000))
-        body = json.dumps(data, separators=(",", ":"))
-        signature = _sign_body(timestamp, body)
+        nonce = uuid.uuid4().hex
+        # ensure_ascii=False: byte-equal to JS JSON.stringify for all content
+        # except U+2028/U+2029 (n8n escapes those); keep both sides identical.
+        body = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+        signature = n8n_webhook_auth.sign_body(timestamp, nonce, body)
         headers = {
             "X-Superbot-Timestamp": timestamp,
+            "X-Superbot-Nonce": nonce,
             "X-Superbot-Signature": signature,
+            "X-Superbot-Key": n8n_webhook_auth.static_key(),
         }
         if extra_headers:
             headers.update(extra_headers)
@@ -411,8 +414,11 @@ class N8nClient:
         last_err = None
         for attempt in range(max_retries):
             try:
+                # data= must be bytes: a str makes requests set Content-Length
+                # from the character count while writing UTF-8 bytes, which
+                # truncates any non-ASCII body on the receiver side.
                 resp = self._webhook_session.request(
-                    method, url, data=body, headers=headers, timeout=timeout
+                    method, url, data=body.encode("utf-8"), headers=headers, timeout=timeout
                 )
                 resp.raise_for_status()
                 if resp.content:
@@ -445,10 +451,10 @@ class N8nClient:
                             )
                             time.sleep(2.0 * (attempt + 1))
                             continue
-                            log.error(
-                                "Signed webhook %s %s: HTTP %s — exhausted %d retries",
-                                method, webhook_path, status, max_retries,
-                            )
+                        log.error(
+                            "Signed webhook %s %s: HTTP %s — exhausted %d retries",
+                            method, webhook_path, status, max_retries,
+                        )
                 log.error("Signed webhook %s %s failed: %s", method, webhook_path, e)
                 raise
         raise last_err
@@ -555,3 +561,40 @@ def n8n_health_check() -> bool:
         return resp.status_code < 500
     except Exception:
         return False
+
+
+def n8n_startup_check() -> bool:
+    """N1 startup gate: warn on non-loopback bind or unsigned acceptance.
+
+    - WARNING when n8n appears bound to a non-loopback address
+      (N8N_HOST / N8N_LISTEN_ADDRESS / configured base URL host).
+    - CRITICAL when an unsigned webhook request is accepted: the superbot-*
+      webhooks must reject requests without the shared secret.
+    Returns True when no issue was found.
+    """
+    from urllib.parse import urlparse
+    issues = []
+    bind = (os.environ.get("N8N_HOST") or os.environ.get("N8N_LISTEN_ADDRESS") or "").strip()
+    if not bind:
+        try:
+            bind = urlparse(DEFAULT_BASE_URL).hostname or ""
+        except Exception:
+            bind = ""
+    if bind and bind not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        log.warning("n8n appears bound to non-loopback address %r — the SuperBot "
+                    "webhooks are meant for 127.0.0.1 only; rebind or tunnel", bind)
+        issues.append("non-loopback-bind")
+    # Probe: an unsigned request must NOT be accepted by the superbot webhooks.
+    try:
+        client = get_client()
+        resp = client.session.post(
+            f"{client.base_url}/webhook/superbot-monitor",
+            json={"probe": "unsigned"}, timeout=5)
+        if resp.status_code < 400:
+            log.critical("n8n accepted an UNSIGNED webhook request (status %s) — "
+                         "the superbot-* webhooks are not authenticated; any local "
+                         "process can post forged events to them", resp.status_code)
+            issues.append("unsigned-accepted")
+    except Exception as e:
+        log.debug("unsigned probe could not reach n8n (offline?): %s", e)
+    return not issues

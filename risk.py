@@ -179,8 +179,10 @@ class RiskManager:
 
         self.state.daily_pnl += pnl_delta
         daily_limit = self.state.start_balance * config.DAILY_LOSS_LIMIT_PCT
-        
-        if self.state.daily_pnl <= -daily_limit:
+        # reviewed: a zero base means "never initialized" (or a genuinely
+        # free account) — daily_pnl 0.0 <= -0.0 is IEEE-true and would halt a
+        # fresh manager on the first probe. Live always calls initialize().
+        if daily_limit > 0.0 and self.state.daily_pnl <= -daily_limit:
             if not self.state.halted:
                 self.state.halted = True
                 self.state.halted_at = now

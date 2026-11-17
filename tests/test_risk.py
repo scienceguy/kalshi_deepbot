@@ -239,6 +239,27 @@ def test_daily_loss_circuit_breaker_exact_limit_halts(monkeypatch):
     assert r.state.halted is True
 
 
+def test_daily_loss_breaker_skips_uninitialized_zero_base(monkeypatch):
+    """A zero-base (never initialized) RiskManager must not halt on a probe.
+
+    risk.check() probes with update_daily_pnl(0.0); with start_balance 0.0
+    the daily limit is 0.0 and 0.0 <= -0.0 is IEEE-true, which used to halt
+    a fresh manager before any balance was ever known. # reviewed: zero-base
+    guard in update_daily_pnl (daily_limit > 0.0 condition).
+    """
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "DAILY_LOSS_LIMIT_PCT", 0.05)
+
+    r = RiskManager()
+    halted, reason = r.update_daily_pnl(0.0)
+    assert halted is False
+    assert reason == "ok"
+    assert r.state.halted is False
+
+
 def test_daily_loss_circuit_breaker_resets_at_midnight(monkeypatch):
     """Daily P&L resets at midnight UTC."""
     import risk

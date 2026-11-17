@@ -1,60 +1,100 @@
 #!/usr/bin/env python3
 """
-Inject n8n workflow definitions for SuperBot integration.
+Install SuperBot n8n workflows through the n8n REST API (N1).
 
-Creates n8n workflows that act as tools:
-1. superbot-backtest - runs parameter sweep backtest
-2. superbot-collect - collects market data for backtesting
-3. superbot-trade - executes trades via SuperBot
-4. superbot-monitor - checks positions and status
+Creates or updates each workflow by name (idempotent), activates it, and
+verifies the health webhook: a signed request must answer 200, an unsigned
+one must be rejected. The installer NEVER opens n8n's SQLite database —
+workflow management goes through /api/v1 like any other client.
 
-Each workflow uses:
-- Webhook trigger node (receives HTTP POST)
-- Execute Command node (runs a Python script)
-- Respond to Webhook node (returns results)
+Workflows:
+1. superbot-backtest  - runs parameter sweep backtest
+2. superbot-collect   - collects market data for backtesting
+3. superbot-trade     - settlement processor (Supabase PATCH)
+4. superbot-monitor   - ack-only monitor sink
+5. superbot-coordinate - inter-agent coordination (HMAC-verified receiver)
 
-Injects directly into n8n SQLite database.
+Webhook nodes use header authentication with the shared secret from
+~/.secrets/ (X-Superbot-Key); coordination/control webhooks additionally
+verify the HMAC-SHA256 signature (body + timestamp + nonce) in a Code node
+before any side effect runs.
 """
 
 import os
 import shlex
-import sqlite3
 import sys
-import json
-import uuid
-from datetime import datetime, timezone
 
-DB_PATH = os.environ.get("N8N_DB_PATH", os.path.expanduser("~/.n8n/database.sqlite"))
-PROJECT_ID = os.environ.get("N8N_PROJECT_ID", "Tnj4bqvQK0YrKDi3")
-USER_ID = os.environ.get("N8N_USER_ID", "8479b7c4-cebe-4ef5-807e-9cb8e6f2f773")
+import n8n_webhook_auth
+from n8n_client import N8nClient, load_api_key, n8n_health_check
 
-# Scripts the workflows execute, resolved relative to this file so the
-# injector is not tied to one checkout path.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-now = datetime.now(timezone.utc).isoformat() + "Z"
+# Header-auth credential name (created idempotently via REST).
+CREDENTIAL_NAME = "SuperBot Webhook Auth"
+HEADER_NAME = "X-Superbot-Key"
 
-def new_id():
-    return uuid.uuid4().hex
+# The coordination workflow's receiver verifies signatures with this JS
+# mirror of n8n_webhook_auth.verify_request. Kept as a constant so the
+# workflow JSON and the Python receiver stay next to each other.
+# Throws on verification failure so the workflow STOPS before any side
+# effect runs (an "ok: false" payload would still flow downstream).
+# Body canonicalization matches n8n_client (json.dumps, compact,
+# ensure_ascii=False); JSON.stringify output is byte-equal for all
+# content except U+2028/U+2029, which JSON.stringify escapes.
+VERIFY_JS = r"""
+const crypto = require('crypto');
+const h = $json.headers || {};
+const ts = String(h['x-superbot-timestamp'] || '');
+const nonce = String(h['x-superbot-nonce'] || '');
+const sig = String(h['x-superbot-signature'] || '');
+const raw = typeof $json.body === 'string' ? $json.body : JSON.stringify($json.body);
+const secret = $env.SUPERBOT_WEBHOOK_SECRET || '';
+if (!ts || !nonce || !sig || !secret) {
+  throw new Error('missing signed fields');
+}
+const expected = crypto.createHmac('sha256', secret)
+  .update(ts + '.' + nonce + '.' + raw).digest('hex');
+const fresh = Math.abs(Date.now() - Number(ts)) <= 60000;
+let replay = false;
+try {
+  const sd = $getWorkflowStaticData('global');
+  sd.seenNonces = sd.seenNonces || {};
+  if (sd.seenNonces[nonce]) { replay = true; } else { sd.seenNonces[nonce] = Date.now(); }
+} catch (e) { /* static data unavailable — signature freshness still enforced */ }
+const ok = fresh && !replay && sig.length === expected.length &&
+  crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));
+if (!ok) {
+  throw new Error(replay ? 'replayed nonce' : (fresh ? 'signature mismatch' : 'stale timestamp'));
+}
+return [{ json: { ok: true, reason: 'ok', body: $json.body, headers: {
+  'x-superbot-timestamp': ts, 'x-superbot-nonce': nonce, 'x-superbot-signature': sig } } }];
+"""
+
 
 def make_command(script, args):
     """Shell command for the Execute Command node.
 
-    n8n 2.x blocks `require('child_process')` in Code nodes, so the script
-    runs through n8n-nodes-base.executeCommand instead. None of the SuperBot
+    n8n 2.x blocks ``require('child_process')`` in Code nodes, so the scripts
+    run through n8n-nodes-base.executeCommand instead. None of the SuperBot
     scripts read stdin; each one is invoked for its side effect and CLI flags.
     """
     return shlex.join(["env", f"PYTHONPATH={BASE_DIR}", sys.executable,
                        script] + shlex.split(args))
 
 
-def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python_script=None, python_args="",
-                  workflow_type="python_script", supabase_url="", supabase_key=""):
-    """Create a complete n8n workflow definition."""
-    
-    version_id = new_id()
-    
-    # Build the webhook node (common to all workflow types)
+def make_header_auth_credential(secret: str) -> dict:
+    """n8n httpHeaderAuth credential payload (X-Superbot-Key possession gate)."""
+    return {
+        "name": CREDENTIAL_NAME,
+        "type": "n8n-nodes-base.httpHeaderAuth",
+        "data": {"name": HEADER_NAME, "value": secret},
+    }
+
+
+def make_workflow(name, webhook_path, node_name, workflow_type="python_script",
+                  python_script=None, python_args="", credential_id=None,
+                  supabase_url="", supabase_key=""):
+    """Create a complete n8n workflow definition (REST API payload)."""
     webhook_node = {
         "id": "node_webhook",
         "name": node_name,
@@ -65,15 +105,16 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
             "httpMethod": "POST",
             "path": webhook_path,
             "responseMode": "responseNode",
-            "authentication": "none",
-            "webhookId": webhook_id,
+            "authentication": "headerAuth",
+            "webhookId": webhook_path,
             "responseData": True,
             "options": {}
         },
-        "webhookId": webhook_id,
+        "credentials": {"httpHeaderAuth": {"id": credential_id, "name": CREDENTIAL_NAME}},
+        "webhookId": webhook_path,
         "isActive": True
     }
-    
+
     if workflow_type == "settlement_processor":
         # Settlement processor: webhook → HTTP request to Supabase
         supabase_url_clean = supabase_url.rstrip("/") if supabase_url else ""
@@ -109,65 +150,48 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
             },
             "isActive": True
         }
-        
-        respond_node = {
-            "id": "node_respond",
-            "name": "Respond to Webhook",
-            "type": "n8n-nodes-base.respondToWebhook",
-            "typeVersion": 1,
-            "position": [600, 0],
-            "parameters": {
-                "responseCode": "200",
-                "responseBody": "={{ $json }}",
-                "respondWith": "json",
-                "options": {}
-            },
-        }
-        
+        respond_node = _respond_node()
         nodes = [webhook_node, http_request_node, respond_node]
-        
-        # n8n resolves connections by node NAME, not id.
         connections = {
-            node_name: {
-                "main": [[
-                    {"node": "Update Order Settlement", "type": "main", "index": 0}
-                ]]
-            },
-            "Update Order Settlement": {
-                "main": [[
-                    {"node": "Respond to Webhook", "type": "main", "index": 0}
-                ]]
-            }
+            node_name: {"main": [[{"node": "Update Order Settlement", "type": "main", "index": 0}]]},
+            "Update Order Settlement": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]},
         }
     elif workflow_type == "ack_only":
         # Health/alert sink: acknowledge without running any subprocess, so a
         # monitor ping can never start a trading cycle.
-        respond_node = {
-            "id": "node_respond",
-            "name": "Respond to Webhook",
-            "type": "n8n-nodes-base.respondToWebhook",
-            "typeVersion": 1,
-            "position": [300, 0],
-            "parameters": {
-                "responseCode": "200",
-                "responseBody": "={{ {ok: true, received: $json.body} }}",
-                "respondWith": "json",
-                "options": {}
-            },
-        }
-
+        respond_node = _respond_node(body="={{ {ok: true, received: $json.body} }}")
         nodes = [webhook_node, respond_node]
-
         connections = {
-            node_name: {
-                "main": [[
-                    {"node": "Respond to Webhook", "type": "main", "index": 0}
-                ]]
-            }
+            node_name: {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]},
+        }
+    elif workflow_type == "signed_command":
+        # Coordination/control receiver: HMAC verify BEFORE any side effect.
+        verify_node = {
+            "id": "node_verify",
+            "name": "Verify Signature",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [200, 0],
+            "parameters": {"jsCode": VERIFY_JS},
+        }
+        command = make_command(python_script, python_args)
+        code_node = {
+            "id": "node_exec",
+            "name": "Execute Python",
+            "type": "n8n-nodes-base.executeCommand",
+            "typeVersion": 1,
+            "position": [500, 0],
+            "parameters": {"command": command, "executeOnce": True}
+        }
+        respond_node = _respond_node()
+        nodes = [webhook_node, verify_node, code_node, respond_node]
+        connections = {
+            node_name: {"main": [[{"node": "Verify Signature", "type": "main", "index": 0}]]},
+            "Verify Signature": {"main": [[{"node": "Execute Python", "type": "main", "index": 0}]]},
+            "Execute Python": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]},
         }
     else:
         command = make_command(python_script, python_args)
-
         code_node = {
             "id": "node_exec",
             "name": "Execute Python",
@@ -179,253 +203,160 @@ def make_workflow(workflow_id, name, webhook_path, webhook_id, node_name, python
                 "executeOnce": True
             }
         }
-        
-        respond_node = {
-            "id": "node_respond",
-            "name": "Respond to Webhook",
-            "type": "n8n-nodes-base.respondToWebhook",
-            "typeVersion": 1,
-            "position": [600, 0],
-            "parameters": {
-                "responseCode": "200",
-                "responseBody": "={{ $json }}",
-                "respondWith": "json",
-                "options": {}
-            },
-        }
-        
+        respond_node = _respond_node()
         nodes = [webhook_node, code_node, respond_node]
-        
-        # n8n resolves connections by node NAME, not id.
         connections = {
-            node_name: {
-                "main": [[
-                    {"node": "Execute Python", "type": "main", "index": 0}
-                ]]
-            },
-            "Execute Python": {
-                "main": [[
-                    {"node": "Respond to Webhook", "type": "main", "index": 0}
-                ]]
-            }
+            node_name: {"main": [[{"node": "Execute Python", "type": "main", "index": 0}]]},
+            "Execute Python": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]},
         }
-    
-    # Build nodes JSON string
-    nodes_json = json.dumps(nodes, separators=(',', ':'))
-    connections_json = json.dumps(connections, separators=(',', ':'))
-    
-    # workflow_entity row
-    workflow_entity = (
-        workflow_id,
-        name,
-        1,  # active
-        nodes_json,  # nodes
-        connections_json,  # connections
-        '{}',  # settings
-        '{}',  # staticData
-        '{}',  # pinData
-        version_id,  # versionId
-        0,  # triggerCount
-        '{}',  # meta
-        None,  # parentFolderId
-        now,  # createdAt
-        now,  # updatedAt
-        0,  # isArchived
-        1,  # versionCounter
-        None,  # description
-        version_id,  # activeVersionId
-    )
-    
-    # workflow_history row
-    workflow_history = (
-        version_id,
-        workflow_id,
-        USER_ID,  # authors
-        now,  # createdAt
-        now,  # updatedAt
-        nodes_json,  # nodes
-        connections_json,  # connections
-        name,  # name
-        False,  # autosaved
-        None,  # description
-    )
-    
-    # workflow_published_version row
-    published_version = (
-        workflow_id,
-        version_id,  # publishedVersionId
-        now,  # createdAt
-        now  # updatedAt
-    )
-    
-    # workflow_publish_history row (id is INTEGER PRIMARY KEY - auto-assign)
-    publish_history = (
-        None,  # id (auto-assigned by SQLite)
-        workflow_id,
-        version_id,
-        'activated',  # event
-        USER_ID,  # userId
-        now  # createdAt
-    )
-    
-    # shared_workflow row
-    shared_workflow = (
-        workflow_id,
-        PROJECT_ID,
-        'workflow:owner',
-        now,
-        now
-    )
-    
-    # webhook_entity row
-    webhook_entity = (
-        workflow_id,
-        webhook_path,
-        'POST',
-        node_name,
-        webhook_id,
-        len(webhook_path)  # pathLength
-    )
-    
+
     return {
-        'workflow_entity': workflow_entity,
-        'workflow_history': workflow_history,
-        'published_version': published_version,
-        'publish_history': publish_history,
-        'shared_workflow': shared_workflow,
-        'webhook_entity': webhook_entity
+        "name": name,
+        "nodes": nodes,
+        "connections": connections,
+        "settings": {},
+        "staticData": None,
+        "pinData": {},
+        "meta": {},
+        "active": True,
     }
 
 
-def main():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    
-    # Check if workflows already exist
-    cur.execute("SELECT id FROM workflow_entity WHERE name LIKE 'SuperBot%'")
-    existing = cur.fetchall()
-    if existing:
-        print("SuperBot workflows already exist. Removing old ones...")
-        for row in existing:
-            wid = row[0]
-            cur.execute("DELETE FROM webhook_entity WHERE workflowId=?", (wid,))
-            cur.execute("DELETE FROM shared_workflow WHERE workflowId=?", (wid,))
-            cur.execute("DELETE FROM workflow_publish_history WHERE workflowId=?", (wid,))
-            cur.execute("DELETE FROM workflow_published_version WHERE workflowId=?", (wid,))
-            cur.execute("DELETE FROM workflow_history WHERE workflowId=?", (wid,))
-            cur.execute("DELETE FROM workflow_entity WHERE id=?", (wid,))
-        conn.commit()
-    
-    workflows = [
-        {
-            'id': new_id(),
-            'name': 'SuperBot Backtest',
-            'webhook_path': 'superbot-backtest',
-            'webhook_id': 'superbot-backtest-auto',
-            'node_name': 'SuperBot Backtest',
-            'script': os.path.join(BASE_DIR, 'backtest.py'),
-            'args': '--quick --limit 50 --top 10 --jobs 2'
+def _respond_node(body="={{ $json }}"):
+    return {
+        "id": "node_respond",
+        "name": "Respond to Webhook",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1,
+        "position": [600, 0],
+        "parameters": {
+            "responseCode": "200",
+            "responseBody": body,
+            "respondWith": "json",
+            "options": {}
         },
-        {
-            'id': new_id(),
-            'name': 'SuperBot Data Collect',
-            'webhook_path': 'superbot-collect',
-            'webhook_id': 'superbot-collect-auto',
-            'node_name': 'SuperBot Data Collect',
-            'script': os.path.join(BASE_DIR, 'legacy', 'data_collector.py'),
-            'args': '--series KXBTC15M KXETH15M KXSOL15M KXXRP15M KXDOGE15M --limit 100'
-        },
-        {
-            'id': new_id(),
-            'name': 'SuperBot Trade',
-            'webhook_path': 'superbot-trade',
-            'webhook_id': 'superbot-trade-auto',
-            'node_name': 'SuperBot Trade',
-            'workflow_type': 'settlement_processor',
-            'supabase_url': os.environ.get('SUPABASE_URL', ''),
-            'supabase_key': os.environ.get('SUPABASE_SERVICE_KEY', ''),
-        },
-        {
-            'id': new_id(),
-            'name': 'SuperBot Monitor',
-            'webhook_path': 'superbot-monitor',
-            'webhook_id': 'superbot-monitor-auto',
-            'node_name': 'SuperBot Monitor',
-            # Acknowledge alerts only. Spawning trader.py here would run a
-            # second cycle that can place orders once DRY_RUN is false.
-            'workflow_type': 'ack_only',
-        }
-    ]
-    
-    for wf in workflows:
-        # The settlement workflow writes the Supabase key into the n8n node.
-        # Refuse to inject it with empty credentials rather than create a
-        # silently broken node; the operator supplies them at injection time.
-        if wf.get('workflow_type') == 'settlement_processor' and not (
-                wf.get('supabase_url') and wf.get('supabase_key')):
-            print("SKIP %s: SUPABASE_URL / SUPABASE_SERVICE_KEY not set "
-                  "(settlement routing needs both)" % wf['name'])
-            continue
-        print("Inserting workflow: %s (webhook: %s)" % (wf['name'], wf['webhook_path']))
-        data = make_workflow(
-            wf['id'], wf['name'], wf['webhook_path'],
-            wf['webhook_id'], wf['node_name'],
-            wf.get('script'), wf.get('args', ''),
-            wf.get('workflow_type', 'python_script'),
-            wf.get('supabase_url', ''),
-            wf.get('supabase_key', '')
-        )
+    }
 
-        # Insert into all tables
-        cur.execute(
-            "INSERT INTO workflow_entity (id, name, active, nodes, connections, settings, staticData, pinData, versionId, triggerCount, meta, parentFolderId, createdAt, updatedAt, isArchived, versionCounter, description, activeVersionId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            data['workflow_entity']
+
+WORKFLOWS = [
+    {
+        "name": "SuperBot Backtest",
+        "webhook_path": "superbot-backtest",
+        "node_name": "SuperBot Backtest",
+        "script": os.path.join(BASE_DIR, "backtest.py"),
+        "args": "--quick --limit 50 --top 10 --jobs 2"
+    },
+    {
+        "name": "SuperBot Data Collect",
+        "webhook_path": "superbot-collect",
+        "node_name": "SuperBot Data Collect",
+        "script": os.path.join(BASE_DIR, "legacy", "data_collector.py"),
+        "args": "--series KXBTC15M KXETH15M KXSOL15M KXXRP15M KXDOGE15M --limit 100"
+    },
+    {
+        "name": "SuperBot Trade",
+        "webhook_path": "superbot-trade",
+        "node_name": "SuperBot Trade",
+        "workflow_type": "settlement_processor",
+        "supabase_url": os.environ.get("SUPABASE_URL", ""),
+        "supabase_key": os.environ.get("SUPABASE_SERVICE_KEY", ""),
+    },
+    {
+        "name": "SuperBot Monitor",
+        "webhook_path": "superbot-monitor",
+        "node_name": "SuperBot Monitor",
+        # Acknowledge alerts only. Spawning trader.py here would run a
+        # second cycle that can place orders once DRY_RUN is false.
+        "workflow_type": "ack_only",
+    },
+    {
+        "name": "SuperBot Coordinate",
+        "webhook_path": "superbot-coordinate",
+        "node_name": "SuperBot Coordinate",
+        # Coordination webhook: HMAC-verified receiver before any side effect.
+        "workflow_type": "signed_command",
+        "script": os.path.join(BASE_DIR, "n8n_coordination.py"),
+        "args": "",
+    },
+]
+
+
+def _ensure_credential(client: N8nClient, secret: str) -> str:
+    """Create the header-auth credential idempotently; return its id."""
+    existing = client._request("GET", "credentials", params={"limit": 100})
+    for cred in existing.get("data", []):
+        if cred.get("name") == CREDENTIAL_NAME:
+            return cred["id"]
+    created = client._request("POST", "credentials", data=make_header_auth_credential(secret))
+    return created["id"]
+
+
+def main():
+    api_key = load_api_key()
+    if not api_key:
+        print("ERROR: no n8n API key (N8N_API_KEY or ~/.secrets/n8n_api_key). "
+              "The REST installer cannot run without it.")
+        return 1
+    secret = n8n_webhook_auth.static_key()
+    if not secret:
+        print("ERROR: SUPERBOT_WEBHOOK_SECRET is not set and "
+              "~/.secrets/superbot_webhook_secret is unreadable. "
+              "Webhooks cannot be authenticated without it.")
+        return 1
+
+    client = N8nClient(api_key=api_key)
+
+    # Startup check: n8n must be loopback-bound (N1).
+    if not client.base_url.startswith(("http://127.0.0.1", "http://localhost", "http://[::1]")):
+        print(f"WARNING: n8n base URL {client.base_url} is not loopback — "
+              "the SuperBot webhooks are meant for 127.0.0.1 only")
+
+    credential_id = _ensure_credential(client, secret)
+
+    for wf in WORKFLOWS:
+        # The settlement workflow writes the Supabase key into the n8n node.
+        # Refuse to install it with empty credentials rather than create a
+        # silently broken node; the operator supplies them at injection time.
+        if wf.get("workflow_type") == "settlement_processor" and not (
+                wf.get("supabase_url") and wf.get("supabase_key")):
+            print("SKIP %s: SUPABASE_URL / SUPABASE_SERVICE_KEY not set "
+                  "(settlement routing needs both)" % wf["name"])
+            continue
+        definition = make_workflow(
+            wf["name"], wf["webhook_path"], wf["node_name"],
+            wf.get("workflow_type", "python_script"),
+            wf.get("script"), wf.get("args", ""), credential_id,
+            wf.get("supabase_url", ""), wf.get("supabase_key", ""),
         )
-        
-        cur.execute(
-            "INSERT INTO workflow_history (versionId, workflowId, authors, createdAt, updatedAt, nodes, connections, name, autosaved, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            data['workflow_history']
-        )
-        
-        cur.execute(
-            "INSERT INTO workflow_published_version (workflowId, publishedVersionId, createdAt, updatedAt) VALUES (?, ?, ?, ?)",
-            data['published_version']
-        )
-        
-        cur.execute(
-            "INSERT INTO workflow_publish_history (id, workflowId, versionId, event, userId, createdAt) VALUES (?, ?, ?, ?, ?, ?)",
-            data['publish_history']
-        )
-        
-        cur.execute(
-            "INSERT INTO shared_workflow (workflowId, projectId, role, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)",
-            data['shared_workflow']
-        )
-        
-        cur.execute(
-            "INSERT INTO webhook_entity (workflowId, webhookPath, method, node, webhookId, pathLength) VALUES (?, ?, ?, ?, ?, ?)",
-            data['webhook_entity']
-        )
-    
-    conn.commit()
-    
-    # Verify
+        existing = client.get_workflow_by_name(wf["name"])
+        if existing:
+            client.update_workflow(existing["id"], definition)
+            client.ensure_workflow_active(existing["id"])
+            print("Updated workflow: %s (id=%s, webhook: %s)" %
+                  (wf["name"], existing["id"], wf["webhook_path"]))
+        else:
+            created = client.create_workflow(definition)
+            client.ensure_workflow_active(created["id"])
+            print("Created workflow: %s (id=%s, webhook: %s)" %
+                  (wf["name"], created["id"], wf["webhook_path"]))
+
+    # Verify: signed health request must succeed, unsigned must be rejected.
+    ok_signed = n8n_health_check()
     print("\n=== VERIFICATION ===")
-    cur.execute("SELECT id, name, active, activeVersionId FROM workflow_entity WHERE name LIKE 'SuperBot%'")
-    for row in cur.fetchall():
-        print("Workflow: %s (id=%s, active=%s, versionId=%s)" % (row[1], row[0], row[2], row[3]))
-    
-    cur.execute("SELECT workflowId, webhookPath, method, node, webhookId FROM webhook_entity WHERE webhookPath LIKE 'superbot-%'")
-    for row in cur.fetchall():
-        print("Webhook: %s %s node=%s webhookId=%s" % (row[1], row[2], row[3], row[4]))
-    
-    cur.execute("SELECT workflowId, projectId, role FROM shared_workflow WHERE workflowId IN (SELECT id FROM workflow_entity WHERE name LIKE 'SuperBot%')")
-    for row in cur.fetchall():
-        print("Shared: workflowId=%s, projectId=%s, role=%s" % (row[0], row[1], row[2]))
-    
-    conn.close()
-    print("\nAll SuperBot n8n workflows injected successfully!")
+    print("Health check: %s" % ("OK" if ok_signed else "FAILED"))
+    try:
+        resp = client.session.post(
+            f"{client.base_url}/webhook/superbot-monitor",
+            json={"probe": "unsigned"}, timeout=5)
+        if resp.status_code < 400:
+            print("FAIL: unsigned request accepted (HTTP %s) — header auth not active" % resp.status_code)
+            return 1
+        print("Unsigned request rejected (HTTP %s) — header auth active" % resp.status_code)
+    except Exception as e:
+        print("Unsigned probe skipped (n8n unreachable: %s)" % e)
+    print("\nAll SuperBot n8n workflows installed via REST API successfully!")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
