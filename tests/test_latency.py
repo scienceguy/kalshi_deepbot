@@ -188,7 +188,7 @@ def test_stage_stats_aggregates_per_stage():
 def test_default_recorder_exists():
     """The module exposes a default recorder instance."""
     assert latency.default_recorder is not None
-    assert isinstance(latency.default_recorder, LatencyRecorder)
+    assert isinstance(latency.default_recorder, latency.LatencyRecorder)
 
 
 def test_span_writes_to_superbot_data_dir_by_default(tmp_path, monkeypatch):

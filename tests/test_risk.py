@@ -224,6 +224,21 @@ def test_daily_loss_circuit_breaker_halts_trading(monkeypatch):
     assert "daily loss circuit breaker" in reason
 
 
+def test_daily_loss_circuit_breaker_exact_limit_halts(monkeypatch):
+    """Daily loss exactly AT the limit must halt (guard fires on equality)."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "DAILY_LOSS_LIMIT_PCT", 0.05)
+
+    r = RiskManager()
+    r.initialize(100.0)
+    halted, reason = r.update_daily_pnl(-5.0)  # exactly the daily limit
+    assert halted is True
+    assert r.state.halted is True
+
+
 def test_daily_loss_circuit_breaker_resets_at_midnight(monkeypatch):
     """Daily P&L resets at midnight UTC."""
     import risk

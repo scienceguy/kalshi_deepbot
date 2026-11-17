@@ -94,9 +94,15 @@ from resilience import CycleSupervisor, systemd_notify  # noqa: E402
 from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, calibration_beats_chance as _llm_calibration_beats_chance  # noqa: E402
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
-import mempalace_bridge  # noqa: E402  (M1: MemPalace bridge off hot path)
-import binance_feed  # noqa: E402  — WebSocket spot streams (start_ws_streams)
 import report_state  # noqa: E402  — B19 operator visibility hook
+import binance_feed  # noqa: E402  — WebSocket spot streams (start_ws_streams)
+# mempalace_bridge's dependency (mempalace.logstream) mutates sys.path,
+# removing the repo dir. Save/restore so later imports (e.g. poly_us_trader
+# in test subprocesses) still find local modules.
+import sys as _sys
+_sys_path_before_bridge = list(_sys.path)
+import mempalace_bridge  # noqa: E402  (M1: MemPalace bridge off hot path)
+_sys.path = _sys_path_before_bridge
 
 # Polymarket US client (order placement infra ready for when crypto markets
 # launch on production; currently preprod only — no crypto updown markets on

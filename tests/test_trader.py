@@ -54,6 +54,13 @@ def test_pre_trade_check_blocks_over_cap(fresh_state, mock_client):
     sig.entry_price = 50
     sig.market = MagicMock()
     sig.market.ticker = "TEST"
+    sig.market.yes_bid = 48
+    sig.market.yes_ask = 52
+    sig.market.yes_liquidity = 100
+    sig.market.no_bid = 48
+    sig.market.no_ask = 52
+    sig.market.no_liquidity = 100
+    sig.win_prob = 0.6
 
     # Set up window budget
     fresh_state.window["budget"] = 100.0
@@ -72,6 +79,13 @@ def test_pre_trade_check_blocks_cash_floor(fresh_state, mock_client):
     sig.entry_price = 50
     sig.market = MagicMock()
     sig.market.ticker = "TEST"
+    sig.market.yes_bid = 48
+    sig.market.yes_ask = 52
+    sig.market.yes_liquidity = 100
+    sig.market.no_bid = 48
+    sig.market.no_ask = 52
+    sig.market.no_liquidity = 100
+    sig.win_prob = 0.6
 
     # Set up window budget
     fresh_state.window["budget"] = 100.0
@@ -83,13 +97,21 @@ def test_pre_trade_check_blocks_cash_floor(fresh_state, mock_client):
     assert not allowed
 
 
-def test_pre_trade_check_allows_small_trade(fresh_state, mock_client):
+def test_pre_trade_check_allows_small_trade(fresh_state, mock_client, monkeypatch):
     """_pre_trade_check allows small trades within limits."""
+    monkeypatch.setattr(config, "MAX_TRADE_DOLLARS", 1000.0)
     sig = MagicMock()
     sig.dollar_risk = 5.0
     sig.entry_price = 50
     sig.market = MagicMock()
     sig.market.ticker = "TEST"
+    sig.market.yes_bid = 48
+    sig.market.yes_ask = 52
+    sig.market.yes_liquidity = 100
+    sig.market.no_bid = 48
+    sig.market.no_ask = 52
+    sig.market.no_liquidity = 100
+    sig.win_prob = 0.6
 
     # Set up window budget
     fresh_state.window["budget"] = 100.0
@@ -210,6 +232,7 @@ def _reset_cycle_state(monkeypatch):
     monkeypatch.setattr(trader.state, "cycles", 0)
     monkeypatch.setattr(trader.state, "orders_today", 0)
     monkeypatch.setattr(trader.state, "trades_placed", 0)
+    monkeypatch.setattr(trader.state, "last_order_time", 0.0)
     # Don't reset today to empty string — use today's date so reset_daily isn't
     # called on first cycle, which would clear market_daily_losses.
     monkeypatch.setattr(trader.state, "today", datetime.now(timezone.utc).date().isoformat())
@@ -290,6 +313,7 @@ def test_cycle_syncs_new_position_from_exchange(monkeypatch):
     """A position that appeared on the exchange is recorded in local state."""
     client = MagicMock()
     client.get_balance.return_value = 100.0
+    client.get_shard_balance.return_value = 100.0  # used by _sizing_cash when not dry-run
     client.get_positions.return_value = [{
         "ticker": "KXBTC15M-NEW", "yes_position": 2, "no_position": 0,
         "yes_avg_price_dollars": "0.85", "no_avg_price_dollars": "0",
@@ -303,6 +327,8 @@ def test_cycle_syncs_new_position_from_exchange(monkeypatch):
     monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
     monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
+    # Position adoption is skipped in dry-run mode (B14) — enable it explicitly.
+    monkeypatch.setattr(config, "DRY_RUN", False)
     _reset_cycle_state(monkeypatch)
 
     trader.cycle(client)
@@ -560,6 +586,12 @@ def test_pre_trade_check_survives_failed_open_llm_eval(fresh_state, mock_client,
     market.minutes_left = 6.0            # -> 9.0 min in, inside the entry window
     market.mid_yes = 50
     market.skew = 5
+    market.yes_bid = 48
+    market.yes_ask = 52
+    market.yes_liquidity = 100
+    market.no_bid = 48
+    market.no_ask = 52
+    market.no_liquidity = 100
 
     sig = MagicMock()
     sig.dollar_risk = 2.0
@@ -567,6 +599,7 @@ def test_pre_trade_check_survives_failed_open_llm_eval(fresh_state, mock_client,
     sig.contracts = 4
     sig.side = "yes"
     sig.direction = "YES"
+    sig.win_prob = 0.6
     sig.strength = 10
 
     fresh_state.window["budget"] = 100.0
@@ -1567,6 +1600,7 @@ def test_p9_dry_run_fill_increments_trades_placed_once(monkeypatch):
     monkeypatch.setattr(_cfg, "DRY_RUN", True)
     monkeypatch.setattr(_cfg, "LLM_EVALUATION_ENABLED", False, raising=False)
     monkeypatch.setattr(_cfg, "GATES_ENABLED", False, raising=False)
+    monkeypatch.setattr(_cfg, "MIN_EV_EDGE_PCT", 0)
     # Keep the dry-run paper ledger hermetic and deterministic.
     monkeypatch.setattr(trader.paper_mode, "cash", lambda open_risk, mtm=None: 100.0)
     monkeypatch.setattr(trader.paper_mode, "start_balance", lambda: 10.0)
@@ -1596,7 +1630,7 @@ def test_p9_dry_run_fill_increments_trades_placed_once(monkeypatch):
     sig = TradeSignal(
         direction="YES", side="yes", entry_price=95,
         contracts=2.0, dollar_risk=1.9, reason="test",
-        market=market, strength=10,
+        market=market, strength=10, win_prob=0.99,
     )
 
     monkeypatch.setattr(

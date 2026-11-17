@@ -101,7 +101,7 @@ def test_dry_run_does_not_top_up_from_exchange_position():
 def test_cycle_resets_no_trade_counter_on_placement(monkeypatch):
     """An order PLACED this cycle resets the counter even before it fills."""
     mkt = _market()
-    sig = TradeSignal("YES", "yes", 93, 1.0, 1.0, "test", mkt)
+    sig = TradeSignal("YES", "yes", 93, 1.0, 1.0, "test", mkt, win_prob=0.99)
     monkeypatch.setattr(trader.se, "evaluate",
                         lambda m, cash, max_trade_override=None: [sig])
     monkeypatch.setattr(trader.se, "rank_signals", lambda sigs: list(sigs))
@@ -109,10 +109,14 @@ def test_cycle_resets_no_trade_counter_on_placement(monkeypatch):
     monkeypatch.setattr(trader.gates, "asset_for", lambda m: "BTC")
     monkeypatch.setattr(trader.gates, "evaluate_entry",
                         lambda *a, **k: types.SimpleNamespace(allowed=True))
+    # Hermetic paper cash so _pre_trade_check doesn't block on empty state file.
+    monkeypatch.setattr(trader.paper_mode, "cash", lambda open_risk, mtm=None: 100.0)
+    monkeypatch.setattr(trader.paper_mode, "start_balance", lambda: 10.0)
+    monkeypatch.setattr(trader.paper_mode, "pnl", lambda: 0.0)
     trader.state._place_order = lambda client, sig, coid: {
         "order": {"order_id": "sb_test_order", "status": "resting"},
     }
-    trader.state.consecutive_no_trade_cycles = 5
+    monkeypatch.setattr(trader.state, "consecutive_no_trade_cycles", 5)
     monkeypatch.setattr(trader, "find_active_markets", lambda c: [mkt])
     client = _client([])
     trader.cycle(client)

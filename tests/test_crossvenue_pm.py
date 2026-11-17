@@ -60,8 +60,16 @@ def _make_market_dict(
 # lazy import inside fetch_pm_ladder_us succeeds, letting us test the mapper.
 # ---------------------------------------------------------------------------
 
+_real_us_client_module = None
+
 def _inject_mock_us_client(mock_market: dict):
     """Add a mock polymarket_us_client to sys.modules for testing."""
+    global _real_us_client_module
+    if _real_us_client_module is None:
+        _real_us_client_module = sys.modules.get("polymarket_us_client")
+        if _real_us_client_module is None:
+            import polymarket_us_client as _real
+            _real_us_client_module = _real
     class _MockGetMarketBySlug:
         def __call__(self, slug, timeout=20):
             return mock_market
@@ -75,8 +83,18 @@ def _inject_mock_us_client(mock_market: dict):
 
 
 def _remove_mock_us_client():
-    """Remove the mock from sys.modules."""
-    sys.modules.pop("polymarket_us_client", None)
+    """Restore the real polymarket_us_client module after an injection.
+
+    Restores the saved real module object rather than popping the name from
+    sys.modules: popping makes the next `import polymarket_us_client` (e.g. via
+    unittest.mock.patch) create a brand-new module object, while modules that
+    already bound a reference to the old one (e.g. poly_us_trader) keep calling
+    the stale real functions — leaking real network calls into later tests.
+    """
+    global _real_us_client_module
+    if _real_us_client_module is not None:
+        sys.modules["polymarket_us_client"] = _real_us_client_module
+        _real_us_client_module = None
 
 
 # ---------------------------------------------------------------------------
@@ -143,11 +161,17 @@ def test_fetch_pm_ladder_us_range_market():
 
 def test_fetch_pm_ladder_us_import_fallback():
     """Test that when polymarket_us_client is absent, US fetch falls back gracefully."""
-    # Ensure the module is NOT in sys.modules
-    _remove_mock_us_client()
-    ladder = fetch_pm_ladder_us("bitcoin-above-on-november-5-2026")
-    # Without the client module, the lazy import fails and returns None
-    assert ladder is None, "US fetch should return None when polymarket_us_client is absent"
+    # Temporarily pop the real module so the lazy import fails; restore it
+    # afterwards so later tests that bind `import polymarket_us_client` keep
+    # working.
+    saved = sys.modules.pop("polymarket_us_client", None)
+    try:
+        ladder = fetch_pm_ladder_us("bitcoin-above-on-november-5-2026")
+        # Without the client module, the lazy import fails and returns None
+        assert ladder is None, "US fetch should return None when polymarket_us_client is absent"
+    finally:
+        if saved is not None:
+            sys.modules["polymarket_us_client"] = saved
 
 
 def test__fetch_pm_ladder_with_fallback_us_first():
@@ -166,9 +190,13 @@ def test__fetch_pm_ladder_with_fallback_us_first():
         _remove_mock_us_client()
 
     # When US client is absent, fallback should try Gamma (which returns None for bad slug)
-    _remove_mock_us_client()
-    result = _fetch_pm_ladder_with_fallback("nonexistent-slug-12345")
-    assert result is None
+    saved = sys.modules.pop("polymarket_us_client", None)
+    try:
+        result = _fetch_pm_ladder_with_fallback("nonexistent-slug-12345")
+        assert result is None
+    finally:
+        if saved is not None:
+            sys.modules["polymarket_us_client"] = saved
 
 
 def test_parse_pm_slug_still_works():

@@ -141,6 +141,7 @@ def test_kalshi_report_hook_classifies_cycle(monkeypatch):
             emitted.append((st, f))
 
     monkeypatch.setattr(trader.report_state, "StateReporter", FakeRep)
+    monkeypatch.setattr(trader, "_state_reporter", None)
 
     st = MagicMock()
     st.cycles = 5

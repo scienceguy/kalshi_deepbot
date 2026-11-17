@@ -235,8 +235,9 @@ class RiskManager:
             log.debug("Kelly rejected: net EV $%.4f < min edge $%.4f", net_ev, config.MIN_EV_EDGE_PCT)
             return 0.0
         
-        # Kelly bet in dollars
-        kelly_dollars = max(0.0, kelly_fraction * total_balance)
+        # Kelly bet in dollars (rounded to cents to avoid floating-point edge
+        # cases where 0.05 * 100 == 4.999999999999999 instead of 5.0).
+        kelly_dollars = round(max(0.0, kelly_fraction * total_balance), 2)
         
         # Cap at MAX_TRADE_DOLLARS
         return min(kelly_dollars, config.MAX_TRADE_DOLLARS)
