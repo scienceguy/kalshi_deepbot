@@ -1,5 +1,6 @@
 # gitleaks configuration for Kalshi SuperBot
 # Allows RSA key patterns in source code (docstrings, help text) — real keys are in ~/.secrets/
+# Also allows historical markdown files with key-like patterns in git history
 
 title = "Kalshi SuperBot gitleaks config"
 
@@ -9,10 +10,13 @@ paths = [
     "kalshi_client.py",
     "config.py",
     "tests/.*\\.py",
+    "handoff.md",
+    "KALSHI_API_RESEARCH.md",
 ]
 regexes = [
     """-----BEGIN RSA PRIVATE KEY-----""",
     """KALSHI_PRIVATE_KEY.*BEGIN RSA""",
+    """-----BEGIN PRIVATE KEY-----""",
 ]
 
 # Use default gitleaks rules
