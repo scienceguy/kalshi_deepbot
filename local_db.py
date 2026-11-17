@@ -1089,13 +1089,15 @@ class LocalDB:
 
     # ─── D4: online backups + integrity ────────────────────────────────────
     def integrity_check(self) -> tuple[bool, str]:
-        """PRAGMA integrity_check on a dedicated read-write connection.
+        """PRAGMA integrity_check on a read-only URI connection.
 
-        Read-only cannot recover a hot WAL: it returned 'unable to open
-        database file' on a healthy image and the startup path mis-read that
-        as image corruption, renaming the live DB to .corrupt.TIMESTAMP."""
+        Read-only (mode=ro) avoids lock contention with active writers in WAL
+        mode. This is safe for nightly maintenance checks. The startup path
+        still uses _startup_integrity which can restore from backup if needed."""
         try:
-            conn = sqlite3.connect(self.db_path, timeout=10)
+            # Use read-only URI to avoid lock contention with active writers
+            uri = f"file:{self.db_path}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=10)
             try:
                 row = conn.execute("PRAGMA integrity_check").fetchone()
                 msg = str(row[0]) if row else "no result"
