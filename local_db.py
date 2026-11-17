@@ -1088,16 +1088,22 @@ class LocalDB:
                             table, pk_val, qe)
 
     # ─── D4: online backups + integrity ────────────────────────────────────
-    def integrity_check(self) -> tuple[bool, str]:
-        """PRAGMA integrity_check on a read-only URI connection.
+    def integrity_check(self, *, read_only: bool = True) -> tuple[bool, str]:
+        """PRAGMA integrity_check on a dedicated connection.
 
-        Read-only (mode=ro) avoids lock contention with active writers in WAL
-        mode. This is safe for nightly maintenance checks. The startup path
-        still uses _startup_integrity which can restore from backup if needed."""
+        If read_only=True (default), uses read-only URI (mode=ro) to avoid
+        lock contention with active writers in WAL mode. Safe for nightly
+        maintenance checks. If read_only=False, uses read-write connection
+        to force WAL recovery/checkpoint — required for startup integrity gate.
+        """
         try:
-            # Use read-only URI to avoid lock contention with active writers
-            uri = f"file:{self.db_path}?mode=ro"
-            conn = sqlite3.connect(uri, uri=True, timeout=10)
+            if read_only:
+                # Read-only URI avoids lock contention with active writers
+                uri = f"file:{self.db_path}?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, timeout=10)
+            else:
+                # Read-write forces WAL checkpoint/recovery on open
+                conn = sqlite3.connect(self.db_path, timeout=10)
             try:
                 row = conn.execute("PRAGMA integrity_check").fetchone()
                 msg = str(row[0]) if row else "no result"
@@ -1122,13 +1128,18 @@ class LocalDB:
         """D4: online backup via sqlite3 Connection.backup — page-by-page, so
         the copy is consistent even while writers hold the DB. Prunes to
         BACKUP_KEEP. Returns the backup path, or None on failure (trading
-        never depends on this succeeding)."""
+        never depends on this succeeding).
+
+        Uses read-only source connection (mode=ro) to avoid lock contention
+        with active writers. integrity_check uses read-only too; only
+        _startup_integrity uses read-write to force WAL recovery."""
         dest_dir = backup_dir or self.backup_dir or default_backup_dir()
         os.makedirs(dest_dir, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         dest = os.path.join(dest_dir, f"{os.path.basename(self.db_path)}.{stamp}.bak")
         try:
-            src = sqlite3.connect(self.db_path, timeout=30)
+            # Read-only source: backup API works with read-only, avoids writer contention
+            src = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=30)
             try:
                 dst = sqlite3.connect(dest)
                 try:
@@ -1203,10 +1214,10 @@ class LocalDB:
             log.warning("critical event emit failed: %s", e)
 
     def _startup_integrity(self) -> None:
-        """D4 startup gate: integrity_check; on failure restore the latest
-        good backup. Raises when unrecoverable so __init__ falls back to the
-        rename+recreate path — never trade on a bad image."""
-        ok, msg = self.integrity_check()
+        """D4 startup gate: integrity_check (read-write to force WAL recovery);
+        on failure restore the latest good backup. Raises when unrecoverable
+        so __init__ falls back to the rename+recreate path — never trade on a bad image."""
+        ok, msg = self.integrity_check(read_only=False)
         if ok:
             return
         log.error("integrity_check failed for %s: %s", self.db_path, msg)
@@ -1237,7 +1248,7 @@ class LocalDB:
             pass
         out: Dict[str, Any] = {"checked": False}
         try:
-            ok, msg = self.integrity_check()
+            ok, msg = self.integrity_check(read_only=True)
             out["checked"] = ok
             if not ok:
                 log.error("nightly integrity_check failed for %s: %s "

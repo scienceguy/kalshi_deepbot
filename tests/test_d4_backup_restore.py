@@ -157,7 +157,7 @@ def test_subtly_corrupt_db_restored_via_startup_integrity_gate(tmp_path, monkeyp
              "severity": kw.get("severity")}))
     # Force the integrity gate (not the open/create path) to detect failure.
     monkeypatch.setattr(local_db.LocalDB, "integrity_check",
-                        lambda self: (False, "page 3 is corrupt"))
+                        lambda self, read_only=True: (False, "page 3 is corrupt"))
     db2 = local_db.LocalDB(db_path=str(tmp_path / "t.db"), auto_sync=False,
                            backup_dir=str(backup_dir))
     assert any(e["event_type"] == "db.integrity_failed"
