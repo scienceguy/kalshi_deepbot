@@ -151,3 +151,6 @@ bot.log.*
 node_modules/
 package.json
 package-lock.json
+
+# Operator-local credential copies (audit 2026-11-17) — live keys live in ~/.secrets/, never here
+secrets/
