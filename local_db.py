@@ -28,6 +28,7 @@ Usage:
 
 import os
 import json
+import random
 import socket
 import sqlite3
 import threading
@@ -236,7 +237,7 @@ class LocalDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_pnl_ledger_market ON pnl_ledger(market_ticker, applied_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_pnl_ledger_synced ON pnl_ledger(synced)")
 
-            # event_outbox: durable outbox for n8n deliveries (N1).
+            # event_outbox: durable outbox for n8n deliveries (N2).
             # critical events are never dropped; telemetry events are drop-oldest
             # when the backlog exceeds a cap. Status: pending | sent | dead.
             conn.execute("""
@@ -252,7 +253,8 @@ class LocalDB:
                     attempts INTEGER DEFAULT 0,
                     next_attempt_at TEXT DEFAULT (datetime('now')),
                     last_error TEXT,
-                    status TEXT NOT NULL DEFAULT 'pending'
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    delivered_at TEXT NOT NULL DEFAULT ''
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_status ON event_outbox(status, next_attempt_at)")
@@ -266,6 +268,8 @@ class LocalDB:
                 ("bot_state", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
                 ("pnl_ledger", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
                 ("backtest_runs", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
+                # N2: delivery timestamp for outbox metrics (ALTER for pre-N2 DBs).
+                ("event_outbox", "delivered_at TEXT NOT NULL DEFAULT ''"),
             ):
                 for _col in _cols.split(", "):
                     _col_name = _col.split(" ")[0]
@@ -761,25 +765,39 @@ class LocalDB:
                 log.warning("insert_outbox_event(%s) error: %s", event_type, e)
                 return None
 
-    def get_pending_outbox_events(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_pending_outbox_events(self, limit: int = 100,
+                                  lane: Optional[str] = None) -> List[Dict[str, Any]]:
         """Return pending outbox events whose next_attempt_at <= now, ordered by
-        delivery_class (critical first) then created_at. Critical events are
-        always selected before telemetry."""
+        delivery_class (critical first, then normal, then telemetry) then
+        created_at. Critical events are always selected before others.
+        `lane` restricts the query to one N2 lane.
+        """
         conn = self._get_conn()
         with self._lock:
             try:
+                # julianday parses both SQLite's 'YYYY-MM-DD HH:MM:SS' and the
+                # Python isoformat written by mark_outbox_dead, so rows written
+                # by either path compare correctly against 'now'.
                 now = datetime.now(timezone.utc).isoformat()
-                rows = conn.execute("""
+                lane_filter = " AND delivery_class = ?" if lane else ""
+                params: list = [now]
+                if lane:
+                    params.append(lane)
+                params.append(limit)
+                rows = conn.execute(f"""
                     SELECT id, event_id, type, delivery_class, payload_json,
                            venue, mode, created_at, attempts, next_attempt_at,
                            last_error, status
                     FROM event_outbox
-                    WHERE status = 'pending' AND next_attempt_at <= ?
+                    WHERE status = 'pending'
+                      AND julianday(next_attempt_at) <= julianday(?)
+                      {lane_filter}
                     ORDER BY
-                        CASE delivery_class WHEN 'critical' THEN 0 ELSE 1 END,
+                        CASE delivery_class WHEN 'critical' THEN 0
+                                            WHEN 'normal' THEN 1 ELSE 2 END,
                         created_at ASC
                     LIMIT ?
-                """, (now, limit)).fetchall()
+                """, params).fetchall()
                 return [dict(zip(
                     ["id", "event_id", "type", "delivery_class", "payload_json",
                      "venue", "mode", "created_at", "attempts", "next_attempt_at",
@@ -789,12 +807,13 @@ class LocalDB:
                 return []
 
     def mark_outbox_sent(self, event_id: int) -> bool:
-        """Mark an outbox event as sent."""
+        """Mark an outbox event as sent; record the delivery timestamp (N2)."""
         conn = self._get_conn()
         with self._lock:
             try:
                 conn.execute(
-                    "UPDATE event_outbox SET status = 'sent' WHERE id = ?",
+                    "UPDATE event_outbox SET status = 'sent', "
+                    "delivered_at = datetime('now') WHERE id = ?",
                     (event_id,),
                 )
                 conn.commit()
@@ -824,11 +843,14 @@ class LocalDB:
                         (attempts, last_error, event_id),
                     )
                 else:
-                    # Exponential backoff: 2^attempts seconds, capped at 1 hour.
+                    # Exponential backoff with jitter (N2): 2^attempts capped at
+                    # 1 hour, scaled by a 0.5-1.0 random factor to avoid a
+                    # thundering-herd retry against a recovering n8n.
                     backoff = min(2 ** attempts, 3600)
+                    jittered = backoff * (0.5 + random.random() * 0.5)
                     from datetime import timedelta
                     next_attempt = (
-                        datetime.now(timezone.utc) + timedelta(seconds=backoff)
+                        datetime.now(timezone.utc) + timedelta(seconds=jittered)
                     ).isoformat()
                     conn.execute(
                         "UPDATE event_outbox SET attempts = ?, next_attempt_at = ?, "
@@ -858,6 +880,41 @@ class LocalDB:
             except Exception as e:
                 log.warning("get_outbox_stats error: %s", e)
                 return {}
+
+    def get_outbox_depth_stats(self) -> Dict[str, Any]:
+        """N2 metrics: pending depth, oldest undelivered age, per-lane counts.
+
+        `oldest_undelivered_age_s` is 0.0 when nothing is pending. Ages are
+        computed with julianday, which parses both SQLite and Python
+        datetime formats written to created_at/next_attempt_at.
+        """
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                row = conn.execute("""
+                    SELECT COUNT(*),
+                           COALESCE(MAX((julianday('now') - julianday(created_at)) * 86400.0), 0.0),
+                           COALESCE(SUM(CASE WHEN delivery_class = 'critical' THEN 1 ELSE 0 END), 0),
+                           COALESCE(SUM(CASE WHEN delivery_class = 'normal' THEN 1 ELSE 0 END), 0),
+                           COALESCE(SUM(CASE WHEN delivery_class = 'telemetry' THEN 1 ELSE 0 END), 0)
+                    FROM event_outbox WHERE status = 'pending'
+                """).fetchone()
+                dead = conn.execute(
+                    "SELECT COUNT(*) FROM event_outbox WHERE status = 'dead'"
+                ).fetchone()[0]
+                return {
+                    "outbox_depth": int(row[0] or 0),
+                    "oldest_undelivered_age_s": float(row[1] or 0.0),
+                    "pending:critical": int(row[2] or 0),
+                    "pending:normal": int(row[3] or 0),
+                    "pending:telemetry": int(row[4] or 0),
+                    "dead": int(dead or 0),
+                }
+            except Exception as e:
+                log.warning("get_outbox_depth_stats error: %s", e)
+                return {"outbox_depth": 0, "oldest_undelivered_age_s": 0.0,
+                        "pending:critical": 0, "pending:normal": 0,
+                        "pending:telemetry": 0, "dead": 0}
 
     # ── backtest_runs ───────────────────────────────────────────────────────────
 

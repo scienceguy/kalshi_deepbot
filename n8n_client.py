@@ -7,13 +7,22 @@ Uses the n8n API key (X-N8N-API-KEY header) to:
 - Get workflow status and executions
 - Manage webhooks
 
-N1 — durable signed bounded n8n outbox:
-- `execute_webhook` writes events to the durable `event_outbox` table
-  (one local SQLite insert, microseconds) and returns without any network I/O.
-- `OutboxSender` (background thread) reads pending outbox rows and delivers
-  to n8n with exponential backoff, jitter, and `Retry-After` honouring.
-- Critical events (settlement, halt, fill) are never dropped; telemetry
-  events (heartbeat, latency) use drop-oldest when the backlog exceeds a cap.
+N2 — persistent outbox, three lanes, bounded queues, circuit breaker:
+- `execute_webhook` writes critical/normal events to the durable
+  `event_outbox` table (one local SQLite insert, microseconds) and returns
+  without any network I/O. Telemetry is coalesced in memory (latest state
+  per key) and never touches the DB.
+- Two `OutboxSender` threads (background): one reserved for `critical`, one
+  for `normal` + telemetry. They read pending outbox rows and deliver with
+  exponential backoff, jitter, and a circuit breaker so an n8n outage does
+  not spin.
+- Lanes: critical (halts, ruin, auth failures, reconciliation mismatches),
+  normal (orders, fills, settlements), telemetry (heartbeats, metrics).
+  Telemetry drops oldest when the backlog exceeds a cap and counts drops.
+  Per-lane attempt timeouts are always bounded (telemetry connect 1s /
+  read 3s; critical bounded at 10s).
+- `outbox_metrics()` exports outbox_depth, oldest_undelivered_age_s and
+  dropped_total for the periodic state report and `--status`.
 - Webhooks are signed with HMAC-SHA256 over `{timestamp_ms}.{nonce}.{body}`
   using `SUPERBOT_WEBHOOK_SECRET`, sent on a separate `requests.Session` that
   carries no `X-N8N-API-KEY`. The nonce gives replay cover; the receiver
@@ -25,21 +34,20 @@ All API endpoints live under http://127.0.0.1:5678/api/v1/.
 import json
 import logging
 import os
-import queue
 import stat
 import threading
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
 
 import config
 import n8n_webhook_auth
-from events import Event, make_event, delivery_class, CRITICAL_TYPES, TELEMETRY_TYPES
+from events import delivery_class
 
 log = logging.getLogger("n8n_client")
 
@@ -50,18 +58,72 @@ DEFAULT_BASE_URL = os.environ.get("N8N_BASE_URL", "http://127.0.0.1:5678")
 # can't block a full cycle. Default: cycle timeout minus 5s margin.
 DEFAULT_WEBHOOK_TIMEOUT = max(1, config.CYCLE_TIMEOUT_SECONDS - 5)
 
-# N1 outbox limits.
+# N2 outbox limits.
 MAX_TELEMETRY_QUEUE = config.N8N_OUTBOX_MAX_TELEMETRY
 MAX_OUTBOX_ATTEMPTS = config.N8N_OUTBOX_MAX_ATTEMPTS
 
-# In-memory queues for fast enqueue (the DB outbox is the source of truth).
-# Critical: unbounded (never dropped). Telemetry: bounded (drop-oldest).
-_webhook_queue: "queue.Queue[tuple]" = queue.Queue()
-_telemetry_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=MAX_TELEMETRY_QUEUE)
+# Per-lane per-attempt timeouts (connect, read) in seconds. Always bounded.
+CRITICAL_WEBHOOK_TIMEOUT = (1.0, 10.0)
+NORMAL_WEBHOOK_TIMEOUT = (1.0, 8.0)
+TELEMETRY_WEBHOOK_TIMEOUT = (1.0, 3.0)
+_LANE_TIMEOUTS = {"critical": CRITICAL_WEBHOOK_TIMEOUT,
+                  "normal": NORMAL_WEBHOOK_TIMEOUT,
+                  "telemetry": TELEMETRY_WEBHOOK_TIMEOUT}
+
+
+class _CircuitBreaker:
+    """Consecutive-failure breaker so an n8n outage does not spin the senders.
+
+    Opens after `threshold` consecutive delivery failures and stays open for
+    `cooldown_s`; while open the senders sleep instead of attempting, and the
+    pending rows stay pending (nothing is dropped or dead-lettered). One
+    success closes it again.
+    """
+
+    def __init__(self, threshold: int = 20, cooldown_s: float = 60.0):
+        self.threshold = int(threshold)
+        self.cooldown_s = float(cooldown_s)
+        self._consecutive_failures = 0
+        self._opened_at = 0.0
+        self._lock = threading.Lock()
+
+    def allow(self) -> bool:
+        with self._lock:
+            if self._opened_at and (time.time() - self._opened_at) < self.cooldown_s:
+                return False
+            return True
+
+    @property
+    def is_open(self) -> bool:
+        return not self.allow()
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
+            self._opened_at = 0.0
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.threshold:
+                if not self._opened_at or (time.time() - self._opened_at) >= self.cooldown_s:
+                    log.warning(
+                        "n8n circuit breaker OPEN after %d consecutive failures — "
+                        "pausing outbox delivery for %.0fs (rows stay pending)",
+                        self._consecutive_failures, self.cooldown_s,
+                    )
+                self._opened_at = time.time()
+
+
+_outbox_breaker = _CircuitBreaker()
+
+# Telemetry is process-local and coalesced: latest state per
+# (webhook_path|venue) wins; the map is bounded by MAX_TELEMETRY_QUEUE with
+# drop-oldest eviction, and every eviction is counted in dropped_total.
+_telemetry_pending: Dict[str, Tuple["N8nClient", str, Dict[str, Any], str]] = {}
+_telemetry_pending_lock = threading.Lock()
 _telemetry_dropped = 0
 _telemetry_dropped_lock = threading.Lock()
-_webhook_worker_started = False
-_webhook_worker_lock = threading.Lock()
 _outbox_sender_started = False
 _outbox_sender_lock = threading.Lock()
 
@@ -77,47 +139,42 @@ def _telemetry_dropped_get() -> int:
         return _telemetry_dropped
 
 
-def _webhook_worker():
-    """Background worker that processes the in-memory webhook queue.
+def _enqueue_telemetry(key: str, item: Tuple["N8nClient", str, Dict[str, Any], str]) -> None:
+    """Coalesce telemetry by key (latest wins); bounded; drop-oldest on overflow."""
+    with _telemetry_pending_lock:
+        if key in _telemetry_pending:
+            _telemetry_pending[key] = item  # latest state wins
+            return
+        if len(_telemetry_pending) >= MAX_TELEMETRY_QUEUE:
+            oldest = next(iter(_telemetry_pending))  # dict preserves insertion order
+            _telemetry_pending.pop(oldest)
+            _telemetry_dropped_inc()
+        _telemetry_pending[key] = item
 
-    Each item is (client, webhook_path, data, method, timeout, max_retries).
-    Delivery is best-effort; the durable outbox (OutboxSender) guarantees
-    at-least-once delivery even if this thread misses an item.
-    """
-    while True:
+
+def _drain_telemetry() -> int:
+    """Fire every pending telemetry item once with the short lane timeout."""
+    with _telemetry_pending_lock:
+        items = list(_telemetry_pending.values())
+        _telemetry_pending.clear()
+    for client, webhook_path, data, method in items:
         try:
-            item = _webhook_queue.get(timeout=1.0)
-            if item is None:  # Shutdown signal
-                break
-            client, webhook_path, data, method, timeout, max_retries = item
-            try:
-                client._execute_webhook_signed(webhook_path, data, method, timeout, max_retries)
-            except Exception as e:
-                log.warning("Background webhook %s failed: %s", webhook_path, e)
-        except queue.Empty:
-            continue
-        except Exception as e:
-            log.error("Webhook worker error: %s", e)
-
-
-def _start_webhook_worker():
-    """Start the background webhook worker thread."""
-    global _webhook_worker_started
-    with _webhook_worker_lock:
-        if not _webhook_worker_started:
-            thread = threading.Thread(
-                target=_webhook_worker, daemon=True, name="n8n-webhook-worker"
+            client._execute_webhook_signed(
+                webhook_path, data, method, TELEMETRY_WEBHOOK_TIMEOUT, 1
             )
-            thread.start()
-            _webhook_worker_started = True
+        except Exception as e:
+            log.debug("Telemetry %s failed (dropped): %s", webhook_path, e)
+    return len(items)
 
 
-def _outbox_sender(db=None):
-    """Background sender that reads pending outbox rows from the DB and delivers.
+def _outbox_sender(db=None, lane: str = "normal"):
+    """Background sender that reads pending outbox rows for one N2 lane.
 
     This is the durable delivery path: it survives restarts and n8n outages.
     Reads from event_outbox (pending, next_attempt_at <= now), delivers with
     HMAC signing, marks sent on success or bumps attempts/dead on failure.
+    The critical lane gets its own reserved sender; the normal sender also
+    drains coalesced telemetry.
     """
     if db is None:
         from local_db import LocalDB
@@ -125,15 +182,26 @@ def _outbox_sender(db=None):
 
     while True:
         try:
-            rows = db.get_pending_outbox_events(limit=50)
+            if not _outbox_breaker.allow():
+                time.sleep(5.0)
+                continue
+            rows = db.get_pending_outbox_events(limit=50, lane=lane)
             if not rows:
+                if lane == "normal":
+                    _drain_telemetry()
                 time.sleep(1.0)
                 continue
             for row in rows:
+                if not _outbox_breaker.allow():
+                    break
                 _deliver_outbox_row(db, row)
         except Exception as e:  # pragma: no cover - defensive
             log.error("Outbox sender error: %s", e)
             time.sleep(2.0)
+
+
+def _lane_timeout(delivery_class: str) -> Tuple[float, float]:
+    return _LANE_TIMEOUTS.get(delivery_class or "normal", NORMAL_WEBHOOK_TIMEOUT)
 
 
 def _deliver_outbox_row(db, row: Dict[str, Any]) -> None:
@@ -141,16 +209,19 @@ def _deliver_outbox_row(db, row: Dict[str, Any]) -> None:
     event_id = row["id"]
     webhook_path = row["type"]  # event type maps to webhook path
     payload = json.loads(row["payload_json"] or "{}")
+    lane = row.get("delivery_class") or "normal"
 
     client = N8nClient()  # API methods not needed; only _execute_webhook_signed
     try:
         client._execute_webhook_signed(webhook_path, payload, "POST",
-                                       DEFAULT_WEBHOOK_TIMEOUT, 1)
+                                       _lane_timeout(lane), 1)
         db.mark_outbox_sent(event_id)
+        _outbox_breaker.record_success()
         log.debug("Outbox event %s delivered (%s)", event_id, row["type"])
     except Exception as e:
         log.warning("Outbox event %s failed (%s): %s", event_id, row["type"], e)
         db.mark_outbox_dead(event_id, str(e)[:200], max_attempts=MAX_OUTBOX_ATTEMPTS)
+        _outbox_breaker.record_failure()
 
 
 def _sign_body(timestamp: str, body: str, nonce: str = "") -> str:
@@ -163,15 +234,39 @@ def _sign_body(timestamp: str, body: str, nonce: str = "") -> str:
 
 
 def _start_outbox_sender():
-    """Start the outbox sender thread."""
+    """Start the two background outbox senders (critical + normal/telemetry)."""
     global _outbox_sender_started
     with _outbox_sender_lock:
         if not _outbox_sender_started:
-            thread = threading.Thread(
-                target=_outbox_sender, daemon=True, name="n8n-outbox-sender"
-            )
-            thread.start()
+            threading.Thread(
+                target=_outbox_sender, daemon=True,
+                name="n8n-outbox-critical",
+                kwargs={"lane": "critical"},
+            ).start()
+            threading.Thread(
+                target=_outbox_sender, daemon=True,
+                name="n8n-outbox-normal",
+                kwargs={"lane": "normal"},
+            ).start()
             _outbox_sender_started = True
+
+
+def outbox_metrics() -> Dict[str, Any]:
+    """N2 export: outbox_depth, oldest_undelivered_age_s, dropped_total.
+
+    Best-effort: a local-DB hiccup returns the in-memory counters only.
+    """
+    metrics: Dict[str, Any] = {
+        "outbox_depth": 0,
+        "oldest_undelivered_age_s": 0.0,
+        "dropped_total": _telemetry_dropped_get(),
+    }
+    try:
+        from local_db import LocalDB
+        metrics.update(LocalDB().get_outbox_depth_stats())
+    except Exception as e:
+        log.debug("outbox_metrics: local db unavailable: %s", e)
+    return metrics
 
 
 _N8N_TOKEN_KEY_NAMES = {"n8n_local_access_token", "n8n_api_key", "n8n_access_token",
@@ -463,23 +558,32 @@ class N8nClient:
                         method: str = "POST", timeout: int = DEFAULT_WEBHOOK_TIMEOUT,
                         max_retries: int = 3, fire_and_forget: bool = True
                         ) -> Dict[str, Any]:
-        """Execute a webhook by path (N1: durable outbox + bounded queues).
+        """Execute a webhook by path (N2: durable outbox, three lanes).
 
-        N1 behavior:
-        - Writes the event to the durable event_outbox table (one local SQLite
-          insert, microseconds) and returns immediately — no network I/O.
-        - Critical events (settlement, halt, fill) go to the unbounded queue;
-          telemetry events go to a bounded queue with drop-oldest.
-        - The OutboxSender thread reads from the DB and delivers with signing.
+        N2 behavior:
+        - critical/normal events are written to the durable `event_outbox`
+          table (one local SQLite insert, microseconds) and returned from
+          immediately — no network I/O in the trading thread.
+        - Two senders deliver from the DB: one reserved for `critical`, one
+          for `normal` (+ coalesced telemetry), with per-lane bounded
+          timeouts, exponential backoff with jitter, and a circuit breaker
+          so an n8n outage does not spin.
+        - Telemetry events (heartbeat, metrics) never touch the DB: they are
+          coalesced in memory (latest state per key), bounded, drop-oldest.
 
         Set fire_and_forget=False for synchronous execution (health checks).
         """
         if fire_and_forget:
-            # N1: write to durable outbox first (source of truth).
             venue = data.get("venue", "kalshi")
             mode = data.get("mode", "dry" if config.DRY_RUN else "live")
             event_type = data.get("event_type", webhook_path.replace("-", "."))
             cls = delivery_class(event_type)
+            _start_outbox_sender()
+            if cls == "telemetry":
+                # Coalesce: latest state per key wins; bounded; drops counted.
+                key = f"{webhook_path}|{venue}"
+                _enqueue_telemetry(key, (self, webhook_path, data, method))
+                return {}
             event_id = str(uuid.uuid4())
             try:
                 from local_db import LocalDB
@@ -493,22 +597,7 @@ class N8nClient:
                     event_id=event_id,
                 )
             except Exception as e:
-                log.warning("N1: outbox insert failed for %s: %s", webhook_path, e)
-
-            # Enqueue for fast in-process delivery (best-effort; DB is durable).
-            _start_outbox_sender()
-            if cls == "critical":
-                _webhook_queue.put((self, webhook_path, data, method, timeout, max_retries))
-            else:
-                # Telemetry: bounded, drop-oldest when full.
-                try:
-                    _telemetry_queue.put_nowait(
-                        (self, webhook_path, data, method, timeout, max_retries)
-                    )
-                except queue.Full:
-                    _telemetry_dropped_inc()
-                    log.debug("N1: telemetry queue full, dropped oldest")
-
+                log.warning("N2: outbox insert failed for %s: %s", webhook_path, e)
             return {}
         else:
             return self._execute_webhook_sync(webhook_path, data, method, timeout, max_retries)

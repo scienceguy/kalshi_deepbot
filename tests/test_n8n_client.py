@@ -122,21 +122,31 @@ class TestExecuteWebhook:
             assert mock_req.call_count == 1
 
     def test_execute_webhook_fire_and_forget_returns_immediately(self, monkeypatch):
-        """execute_webhook with fire_and_forget=True returns immediately without waiting."""
-        import queue
-        from n8n_client import _webhook_queue
+        """fire_and_forget=True returns {} immediately; the durable outbox holds the row."""
         client = N8nClient(api_key="test_key")
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.content = b'{"status": "ok"}'
 
-        with patch.object(client.session, "request", return_value=mock_resp):
-            result = client.execute_webhook("superbot-trade", {"action": "settlement"}, fire_and_forget=True)
+        class _FakeDB:
+            def __init__(self):
+                self.rows = []
+
+            def insert_outbox_event(self, **kwargs):
+                self.rows.append(kwargs)
+                return 1
+
+        fake_db = _FakeDB()
+        monkeypatch.setattr("local_db.LocalDB", lambda *a, **k: fake_db)
+        with patch.object(client.session, "request", return_value=mock_resp) as mock_req:
+            result = client.execute_webhook(
+                "superbot-trade",
+                {"action": "settlement", "event_type": "settlement"},
+                fire_and_forget=True)
             assert result == {}
-            # The webhook should be queued
-            assert not _webhook_queue.empty()
-            # Drain the queue to avoid affecting other tests
-            _webhook_queue.get_nowait()
+            # N2: no network I/O in the calling thread; the row is durable
+            assert mock_req.call_count == 0
+            assert fake_db.rows and fake_db.rows[0]["event_type"] == "settlement"
 
 
 class TestRunBacktest:

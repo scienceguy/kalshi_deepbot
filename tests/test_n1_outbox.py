@@ -47,12 +47,21 @@ def test_make_event():
 
 
 def test_delivery_class():
-    """delivery_class returns critical/telemetry per type."""
-    assert delivery_class("settlement") == "critical"
+    """delivery_class maps each type to its N2 lane (critical/normal/telemetry)."""
+    # critical = halts, ruin, auth failures, reconciliation mismatches
     assert delivery_class("risk.halt") == "critical"
-    assert delivery_class("fill") == "critical"
+    assert delivery_class("risk.resume") == "critical"
+    assert delivery_class("reconcile.mismatch") == "critical"
+    assert delivery_class("auth.failure") == "critical"
+    # normal = orders, fills, settlements
+    assert delivery_class("settlement") == "normal"
+    assert delivery_class("fill") == "normal"
+    assert delivery_class("order.placed") == "normal"
+    assert delivery_class("position.settled") == "normal"
+    # telemetry = heartbeats, metrics
     assert delivery_class("heartbeat") == "telemetry"
     assert delivery_class("latency.alert") == "telemetry"
+    assert delivery_class("daily.summary") == "telemetry"
     assert delivery_class("unknown.type") == "critical"  # safe-by-default
 
 

@@ -39,6 +39,8 @@ def parse_args(argv=None):
     _mode.add_argument("--dry", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--status", action="store_true",
+                        help="Print n8n outbox delivery metrics and exit (no trading)")
     parser.add_argument("--interval", type=int, default=config.LOOP_INTERVAL_SECONDS)
     parser.add_argument("--cycle-limit", type=int, default=0,
                         help="stop after this many cycles (0 = disabled)")
@@ -1812,6 +1814,11 @@ def _report_cycle_state(cash, positions, risk_state):
             cooldown = state.risk._loss_cooldown_active()
         except Exception:
             cooldown = bool(risk_state.get("cooldown_started_at"))
+        try:
+            from n8n_client import outbox_metrics
+            _metrics = outbox_metrics()
+        except Exception:
+            _metrics = {}
         new_state = report_state.classify(
             halted=bool(risk_state.get("halted")),
             cooldown=cooldown,
@@ -1822,7 +1829,10 @@ def _report_cycle_state(cash, positions, risk_state):
                                cycle=state.cycles,
                                cycle_outcome=state.cycle_outcome,
                                risk_halt_reason=risk_state.get("halt_reason") or "",
-                               degraded_sources=degraded)
+                               degraded_sources=degraded,
+                               outbox_depth=_metrics.get("outbox_depth"),
+                               oldest_undelivered_age_s=_metrics.get("oldest_undelivered_age_s"),
+                               dropped_total=_metrics.get("dropped_total"))
     except Exception as e:
         log.warning("_report_cycle_state failed (non-fatal): %s", e)
 
@@ -3022,6 +3032,12 @@ def _report_kalshi_request_budget(client) -> None:
 
 def main():
     args = parse_args()
+    if args.status:
+        # --status: operator visibility into the durable outbox, no trading.
+        import json as _json
+        from n8n_client import outbox_metrics
+        print(_json.dumps(outbox_metrics(), indent=2, sort_keys=True))
+        return
     _configure_logging()
     get_state()
 
