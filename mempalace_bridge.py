@@ -179,6 +179,10 @@ class MemPalaceBridge:
             "metadata": dict(metadata or {}),
         })
 
+    def ack_event(self, event_id: str, body: str = "") -> None:
+        """Queue an ``event.ack`` for a delivered message (C1). Non-blocking."""
+        self._enqueue("ack", "ack", {"event_id": str(event_id), "body": str(body or "")})
+
     def drain_tasks(self) -> list:
         """Drain inbound task.request events from the subscriber queue.
 
@@ -246,6 +250,8 @@ class MemPalaceBridge:
             self._deliver_kg(subtype, payload)
         elif cmd_type == "artifact":
             self._deliver_artifact(payload)
+        elif cmd_type == "ack":
+            self._deliver_ack(subtype, payload)
 
     def _deliver_status(self, status_type: str, payload: dict,
                         correlation_id: str) -> None:
@@ -305,6 +311,20 @@ class MemPalaceBridge:
         except Exception as e:
             self._breaker_failure()
             log.warning("MemPalace kg %s failed: %s", subtype, e)
+            raise
+
+    def _deliver_ack(self, subtype: str, payload: dict) -> None:
+        if not self._breaker_closed():
+            raise RuntimeError("circuit breaker open")
+        try:
+            ls = Logstream(db_path=_LOGSTREAM_DB)
+            ls.ack_event(payload["event_id"], from_agent=self.agent_identity,
+                         status="received", body=payload.get("body") or "")
+            self._breaker_success()
+        except Exception as e:
+            self._breaker_failure()
+            log.warning("MemPalace ack failed for %s: %s",
+                        payload.get("event_id"), e)
             raise
 
     def _deliver_artifact(self, payload: dict) -> None:

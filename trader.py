@@ -3185,6 +3185,26 @@ def _run_loop(args):
     except Exception as e:
         log.warning("MemPalace bridge start failed: %s — MemPalace features disabled", e)
 
+    # C1: localhost push bus for peer messages. Advisory only — the
+    # logstream stays the audit trail and the fallback poll.
+    try:
+        from agent_bus import BusReceiver, BusServer
+
+        def _bus_task(env):
+            _handle_task({
+                "event_id": env.get("event_id") or env.get("message_id", ""),
+                "correlation_id": env.get("correlation_id", ""),
+                "from_agent": env.get("from_agent", ""),
+                "body": str(env.get("body") if env.get("body") is not None else ""),
+            })
+
+        _bus = BusServer(BusReceiver(agent_identity.KALSHI_TRADER, _bus_task,
+                                     bridge=_bridge))
+        _bus.start()
+        log.info("Agent bus listening on 127.0.0.1:%s", _bus.port)
+    except Exception as e:
+        log.warning("Agent bus unavailable (%s) — logstream poll remains the path", e)
+
     # Validate credentials, dry-run mode, bands, and fee rate before connecting to Kalshi.
     # The local .env sets DRY_RUN=false, which overrides the safe default of True.
     try:

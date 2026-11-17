@@ -2768,6 +2768,25 @@ def main():
     except Exception as e:
         log.warning("MemPalace session start failed: %s — continuing without continuity", e)
 
+    # C1: localhost push bus for peer messages. Log-only handler — the
+    # poly trader takes no commands; the logstream stays the audit trail.
+    try:
+        import agent_identity as _ai
+        from agent_bus import BusReceiver, BusServer
+
+        def _bus_log(env):
+            log.info("BUS message id=%s from=%s type=%s topic=%s body=%.200s",
+                     env.get("message_id", ""), env.get("from_agent", ""),
+                     env.get("type", ""), env.get("topic", ""),
+                     str(env.get("body")))
+
+        _poly_bus = BusServer(BusReceiver(_ai.POLY_TRADER, _bus_log,
+                                          bridge=_mp_bridge()))
+        _poly_bus.start()
+        log.info("Agent bus listening on 127.0.0.1:%s", _poly_bus.port)
+    except Exception as e:
+        log.warning("Agent bus unavailable (%s) — logstream poll remains the path", e)
+
     # R17: SIGTERM/SIGINT -> clean shutdown after the current cycle finishes.
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:

@@ -90,6 +90,29 @@ def _refuse(reason):
     return 1
 
 
+def _post_to_bus(to_agent, msg_type, msg_body, topic, correlation_id):
+    """C1: push the same message to the target's localhost receiver.
+
+    Advisory only — never fails the webhook. The logstream append is the
+    durable record; if the bus is down or refuses, the target's fallback
+    poll still delivers. A known-stale peer is refused; an unknown peer is
+    attempted anyway (the receiver's TTL will drop a late message).
+    """
+    try:
+        import agent_bus
+        if to_agent == "*":
+            return {"delivered": False, "reason": "broadcast"}
+        status = agent_bus.peer_status(to_agent)
+        if status == "stale":
+            return {"delivered": False, "reason": "stale peer refused"}
+        env = agent_bus.envelope(to_agent=to_agent, body=msg_body, type=msg_type,
+                                 topic=topic, correlation_id=correlation_id)
+        result = agent_bus.post_envelope(env, timeout=1.0)
+        return {"delivered": bool(result.get("ok")), **result}
+    except Exception as e:
+        return {"delivered": False, "reason": f"bus error: {e}"}
+
+
 def main():
     # Read input from stdin (n8n passes the verify node's output via stdin)
     raw = sys.stdin.read()
@@ -152,12 +175,14 @@ def main():
         )
         if result.returncode == 0:
             log("Coordination event written to MemPalace logstream")
+            bus = _post_to_bus(to_agent, msg_type, msg_body, topic, correlation_id)
             print(json.dumps({
                 "success": True,
                 "event_written": True,
                 "to_agent": to_agent,
                 "type": msg_type,
                 "topic": topic,
+                "bus": bus,
             }))
         else:
             log(f"MemPalace logstream error: {result.stderr}")
