@@ -29,6 +29,12 @@ import os
 import shlex
 import sys
 
+
+def __getattr__(name):
+    if name == "WORKFLOWS":
+        return get_workflows()
+    raise AttributeError(f"module 'inject_n8n_workflows' has no attribute '{name}'")
+
 import n8n_webhook_auth
 from n8n_client import N8nClient, load_api_key, n8n_health_check
 
@@ -251,7 +257,10 @@ def _respond_node(body="={{ $json }}"):
 
 def get_workflows():
     """Return workflow definitions with env vars evaluated at call time (not import time)."""
-    return [
+    return _WORKFLOWS_TEMPLATE
+
+
+_WORKFLOWS_TEMPLATE = [
         {
             "name": "SuperBot Backtest",
             "webhook_path": "superbot-backtest",
