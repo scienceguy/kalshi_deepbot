@@ -257,6 +257,25 @@ def get_portfolio_positions() -> dict:
     return client.get("/v1/portfolio/positions", authenticated=True)
 
 
+def prewarm() -> bool:
+    """L6: pre-warm the persistent HTTP session at startup.
+
+    The SDK client is cached per process (connection pool reuse), but the
+    first request still pays the TCP+TLS handshake. One cheap authenticated
+    read at startup moves that cost off the order hot path. Never raises;
+    False when there are no credentials.
+    """
+    try:
+        client = _get_client()
+        if client is None:
+            return False
+        client.get("/v1/account/balances", authenticated=True)
+        return True
+    except Exception as e:
+        log.debug("HTTP pre-warm failed (non-fatal): %s", e)
+        return False
+
+
 def get_account_balances() -> dict:
     """Fetch account balances (authenticated endpoint)."""
     _enforce_rate_limit()

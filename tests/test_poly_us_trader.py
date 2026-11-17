@@ -863,6 +863,8 @@ def test_buy_fill_records_best_ask(temp_trader):
     # Cost is the stake plus the venue taker fee C*p*(1-p)*rate.
     assert pos["cost"] == round(0.97 + _taker_fee(1, 0.97), 4)
     assert temp_trader.state["cash"] == round(35.0 - 0.97 - _taker_fee(1, 0.97), 4)
+    # L6: ledger writes are deferred to the writer thread; flush before reading.
+    temp_trader.flush_ledger()
     ledger = temp_trader.ledger_file.read_text()
     assert '"source": "crossvenue"' in ledger
 

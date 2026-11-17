@@ -16,8 +16,10 @@ import argparse
 import fcntl
 import json
 import logging
+import logging.handlers
 import math
 import os
+import queue
 import signal
 import subprocess
 import sys
@@ -389,6 +391,20 @@ class PolyUSPaperTrader:
         self.ledger_file = LEDGER_FILE
         self.max_open_positions = 25
         self.live_mode = live_mode
+        # L6: (slug, side) pairs already previewed this process — the hot
+        # path skips the venue preview once validated. Cleared on reset.
+        # These must exist before _load_state/reset_state, which save state.
+        self._preview_validated: set = set()
+        # L6: memo of per-slug static facts (terms/strike/symbol/end date).
+        self._static_cache: dict = {}
+        # L6: bounded outbox for ledger/DB writes, drained by ONE writer
+        # thread. The trading thread only enqueues; flush_ledger() joins.
+        self._ledger_q: "queue.Queue" = queue.Queue(maxsize=1024)
+        self._ledger_thread: Optional[threading.Thread] = None
+        self._ledger_lock = threading.Lock()
+        self._ledger_count_lock = threading.Lock()
+        self._ledger_pending = 0
+        self._ledger_dropped = 0
         if reset:
             self.state = self.reset_state(initial_cash)
         else:
@@ -488,6 +504,8 @@ class PolyUSPaperTrader:
         old = getattr(self, "state", None) or {}
         old_realized = float(old.get("realized_pnl", 0.0) or 0.0)
         old_lifetime = float(old.get("lifetime_realized_pnl", 0.0) or 0.0)
+        self._preview_validated.clear()   # L6: new session re-validates orders
+        self._static_cache.clear()        # L6: drop memoized market facts
         forfeit_pnl = 0.0
         for pos in old.get("positions", []):
             mark = float(pos.get("current_price") or pos.get("price") or 0.0)
@@ -538,6 +556,7 @@ class PolyUSPaperTrader:
             "cash": initial_cash,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
+        self.flush_ledger()
         log.info("Reset Polymarket US paper state with initial bankroll $%.2f", initial_cash)
         return state
 
@@ -857,15 +876,59 @@ class PolyUSPaperTrader:
         tmp_file = self.state_file.with_name(f"{self.state_file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp_file.write_text(json.dumps(state, indent=2))
         os.replace(tmp_file, self.state_file)
-        # D2: best-effort position snapshot mirror; JSON stays authoritative.
-        try:
-            pdb = self._poly_db()
-            if pdb is not None:
-                pdb.replace_positions(state.get("positions") or [])
-        except Exception as e:
-            log.debug("Poly DB position mirror failed: %s", e)
+        # D2: best-effort position snapshot mirror, deferred to the writer
+        # thread (L6). JSON stays authoritative; snapshot the list because
+        # the writer drains after this call.
+        self._enqueue_ledger(("positions", list(state.get("positions") or [])))
 
     def _append_ledger(self, record: dict):
+        """L6: enqueue only — the writer thread owns the disk. The trading
+        thread never touches the ledger file."""
+        self._enqueue_ledger(("ledger", record))
+
+    def _enqueue_ledger(self, op: tuple):
+        self._ensure_ledger_thread()
+        with self._ledger_count_lock:
+            self._ledger_pending += 1
+        try:
+            self._ledger_q.put_nowait(op)
+        except queue.Full:
+            # Bounded queue: never block the trading thread on a slow disk.
+            # Dropping is loud (error log + counter) so the operator sees it.
+            with self._ledger_count_lock:
+                self._ledger_pending -= 1
+            self._ledger_dropped += 1
+            log.error("Ledger queue full (%d) — dropped record %s",
+                      self._ledger_q.maxsize, op)
+
+    def _ensure_ledger_thread(self):
+        with self._ledger_lock:
+            if self._ledger_thread is not None and self._ledger_thread.is_alive():
+                return
+            self._ledger_thread = threading.Thread(
+                target=self._ledger_writer, name="ledger-writer", daemon=True)
+            self._ledger_thread.start()
+
+    def _ledger_writer(self):
+        while True:
+            op = self._ledger_q.get()  # daemon; exits with the process
+            try:
+                if op[0] == "ledger":
+                    self._write_ledger_record(op[1])
+                elif op[0] == "positions":
+                    try:
+                        pdb = self._poly_db()
+                        if pdb is not None:
+                            pdb.replace_positions(op[1])
+                    except Exception as e:
+                        log.debug("Poly DB position mirror failed: %s", e)
+            except Exception as e:
+                log.error("Ledger writer failed on %s: %s", op[0], e)
+            finally:
+                with self._ledger_count_lock:
+                    self._ledger_pending -= 1
+
+    def _write_ledger_record(self, record: dict):
         self.ledger_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.ledger_file, "a") as f:
             f.write(json.dumps(record) + "\n")
@@ -877,6 +940,21 @@ class PolyUSPaperTrader:
                 pdb.mirror_ledger(record)
         except Exception as e:
             log.debug("Poly DB ledger mirror failed: %s", e)
+
+    def flush_ledger(self, timeout: float = 10.0) -> bool:
+        """Wait until every enqueued ledger/DB write has hit the disk.
+        Returns False (with an error log) if the deadline passes first."""
+        deadline = time.time() + timeout
+        while True:
+            with self._ledger_count_lock:
+                pending = self._ledger_pending
+            if pending <= 0:
+                return True
+            if time.time() > deadline:
+                log.error("flush_ledger: %d writes still pending after %.1fs",
+                          pending, timeout)
+                return False
+            time.sleep(0.005)
 
     def _poly_db(self):
         """D2: the mode-isolated poly LocalDB, or None when unavailable.
@@ -1316,17 +1394,33 @@ class PolyUSPaperTrader:
     def preview_order(self, slug: str, side: str, price_dollars: float, qty: int) -> bool:
         """Validate order against Polymarket US production order preview API.
 
-        Always calls the live orders.preview endpoint (even in paper mode) so
-        that every simulated fill is backed by HTTP 200 validation against
-        api.polymarket.us. Returns True only on a successful preview.
+        Calls the live orders.preview endpoint (even in paper mode) so that
+        every simulated fill is backed by HTTP 200 validation against
+        api.polymarket.us. L6: the hot path skips the venue round-trip for a
+        (slug, side) once validated this process — except in shadow mode
+        (GATES_SHADOW_MODE), where every order keeps its preview.
+        Returns True only on a successful preview.
         """
+        key = (slug, side)
+        if not getattr(config, "GATES_SHADOW_MODE", False) and key in self._preview_validated:
+            return True
         try:
             res = polymarket_us_client.preview_order(slug, side, price_dollars, qty)
-            return res is not None
+            ok = res is not None
         except Exception as e:
             log.warning("Order preview failed for %s %s @ $%.2f: %s",
                         slug, side, price_dollars, e)
             return False
+        if ok:
+            self._preview_validated.add(key)
+        return ok
+
+    def _record_order_sent(self, start: float):
+        """L1: mark the order hand-off. `start` is time.monotonic() captured at
+        the start of placement/booking; the delta covers venue submit (live)
+        or the local book (paper) — never any disk I/O."""
+        latency.default_recorder.record(
+            "order_sent", (time.monotonic() - start) * 1000.0)
 
     def check_settlements(self, market_map: dict):
         """Check settlement status for closed paper positions.
@@ -1351,7 +1445,8 @@ class PolyUSPaperTrader:
         def _settlement(slug: str):
             if slug not in settle_cache:
                 try:
-                    time.sleep(0.05)
+                    # Pacing comes from the shared B7 token bucket inside
+                    # the client, not from a fixed wait.
                     self._note_request(1)
                     settle_cache[slug] = polymarket_us_client.get_market_settlement(slug)
                 except Exception as e:
@@ -1529,12 +1624,14 @@ class PolyUSPaperTrader:
         self.state["positions"] = remaining_positions
         self._save_state(self.state)
 
-    def evaluate_opportunity(self, market: dict) -> dict | None:
-        """Find high-probability favourite opportunities (92c-99c) directly from market data."""
-        slug = market.get("slug")
-        if not slug:
-            return None
-
+    def _slug_static(self, slug: str, market: dict) -> dict:
+        """L6: memoize the per-slug static facts (terms, strike, symbol,
+        event slug, end date) that were re-derived on every 15s cycle.
+        Terms/strike/asset are fixed for a market's window; hours_left is
+        always computed fresh from the end time. Process-lifetime bounded."""
+        ent = self._static_cache.get(slug)
+        if ent is not None:
+            return ent
         terms = market.get("assetPriceTerms") or {}
         # A8: the parent event slug comes from the payload, never from parsing
         # the market slug. Stored on the position so cycle() can re-fetch the
@@ -1543,7 +1640,42 @@ class PolyUSPaperTrader:
         if not event_slug and isinstance(market.get("event"), dict):
             event_slug = market["event"].get("slug") or ""
         end_dt = market_end_dt(market)
-        end_date = end_dt.isoformat() if end_dt else ""
+        strike_dict = terms.get("strike") or terms.get("priceToBeat")
+        strike_val = None
+        if strike_dict and isinstance(strike_dict, dict):
+            try:
+                strike_val = float(strike_dict.get("value", 0))
+            except Exception:
+                pass
+        symbol = (terms.get("asset") or {}).get("symbol", "").upper()
+        if not symbol:
+            slug_lower = slug.lower()
+            if "btc" in slug_lower:
+                symbol = "BTC"
+            elif "eth" in slug_lower:
+                symbol = "ETH"
+            elif "sol" in slug_lower:
+                symbol = "SOL"
+        ent = {"terms": terms, "event_slug": event_slug, "end_dt": end_dt,
+               "end_date": end_dt.isoformat() if end_dt else "",
+               "strike_val": strike_val, "symbol": symbol}
+        if len(self._static_cache) >= 512:
+            self._static_cache.pop(next(iter(self._static_cache)))
+        self._static_cache[slug] = ent
+        return ent
+
+    def evaluate_opportunity(self, market: dict) -> dict | None:
+        """Find high-probability favourite opportunities (92c-99c) directly from market data."""
+        slug = market.get("slug")
+        if not slug:
+            return None
+
+        # L6: static facts are memoized per slug; hours_left moves every call.
+        _static = self._slug_static(slug, market)
+        terms = _static["terms"]
+        event_slug = _static["event_slug"]
+        end_dt = _static["end_dt"]
+        end_date = _static["end_date"]
         hours_left = None
         if end_dt:
             hours_left = (end_dt - datetime.now(timezone.utc)).total_seconds() / 3600.0
@@ -1560,23 +1692,8 @@ class PolyUSPaperTrader:
 
         # Strike/spot resolution shared by BOTH entry paths (R6): the gates must
         # not depend on which branch found the candidate.
-        strike_val = None
-        strike_dict = terms.get("strike") or terms.get("priceToBeat")
-        if strike_dict and isinstance(strike_dict, dict):
-            try:
-                strike_val = float(strike_dict.get("value", 0))
-            except Exception:
-                pass
-
-        symbol = (terms.get("asset") or {}).get("symbol", "").upper()
-        if not symbol:
-            slug_lower = slug.lower()
-            if "btc" in slug_lower:
-                symbol = "BTC"
-            elif "eth" in slug_lower:
-                symbol = "ETH"
-            elif "sol" in slug_lower:
-                symbol = "SOL"
+        strike_val = _static["strike_val"]
+        symbol = _static["symbol"]
 
         spot = crossvenue_edge.get_cached_spot(symbol) if symbol else None
 
@@ -1989,8 +2106,10 @@ class PolyUSPaperTrader:
         if getattr(self, "live_mode", False):
             # preview_order above validated the order at fill_price; place at the
             # same price so the booked resting record matches the venue quote.
+            _sent_t0 = time.monotonic()
             resp = polymarket_us_client.place_maker_order(slug, side, fill_price, qty,
                                                           preview=False)
+            self._record_order_sent(_sent_t0)
             if not resp or not resp.get("id"):
                 log.warning("Live order placement failed for %s %s @ %.2f", slug, side, fill_price)
                 return False
@@ -2049,6 +2168,7 @@ class PolyUSPaperTrader:
             # Paper maker model: do not fill immediately. Record a resting
             # paper order; it fills only when a later book observation trades
             # through the resting price within the order TTL (A3).
+            _sent_t0 = time.monotonic()
             with self._guard_lock:
                 self.state["cash"] = round(self.state["cash"] - cost, 4)
                 self.state["window_spent"] = round(window_spent + cost, 4)
@@ -2078,6 +2198,7 @@ class PolyUSPaperTrader:
                     "window_ts": self.state.get("current_window_ts"),
                     "paper_fill_model": "maker",
                 })
+            self._record_order_sent(_sent_t0)
             # D2: record the resting order in the local poly DB (best-effort).
             try:
                 pdb = self._poly_db()
@@ -2099,6 +2220,7 @@ class PolyUSPaperTrader:
                        key=f"order.placed:paper:{slug}:{self.state.get('current_window_ts')}:{side}:{int(qty)}")
         else:
             # Paper taker mode (default): fill modelled at BBO (R5), position booked immediately.
+            _sent_t0 = time.monotonic()
             self.state["cash"] = round(self.state["cash"] - cost, 4)
             self.state["window_spent"] = round(window_spent + cost, 4)
             self.state["trades_count"] += 1
@@ -2122,6 +2244,7 @@ class PolyUSPaperTrader:
                 "paper_fill_model": "taker",
             }
             self.state["positions"].append(pos)
+            self._record_order_sent(_sent_t0)
             # Paper taker: placed and filled at BBO — emit both.
             _paper_key = f"paper:{slug}:{self.state.get('current_window_ts')}:{side}:{int(qty)}"
             emit_event("poly_us_trader", "order.placed",
@@ -2285,7 +2408,6 @@ class PolyUSPaperTrader:
             for s in missing_slugs:
                 if s not in market_map:
                     try:
-                        time.sleep(0.05)
                         self._note_request(1)
                         fresh_m = polymarket_us_client.get_market_by_slug(s)
                         if fresh_m and isinstance(fresh_m, dict):
@@ -2686,6 +2808,9 @@ class PolyUSPaperTrader:
         except Exception as e:
             log.debug("MemPalace heartbeat/checkpoint failed: %s", e)
 
+        # L6: drain deferred ledger/DB writes at cycle end so the next cycle's
+        # hot path starts with an empty outbox.
+        self.flush_ledger(timeout=5.0)
         systemd_notify("WATCHDOG=1")
 
 
@@ -2851,6 +2976,13 @@ def main():
     trader = PolyUSPaperTrader(initial_cash=init_cash,
                                reset=args.reset is not None, live_mode=args.live)
 
+    # L6: pre-warm the persistent HTTP session (one cheap authenticated read)
+    # so the first order does not pay the TCP+TLS handshake.
+    try:
+        polymarket_us_client.prewarm()
+    except Exception:
+        pass
+
     # M2: MemPalace parity — resume hint (advisory; local DB wins),
     # then announce this session as online.
     try:
@@ -2883,6 +3015,20 @@ def main():
             signal.signal(sig, _request_stop)
         except (ValueError, OSError):
             pass  # not main thread / unsupported platform: KeyboardInterrupt still works
+    # L6: logging moves off the trading thread — a QueueHandler hands records
+    # to a listener thread running the original stdout/file handlers. Failures
+    # here keep inline logging (better duplicated than lost).
+    _log_listener = None
+    try:
+        _log_queue = queue.Queue()
+        _queue_handler = logging.handlers.QueueHandler(_log_queue)
+        _root_logger = logging.getLogger()
+        _old_handlers = _root_logger.handlers[:]
+        _root_logger.handlers = [_queue_handler]
+        _log_listener = logging.handlers.QueueListener(_log_queue, *_old_handlers)
+        _log_listener.start()
+    except Exception as e:
+        log.warning("QueueHandler setup failed (%s) — logging stays inline", e)
     guard_stop = threading.Event()
     guard_thread = None
     try:
@@ -2925,10 +3071,15 @@ def main():
         if _stop_requested:
             log.info("Stop signal received — shutting down cleanly.")
     finally:
-        # L5: stop the guard fast loop before the state/bridge teardown.
+        # L5: stop the guard fast loop first (it can enqueue writer ops).
         guard_stop.set()
         if guard_thread is not None:
             guard_thread.join(timeout=2.0)
+        # L6: drain deferred ledger/DB writes so nothing is lost on shutdown.
+        try:
+            trader.flush_ledger(timeout=5.0)
+        except Exception as e:
+            log.warning("Ledger flush on shutdown failed: %s", e)
         # M2: final operational checkpoint, then flush the bridge before
         # releasing the instance lock.
         try:
@@ -2941,6 +3092,13 @@ def main():
                 _b.stop(timeout=5.0)
         except Exception as e:
             log.warning("MemPalace bridge stop failed: %s", e)
+        # L6: logging goes through a QueueHandler/listener above the trading
+        # thread — stop it after the last log call so shutdown output stays.
+        if _log_listener is not None:
+            try:
+                _log_listener.stop()
+            except Exception:
+                pass
         if lock_fd is not None:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
