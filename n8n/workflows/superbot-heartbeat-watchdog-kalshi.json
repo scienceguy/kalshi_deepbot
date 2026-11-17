@@ -1,0 +1,163 @@
+{
+  "name": "SuperBot Heartbeat Watchdog Kalshi",
+  "nodes": [
+    {
+      "id": "node_schedule",
+      "name": "Schedule (5 min heartbeat)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_exec",
+      "name": "Run Watchdog",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "command": "/opt/superbot/.venv/bin/python /opt/superbot/scripts/heartbeat_watchdog.py --source kalshi --max-age-s 1200",
+        "executeOnce": true
+      }
+    },
+    {
+      "id": "node_parse",
+      "name": "Parse Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const data = JSON.parse($json.stdout || '{}');\nreturn [{ json: {\n  subject: `[SuperBot] ${data.alert ? 'ALERT' : 'ok'}: ${data.trader || data.reason || 'Kalshi'}`,\n  text: JSON.stringify(data, null, 0).slice(0, 800),\n  ...data,\n} }];"
+      }
+    },
+    {
+      "id": "node_if",
+      "name": "Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.alert }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "node_http",
+      "name": "Post Alert (SUPERBOT_ALERT_WEBHOOK_URL)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        880,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPERBOT_ALERT_WEBHOOK_URL || 'http://127.0.0.1:9/superbot-alert-placeholder' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: $json.subject, text: $json.text, source: 'SuperBot Heartbeat Watchdog Kalshi' }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Schedule (5 min heartbeat)": {
+      "main": [
+        [
+          {
+            "node": "Run Watchdog",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Watchdog": {
+      "main": [
+        [
+          {
+            "node": "Parse Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Result": {
+      "main": [
+        [
+          {
+            "node": "Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert?": {
+      "main": [
+        [
+          {
+            "node": "Post Alert (SUPERBOT_ALERT_WEBHOOK_URL)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {
+    "description": "N3 watchdog (5 min heartbeat). Alerts only when check() returns alert=true. No secrets stored."
+  },
+  "active": true
+}

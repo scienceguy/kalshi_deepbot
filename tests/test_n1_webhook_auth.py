@@ -312,19 +312,30 @@ def test_installer_rest_idempotent_no_db(monkeypatch, capsys):
 
     st = fake.state
     names = sorted(w["name"] for w in st["workflows"].values())
-    assert names == ["SuperBot Backtest", "SuperBot Coordinate",
-                     "SuperBot Data Collect", "SuperBot Monitor"]
-    assert len(st["workflows"]) == 4            # settlement skipped without Supabase creds
+    assert names == [
+        "SuperBot Backtest", "SuperBot Coordinate", "SuperBot Critical Alert",
+        "SuperBot Daily Digest", "SuperBot Data Collect",
+        "SuperBot Heartbeat Watchdog Kalshi", "SuperBot Heartbeat Watchdog Poly",
+        "SuperBot Monitor", "SuperBot Position Watchdog", "SuperBot Sync Lag",
+    ]
+    # settlement processor skipped without Supabase creds; everything else present
+    assert len(st["workflows"]) == 10
     assert st["updates"] >= 4                   # second run updated, never duplicated
     assert len(st["credentials"]) == 1          # credential created once
 
-    # every webhook node is headerAuth-gated with the shared credential
+    # every webhook node (if any) is headerAuth-gated with the shared credential;
+    # scheduled workflows (digest/watchdogs) have no webhook at all.
     for w in st["workflows"].values():
         webhooks = [n for n in w["nodes"] if n["type"] == "n8n-nodes-base.webhook"]
-        assert webhooks, w["name"]
         for wh in webhooks:
             assert wh["parameters"]["authentication"] == "headerAuth"
             assert wh["credentials"]["httpHeaderAuth"]["id"] == "cred-1"
+    hooked = sorted(
+        w["name"] for w in st["workflows"].values()
+        if any(n["type"] == "n8n-nodes-base.webhook" for n in w["nodes"]))
+    assert hooked == ["SuperBot Backtest", "SuperBot Coordinate",
+                      "SuperBot Critical Alert", "SuperBot Data Collect",
+                      "SuperBot Monitor"]
 
     # coordination workflow verifies the HMAC in a Code node before side effects
     coord = next(w for w in st["workflows"].values() if w["name"] == "SuperBot Coordinate")

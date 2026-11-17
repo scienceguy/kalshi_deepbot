@@ -1,0 +1,90 @@
+{
+  "name": "SuperBot Critical Alert",
+  "nodes": [
+    {
+      "id": "node_webhook",
+      "name": "Critical Alert Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "superbot-critical-alert",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "webhookId": "superbot-critical-alert",
+        "responseData": true,
+        "options": {}
+      },
+      "credentials": {"httpHeaderAuth": {"id": "", "name": "SuperBot Webhook Auth"}},
+      "webhookId": "superbot-critical-alert",
+      "isActive": true
+    },
+    {
+      "id": "node_verify",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst h = $json.headers || {};\nconst ts = String(h['x-superbot-timestamp'] || '');\nconst nonce = String(h['x-superbot-nonce'] || '');\nconst sig = String(h['x-superbot-signature'] || '');\nconst raw = typeof $json.body === 'string' ? $json.body : JSON.stringify($json.body);\nconst secret = $env.SUPERBOT_WEBHOOK_SECRET || '';\nif (!ts || !nonce || !sig || !secret) {\n  throw new Error('missing signed fields');\n}\nconst expected = crypto.createHmac('sha256', secret)\n  .update(ts + '.' + nonce + '.' + raw).digest('hex');\nconst fresh = Math.abs(Date.now() - Number(ts)) <= 60000;\nlet replay = false;\ntry {\n  const sd = $getWorkflowStaticData('global');\n  sd.seenNonces = sd.seenNonces || {};\n  if (sd.seenNonces[nonce]) { replay = true; } else { sd.seenNonces[nonce] = Date.now(); }\n} catch (e) { /* static data unavailable — signature freshness still enforced */ }\nconst ok = fresh && !replay && sig.length === expected.length &&\n  crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));\nif (!ok) {\n  throw new Error(replay ? 'replayed nonce' : (fresh ? 'signature mismatch' : 'stale timestamp'));\n}\nreturn [{ json: { ok: true, reason: 'ok', body: $json.body, headers: {\n  'x-superbot-timestamp': ts, 'x-superbot-nonce': nonce, 'x-superbot-signature': sig } } }];"
+      }
+    },
+    {
+      "id": "node_format",
+      "name": "Format Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "jsCode": "const ev = $json.body || {};\nconst p = ev.payload || {};\nconst ts = ev.ts ? new Date(Number(ev.ts) * 1000).toISOString() : 'unknown-ts';\nconst body = JSON.stringify(p);\nconst lines = [\n  `${String(ev.severity || 'critical').toUpperCase()} ${ev.type || 'alert'} (${ev.source || 'unknown'}, ${ev.mode || 'dry'})`,\n  `ts: ${ts}`,\n  `payload: ${body.length > 800 ? body.slice(0, 800) + '…' : body}`,\n];\nreturn [{ json: {\n  subject: `[SuperBot] ${ev.type || 'critical alert'}`,\n  text: lines.join('\\n'),\n  severity: ev.severity || 'critical',\n  event_type: ev.type || '',\n  source: ev.source || '',\n} }];"
+      }
+    },
+    {
+      "id": "node_http",
+      "name": "Send Alert (SUPERBOT_ALERT_WEBHOOK_URL)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPERBOT_ALERT_WEBHOOK_URL || 'http://127.0.0.1:9/superbot-alert-placeholder' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: $json.subject, text: $json.text, severity: $json.severity, event_type: $json.event_type, source: $json.source }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [880, 0],
+      "parameters": {
+        "responseCode": "200",
+        "responseBody": "={{ { ok: true, alert: $json.event_type || 'routed' } }}",
+        "respondWith": "json",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Critical Alert Webhook": {"main": [[{"node": "Verify Signature", "type": "main", "index": 0}]]},
+    "Verify Signature": {"main": [[{"node": "Format Alert", "type": "main", "index": 0}]]},
+    "Format Alert": {"main": [[{"node": "Send Alert (SUPERBOT_ALERT_WEBHOOK_URL)", "type": "main", "index": 0}]]},
+    "Send Alert (SUPERBOT_ALERT_WEBHOOK_URL)": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "HMAC-verified critical alert sink for N3 critical-lane events. Route target: $SUPERBOT_ALERT_WEBHOOK_URL (operator channel). No secrets stored."},
+  "active": true
+}

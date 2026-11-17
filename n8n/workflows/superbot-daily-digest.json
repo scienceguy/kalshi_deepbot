@@ -1,0 +1,72 @@
+{
+  "name": "SuperBot Daily Digest",
+  "nodes": [
+    {
+      "id": "node_schedule",
+      "name": "Daily 00:10 UTC",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {"field": "days", "triggerAtHour": 0, "triggerAtMinute": 10}
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_exec",
+      "name": "Run Daily Digest",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [220, 0],
+      "parameters": {
+        "command": "/opt/superbot/.venv/bin/python /opt/superbot/scripts/daily_digest.py",
+        "executeOnce": true
+      }
+    },
+    {
+      "id": "node_parse",
+      "name": "Parse Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "jsCode": "const data = JSON.parse($json.stdout || '{}');\nreturn [{ json: {\n  subject: '[SuperBot] daily digest',\n  text: data.digest_text || JSON.stringify(data),\n  ...data,\n} }];"
+      }
+    },
+    {
+      "id": "node_http",
+      "name": "Post Digest (SUPERBOT_ALERT_WEBHOOK_URL)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPERBOT_ALERT_WEBHOOK_URL || 'http://127.0.0.1:9/superbot-alert-placeholder' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: $json.subject, text: $json.text, source: 'superbot-daily-digest' }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Daily 00:10 UTC": {"main": [[{"node": "Run Daily Digest", "type": "main", "index": 0}]]},
+    "Run Daily Digest": {"main": [[{"node": "Parse Digest", "type": "main", "index": 0}]]},
+    "Parse Digest": {"main": [[{"node": "Post Digest (SUPERBOT_ALERT_WEBHOOK_URL)", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "N3 daily digest: signals/orders/settlements/P&L from the local DB, posted to $SUPERBOT_ALERT_WEBHOOK_URL. No secrets stored."},
+  "active": true
+}

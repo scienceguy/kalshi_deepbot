@@ -254,7 +254,8 @@ class LocalDB:
                     next_attempt_at TEXT DEFAULT (datetime('now')),
                     last_error TEXT,
                     status TEXT NOT NULL DEFAULT 'pending',
-                    delivered_at TEXT NOT NULL DEFAULT ''
+                    delivered_at TEXT NOT NULL DEFAULT '',
+                    webhook_path TEXT NOT NULL DEFAULT ''
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_status ON event_outbox(status, next_attempt_at)")
@@ -268,8 +269,10 @@ class LocalDB:
                 ("bot_state", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
                 ("pnl_ledger", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
                 ("backtest_runs", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
-                # N2: delivery timestamp for outbox metrics (ALTER for pre-N2 DBs).
+                # N2/N3: delivery timestamp for outbox metrics, and the webhook
+                # path to deliver to (event type alone cannot route).
                 ("event_outbox", "delivered_at TEXT NOT NULL DEFAULT ''"),
+                ("event_outbox", "webhook_path TEXT NOT NULL DEFAULT ''"),
             ):
                 for _col in _cols.split(", "):
                     _col_name = _col.split(" ")[0]
@@ -749,16 +752,19 @@ class LocalDB:
     def insert_outbox_event(self, event_type: str, payload_json: str,
                             delivery_class: str = "critical",
                             venue: str = "", mode: str = "",
-                            event_id: Optional[str] = None) -> Optional[int]:
+                            event_id: Optional[str] = None,
+                            webhook_path: str = "") -> Optional[int]:
         """Insert an event into the durable outbox. Returns the row id or None."""
         conn = self._get_conn()
         with self._lock:
             try:
                 cur = conn.execute("""
                     INSERT INTO event_outbox
-                        (event_id, type, delivery_class, payload_json, venue, mode)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (event_id, event_type, delivery_class, payload_json, venue, mode))
+                        (event_id, type, delivery_class, payload_json, venue, mode,
+                         webhook_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (event_id, event_type, delivery_class, payload_json, venue,
+                      mode, webhook_path))
                 conn.commit()
                 return cur.lastrowid
             except Exception as e:
@@ -787,7 +793,7 @@ class LocalDB:
                 rows = conn.execute(f"""
                     SELECT id, event_id, type, delivery_class, payload_json,
                            venue, mode, created_at, attempts, next_attempt_at,
-                           last_error, status
+                           last_error, status, webhook_path
                     FROM event_outbox
                     WHERE status = 'pending'
                       AND julianday(next_attempt_at) <= julianday(?)
@@ -801,7 +807,7 @@ class LocalDB:
                 return [dict(zip(
                     ["id", "event_id", "type", "delivery_class", "payload_json",
                      "venue", "mode", "created_at", "attempts", "next_attempt_at",
-                     "last_error", "status"], row)) for row in rows]
+                     "last_error", "status", "webhook_path"], row)) for row in rows]
             except Exception as e:
                 log.warning("get_pending_outbox_events error: %s", e)
                 return []
@@ -1164,6 +1170,28 @@ class LocalDB:
             "supabase_enabled": supabase_is_enabled(),
             "auto_sync": self._auto_sync,
         }
+
+    def get_sync_lag_stats(self) -> Dict[str, Any]:
+        """N3: mirror lag for the sync.lag event — unsynced row count and the
+        age (seconds) of the oldest unsynced row across the mirrored tables.
+        """
+        tables = ("bot_state", "signals", "orders", "pnl_ledger", "backtest_runs")
+        total = 0
+        oldest = 0.0
+        conn = self._get_conn()
+        with self._lock:
+            for table in tables:
+                try:
+                    row = conn.execute(
+                        f"SELECT COUNT(*), "
+                        f"COALESCE(MAX((julianday('now') - julianday(created_at)) * 86400.0), 0.0) "
+                        f"FROM {table} WHERE synced = 0"
+                    ).fetchone()
+                    total += int(row[0] or 0)
+                    oldest = max(oldest, float(row[1] or 0.0))
+                except Exception as e:
+                    log.debug("get_sync_lag_stats(%s): %s", table, e)
+        return {"unsynced_count": total, "oldest_unsynced_age_s": oldest}
 
     def _sync_loop(self):
         """Background sync loop."""

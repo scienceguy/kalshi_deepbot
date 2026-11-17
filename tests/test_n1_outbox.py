@@ -25,25 +25,45 @@ from n8n_client import N8nClient, _sign_body, _outbox_sender, _deliver_outbox_ro
 
 def test_event_envelope_defaults():
     """Event has sensible defaults and a UUID id."""
-    e = Event(venue="kalshi", mode="dry", type="settlement", payload={"pnl": 1.0})
-    assert e.schema == 1
-    assert e.venue == "kalshi"
+    e = Event(source="kalshi_trader", mode="dry", type="settlement", payload={"pnl": 1.0})
+    assert e.schema_version == 1
+    assert e.source == "kalshi_trader"
     assert e.mode == "dry"
     assert e.type == "settlement"
     assert e.payload == {"pnl": 1.0}
-    assert e.id  # non-empty UUID
+    assert e.severity == "info"
+    assert e.event_id  # non-empty UUID
     assert e.ts > 0
-    assert ":" in e.origin  # host:pid
+    assert ":" in e.agent_id  # host:pid
 
 
 def test_make_event():
-    """make_event builds an Event with given fields."""
-    e = make_event("polymarket_us", "live", "fill", {"order_id": "abc"}, seq=3)
-    assert e.venue == "polymarket_us"
+    """make_event builds an N3 envelope with the given fields."""
+    e = make_event("polymarket_us", "live", "fill", {"order_id": "abc"})
+    assert e.source == "polymarket_us"
     assert e.mode == "live"
     assert e.type == "fill"
-    assert e.seq == 3
     assert e.payload == {"order_id": "abc"}
+    # deterministic key -> stable event_id (replay-safe dedupe)
+    e2 = make_event("polymarket_us", "live", "fill", {}, key="abc")
+    assert e2.event_id == make_event("polymarket_us", "live", "fill", {}, key="abc").event_id
+    assert e2.event_id != e.event_id
+
+
+def test_make_event_severity_defaults_by_lane():
+    """Severity is derived from the lane when not specified."""
+    assert make_event("kalshi_trader", "dry", "risk.halt", {}).severity == "critical"
+    assert make_event("kalshi_trader", "dry", "order.placed", {}).severity == "info"
+    assert make_event("kalshi_trader", "dry", "heartbeat", {}).severity == "debug"
+    assert make_event("kalshi_trader", "dry", "risk.halt", {}, severity="warning").severity == "warning"
+
+
+def test_validate_event_roundtrip():
+    """A make_event envelope passes the JSON Schema check."""
+    from events import validate_event
+    e = make_event("poly_us_trader", "dry", "position.settled", {"pnl": -0.5},
+                   key="k1", agent_id="agent-1", ts=123.5)
+    validate_event(e.to_dict())  # must not raise
 
 
 def test_delivery_class():
@@ -66,11 +86,11 @@ def test_delivery_class():
 
 
 def test_to_dict_roundtrip():
-    """to_dict() produces a JSON-serializable dict."""
-    e = make_event("kalshi", "dry", "risk.resume", {"ticker": "KXBTC15M"})
+    """to_dict() produces a JSON-serializable N3 envelope."""
+    e = make_event("kalshi_trader", "dry", "risk.resume", {"ticker": "KXBTC15M"})
     d = e.to_dict()
-    assert d["schema"] == 1
-    assert d["venue"] == "kalshi"
+    assert d["schema_version"] == 1
+    assert d["source"] == "kalshi_trader"
     json.dumps(d)  # must serialize
 
 

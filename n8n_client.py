@@ -99,8 +99,11 @@ class _CircuitBreaker:
 
     def record_success(self) -> None:
         with self._lock:
+            was_open = bool(self._opened_at)
             self._consecutive_failures = 0
             self._opened_at = 0.0
+        if was_open:
+            self._emit_breaker_event("breaker.clear")
 
     def record_failure(self) -> None:
         with self._lock:
@@ -112,7 +115,27 @@ class _CircuitBreaker:
                         "pausing outbox delivery for %.0fs (rows stay pending)",
                         self._consecutive_failures, self.cooldown_s,
                     )
+                    just_opened = not self._opened_at
+                else:
+                    just_opened = False
                 self._opened_at = time.time()
+            else:
+                just_opened = False
+        if just_opened:
+            self._emit_breaker_event("breaker.trip")
+
+    def _emit_breaker_event(self, event_type: str) -> None:
+        # Critical lane: routed via the durable outbox, so this never fails
+        # the sender thread that triggered it.
+        try:
+            from emit import emit_event
+            emit_event("n8n_outbox", event_type,
+                       {"reason": "consecutive delivery failures" if "trip" in event_type
+                        else "delivery recovered"},
+                       key=f"{event_type}:{int(time.time()) // 60}",
+                       mode="dry" if config.DRY_RUN else "live")
+        except Exception as e:
+            log.debug("breaker event emit failed (non-fatal): %s", e)
 
 
 _outbox_breaker = _CircuitBreaker()
@@ -207,7 +230,9 @@ def _lane_timeout(delivery_class: str) -> Tuple[float, float]:
 def _deliver_outbox_row(db, row: Dict[str, Any]) -> None:
     """Deliver a single outbox row to n8n with HMAC signing."""
     event_id = row["id"]
-    webhook_path = row["type"]  # event type maps to webhook path
+    # N3: the row stores the webhook path it was enqueued for; fall back to
+    # the event type for rows written before webhook_path existed.
+    webhook_path = row.get("webhook_path") or row["type"]
     payload = json.loads(row["payload_json"] or "{}")
     lane = row.get("delivery_class") or "normal"
 
@@ -576,7 +601,10 @@ class N8nClient:
         if fire_and_forget:
             venue = data.get("venue", "kalshi")
             mode = data.get("mode", "dry" if config.DRY_RUN else "live")
-            event_type = data.get("event_type", webhook_path.replace("-", "."))
+            # N3: a versioned envelope carries its own type; legacy callers
+            # fall back to the webhook path.
+            event_type = (data.get("type") or data.get("event_type")
+                          or webhook_path.replace("-", "."))
             cls = delivery_class(event_type)
             _start_outbox_sender()
             if cls == "telemetry":
@@ -595,6 +623,7 @@ class N8nClient:
                     venue=venue,
                     mode=mode,
                     event_id=event_id,
+                    webhook_path=webhook_path,
                 )
             except Exception as e:
                 log.warning("N2: outbox insert failed for %s: %s", webhook_path, e)

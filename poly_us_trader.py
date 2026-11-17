@@ -43,6 +43,7 @@ import config
 import report_state  # B19 operator visibility hook
 from resilience import systemd_notify
 from local_db import get_local_db  # D1: local DB is source of truth for settlements
+from emit import emit_event, emit_sync_lag  # N3: typed event stream to n8n
 
 # Optional ML fair-value model (torch may not be installed everywhere).
 try:
@@ -454,6 +455,14 @@ class PolyUSPaperTrader:
         """
         today = self._daily_loss_key()
         if self.state.get("daily_loss_date", today) != today:
+            _prev = self.state.get("daily_loss_date") or today
+            try:
+                emit_event("poly_us_trader", "daily.summary",
+                           {"date_utc": _prev,
+                            "daily_realized_loss": float(self.state.get("daily_realized_loss", 0.0) or 0.0)},
+                           key=f"daily.summary:{_prev}")
+            except Exception:
+                pass
             self.state["daily_loss_date"] = today
             self.state["daily_realized_loss"] = 0.0
             self.state["daily_loss_halted"] = False
@@ -664,6 +673,10 @@ class PolyUSPaperTrader:
                     self.state["cash"] = round(self.state["cash"] + release_cost, 4)
                     self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - release_cost, 4))
                     log.info("Live order %s cancelled (TTL) on %s — reserved cash released", oid, o.get("slug", ""))
+                    emit_event("poly_us_trader", "order.cancelled",
+                               {"order_id": oid, "slug": o.get("slug", ""),
+                                "reason": "stale_ttl"},
+                               key=f"order.cancelled:{oid}")
                 continue
             # Order resolved: filled (if still held) or cancelled by venue/expiry.
             held = self._held_position_qty(o.get("slug", ""))
@@ -696,6 +709,11 @@ class PolyUSPaperTrader:
                 })
             if filled_qty > 0:
                 o["state"] = "filled"
+                emit_event("poly_us_trader", "order.filled",
+                           {"order_id": oid, "slug": o.get("slug", ""),
+                            "side": o.get("side", ""), "filled_qty": float(filled_qty),
+                            "fill_price": float(o.get("price") or 0.0)},
+                           key=f"order.filled:{oid}:{filled_qty}")
             else:
                 o["state"] = "cancelled"
                 release_cost = float(o.get("cost", 0.0) or 0.0)
@@ -703,6 +721,10 @@ class PolyUSPaperTrader:
                 self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - release_cost, 4))
                 cancelled_any = True
                 log.info("Live order %s resolved with no held position -> cancelled, reserved cash released", oid)
+                emit_event("poly_us_trader", "order.cancelled",
+                           {"order_id": oid, "slug": o.get("slug", ""),
+                            "reason": "unfilled_expiry"},
+                           key=f"order.cancelled:{oid}")
         self.state["resting_orders"] = [o for o in self.state.get("resting_orders") or [] if o.get("state") == "resting"]
         return True
 
@@ -766,6 +788,11 @@ class PolyUSPaperTrader:
                              "cash_gap": round(cash_gap, 4),
                              "position_gaps": gaps,
                              "timestamp": datetime.now(timezone.utc).isoformat()})
+        emit_event("poly_us_trader", "reconcile.mismatch",
+                   {"context": "venue_reconcile",
+                    "cash_gap_dollars": round(cash_gap, 4),
+                    "position_gaps": gaps},
+                   key=f"reconcile.mismatch:venue:{datetime.now(timezone.utc):%Y-%m-%dT%H}")
         log.warning("VENUE RECONCILE MISMATCH — cash gap $%.2f (venue $%.2f vs state+reserved $%.2f), "
                     "position gaps %s — new entries HALTED until manual --reset",
                     cash_gap, venue_cash, expected_cash, gaps)
@@ -801,6 +828,10 @@ class PolyUSPaperTrader:
                     0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - release_cost, 4))
                 log.info("Paper maker order %s cancelled (TTL) on %s — reserved cash released",
                          o.get("order_id"), slug)
+                emit_event("poly_us_trader", "order.cancelled",
+                           {"order_id": o.get("order_id"), "slug": slug,
+                            "reason": "stale_ttl"},
+                           key=f"order.cancelled:{o.get('order_id')}")
                 continue
             m_info = market_map.get(slug)
             if not m_info:
@@ -848,6 +879,11 @@ class PolyUSPaperTrader:
                 o["state"] = "filled"
                 log.info("Paper maker order %s filled on %s @ %.4f — no maker fee",
                          o.get("order_id"), slug, fill_price)
+                emit_event("poly_us_trader", "order.filled",
+                           {"order_id": o.get("order_id"), "slug": slug,
+                            "side": side, "filled_qty": float(qty),
+                            "fill_price": float(fill_price)},
+                           key=f"order.filled:{o.get('order_id')}:{qty}")
             else:
                 still_resting.append(o)
         self.state["resting_orders"] = still_resting
@@ -999,6 +1035,10 @@ class PolyUSPaperTrader:
                 try:
                     if polymarket_us_client.cancel_order(oid, slug):
                         log.info("Cancelled resting order %s on settled market %s", oid, slug)
+                        emit_event("poly_us_trader", "order.cancelled",
+                                   {"order_id": oid, "slug": slug,
+                                    "reason": "market_settled"},
+                                   key=f"order.cancelled:{oid}")
                     else:
                         log.warning("cancel_order returned False for %s on %s", oid, slug)
                 except Exception as e:
@@ -1111,6 +1151,11 @@ class PolyUSPaperTrader:
                     "🏆 SETTLED %s %s: outcome=%.2f payout=$%.2f cost=$%.2f PnL=$%+.2f | Cash=$%.2f",
                     slug, pos["side"].upper(), payout_per_contract, total_payout, cost, pnl, self.state["cash"]
                 )
+                emit_event("poly_us_trader", "position.settled",
+                           {"slug": slug, "order_id": pos.get("order_id"),
+                            "side": pos["side"], "qty": pos["qty"],
+                            "pnl_dollars": pnl, "settle_key": settle_key},
+                           key=f"position.settled:{settle_key}")
             elif applied is False:
                 # Duplicate — already applied in a prior cycle. Don't re-credit.
                 # Just detach the position from memory; cash/pnl already reflect it.
@@ -1590,6 +1635,11 @@ class PolyUSPaperTrader:
                 return False
             order_id = resp.get("id")
             log.info("Live maker order placed: %s (id=%s)", slug, order_id)
+            emit_event("poly_us_trader", "order.placed",
+                       {"slug": slug, "order_id": order_id, "side": side,
+                        "price": float(fill_price), "qty": int(qty),
+                        "cost": round(float(cost), 4)},
+                       key=f"order.placed:{order_id}")
 
         if getattr(self, "live_mode", False):
             # Live mode: book the position only after a confirmed fill. The order
@@ -1646,6 +1696,11 @@ class PolyUSPaperTrader:
             })
             log.info("Paper maker order resting: %s (id=%s) — fills when the book trades through",
                      slug, order_id)
+            emit_event("poly_us_trader", "order.placed",
+                       {"slug": slug, "order_id": order_id or "paper", "side": side,
+                        "price": float(fill_price), "qty": int(qty),
+                        "cost": round(float(cost), 4)},
+                       key=f"order.placed:paper:{slug}:{self.state.get('current_window_ts')}:{side}:{int(qty)}")
         else:
             # Paper taker mode (default): fill modelled at BBO (R5), position booked immediately.
             self.state["cash"] = round(self.state["cash"] - cost, 4)
@@ -1671,6 +1726,17 @@ class PolyUSPaperTrader:
                 "paper_fill_model": "taker",
             }
             self.state["positions"].append(pos)
+            # Paper taker: placed and filled at BBO — emit both.
+            _paper_key = f"paper:{slug}:{self.state.get('current_window_ts')}:{side}:{int(qty)}"
+            emit_event("poly_us_trader", "order.placed",
+                       {"slug": slug, "order_id": order_id or "paper", "side": side,
+                        "price": float(fill_price), "qty": int(qty),
+                        "cost": round(float(cost), 4)},
+                       key=f"order.placed:{_paper_key}")
+            emit_event("poly_us_trader", "order.filled",
+                       {"slug": slug, "order_id": order_id or "paper", "side": side,
+                        "filled_qty": int(qty), "fill_price": float(fill_price)},
+                       key=f"order.filled:{_paper_key}")
         # Task 2: record entry for rolling Brier calibration (model p, z, price band).
         try:
             minutes_left = opp.get("hours_left")
@@ -2078,7 +2144,7 @@ class PolyUSPaperTrader:
         try:
             global _poly_state_reporter
             if _poly_state_reporter is None:
-                _poly_state_reporter = report_state.StateReporter("poly_us")
+                _poly_state_reporter = report_state.StateReporter("poly_us", bot_state_key="reported_state:poly_us")
             try:
                 dl_halted = self._daily_loss_halted()
             except Exception:
@@ -2090,6 +2156,29 @@ class PolyUSPaperTrader:
                       or self.paper_fill_model is None)
             new_state = report_state.classify(halted=halted, degraded=not markets,
                                               traded=bool(trades_placed))
+            # N3: halt/resume transitions, degraded and sync-lag alerts.
+            reason = ("ruin" if self.state.get("ruin_halted")
+                      else "venue_recon" if self.state.get("venue_recon_halted")
+                      else "daily_loss" if dl_halted
+                      else "calibration" if a1_halted else "halted")
+            _prev_halted = self.state.get("_last_halted_seen")
+            if _prev_halted is None:
+                self.state["_last_halted_seen"] = bool(halted)
+            elif bool(_prev_halted) != bool(halted):
+                emit_event("poly_us_trader",
+                           "risk.halt" if halted else "risk.resume",
+                           {"reason": reason if halted else "ok"},
+                           key=f"{'risk.halt' if halted else 'risk.resume'}:{datetime.now(timezone.utc):%Y-%m-%d}")
+                self.state["_last_halted_seen"] = bool(halted)
+            if not markets:
+                emit_event("poly_us_trader", "cycle.degraded",
+                           {"degraded_sources": ["markets"]},
+                           key="cycle.degraded")
+            try:
+                emit_sync_lag("poly_us_trader",
+                              **get_local_db().get_sync_lag_stats())
+            except Exception:
+                pass
             _poly_state_reporter.report(new_state,
                                         equity=total_equity,
                                         positions=len(self.state.get("positions", [])),

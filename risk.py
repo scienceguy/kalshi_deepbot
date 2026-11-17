@@ -169,6 +169,16 @@ class RiskManager:
         if now - self.state.daily_pnl_reset_ts >= 86400:  # 24 hours
             if self.state.daily_pnl != 0.0:
                 log.info("📅 Daily P&L reset: was $%.2f", self.state.daily_pnl)
+                try:
+                    import emit
+                    emit.emit_event(
+                        "kalshi_trader", "daily.summary",
+                        {"date_utc": time.strftime("%Y-%m-%d", time.gmtime(now - 86400)),
+                         "daily_pnl_dollars": round(self.state.daily_pnl, 4),
+                         "start_balance_dollars": round(self.state.start_balance, 2)},
+                        key=f"daily.summary:{time.strftime('%Y-%m-%d', time.gmtime(now - 86400))}")
+                except Exception:
+                    pass
             self.state.daily_pnl = 0.0
             self.state.daily_pnl_reset_ts = now
             # A new day starts fresh: clear a daily-loss halt so trading can resume

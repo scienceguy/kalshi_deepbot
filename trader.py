@@ -94,6 +94,7 @@ from signals import floor_contracts  # noqa: E402
 import signals as se  # noqa: E402
 from resilience import CycleSupervisor, systemd_notify  # noqa: E402
 from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, calibration_beats_chance as _llm_calibration_beats_chance  # noqa: E402
+from emit import emit_event, emit_sync_lag  # noqa: E402
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
 import report_state  # noqa: E402  — B19 operator visibility hook
@@ -427,6 +428,10 @@ class BotState:
                 # re-raised so the main loop stops rather than looping on a dead key.
                 self.resilience.mark_failure(e)
                 if self.resilience.is_auth_error():  # reviewed: auth errors are re-raised to stop the loop; they never retry (B5)
+                    emit_event("kalshi_trader", "auth.failure",
+                               {"context": "order_placement",
+                                "error": str(e)[:200]},
+                               key=f"auth.failure:{int(time.time() // 60)}")
                     raise
                 existing = self._adopt_duplicate_order(client, coid)
                 if existing is not None:  # reviewed: adopt the venue's order and return it — never submit a second one for this intent (B5)
@@ -465,6 +470,11 @@ class BotState:
         if isinstance(info, dict) and info.get("ticker"):
             self.resting_tickers.discard(info["ticker"])
         log.info("✓ %s order_id=%s (fills=%.2f)", ticker, oid, fill_count)
+        emit_event("kalshi_trader", "order.filled",
+                   {"ticker": ticker, "order_id": oid, "side": sig.side,
+                    "filled_contracts": float(filled),
+                    "entry_price_cents": int(sig.entry_price)},
+                   key=f"order.filled:{oid}:{filled}")
         self.window["used"] += filled_risk
         self.trades_placed += 1
         # Record locally first, then to Supabase
@@ -1302,6 +1312,13 @@ def _replay_settlement_queue(client=None):
                 "settle_key": settle_key,
                 "already_recorded": applied is False if pnl is not None else True,
             }, max_retries=1)
+            emit_event("kalshi_trader", "position.settled",
+                       {"order_id": order_id, "ticker": payload.get("ticker"),
+                        "side": payload.get("side"),
+                        "contracts": payload.get("contracts"),
+                        "pnl_dollars": payload.get("pnl_dollars"),
+                        "settle_key": settle_key},
+                       key=f"position.settled:{settle_key}")
 
             # Step 3b: Mark the local orders row settled (pnl_ledger has the
             # P&L; without this the orders table stays 'executed' forever).
@@ -1525,6 +1542,10 @@ def clear_resting_orders(client, ticker: str):
         if not config.DRY_RUN:
             try:
                 client.cancel_order(oid, market_ticker=ticker)
+                emit_event("kalshi_trader", "order.cancelled",
+                           {"ticker": ticker, "order_id": oid,
+                            "reason": "position_closed"},
+                           key=f"order.cancelled:{oid}")
             except Exception as e:
                 log.debug("Could not cancel resting order %s: %s", oid, e)
         state.resting_value.pop(oid, None)
@@ -1808,7 +1829,7 @@ def _report_cycle_state(cash, positions, risk_state):
     global _state_reporter
     try:
         if _state_reporter is None:
-            _state_reporter = report_state.StateReporter("kalshi")
+            _state_reporter = report_state.StateReporter("kalshi", bot_state_key="reported_state:kalshi")
         degraded = [name for name, val in (("cash", cash), ("positions", positions)) if val is None]
         try:
             cooldown = state.risk._loss_cooldown_active()
@@ -1819,6 +1840,26 @@ def _report_cycle_state(cash, positions, risk_state):
             _metrics = outbox_metrics()
         except Exception:
             _metrics = {}
+        # N3: halt/resume transitions and degraded/lag alerts, once per cycle.
+        _halted_now = bool(risk_state.get("halted"))
+        _prev_halted = getattr(state, "_last_halted_seen", None)
+        if _prev_halted is None:
+            state._last_halted_seen = _halted_now
+        elif _prev_halted != _halted_now:
+            emit_event("kalshi_trader",
+                       "risk.halt" if _halted_now else "risk.resume",
+                       {"halt_reason": risk_state.get("halt_reason") or ""},
+                       key=f"{'risk.halt' if _halted_now else 'risk.resume'}:{int(time.time() // 86400)}")
+            state._last_halted_seen = _halted_now
+        if degraded:
+            emit_event("kalshi_trader", "cycle.degraded",
+                       {"degraded_sources": list(degraded),
+                        "cycle_outcome": state.cycle_outcome},
+                       key="cycle.degraded")
+        try:
+            emit_sync_lag("kalshi_trader", **get_local_db().get_sync_lag_stats())
+        except Exception:
+            pass
         new_state = report_state.classify(
             halted=bool(risk_state.get("halted")),
             cooldown=cooldown,
@@ -1967,6 +2008,10 @@ def cycle(client: KalshiClient):
                     created_ts = _parse_api_time(created)
                     if created_ts and (now - created_ts.timestamp()) > config.STALE_ORDER_MINS * 60:
                         client.cancel_order(oid, market_ticker=ticker)
+                        emit_event("kalshi_trader", "order.cancelled",
+                                   {"ticker": ticker, "order_id": oid,
+                                    "reason": "stale_ttl"},
+                                   key=f"order.cancelled:{oid}")
                         state.resting_value.pop(oid, None)
                         if ticker:
                             state.resting_tickers.discard(ticker)
@@ -1984,6 +2029,9 @@ def cycle(client: KalshiClient):
                     state.resting_tickers.discard(info["ticker"])
     except Exception as e:
         log.warning("Could not reconcile resting orders: %s", e)
+        emit_event("kalshi_trader", "reconcile.mismatch",
+                   {"context": "resting_orders_fetch", "error": str(e)[:200]},
+                   key=f"reconcile.mismatch:{int(time.time() // 3600)}")
 
 
     # Record any position that appeared on the exchange but is not in local
@@ -2024,6 +2072,11 @@ def cycle(client: KalshiClient):
                         "Top-up skipped for %s: exchange contracts %d > stored %d "
                         "but no resting entry order explains it",
                         tk, exch_contracts, existing.get("contracts", 0))
+                    emit_event("kalshi_trader", "reconcile.mismatch",
+                               {"context": "exchange_increase_without_resting_order",
+                                "ticker": tk, "exchange_contracts": exch_contracts,
+                                "stored_contracts": existing.get("contracts", 0)},
+                               key=f"reconcile.mismatch:{tk}:{int(time.time() // 3600)}")
                     continue
                 exit_ts = state.last_exit_ts.get(tk, 0.0)  # reviewed: suppress resurrection from a stale payload for a grace period after any exit (B13)
                 if exit_ts and (now - exit_ts) < config.EXIT_TOPUP_GRACE_SECONDS:
@@ -2338,6 +2391,11 @@ def cycle(client: KalshiClient):
                     "side": side,
                     "contracts": contracts,
                 }, max_retries=1)  # No retry — on failure, queue for replay instead of double-counting
+                emit_event("kalshi_trader", "position.settled",
+                           {"order_id": order_id, "ticker": t, "side": side,
+                            "contracts": contracts, "pnl_dollars": realized_pnl,
+                            "outcome_won": won},
+                           key=f"position.settled:{order_id}")
             except Exception:
                 log.warning("Failed to record settlement for %s via n8n webhook — queuing", t)
                 # reviewed: use _enqueue_settlement for dedup and atomic write
@@ -2801,6 +2859,12 @@ def cycle(client: KalshiClient):
         oid = (resp.get("order") or {}).get("order_id") or resp.get("order_id", "")
         if oid:
             placed += 1
+            emit_event("kalshi_trader", "order.placed",
+                       {"ticker": sig.market.ticker, "side": sig.side,
+                        "contracts": float(sig.contracts),
+                        "entry_price_cents": int(sig.entry_price),
+                        "order_id": oid, "client_order_id": coid},
+                       key=f"order.placed:{oid}")
             # trades_placed counts filled trades (recorded once in
             # _record_filled_order), not placement attempts. Counting placement
             # too double-counts a dry-run place+fill in the same cycle and
@@ -3457,6 +3521,10 @@ def _run_loop(args):
                 if state.resilience.is_auth_error():
                     log.error("Authentication error — not rebuilding client. "
                               "Check KALSHI_KEY_ID and private key.")
+                    emit_event("kalshi_trader", "auth.failure",
+                               {"context": "cycle_error",
+                                "error": str(e)[:200]},
+                               key=f"auth.failure:{int(time.time() // 60)}")
                     break
                 log.info("Rebuilding Kalshi client after %d errors",
                          state.resilience.settings.rebuild_threshold)

@@ -13,6 +13,10 @@ Workflows:
 3. superbot-trade     - settlement processor (Supabase PATCH)
 4. superbot-monitor   - ack-only monitor sink
 5. superbot-coordinate - inter-agent coordination (HMAC-verified receiver)
+6. n8n/workflows/*.json (N3) - loaded from disk and upserted the same way:
+   superbot-critical-alert (HMAC-verified critical lane), superbot-daily-digest,
+   superbot-heartbeat-watchdog-kalshi/-poly, superbot-sync-lag,
+   superbot-position-watchdog
 
 Webhook nodes use header authentication with the shared secret from
 ~/.secrets/ (X-Superbot-Key); coordination/control webhooks additionally
@@ -20,6 +24,7 @@ verify the HMAC-SHA256 signature (body + timestamp + nonce) in a Code node
 before any side effect runs.
 """
 
+import json
 import os
 import shlex
 import sys
@@ -28,6 +33,12 @@ import n8n_webhook_auth
 from n8n_client import N8nClient, load_api_key, n8n_health_check
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# JSON workflows shipped in the repo (N3): loaded and upserted by name, so
+# editing the JSON and re-running the installer is all it takes. No secrets
+# live in these files; the headerAuth credential id is injected at install
+# time from the credential this script manages.
+WORKFLOWS_JSON_DIR = os.path.join(BASE_DIR, "n8n", "workflows")
 
 # Header-auth credential name (created idempotently via REST).
 CREDENTIAL_NAME = "SuperBot Webhook Auth"
@@ -291,6 +302,39 @@ def _ensure_credential(client: N8nClient, secret: str) -> str:
     return created["id"]
 
 
+def _load_json_workflows(credential_id: str):
+    """Load the N3 workflow JSONs, injecting the live credential id."""
+    out = []
+    if not os.path.isdir(WORKFLOWS_JSON_DIR):
+        return out
+    for fname in sorted(os.listdir(WORKFLOWS_JSON_DIR)):
+        if not fname.endswith(".json"):
+            continue
+        with open(os.path.join(WORKFLOWS_JSON_DIR, fname)) as f:
+            wf = json.load(f)
+        for node in wf.get("nodes", []):
+            creds = node.get("credentials") or {}
+            for kind in creds.values():
+                if isinstance(kind, dict) and not kind.get("id"):
+                    kind["id"] = credential_id
+        out.append(wf)
+    return out
+
+
+def _upsert_workflow(client: N8nClient, definition: dict, label: str = "") -> None:
+    """Create or update `definition` by name, then activate it."""
+    name = definition["name"]
+    existing = client.get_workflow_by_name(name)
+    if existing:
+        client.update_workflow(existing["id"], definition)
+        client.ensure_workflow_active(existing["id"])
+        print("Updated workflow: %s (id=%s)%s" % (name, existing["id"], label))
+    else:
+        created = client.create_workflow(definition)
+        client.ensure_workflow_active(created["id"])
+        print("Created workflow: %s (id=%s)%s" % (name, created["id"], label))
+
+
 def main():
     api_key = load_api_key()
     if not api_key:
@@ -328,17 +372,12 @@ def main():
             wf.get("script"), wf.get("args", ""), credential_id,
             wf.get("supabase_url", ""), wf.get("supabase_key", ""),
         )
-        existing = client.get_workflow_by_name(wf["name"])
-        if existing:
-            client.update_workflow(existing["id"], definition)
-            client.ensure_workflow_active(existing["id"])
-            print("Updated workflow: %s (id=%s, webhook: %s)" %
-                  (wf["name"], existing["id"], wf["webhook_path"]))
-        else:
-            created = client.create_workflow(definition)
-            client.ensure_workflow_active(created["id"])
-            print("Created workflow: %s (id=%s, webhook: %s)" %
-                  (wf["name"], created["id"], wf["webhook_path"]))
+        _upsert_workflow(client, definition, " (webhook: %s)" % wf["webhook_path"])
+
+    # N3: workflows shipped as JSON in n8n/workflows/ (critical alert routing,
+    # daily digest, heartbeat watchdogs, sync-lag and position watchdogs).
+    for definition in _load_json_workflows(credential_id):
+        _upsert_workflow(client, definition, " (from n8n/workflows/)")
 
     # Verify: signed health request must succeed, unsigned must be rejected.
     ok_signed = n8n_health_check()
