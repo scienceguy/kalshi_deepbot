@@ -47,7 +47,7 @@ jobs:
       # instead of a bare "job failed".
 
       - name: 0/6 secret scan (gitleaks)
-        run: gitleaks detect --source . --verbose --no-banner
+        run: gitleaks detect --source . --config .gitleaks.toml --verbose --no-banner
 
       - name: 1/6 non-ASCII letters and number+name splices
         run: python scripts/verify_source.py --all
