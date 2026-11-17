@@ -95,7 +95,6 @@ class LocalDB:
         # D2: sync circuit breaker state + metrics
         self._sync_breaker_open_until = 0.0
         self._sync_breaker_failures = 0
-        self._sync_row_attempts: dict[tuple[str, str], int] = {}  # (table, pk) -> attempts
         self._sync_metrics = {
             "sync_success_count": 0,
             "sync_failure_count": 0,
@@ -286,6 +285,19 @@ class LocalDB:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_control_inbox_status ON control_inbox(status, created_at)")
 
+            # D3: durable per-row sync bookkeeping + quarantine for poison rows.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sync_quarantine (
+                    table_name TEXT NOT NULL,
+                    pk TEXT NOT NULL,
+                    row_json TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    quarantined_at TEXT DEFAULT (datetime('now')),
+                    PRIMARY KEY (table_name, pk)
+                )
+            """)
+
             # D1: venue/mode/origin_host/schema_version on all activity tables.
             # Added via ALTER TABLE so existing databases are migrated in place.
             for _table, _cols in (
@@ -294,6 +306,13 @@ class LocalDB:
                 ("bot_state", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
                 ("pnl_ledger", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
                 ("backtest_runs", ("venue TEXT DEFAULT '', mode TEXT DEFAULT '', origin_host TEXT DEFAULT '', schema_version TEXT DEFAULT '1'")),
+                # D3: persistent per-row retry bookkeeping (attempts survive
+                # restarts; backoff is enforced in the SELECT, not in memory).
+                ("signals", "sync_attempts INTEGER DEFAULT 0, last_error TEXT, next_attempt_at TEXT"),
+                ("orders", "sync_attempts INTEGER DEFAULT 0, last_error TEXT, next_attempt_at TEXT"),
+                ("bot_state", "sync_attempts INTEGER DEFAULT 0, last_error TEXT, next_attempt_at TEXT"),
+                ("pnl_ledger", "sync_attempts INTEGER DEFAULT 0, last_error TEXT, next_attempt_at TEXT"),
+                ("backtest_runs", "sync_attempts INTEGER DEFAULT 0, last_error TEXT, next_attempt_at TEXT"),
                 # N2/N3: delivery timestamp for outbox metrics, and the webhook
                 # path to deliver to (event type alone cannot route).
                 ("event_outbox", "delivered_at TEXT NOT NULL DEFAULT ''"),
@@ -1011,6 +1030,35 @@ class LocalDB:
                 self._sync_breaker_failures, int(SYNC_BREAKER_COOLDOWN_SECONDS),
             )
 
+    def _record_sync_failure(self, table: str, pk_col: str, pk_val, attempts: int,
+                             wait: int, row_dict: Dict[str, Any], error: str) -> None:
+        """D3: persist one sync failure. Past the attempt cap the row moves to
+        sync_quarantine (durable poison row) and is deleted from the source
+        table so it stops blocking the batch."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                if attempts >= SYNC_MAX_ROW_ATTEMPTS:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO sync_quarantine "
+                        "(table_name, pk, row_json, attempts, last_error) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (table, str(pk_val), json.dumps(row_dict, default=str),
+                         attempts, error[:500]))
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE {pk_col} = ?", (pk_val,))
+                    log.warning("quarantined poison %s row %s after %d attempts",
+                                table, pk_val, attempts)
+                else:
+                    conn.execute(
+                        f"UPDATE {table} SET sync_attempts = ?, last_error = ?, "
+                        f"next_attempt_at = datetime('now', ?) WHERE {pk_col} = ?",
+                        (attempts, error[:500], f"+{int(wait)} seconds", pk_val))
+                conn.commit()
+            except Exception as qe:
+                log.warning("_record_sync_failure(%s, %s) failed: %s",
+                            table, pk_val, qe)
+
     def _sync_table(self, table: str, supabase_client) -> int:
         """Sync unsynced rows from local table to Supabase. Returns count synced.
 
@@ -1030,7 +1078,9 @@ class LocalDB:
         order_col = "updated_at" if table == "bot_state" else "created_at"
         with self._lock:
             rows = conn.execute(
-                f"SELECT * FROM {table} WHERE synced = 0 ORDER BY {order_col} LIMIT 100"
+                f"SELECT * FROM {table} WHERE synced = 0 "
+                f"AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now')) "
+                f"ORDER BY {order_col} LIMIT 100"
             ).fetchall()
 
         if not rows:
@@ -1058,26 +1108,12 @@ class LocalDB:
                 if not table.startswith("poly_"):
                     row_dict.pop("id")
 
-            attempt_key = (table, str(pk_val))
-            attempts = self._sync_row_attempts.get(attempt_key, 0)
-
-            # Dead letter: skip rows that have exceeded max attempts
-            if attempts >= SYNC_MAX_ROW_ATTEMPTS:
-                continue
-
-            # Exponential backoff: skip if we're still in backoff window
-            if attempts > 0:
-                backoff = min(2 ** attempts, 3600)
-                # We don't store next_attempt time per row; instead we
-                # use attempts count as a proxy — higher attempts = longer
-                # effective backoff since we only get one shot per cycle.
-                # The 2^attempts backoff is enforced by the sync interval:
-                # each cycle increments attempts on failure, so a row that
-                # keeps failing will be retried less often in wall-clock
-                # time because it stays at synced=0 but we can't easily
-                # enforce per-row backoff without a next_attempt column.
-                # Simpler approach: cap attempts and use dead letters.
-                pass
+            # D3: persisted retry/backoff/quarantine. Attempts survive
+            # restarts; a row that keeps failing is moved to
+            # sync_quarantine instead of dead-lettering in memory (which a
+            # restart would lose).
+            attempts = int(row_dict.get("sync_attempts", 0) or 0) + 1
+            wait = min(2 ** attempts, 3600)
 
             try:
                 # Map local column names to Supabase column names
@@ -1125,20 +1161,23 @@ class LocalDB:
                 if result:
                     with self._lock:
                         conn.execute(
-                            f"UPDATE {table} SET synced = 1 WHERE {pk_col} = ?", (pk_val,)
+                            f"UPDATE {table} SET synced = 1, sync_attempts = 0, "
+                            f"last_error = NULL, next_attempt_at = NULL "
+                            f"WHERE {pk_col} = ?", (pk_val,)
                         )
                         conn.commit()
                     synced_count += 1
-                    # Clean up attempt tracking for successfully synced row
-                    self._sync_row_attempts.pop(attempt_key, None)
                     self._sync_metrics["sync_success_count"] += 1
                 else:
-                    # Sync returned False — increment attempts, may dead-letter
-                    self._sync_row_attempts[attempt_key] = attempts + 1
+                    # Sync returned False — record the attempt (may quarantine)
+                    self._record_sync_failure(table, pk_col, pk_val,
+                                              attempts, wait, row_dict,
+                                              "upsert returned False")
                     table_failures += 1
                     log.warning("Failed to sync %s row %s to Supabase", table, pk_val)
             except Exception as e:
-                self._sync_row_attempts[attempt_key] = attempts + 1
+                self._record_sync_failure(table, pk_col, pk_val,
+                                          attempts, wait, row_dict, str(e))
                 table_failures += 1
                 log.warning("Error syncing %s row %s: %s", table, pk_val, e)
 
@@ -1158,7 +1197,11 @@ class LocalDB:
         If ``supabase_client`` is not provided, it is fetched via
         ``get_supabase()``. The parameter exists for testing with a fake
         client.
-        """
+
+        Conflict policy: local rows for trades are authoritative (remote is
+        a mirror, keyed by order_id / signal_id / pnl idempotency_key /
+        poly row id, merged via on_conflict upserts). Remote config tables
+        are read-only to the traders."""
         if not supabase_is_enabled():
             return {t: 0 for t in self.SYNC_TABLES}
 
@@ -1196,7 +1239,7 @@ class LocalDB:
             "breaker_open": breaker_open,
             "breaker_open_until": self._sync_breaker_open_until,
             "breaker_failures": self._sync_breaker_failures,
-            "dead_rows": len(self._sync_row_attempts),
+            "quarantined_rows": self.quarantine_count(),
             "supabase_enabled": supabase_is_enabled(),
             "auto_sync": self._auto_sync,
         }
@@ -1221,7 +1264,21 @@ class LocalDB:
                     oldest = max(oldest, float(row[1] or 0.0))
                 except Exception as e:
                     log.debug("get_sync_lag_stats(%s): %s", table, e)
-        return {"unsynced_count": total, "oldest_unsynced_age_s": oldest}
+        return {
+            "unsynced_count": total,
+            "oldest_unsynced_age_s": oldest,
+            "last_success_ts": self._sync_metrics.get("last_sync_ts", 0.0),
+            "quarantined": self.quarantine_count(),
+        }
+
+    def quarantine_count(self) -> int:
+        """D3: rows moved to sync_quarantine (poison rows that failed N times)."""
+        conn = self._get_conn()
+        try:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM sync_quarantine").fetchone()[0])
+        except Exception:
+            return 0
 
     def enqueue_control_command(self, command: str, agent_id: str, nonce: str,
                                 ts: int, payload_json: str, signature: str
@@ -1475,6 +1532,26 @@ class PolyLocalDB(LocalDB):
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_status ON event_outbox(status, next_attempt_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_event_id ON event_outbox(event_id)")
+            # D3: durable per-row sync bookkeeping + quarantine for poison rows.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sync_quarantine (
+                    table_name TEXT NOT NULL,
+                    pk TEXT NOT NULL,
+                    row_json TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    quarantined_at TEXT DEFAULT (datetime('now')),
+                    PRIMARY KEY (table_name, pk)
+                )
+            """)
+            for _table in self.SYNC_TABLES:
+                for _col in ("sync_attempts INTEGER DEFAULT 0",
+                             "last_error TEXT", "next_attempt_at TEXT"):
+                    _col_name = _col.split(" ")[0]
+                    try:
+                        conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col}")
+                    except Exception:
+                        pass  # column already exists
             conn.execute("CREATE INDEX IF NOT EXISTS idx_poly_orders_slug ON poly_orders(slug, ts)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_poly_fills_slug ON poly_fills(slug, ts)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_poly_settlements_slug ON poly_settlements(slug, ts)")

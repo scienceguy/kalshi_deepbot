@@ -1,5 +1,5 @@
-"""Tests for D2 sync engine hardening: circuit breaker, per-row retry,
-dead letters, sync metrics.
+"""Tests for the sync engine hardening: circuit breaker, per-row retry,
+persisted backoff + quarantine, sync metrics.
 
 Tests use a fake Supabase client and a LocalDB with auto_sync=False so
 the background thread never interferes.
@@ -101,6 +101,13 @@ def _db(tmp_path):
     return db
 
 
+def _rewind_backoff(db):
+    """Simulate wall-clock passing so a backoff row is retried next cycle."""
+    conn = db._get_conn()  # noqa: SLF001
+    conn.execute("UPDATE orders SET next_attempt_at = NULL")
+    conn.commit()
+
+
 def _insert_order(db, order_id="oid1", ticker="KXBTC15M"):
     conn = db._get_conn()  # noqa: SLF001
     conn.execute(
@@ -123,9 +130,12 @@ def test_circuit_breaker_opens_after_n_failures(mock_enabled, tmp_path):
     # Insert a row so there's something to sync
     _insert_order(db)
 
-    # Sync max_failures times — each sync where all rows fail trips breaker
+    # Sync max_failures times — each sync where all rows fail trips breaker.
+    # The backoff window is rewound between cycles (tests are faster than
+    # wall clock; production spaces these by 30s intervals).
     for _ in range(local_db.SYNC_BREAKER_MAX_FAILURES):
         db.sync_to_supabase(fake)
+        _rewind_backoff(db)
 
     # Breaker should now be open
     assert not db._sync_breaker_closed(), "breaker should be open"
@@ -145,6 +155,7 @@ def test_circuit_breaker_skips_sync_when_open(mock_enabled, tmp_path):
     # Trip the breaker
     for _ in range(local_db.SYNC_BREAKER_MAX_FAILURES):
         db.sync_to_supabase(fake)
+        _rewind_backoff(db)
     call_count_before = len(fake.calls)
 
     # Sync again — should skip entirely
@@ -163,6 +174,7 @@ def test_circuit_breaker_allows_half_open_probe_after_cooldown(mock_enabled, tmp
     # Trip the breaker
     for _ in range(local_db.SYNC_BREAKER_MAX_FAILURES):
         db.sync_to_supabase(fake)
+        _rewind_backoff(db)
     assert not db._sync_breaker_closed()
 
     # Simulate cooldown expired
@@ -195,7 +207,9 @@ def test_per_row_retries_after_transient_failure(mock_enabled, tmp_path):
     synced = conn.execute("SELECT synced FROM orders WHERE order_id = 'oid1'").fetchone()[0]
     assert synced == 0
 
-    # Second sync: order succeeds (1 more call)
+    # Second sync: order succeeds (1 more call) once the backoff window
+    # has passed (rewound here; production waits it out on the 30s cycle)
+    _rewind_backoff(db)
     result = db.sync_to_supabase(fake)
     assert result["orders"] == 1
     assert len(fake.calls) == 2
@@ -208,8 +222,12 @@ def test_per_row_retries_after_transient_failure(mock_enabled, tmp_path):
 # ── Dead letters ─────────────────────────────────────────────────────
 
 @patch("local_db.supabase_is_enabled", return_value=True)
-def test_dead_letter_skips_permanently_failed_row(mock_enabled, tmp_path):
-    """Rows exceeding SYNC_MAX_ROW_ATTEMPTS are skipped, not retried."""
+def test_poison_row_quarantined_after_max_attempts(mock_enabled, tmp_path, monkeypatch):
+    """Rows exceeding SYNC_MAX_ROW_ATTEMPTS move to sync_quarantine."""
+    # The breaker would open after 5 all-fail batches and stop selecting the
+    # row before it reaches the row-attempt cap; raise it so the row's own
+    # retry cap is what quarantines it.
+    monkeypatch.setattr(local_db, "SYNC_BREAKER_MAX_FAILURES", 1000)
     db = _db(tmp_path)
     fake = _FailAlwaysSupabase(fail_mode="false")
     _insert_order(db)
@@ -219,16 +237,23 @@ def test_dead_letter_skips_permanently_failed_row(mock_enabled, tmp_path):
     # Sync max_attempts times — each time the row fails and attempts increment
     for i in range(max_attempts):
         db.sync_to_supabase(fake)
+        _rewind_backoff(db)
 
-    # After max_attempts failures, the row should be dead-lettered
-    # One more sync should NOT call Supabase for this row
+    # After max_attempts failures the row is quarantined (moved out of the
+    # source table), so later syncs never call Supabase for it again.
+    conn = db._get_conn()  # noqa: SLF001
+    qrow = conn.execute("SELECT pk, attempts, row_json FROM sync_quarantine").fetchone()
+    assert qrow is not None, "poison row should be in sync_quarantine"
+    assert qrow["attempts"] == max_attempts
+    assert "oid1" in qrow["row_json"]
+    assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
     call_count_before = len(fake.calls)
     db.sync_to_supabase(fake)
-    assert len(fake.calls) == call_count_before, "dead-lettered row should not be retried"
+    assert len(fake.calls) == call_count_before, "quarantined row should not be retried"
 
-    # Health shows dead rows tracked
+    # Health shows quarantined rows tracked
     health = db.get_sync_health()
-    assert health["dead_rows"] >= 1
+    assert health["quarantined_rows"] >= 1
 
 
 # ── Sync metrics ─────────────────────────────────────────────────────
@@ -260,7 +285,8 @@ def test_sync_health_tracks_success_and_failure(mock_enabled, tmp_path):
     h1 = db.get_sync_health()
     failures_after_first = h1["sync_failure_count"]
 
-    # Second sync: success
+    # Second sync: success (backoff rewound; production waits it out)
+    _rewind_backoff(db)
     db.sync_to_supabase(fake)
     h2 = db.get_sync_health()
 

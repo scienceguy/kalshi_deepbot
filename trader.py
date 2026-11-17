@@ -41,6 +41,8 @@ def parse_args(argv=None):
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--status", action="store_true",
                         help="Print n8n outbox delivery metrics and exit (no trading)")
+    parser.add_argument("--sync-status", action="store_true",
+                        help="Print local DB sync lag metrics and exit (no trading)")
     parser.add_argument("--interval", type=int, default=config.LOOP_INTERVAL_SECONDS)
     parser.add_argument("--cycle-limit", type=int, default=0,
                         help="stop after this many cycles (0 = disabled)")
@@ -3089,6 +3091,11 @@ def main():
         import json as _json
         from n8n_client import outbox_metrics
         print(_json.dumps(outbox_metrics(), indent=2, sort_keys=True))
+        return
+    if args.sync_status:
+        # --sync-status: lag metrics for the local-first mirror.
+        import json as _json
+        print(_json.dumps(get_local_db().get_sync_lag_stats(), indent=2, sort_keys=True))
         return
     _configure_logging()
     get_state()

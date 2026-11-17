@@ -2438,6 +2438,8 @@ def main():
     parser.add_argument("--live", action="store_true", help="Enable live trading mode (places real maker orders via Polymarket US API)")
     parser.add_argument("--import-legacy", action="store_true",
                         help="Import pre-D2 JSON state/JSONL ledgers into the local poly DB and exit")
+    parser.add_argument("--sync-status", action="store_true",
+                        help="Print local poly DB sync lag metrics and exit")
     args = parser.parse_args()
 
     # R3: refuse --live unless POLY_CONFIRM_LIVE=true (exit non-zero).
@@ -2460,6 +2462,13 @@ def main():
             STATE_FILE, LEDGER_FILE, CALIBRATION_FILE,
             mode="live" if args.live else "dry")
         print(json.dumps(counts, indent=2, sort_keys=True))
+        return
+
+    # D3: local mirror lag metrics, read-only.
+    if args.sync_status:
+        print(json.dumps(
+            get_poly_db("live" if args.live else "dry").get_sync_lag_stats(),
+            indent=2, sort_keys=True))
         return
 
     # A9: take the single-instance lock BEFORE constructing the trader, whose
