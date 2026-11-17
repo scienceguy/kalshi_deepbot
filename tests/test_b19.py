@@ -76,14 +76,14 @@ def test_report_state_emits_only_on_change_or_heartbeat():
             emitted.append(("webhook", data))
             return {}
 
-    class FakeSupa:
+    class FakeStateDB:
         def set_bot_state(self, key, value):
             emitted.append(("bot_state", value))
             return True
 
     import report_state as rs
-    orig_n8n, orig_supa = rs._n8n_client, rs._supabase_client
-    rs._n8n_client, rs._supabase_client = FakeN8n(), FakeSupa()
+    orig_n8n, orig_sdb = rs._n8n_client, rs._state_db
+    rs._n8n_client, rs._state_db = FakeN8n(), FakeStateDB()
     try:
         r = StateReporter("test-trader", heartbeat_seconds=3600.0)
         now = 1000.0
@@ -102,7 +102,7 @@ def test_report_state_emits_only_on_change_or_heartbeat():
         assert len(emitted) == 6
         assert emitted[-2][1]["state"] == "trading"
     finally:
-        rs._n8n_client, rs._supabase_client = orig_n8n, orig_supa
+        rs._n8n_client, rs._state_db = orig_n8n, orig_sdb
 
 
 def test_report_state_never_raises_when_sinks_fail():
@@ -114,17 +114,17 @@ def test_report_state_never_raises_when_sinks_fail():
 
     class Boom2:
         def set_bot_state(self, key, value):
-            raise RuntimeError("supabase down")
+            raise RuntimeError("local db down")
 
     import report_state as rs
-    orig_n8n, orig_supa = rs._n8n_client, rs._supabase_client
-    rs._n8n_client, rs._supabase_client = Boom(), Boom2()
+    orig_n8n, orig_sdb = rs._n8n_client, rs._state_db
+    rs._n8n_client, rs._state_db = Boom(), Boom2()
     try:
         r = StateReporter("test-trader", heartbeat_seconds=1.0)
         r._now = lambda: 0.0
         r.report("degraded", cycle=1)  # must not raise
     finally:
-        rs._n8n_client, rs._supabase_client = orig_n8n, orig_supa
+        rs._n8n_client, rs._state_db = orig_n8n, orig_sdb
 
 
 # ── Item 4 wiring: trader.py hook classification ───────────────────────────

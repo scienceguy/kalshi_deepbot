@@ -155,11 +155,8 @@ class TestBookExit:
             ldb.apply_settlement_pnl.side_effect = RuntimeError("database is locked")
         else:
             ldb.apply_settlement_pnl.return_value = applied
-        sb = MagicMock()
-        sb.set_bot_state_batch.return_value = True
         n8n = MagicMock()
         monkeypatch.setattr(trader, "get_local_db", lambda: ldb)
-        monkeypatch.setattr(trader, "get_supabase_client", lambda: sb)
         monkeypatch.setattr(trader, "get_n8n_client", lambda: n8n)
         monkeypatch.setattr(trader.paper_mode, "add_pnl", lambda pnl: None)
         risk = MagicMock()
@@ -271,8 +268,6 @@ def test_replay_exit_books_at_exit_key_not_settlement(monkeypatch, tmp_path):
     ldb = MagicMock()
     ldb.apply_settlement_pnl.return_value = True
     monkeypatch.setattr(trader, "get_local_db", lambda: ldb)
-    monkeypatch.setattr(trader, "get_supabase_client",
-                        lambda: MagicMock(set_bot_state_batch=MagicMock(return_value=True)))
 
     trader._replay_settlement_queue(client)
 
@@ -306,8 +301,6 @@ def test_replay_legacy_exit_none_pnl_resolves_from_payload(monkeypatch, tmp_path
     ldb = MagicMock()
     ldb.apply_settlement_pnl.return_value = True
     monkeypatch.setattr(trader, "get_local_db", lambda: ldb)
-    monkeypatch.setattr(trader, "get_supabase_client",
-                        lambda: MagicMock(set_bot_state_batch=MagicMock(return_value=True)))
 
     trader._replay_settlement_queue(client)
 

@@ -69,7 +69,6 @@ def test_valid_pause_entries_stops_new_entries_within_one_tick(
     _signed_row(control_db, "pause_entries", agent_id="operator")
     monkeypatch.setattr(trader, "get_local_db", lambda: control_db)
     monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
     monkeypatch.setattr(config, "LLM_EVALUATION_ENABLED", False)
     monkeypatch.setattr(trader.se, "evaluate",

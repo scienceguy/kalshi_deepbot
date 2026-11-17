@@ -16,6 +16,7 @@ Tables expected (create via Supabase dashboard):
                  win_rate, max_drawdown, final_balance
 """
 import os
+import hashlib
 import json
 import logging
 import stat
@@ -328,7 +329,13 @@ class SupabaseClient:
 
     # ─── signals table ─────────────────────────────────────────────────────────
     def insert_signal(self, signal_data: Dict[str, Any]) -> bool:
-        """Insert a new trade signal."""
+        """Insert a new trade signal (upsert on a deterministic signal_id).
+
+        D1: signal_id is a hash of ticker/ts/type so the local->remote sync
+        can safely retry a row whose write landed but whose ack did not. When
+        the remote schema lacks signal_id (migration not applied yet), fall
+        back to a plain insert instead of dropping the audit row.
+        """
         data = dict(signal_data)
         if not data.get("type"):
             data["type"] = "taker"
@@ -337,8 +344,22 @@ class SupabaseClient:
         if missing:
             log.warning("insert_signal: missing required fields %s — skipping", ", ".join(missing))
             return False
+        digest = hashlib.sha256(
+            f"{data.get('ticker')}|{data.get('ts')}|{data.get('type')}".encode()
+        ).hexdigest()[:32]
+        data["signal_id"] = digest
         try:
-            result = self._request("POST", "signals", data=data)
+            result = self._request("POST", "signals", data=data,
+                                   params={"on_conflict": "signal_id"},
+                                   extra_headers={"Prefer": "resolution=merge-duplicates"})
+            if result is not None:
+                return True
+            log.warning("insert_signal upsert failed — falling back to plain insert")
+        except Exception as e:
+            log.warning("insert_signal upsert error: %s — falling back to plain insert", e)
+        plain = {k: v for k, v in data.items() if k != "signal_id"}
+        try:
+            result = self._request("POST", "signals", data=plain)
             return result is not None
         except Exception as e:
             log.warning("insert_signal error: %s", e)
@@ -553,3 +574,23 @@ def get_supabase() -> SupabaseClient:
     if _supabase is None:
         _supabase = SupabaseClient()
     return _supabase
+
+
+def validate_at_startup() -> bool:
+    """D1: probe the service key once at startup, disable cleanly on failure.
+
+    An invalid/leaked key returns 401 on every write and would spam warnings
+    forever; one failed health check disables the client for this process so
+    the bot keeps trading without Supabase. Lives here so trader.py never
+    touches Supabase directly.
+    """
+    client = get_supabase()
+    if client.enabled and not client.health_check():
+        log.warning(
+            "Supabase health check failed — service key may be invalid or revoked. "
+            "Supabase writes are disabled; rotate the key in the Supabase dashboard "
+            "and restart. Bot continues trading without Supabase."
+        )
+        client.enabled = False
+        return False
+    return client.enabled

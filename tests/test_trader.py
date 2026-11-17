@@ -261,7 +261,6 @@ def test_cycle_does_not_crash_on_unknown_balance(monkeypatch):
     client.invalidate_markets.return_value = None
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     _reset_cycle_state(monkeypatch)
 
     trader.cycle(client)  # must not raise
@@ -300,7 +299,6 @@ def test_cycle_prunes_stale_resting_value(monkeypatch):
     client.place_order.return_value = None
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     _reset_cycle_state(monkeypatch)
     trader.state.resting_value["stale_oid"] = 5.0
 
@@ -325,7 +323,6 @@ def test_cycle_syncs_new_position_from_exchange(monkeypatch):
     client.place_order.return_value = None
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
     # Position adoption is skipped in dry-run mode (B14) — enable it explicitly.
     monkeypatch.setattr(config, "DRY_RUN", False)
@@ -400,7 +397,6 @@ def test_replay_resolves_pending_and_credits(monkeypatch, tmp_path):
     # Mock local DB to return True (new settlement, not duplicate)
     monkeypatch.setattr(trader, "get_local_db", lambda: MagicMock(apply_settlement_pnl=MagicMock(return_value=True)))
     # Mock Supabase to succeed
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock(set_bot_state_batch=MagicMock(return_value=True)))
 
     trader._replay_settlement_queue(client)
 
@@ -464,7 +460,6 @@ def test_settlement_records_market_loss_to_correct_ticker(monkeypatch):
     client.get_orders.return_value = []
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
     _reset_cycle_state(monkeypatch)
 
@@ -881,7 +876,6 @@ def test_cycle_llm_pre_entry_filter_blocks_signal(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: [market])
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
 
     # Set state: LLL should block because this signal has low probability
@@ -941,7 +935,6 @@ def test_cycle_llm_pre_entry_filter_blocks_low_prob(monkeypatch):
     monkeypatch.setattr(trader.se, "evaluate", lambda m, cash=None, max_trade_override=None: [sig])
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: [market])
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
 
     _reset_cycle_state(monkeypatch)
@@ -1045,7 +1038,6 @@ def test_paper_exit_charges_taker_exit_fee_when_config_on(monkeypatch):
     ledger = MagicMock()
     ledger.apply_settlement_pnl.return_value = True
     monkeypatch.setattr(trader, "get_local_db", lambda: ledger)
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader.paper_mode, "add_pnl", lambda *a, **k: None)
     monkeypatch.setattr(trader.state.risk, "record_trade_outcome", lambda *a, **k: None)
     monkeypatch.setattr(trader.state.risk, "record_market_loss", lambda *a, **k: None)
@@ -1078,7 +1070,6 @@ def test_paper_exit_fee_config_off_restores_entry_fee(monkeypatch):
     ledger = MagicMock()
     ledger.apply_settlement_pnl.return_value = True
     monkeypatch.setattr(trader, "get_local_db", lambda: ledger)
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader.paper_mode, "add_pnl", lambda *a, **k: None)
     monkeypatch.setattr(trader.state.risk, "record_trade_outcome", lambda *a, **k: None)
     monkeypatch.setattr(trader.state.risk, "record_market_loss", lambda *a, **k: None)
@@ -1241,7 +1232,6 @@ def test_live_fill_confirmation_api_confirms_filled(monkeypatch):
     client.invalidate_markets.return_value = None
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: [])
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
 
     state = trader.BotState()
@@ -1306,7 +1296,6 @@ def test_live_fill_confirmation_api_no_confirm(monkeypatch):
     client.invalidate_markets.return_value = None
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: [])
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
 
     state = trader.BotState()
@@ -1372,7 +1361,6 @@ def test_live_fill_confirmation_partial_fill_handled(monkeypatch):
     client.invalidate_markets.return_value = None
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: [])
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
 
     state = trader.BotState()
@@ -1440,7 +1428,6 @@ def test_live_fill_confirmation_full_fill_recorded(monkeypatch):
     client.invalidate_markets.return_value = None
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: [])
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
 
     state = trader.BotState()
@@ -1522,7 +1509,6 @@ def test_p2_balance_unknown_does_not_crash_cycle(monkeypatch):
     client.invalidate_markets.return_value = None
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c, target_series=None: [])
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
 
     test_state = trader.BotState()
@@ -1547,7 +1533,6 @@ def test_p3_positions_failure_sentinel_blocks_order_placement(monkeypatch):
     monkeypatch.setattr(trader, "state", test_state)
     monkeypatch.setattr(trader, "_sizing_cash", lambda c: 100.0)
     monkeypatch.setattr(trader, "find_active_markets", lambda c, target_series=None: [])
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
 
     trader.cycle(client)
@@ -1606,7 +1591,6 @@ def test_p9_dry_run_fill_increments_trades_placed_once(monkeypatch):
     monkeypatch.setattr(trader.paper_mode, "start_balance", lambda: 10.0)
     monkeypatch.setattr(trader.paper_mode, "pnl", lambda: 0.0)
     monkeypatch.setattr(trader, "get_local_db", lambda: MagicMock())
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
     monkeypatch.setattr(trader.gates, "prefetch", lambda assets: None)
     monkeypatch.setattr(
@@ -1673,7 +1657,6 @@ def test_p9_record_filled_order_increments_once_per_fill(
     """P9: _record_filled_order is the single trades_placed increment site —
     exactly +1 per recorded fill, never more."""
     monkeypatch.setattr(trader, "get_local_db", lambda: MagicMock())
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
 
     fresh_state.trades_placed = 0
     sig = MagicMock()

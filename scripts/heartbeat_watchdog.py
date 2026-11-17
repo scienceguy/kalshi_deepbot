@@ -3,9 +3,9 @@
 scripts/heartbeat_watchdog.py — N3 heartbeat watchdog per trader.
 
 Scheduled by the superbot-heartbeat-watchdog workflows (every 5 min).
-Reads the trader's last reported_state heartbeat from Supabase bot_state and
-alerts when it is stale. Supabase being unreachable is NOT an alert (the sync
-lag workflow covers that); it yields a skipped verdict instead.
+Reads the trader's last reported_state heartbeat from the local bot_state
+and alerts when it is stale. The local DB being unreadable is NOT an alert
+(the sync lag workflow covers that); it yields a skipped verdict instead.
 """
 
 import argparse
@@ -34,14 +34,10 @@ def check(trader: str, max_age_s: float, now: datetime | None = None,
     key = TRADER_KEYS[trader]
     if get_bot_state is None:
         try:
-            from supabase_client import get_supabase_client, is_enabled
+            from local_db import get_local_db
+            get_bot_state = get_local_db().get_bot_state
         except Exception:
             get_bot_state = None
-        else:
-            if not is_enabled():
-                return {"alert": False, "skipped": "supabase disabled", "trader": trader}
-            sb = get_supabase_client()
-            get_bot_state = sb.get_bot_state if sb else None
     if get_bot_state is None:
         return {"alert": False, "skipped": "supabase unavailable", "trader": trader}
     try:

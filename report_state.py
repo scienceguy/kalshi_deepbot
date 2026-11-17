@@ -20,7 +20,7 @@ DEFAULT_HEARTBEAT_SECONDS = 900.0  # 15 min = 60 cycles at the 15s cadence
 
 # Lazy singletons; tests monkeypatch these attributes with fakes.
 _n8n_client = None
-_supabase_client = None
+_state_db = None
 
 
 def _get_n8n():
@@ -34,15 +34,20 @@ def _get_n8n():
     return _n8n_client
 
 
-def _get_supabase():
-    global _supabase_client
-    if _supabase_client is None:
+def _get_state_db():
+    """D1: heartbeat state goes to the local DB; the sync thread mirrors it.
+
+    Writing remote Supabase inline put a synchronous HTTP call in the trading
+    cycle; the local write keeps the same key the sync path upserts by.
+    """
+    global _state_db
+    if _state_db is None:
         try:
-            from supabase_client import get_supabase
-            _supabase_client = get_supabase()
+            from local_db import get_local_db
+            _state_db = get_local_db()
         except Exception as e:
-            log.debug("report_state: supabase client unavailable (%s)", e)
-    return _supabase_client
+            log.debug("report_state: local db unavailable (%s)", e)
+    return _state_db
 
 
 def classify(*, halted: bool = False, cooldown: bool = False,
@@ -106,10 +111,10 @@ class StateReporter:
                 n8n.run_monitor(payload)
             except Exception as e:
                 log.debug("report_state[%s]: monitor webhook failed: %s", self.trader, e)
-        sb = _get_supabase()
-        if sb is not None:
+        sdb = _get_state_db()
+        if sdb is not None:
             try:
-                sb.set_bot_state(self.key, payload)
+                sdb.set_bot_state(self.key, payload)
             except Exception as e:
                 log.debug("report_state[%s]: bot_state write failed: %s", self.trader, e)
         self._last_state = new_state

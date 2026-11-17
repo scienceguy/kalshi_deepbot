@@ -82,3 +82,11 @@ create table if not exists public.pnl_ledger (
 );
 create index if not exists idx_pnl_ledger_market on public.pnl_ledger(market_ticker, applied_at);
 create index if not exists idx_pnl_ledger_synced on public.pnl_ledger(synced);
+
+-- ─── D1: deterministic signal_id for idempotent remote upserts ────────────
+-- The local->remote sync posts signals with on_conflict=signal_id, so a
+-- retried row updates instead of duplicating. UNAPPLIED migration: apply in
+-- the Supabase dashboard SQL editor (operator action required).
+alter table public.signals add column if not exists signal_id text;
+create unique index if not exists signals_signal_id_key
+    on public.signals (signal_id) where signal_id is not null;

@@ -85,7 +85,7 @@ class _LazyModule:
 
 
 ml_model = _LazyModule("ml_model")  # noqa: E402
-from local_db import get_local_db_api, get_local_db  # noqa: E402
+from local_db import get_local_db  # noqa: E402
 from n8n_client import get_client as get_n8n_client, n8n_health_check  # noqa: E402
 from kalshi_client import KalshiClient, CRYPTO_EXCHANGE_INDEX  # noqa: E402
 from market_finder import find_active_markets, _parse_api_time, _dollars_to_cents, _parse_market_prices, _settle_yes_cents  # noqa: E402
@@ -99,6 +99,7 @@ import control  # noqa: E402  — N4 signed control inbox (pause/resume/caps)
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
 import report_state  # noqa: E402  — B19 operator visibility hook
+import supabase_client  # noqa: E402  — is_enabled()/validate_at_startup() only; no inline writes (D1)
 import binance_feed  # noqa: E402  — WebSocket spot streams (start_ws_streams)
 # mempalace_bridge's dependency (mempalace.logstream) mutates sys.path,
 # removing the repo dir. Save/restore so later imports (e.g. poly_us_trader
@@ -160,22 +161,8 @@ def _configure_logging():
 
 log = logging.getLogger("trader")
 
-# Global LocalDB client (lazy) — primary write path with background Supabase sync
-_local_db_api = None
 # Raw Supabase client for direct reads (e.g., reconciliation)
 _raw_supabase = None
-
-
-def get_supabase_client():
-    """Get the local database API (SupabaseClient-compatible interface).
-    
-    All writes go to local SQLite immediately (fast, reliable, offline-capable).
-    A background thread syncs changes to Supabase periodically.
-    """
-    global _local_db_api
-    if _local_db_api is None:
-        _local_db_api = get_local_db_api()
-    return _local_db_api
 
 
 def get_raw_supabase_client():
@@ -495,10 +482,6 @@ class BotState:
             get_local_db().insert_order(order_payload)
         except Exception as e:
             log.warning("LocalDB insert_order failed for %s: %s", ticker, e)
-        try:
-            get_supabase_client().insert_order(order_payload)
-        except Exception:
-            log.warning("Supabase insert_order failed for %s — order audit trail incomplete", ticker)
         # Track capital at risk per ticker — released on settlement, not booked as P&L.
         # Use filled_risk (actual fill) so partial fills don't over-reserve.
         self.position_risk[ticker] = filled_risk
@@ -1288,13 +1271,15 @@ def _replay_settlement_queue(client=None):
                     if config.DRY_RUN:
                         paper_mode.add_pnl(pnl_to_add, pnl_type="settlement", reason="settlement replay")
 
-                    # Step 2: Write to Supabase
+                    # Step 2: persist the credit locally; the sync thread
+                    # mirrors bot_state to Supabase (D1: no inline remote writes)
                     try:
-                        if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
+                        # reviewed: D1 local bot_state write replaces the inline Supabase call
+                        if get_local_db().set_bot_state_batch({"session_pnl": new_session_pnl}):
                             state.session_pnl = new_session_pnl
-                            log.debug("Replayed settlement PnL $%.2f persisted to Supabase", new_session_pnl)
+                            log.debug("Replayed settlement PnL $%.2f persisted to local bot_state", new_session_pnl)
                     except Exception:
-                        log.warning("Supabase session_pnl write failed for %s — local state credited, will sync later", ticker)
+                        log.warning("Local bot_state session_pnl write failed for %s", ticker)
                         state.session_pnl = new_session_pnl
                 elif applied is False:
                     log.info("Settlement P&L already recorded for %s — skipping duplicate", order_id)
@@ -1478,17 +1463,12 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
         # Update daily P&L for circuit breaker (Pillar B)
         state.risk.update_daily_pnl(pnl_to_add)
 
-        # Persist to BOTH Supabase and local DB bot_state so startup
-        # reconciliation always finds the latest value.
+        # Persist session_pnl to the local DB; the sync thread mirrors it to
+        # Supabase (D1: no inline remote writes).
         try:
             get_local_db().set_bot_state("session_pnl", str(new_session_pnl))
         except Exception:
-            log.warning("Local DB session_pnl write failed for %s — Supabase will sync later", ticker)
-        try:
-            if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
-                log.debug("Exit session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
-        except Exception:
-            log.warning("Supabase session_pnl write failed — local state credited, will sync later", ticker)
+            log.warning("Local DB session_pnl write failed for %s — sync will see the ledger row", ticker)
 
     log.info(
         "EXIT %s (%s) %.0fx @%dc -> @%dc, P&L $%+.2f, won=%s",
@@ -2368,18 +2348,12 @@ def cycle(client: KalshiClient):
                 # Update daily P&L for circuit breaker (Pillar B)
                 state.risk.update_daily_pnl(pnl_to_add)
 
-                # Persist to BOTH Supabase and local DB bot_state so startup
-                # reconciliation always finds the latest value. Writing to local
-                # DB first means a Supabase outage can't lose the credit.
+                # Persist session_pnl to the local DB; the sync thread mirrors
+                # it to Supabase (D1: no inline remote writes).
                 try:
                     get_local_db().set_bot_state("session_pnl", str(new_session_pnl))
                 except Exception:
-                    log.warning("Local DB session_pnl write failed for %s — Supabase will sync later", t)
-                try:
-                    if get_supabase_client().set_bot_state_batch({"session_pnl": new_session_pnl}):
-                        log.debug("Session PnL updated to $%.2f and persisted to Supabase", state.session_pnl)
-                except Exception:
-                    log.warning("Supabase session_pnl write failed — local state credited, will sync later", t)
+                    log.warning("Local DB session_pnl write failed for %s — sync will see the ledger row", t)
 
             # Invalidate market cache after settlement — the market is no longer open.
             series = t.split("-")[0] if "-" in t else t
@@ -2605,10 +2579,11 @@ def cycle(client: KalshiClient):
     }
     if current_state != last_logged:
         try:
-            if get_supabase_client().set_bot_state_batch(current_state):
+            # reviewed: D1 local snapshot replaces the inline Supabase write
+            if get_local_db().set_bot_state_batch(current_state):
                 state._last_logged_state = current_state
         except Exception:
-            log.debug("Supabase bot_state writes failed")
+            log.debug("Local bot_state writes failed")
 
     # B19: per-cycle operator visibility — classify and emit to the monitor
     # webhook + bot_state only on change plus a heartbeat (never raises).
@@ -2760,7 +2735,7 @@ def cycle(client: KalshiClient):
                     )
                     # Record blocked signal to Supabase
                     try:
-                        get_supabase_client().insert_signal({
+                        get_local_db().insert_signal({
                             "ts": datetime.now(timezone.utc).isoformat(),
                             "type": "taker",
                             "ticker": sig.market.ticker,
@@ -2772,7 +2747,7 @@ def cycle(client: KalshiClient):
                             "blocked_reason": f"LLM prob {eval_result['probability_of_net_profit']:.2f}" if eval_result else "LLM eval failed",
                         })
                     except Exception as e:
-                        log.warning("Supabase insert_signal failed for %s: %s", sig.market.ticker, e)
+                        log.warning("insert_signal failed for %s: %s", sig.market.ticker, e)
                     continue  # skip this signal
                 # Record LLM insight for audit trail
                 if eval_result:
@@ -3166,7 +3141,7 @@ def _run_loop(args):
     llm_active = bool(config.NVIDIA_API_KEY or getattr(config, "GROQ_API_KEY", ""))
     log.info("LLM eval: %s | Supabase: %s",
              "enabled (Consensus Quorum)" if llm_active else "disabled",
-             "enabled" if get_supabase_client().enabled else "disabled")
+             "enabled" if supabase_client.is_enabled() else "disabled")
     # reviewed: startup-only warning; fails-open only when the LLM is actually
     # wired (NVIDIA key present) and the operator left fail-open on
     # reviewed: the guard warns at startup, it never touches the order path
@@ -3275,18 +3250,10 @@ def _run_loop(args):
         _load_ml_model(ml_path)
         log.info("ML fair-value filtering enabled (%s)", ml_path)
 
-    # Validate the Supabase service key at startup — an invalid/leaked key
-    # (e.g. the one previously committed to git history) returns 401 on every
-    # write and would spam warnings forever. Test it once and disable Supabase
-    # cleanly if it doesn't work, so the bot keeps trading without it.
-    sb = get_supabase_client()
-    if sb.enabled and not sb.health_check():
-        log.warning(
-            "Supabase health check failed — service key may be invalid or revoked. "
-            "Supabase writes are disabled; rotate the key in the Supabase dashboard "
-            "and restart. Bot continues trading without Supabase."
-        )
-        sb.enabled = False
+    # D1: the startup probe lives in the sync module; trader.py holds no
+    # direct Supabase client. It disables Supabase cleanly when the service
+    # key is invalid so the bot keeps trading without it.
+    supabase_client.validate_at_startup()
 
     # Seed resting orders from Kalshi so intra-cycle cash tracking accounts
     # for orders already resting from a previous run.

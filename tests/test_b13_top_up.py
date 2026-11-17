@@ -45,7 +45,6 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(trader.state, "today",
                         datetime.now(timezone.utc).date().isoformat())
     monkeypatch.setattr(trader, "find_active_markets", lambda c: _mkts())
-    monkeypatch.setattr(trader, "get_supabase_client", lambda: MagicMock())
     monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
     yield
 
