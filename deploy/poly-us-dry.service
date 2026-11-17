@@ -17,7 +17,7 @@ TimeoutStartSec=90
 #   sudo install -m 600 -o polybot -g polybot /opt/superbot/.env /opt/superbot/.env
 User=polybot
 Group=polybot
-WorkingDirectory=/opt/superbot
+WorkingDirectory=/opt/superbot-releases/current
 ExecStart=/opt/superbot/.venv/bin/python poly_us_trader.py --interval 15
 Restart=always
 RestartSec=15

@@ -182,7 +182,10 @@ _stability_warned: set[str] = set()
 
 def _bid_hist_file() -> Path:
     """Get bid history file path, evaluated at call time (not import time)."""
-    return Path(__file__).resolve().parent / f"bid_hist_{'dry' if config.DRY_RUN else 'live'}.json"
+    # V1: runtime data lives outside the release directory (the release is
+    # read-only under the service unit) — anchor to SUPERBOT_DATA_DIR like
+    # every other runtime file instead of the repo root.
+    return Path(config.SUPERBOT_DATA_DIR) / f"bid_hist_{'dry' if config.DRY_RUN else 'live'}.json"
 
 # NOTE: This module-level bid history is single-process only. It is mutated by
 # _track_bid/_maybe_save_bid_hist and persisted to bid_hist_{dry,live}.json.
