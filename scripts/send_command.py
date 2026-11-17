@@ -32,7 +32,7 @@ sys.path.insert(0, "/opt/superbot")  # when run by n8n from elsewhere
 
 import n8n_webhook_auth  # noqa: E402
 from local_db import get_local_db  # noqa: E402
-from control import COMMANDS  # noqa: E402
+from control import COMMANDS, allowed_senders  # noqa: E402
 
 
 def _refuse(reason: str) -> int:
@@ -83,6 +83,8 @@ def _from_stdin() -> int:
     if command not in COMMANDS:
         return _refuse(f"unknown command: {command!r}")
     agent_id = str(cmd.get("agent_id") or "n8n")
+    if agent_id not in allowed_senders():
+        return _refuse(f"sender not allowlisted: {agent_id!r}")
     payload_obj = cmd.get("payload") or {}
     if not isinstance(payload_obj, dict):
         return _refuse("payload must be a JSON object")
@@ -105,12 +107,15 @@ def _from_args(args) -> int:
             return _refuse(f"payload: {e}")
     if args.reason and command in ("pause_entries", "resume_entries"):
         payload.setdefault("reason", args.reason)
+    agent_id = args.by or "operator"
+    if agent_id not in allowed_senders():
+        return _refuse(f"sender not allowlisted: {agent_id!r}")
     ts_ms = int(time.time() * 1000)
     nonce = _mk_nonce()
     body_str = json.dumps({"command": command, **payload},
                           separators=(",", ":"), ensure_ascii=False)
     sig = n8n_webhook_auth.sign_body(ts_ms, nonce, body_str)
-    return _enqueue(command, args.by or "operator", nonce, ts_ms,
+    return _enqueue(command, agent_id, nonce, ts_ms,
                     {"command": command, **payload}, sig)
 
 

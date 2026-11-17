@@ -42,7 +42,7 @@ def _reset_control_state():
     control.STATE.pause_entries = False
 
 
-def _signed_row(db, command="pause_entries", agent_id="agent-a",
+def _signed_row(db, command="pause_entries", agent_id="operator",
                 payload=None, nonce=None, ts_offset_ms=0,
                 secret="n4-test-secret"):
     ts = int(time.time() * 1000) + ts_offset_ms
@@ -153,7 +153,7 @@ def test_replayed_command_rejected_at_enqueue(control_db):
 
 
 def test_unknown_command_rejected_and_logged(control_db, caplog):
-    _signed_row(control_db, "delete_everything", agent_id="agent-a")
+    _signed_row(control_db, "delete_everything", agent_id="operator")
     with caplog.at_level("WARNING"):
         results = control.drain_and_apply(control_db, risk_halted=False)
     assert results[0]["status"] == "rejected"
@@ -197,21 +197,21 @@ def test_reduce_exposure_caps_cannot_raise(control_db, monkeypatch):
 def test_resume_after_risk_halt_refused_without_confirmation(control_db):
     control.STATE.pause_entries = True
 
-    _signed_row(control_db, "resume_entries", agent_id="agent-a")
+    _signed_row(control_db, "resume_entries", agent_id="operator")
     results = control.drain_and_apply(control_db, risk_halted=True)
     assert results[0]["status"] == "rejected"
     assert "confirm" in results[0]["reason"].lower()
     assert control.STATE.pause_entries is True
 
     # confirmation from the *same* identity does not count
-    _signed_row(control_db, "resume_entries", agent_id="agent-a",
-                payload={"confirm_by": "agent-a"})
+    _signed_row(control_db, "resume_entries", agent_id="operator",
+                payload={"confirm_by": "operator"})
     results = control.drain_and_apply(control_db, risk_halted=True)
     assert results[0]["status"] == "rejected"
 
     # a different identity confirms: applied (risk halt itself stays;
     # that needs HALT_AUTO_RESUME or a VPS-side --resume)
-    _signed_row(control_db, "resume_entries", agent_id="agent-a",
+    _signed_row(control_db, "resume_entries", agent_id="operator",
                 payload={"confirm_by": "agent-b"})
     results = control.drain_and_apply(control_db, risk_halted=True)
     assert results[0]["status"] == "applied"
@@ -220,7 +220,7 @@ def test_resume_after_risk_halt_refused_without_confirmation(control_db):
 
 def test_resume_without_risk_halt_applies(control_db):
     control.STATE.pause_entries = True
-    _signed_row(control_db, "resume_entries", agent_id="agent-a")
+    _signed_row(control_db, "resume_entries", agent_id="operator")
     results = control.drain_and_apply(control_db, risk_halted=False)
     assert results[0]["status"] == "applied"
     assert control.STATE.pause_entries is False

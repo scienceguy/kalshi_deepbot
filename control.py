@@ -18,10 +18,12 @@ Rules (spec AGENT_TASKS_v7.md N4):
 """
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import agent_identity
 import config
 import n8n_webhook_auth
 
@@ -33,6 +35,23 @@ COMMANDS = frozenset({
 # risk.py reads these at call time, so mutating the config module applies now.
 CAP_ATTRS = {"per_trade_pct": "PER_TRADE_PCT",
              "exposure_ceiling_pct": "EXPOSURE_CEILING_PCT"}
+
+# C2 sender allowlist (M3): who may command the traders. The default is the
+# set of identities this system actually emits today — the coding agent, the
+# operator escape hatch (send_command.py --by default) and the n8n workflow
+# path (the "n8n" default). SUPERBOT_CONTROL_SENDERS (comma/space separated)
+# replaces the default; an empty value refuses everyone.
+DEFAULT_CONTROL_SENDERS = frozenset(
+    {agent_identity.CODING_AGENT, "operator", "n8n"})
+CONTROL_SENDERS_ENV = "SUPERBOT_CONTROL_SENDERS"
+
+
+def allowed_senders() -> frozenset:
+    """The allowlist of identities permitted to send commands."""
+    raw = os.environ.get(CONTROL_SENDERS_ENV)
+    if raw is None:
+        return DEFAULT_CONTROL_SENDERS
+    return frozenset(p for p in raw.replace(",", " ").split() if p)
 
 # Caps live in the running process only; on restart config raises them back
 # to .env defaults. Persisting them would require a risk-state format bump —
@@ -119,6 +138,12 @@ def apply_command(db, row: dict, *, risk_halted: bool = False,
             return _reject(db, row, reason, source)
         if command not in COMMANDS:
             return _reject(db, row, f"unknown command: {command!r}", source)
+        if agent_id not in allowed_senders():
+            return _reject(
+                db, row,
+                f"sender not allowlisted: {agent_id!r} "
+                f"(allowed: {', '.join(sorted(allowed_senders())) or 'none'})",
+                source)
 
         context = {"risk_halted": risk_halted, "positions": positions}
         if command == "pause_entries":
