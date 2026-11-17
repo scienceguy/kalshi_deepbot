@@ -62,6 +62,7 @@ EVENT_TYPES = frozenset({
     "calibration.alert",   # vol/model calibration drift
     "latency.alert",       # p95 exceeded budget
     "heartbeat",           # liveness ping
+    "db.integrity_failed", # D4: integrity_check failed (restored | unrecoverable)
     "control.applied",     # a signed control command was applied (N4)
     "control.rejected",    # a control command was rejected (N4)
     "control.status",      # response to request_status (N4)
@@ -72,6 +73,7 @@ EVENT_TYPES = frozenset({
 CRITICAL_TYPES = frozenset({
     "risk.halt", "risk.resume", "breaker.trip", "breaker.clear",
     "reconcile.mismatch", "auth.failure", "control.rejected",
+    "db.integrity_failed",
 })
 NORMAL_TYPES = frozenset({
     "order.placed", "order.filled", "order.cancelled", "order.state",

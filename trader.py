@@ -1843,6 +1843,10 @@ def _report_cycle_state(cash, positions, risk_state):
             emit_sync_lag("kalshi_trader", **get_local_db().get_sync_lag_stats())
         except Exception:
             pass
+        try:
+            get_local_db().maybe_nightly_maintenance()  # D4: nightly backup+integrity
+        except Exception:
+            pass
         new_state = report_state.classify(
             halted=bool(risk_state.get("halted")),
             cooldown=cooldown,

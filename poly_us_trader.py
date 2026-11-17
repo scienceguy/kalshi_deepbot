@@ -2304,6 +2304,12 @@ class PolyUSPaperTrader:
                               **get_local_db().get_sync_lag_stats())
             except Exception:
                 pass
+            try:
+                pdb = self._poly_db()
+                if pdb is not None:
+                    pdb.maybe_nightly_maintenance()  # D4: nightly backup+integrity
+            except Exception:
+                pass
             _poly_state_reporter.report(new_state,
                                         equity=total_equity,
                                         positions=len(self.state.get("positions", [])),

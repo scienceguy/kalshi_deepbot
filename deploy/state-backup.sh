@@ -36,3 +36,32 @@ with open(sys.argv[1], "a") as fh:
     fh.write(json.dumps(row) + "\n")
 print(json.dumps(row))
 PY
+
+# SQLite online backups (D4): Connection.backup is WAL-safe; cp of the main
+# file can capture a torn image. Keeps 7 generations per DB. Restore drill:
+# docs/vps-runbook.md ("Restore drill (SQLite DBs)").
+.venv/bin/python - "$d/sqlite" <<'PY'
+import sqlite3
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+dest = Path(sys.argv[1])
+dest.mkdir(parents=True, exist_ok=True)
+stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+KEEP = 7
+for db in sorted(Path("local_data").glob("superbot_local*.db")):
+    target = dest / f"{db.name}.{stamp}.bak"
+    src = sqlite3.connect(str(db), timeout=30)
+    try:
+        dst = sqlite3.connect(str(target))
+        try:
+            src.backup(dst)  # page-by-page, consistent under concurrent writers
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    print(f"backed up {db} -> {target}")
+    for old in sorted(dest.glob(f"{db.name}.*.bak"), reverse=True)[KEEP:]:
+        old.unlink()
+PY

@@ -29,6 +29,7 @@ Usage:
 import hashlib
 import os
 import json
+import shutil
 import random
 import socket
 import sqlite3
@@ -76,6 +77,14 @@ SYNC_INTERVAL = float(config.LOCAL_DB_SYNC_INTERVAL)
 SYNC_BREAKER_MAX_FAILURES = int(config.LOCAL_DB_SYNC_BREAKER_MAX_FAILURES)
 SYNC_BREAKER_COOLDOWN_SECONDS = float(config.LOCAL_DB_SYNC_BREAKER_COOLDOWN_SECONDS)
 SYNC_MAX_ROW_ATTEMPTS = int(config.LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS)
+# D4: online-backup retention + nightly cadence for the local mirror DBs.
+BACKUP_KEEP = 7          # most recent backups to keep per DB
+NIGHTLY_INTERVAL_S = 20 * 3600
+
+
+def default_backup_dir() -> str:
+    """Where nightly online backups live (SUPERBOT_DATA_DIR/backups/sqlite)."""
+    return str(Path(config.SUPERBOT_DATA_DIR) / "backups" / "sqlite")
 
 
 class LocalDB:
@@ -85,8 +94,13 @@ class LocalDB:
     # with its own table set (D2).
     SYNC_TABLES = ("bot_state", "signals", "orders", "pnl_ledger", "backtest_runs")
 
-    def __init__(self, db_path: str | None = None, auto_sync: bool = True):
+    # D4: source tag for critical integrity events (N3 catalog).
+    EVENT_SOURCE = "kalshi_trader"
+
+    def __init__(self, db_path: str | None = None, auto_sync: bool = True,
+                 backup_dir: str | None = None):
         self.db_path = str(db_path or get_db_path())
+        self.backup_dir = backup_dir
         self._local = threading.local()
         self._lock = threading.RLock()
         self._sync_thread = None
@@ -105,8 +119,22 @@ class LocalDB:
         
         try:
             self._init_db()
+            self._startup_integrity()
         except sqlite3.DatabaseError as e:
             log.error("Local SQLite DB image corrupted (%s) — backing up and recreating clean database", e)
+            # D4: before discarding history, try the newest good backup.
+            if self.restore_latest_backup():
+                self._emit_critical("db.integrity_failed",
+                                    {"status": "restored", "db": self.db_path,
+                                     "error": str(e)})
+                self._local = threading.local()
+                self._init_db()
+                if self._auto_sync:
+                    self._start_sync_thread()
+                return
+            self._emit_critical("db.integrity_failed",
+                                {"status": "recreated", "db": self.db_path,
+                                 "error": str(e)})
             corrupt_path = f"{self.db_path}.corrupt.{int(time.time())}"
             try:
                 # Close connection before renaming files so file locks are released
@@ -1059,6 +1087,171 @@ class LocalDB:
                 log.warning("_record_sync_failure(%s, %s) failed: %s",
                             table, pk_val, qe)
 
+    # ─── D4: online backups + integrity ────────────────────────────────────
+    def integrity_check(self) -> tuple[bool, str]:
+        """PRAGMA integrity_check on a dedicated read connection."""
+        try:
+            conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True,
+                                   timeout=10)
+            try:
+                row = conn.execute("PRAGMA integrity_check").fetchone()
+                msg = str(row[0]) if row else "no result"
+                return (msg.lower() == "ok", msg)
+            finally:
+                conn.close()
+        except Exception as e:
+            return (False, str(e))
+
+    def list_backups(self, backup_dir: str | None = None) -> list[str]:
+        """Existing backups for this DB, newest first."""
+        dest_dir = backup_dir or self.backup_dir or default_backup_dir()
+        prefix = os.path.basename(self.db_path) + "."
+        try:
+            names = [f for f in os.listdir(dest_dir)
+                     if f.startswith(prefix) and f.endswith(".bak")]
+        except OSError:
+            return []
+        return sorted(names, reverse=True)
+
+    def backup_to(self, backup_dir: str | None = None) -> Optional[str]:
+        """D4: online backup via sqlite3 Connection.backup — page-by-page, so
+        the copy is consistent even while writers hold the DB. Prunes to
+        BACKUP_KEEP. Returns the backup path, or None on failure (trading
+        never depends on this succeeding)."""
+        dest_dir = backup_dir or self.backup_dir or default_backup_dir()
+        os.makedirs(dest_dir, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        dest = os.path.join(dest_dir, f"{os.path.basename(self.db_path)}.{stamp}.bak")
+        try:
+            src = sqlite3.connect(self.db_path, timeout=30)
+            try:
+                dst = sqlite3.connect(dest)
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+            self.prune_backups(dest_dir)
+            return dest
+        except Exception as e:
+            log.error("backup of %s to %s failed: %s", self.db_path, dest, e)
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            return None
+
+    def prune_backups(self, backup_dir: str | None = None,
+                      keep: int = BACKUP_KEEP) -> None:
+        """D4 retention: keep the newest `keep` backups of this DB."""
+        dest_dir = backup_dir or self.backup_dir or default_backup_dir()
+        for old in self.list_backups(dest_dir)[keep:]:
+            try:
+                os.remove(os.path.join(dest_dir, old))
+            except OSError:
+                pass
+
+    def restore_latest_backup(self, backup_dir: str | None = None) -> bool:
+        """D4: swap in the newest backup that passes its own integrity_check.
+        Closes live connections first and drops stale -wal/-shm sidecars."""
+        dest_dir = backup_dir or self.backup_dir or default_backup_dir()
+        for name in self.list_backups(dest_dir):
+            path = os.path.join(dest_dir, name)
+            try:
+                probe = sqlite3.connect(path, timeout=10)
+                try:
+                    ok = str(probe.execute("PRAGMA integrity_check").fetchone()[0]).lower() == "ok"
+                finally:
+                    probe.close()
+            except Exception:
+                ok = False
+            if not ok:
+                log.warning("backup %s failed integrity_check; trying older", path)
+                continue
+            if getattr(self._local, "conn", None) is not None:
+                try:
+                    self._local.conn.close()
+                except Exception:
+                    pass
+                self._local.conn = None
+            shutil.copy2(path, self.db_path)
+            for ext in ("-wal", "-shm"):
+                side = self.db_path + ext
+                if os.path.exists(side):
+                    try:
+                        os.remove(side)
+                    except OSError:
+                        pass
+            log.info("restored %s from backup %s", self.db_path, path)
+            return True
+        return False
+
+    def _emit_critical(self, event_type: str, payload: dict) -> None:
+        """D4: a DB integrity event pages the operator; never raises."""
+        try:
+            from emit import emit_event
+            emit_event(self.EVENT_SOURCE, event_type, payload,
+                       key=f"integrity:{os.path.basename(self.db_path)}",
+                       severity="critical")
+        except Exception as e:
+            log.warning("critical event emit failed: %s", e)
+
+    def _startup_integrity(self) -> None:
+        """D4 startup gate: integrity_check; on failure restore the latest
+        good backup. Raises when unrecoverable so __init__ falls back to the
+        rename+recreate path — never trade on a bad image."""
+        ok, msg = self.integrity_check()
+        if ok:
+            return
+        log.error("integrity_check failed for %s: %s", self.db_path, msg)
+        if self.restore_latest_backup():
+            self._emit_critical("db.integrity_failed",
+                                {"status": "restored", "db": self.db_path,
+                                 "error": msg})
+            self._local = threading.local()
+            self._init_db()
+            return
+        self._emit_critical("db.integrity_failed",
+                            {"status": "unrecoverable", "db": self.db_path,
+                             "error": msg})
+        raise sqlite3.DatabaseError(f"integrity_check failed: {msg}")
+
+    def maybe_nightly_maintenance(self, backup_dir: str | None = None) -> dict:
+        """D4: ~nightly integrity check + online backup + prune, time-gated on
+        a marker file so a per-cycle call costs one stat when not due. Any
+        failure is logged and swallowed — trading never depends on it. A
+        corrupt DB is paged (critical event) and restored at next startup."""
+        dest_dir = backup_dir or self.backup_dir or default_backup_dir()
+        stamp = os.path.join(dest_dir, ".last_maintenance")
+        try:
+            if (os.path.exists(stamp)
+                    and time.time() - os.path.getmtime(stamp) < NIGHTLY_INTERVAL_S):
+                return {"skipped": True}
+        except OSError:
+            pass
+        out: Dict[str, Any] = {"checked": False}
+        try:
+            ok, msg = self.integrity_check()
+            out["checked"] = ok
+            if not ok:
+                log.error("nightly integrity_check failed for %s: %s "
+                          "(restore happens at next startup)", self.db_path, msg)
+                self._emit_critical("db.integrity_failed",
+                                    {"status": "failed", "db": self.db_path,
+                                     "error": msg})
+                return out
+            out["backup"] = self.backup_to(dest_dir)
+        except Exception as e:
+            log.error("nightly maintenance failed for %s: %s", self.db_path, e)
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            with open(stamp, "w") as f:
+                f.write(str(time.time()))
+        except OSError:
+            pass
+        return out
+
     def _sync_table(self, table: str, supabase_client) -> int:
         """Sync unsynced rows from local table to Supabase. Returns count synced.
 
@@ -1407,11 +1600,14 @@ class PolyLocalDB(LocalDB):
                    "poly_settlements", "poly_ledger", "poly_epochs",
                    "poly_calibration")
 
+    # D4: source tag for critical integrity events (N3 catalog).
+    EVENT_SOURCE = "poly_us_trader"
+
     def __init__(self, db_path: str | None = None, mode: str = "dry",
-                 auto_sync: bool = True):
+                 auto_sync: bool = True, backup_dir: str | None = None):
         self.mode = "live" if mode == "live" else "dry"
         super().__init__(db_path=db_path or str(get_poly_db_path(self.mode)),
-                         auto_sync=auto_sync)
+                         auto_sync=auto_sync, backup_dir=backup_dir)
 
     def _init_db(self):
         """Poly tables only; the kalshi schema is not created here."""

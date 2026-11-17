@@ -99,7 +99,48 @@ chmod +x /opt/superbot/deploy/state-backup.sh
 crontab -e   # add: 15 3 * * * /opt/superbot/deploy/state-backup.sh
 ```
 
-Snapshots land in `~/backups/state/` (7 kept).
+Snapshots land in `~/backups/state/` (7 kept). The script also takes
+WAL-safe SQLite online backups of every `local_data/superbot_local*.db`
+into `~/backups/state/sqlite/` (7 kept) — `cp` of a WAL-mode DB's main
+file is not a consistent snapshot, so don't.
+
+In addition, each trader runs ~nightly from its cycle loop
+(`maybe_nightly_maintenance()` in `local_db.py`): `PRAGMA integrity_check`,
+an online backup into `local_data/backups/sqlite/` (7 kept), and pruning.
+A corrupt DB is paged as a `db.integrity_failed` critical event and is
+restored from the newest integrity-verified backup at the next startup; if
+no good backup exists the DB is renamed `.corrupt.<ts>` and recreated empty
+(and the operator gets paged either way).
+
+Off-box copy of the backups is the operator's choice (e.g. `rclone copy`
+to OCI Object Storage with a scoped credential on the same cron, or the
+bucket lifecycle rule for retention). It is deliberately not wired by the
+bot — no cloud credentials in the app's path.
+
+## Restore drill (SQLite DBs)
+
+Exercise this quarterly and after any corruption page. Everything below is
+safe on paper/dry-run instances; on a live instance do it with the trader
+stopped.
+
+1. Stop the trader. Snapshot the current state for post-mortem:
+   `cp -a local_data /tmp/pre-restore-local_data`.
+2. List backups: `ls -t local_data/backups/sqlite/ superbot_local*.db.*.bak`.
+3. Verify a candidate:
+   `.venv/bin/python -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('PRAGMA integrity_check').fetchone()[0])" local_data/backups/sqlite/superbot_local_live.db.<stamp>.bak`
+   — must print `ok`.
+4. Restore: stop the trader, then start it again. The startup integrity
+   gate checks the DB and swaps in the newest verified backup automatically
+   (you will see `restored ... from backup ...` in the log and get a
+   `db.integrity_failed` critical page). Manual equivalent:
+   `cp local_data/backups/sqlite/<file>.bak local_data/superbot_local_live.db`
+   plus `rm -f local_data/superbot_local_live.db-wal local_data/superbot_local_live.db-shm`.
+5. Verify row counts look sane (e.g. `orders` not empty if you traded
+   recently) and `PRAGMA integrity_check` prints `ok`.
+6. Restart the trader and watch one full cycle in the log.
+
+The automated path above is exercised in `tests/test_d4_backup_restore.py`
+against temp dirs.
 
 ## Modes
 
