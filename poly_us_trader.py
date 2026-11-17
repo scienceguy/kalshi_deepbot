@@ -43,6 +43,7 @@ import config
 import report_state  # B19 operator visibility hook
 from resilience import systemd_notify
 from local_db import get_local_db  # D1: local DB is source of truth for settlements
+from local_db import PolyLocalDB, get_poly_db  # D2: poly local DB + legacy importer
 from emit import emit_event, emit_sync_lag  # N3: typed event stream to n8n
 
 # Optional ML fair-value model (torch may not be installed everywhere).
@@ -58,6 +59,7 @@ STATE_FILE = DATA_DIR / "poly_us_state.json"
 LEDGER_FILE = DATA_DIR / "poly_us_paper_ledger.jsonl"
 POLY_US_LOG_FILE = DATA_DIR / "poly_us_dry.log"
 LOCK_FILE = config.SUPERBOT_DATA_DIR / ".lock_poly"
+CALIBRATION_FILE = DATA_DIR / "bs_calibration_ledger.jsonl"  # D2 legacy importer
 
 # B19: operator-visibility reporter, created lazily inside cycle().
 _poly_state_reporter = None
@@ -582,11 +584,49 @@ class PolyUSPaperTrader:
         tmp_file = self.state_file.with_name(f"{self.state_file.name}.{os.getpid()}.tmp")
         tmp_file.write_text(json.dumps(state, indent=2))
         os.replace(tmp_file, self.state_file)
+        # D2: best-effort position snapshot mirror; JSON stays authoritative.
+        try:
+            pdb = self._poly_db()
+            if pdb is not None:
+                pdb.replace_positions(state.get("positions") or [])
+        except Exception as e:
+            log.debug("Poly DB position mirror failed: %s", e)
 
     def _append_ledger(self, record: dict):
         self.ledger_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.ledger_file, "a") as f:
             f.write(json.dumps(record) + "\n")
+        # D2: best-effort mirror into the local poly DB. Trading never depends
+        # on this — any failure leaves the JSON ledger as the only record.
+        try:
+            pdb = self._poly_db()
+            if pdb is not None:
+                pdb.mirror_ledger(record)
+        except Exception as e:
+            log.debug("Poly DB ledger mirror failed: %s", e)
+
+    def _poly_db(self):
+        """D2: the mode-isolated poly LocalDB, or None when unavailable.
+
+        Anchored on the ledger file's directory so tests that redirect
+        STATE_FILE/LEDGER_FILE into a tmp dir get their own DB, while
+        production (ledger under local_data/poly_us/) lands the DB in
+        local_data/ next to the kalshi one.
+        """
+        cached = getattr(self, "_poly_db_cache", None)
+        if cached is not None:
+            return cached
+        try:
+            parent = Path(self.ledger_file).resolve().parent
+            base = parent.parent if parent.name == "poly_us" else parent
+            mode = "live" if getattr(self, "live_mode", False) else "dry"
+            self._poly_db_cache = PolyLocalDB(
+                db_path=str(base / f"superbot_local_poly_{mode}.db"),
+                mode=mode, auto_sync=True)
+            return self._poly_db_cache
+        except Exception as e:
+            log.warning("Poly local DB unavailable (JSON ledger still authoritative): %s", e)
+            return None
 
     def _held_position_qty(self, slug: str):
         """Held contract qty for a slug, or None when the venue cannot answer.
@@ -707,6 +747,22 @@ class PolyUSPaperTrader:
                     "event_slug": o.get("event_slug", ""),
                     "opened_at": o.get("placed_at"),
                 })
+                # D2: record the fill in the local poly DB (best-effort).
+                try:
+                    pdb = self._poly_db()
+                    if pdb is not None:
+                        pdb.record_fill({
+                            "order_id": oid,
+                            "slug": o.get("slug", ""),
+                            "side": o.get("side", ""),
+                            "action": "buy",
+                            "qty": filled_qty,
+                            "price": fill_price,
+                            "fee": float(o.get("fee", 0.0) or 0.0),
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        })
+                except Exception as e:
+                    log.debug("Poly DB fill record failed: %s", e)
             if filled_qty > 0:
                 o["state"] = "filled"
                 emit_event("poly_us_trader", "order.filled",
@@ -876,6 +932,22 @@ class PolyUSPaperTrader:
                     "opened_at": datetime.now(timezone.utc).isoformat(),
                     "paper_fill_model": "maker",
                 })
+                # D2: record the fill in the local poly DB (best-effort).
+                try:
+                    pdb = self._poly_db()
+                    if pdb is not None:
+                        pdb.record_fill({
+                            "order_id": o.get("order_id"),
+                            "slug": slug,
+                            "side": side,
+                            "action": "buy",
+                            "qty": qty,
+                            "price": fill_price,
+                            "fee": 0.0,
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        })
+                except Exception as e:
+                    log.debug("Poly DB fill record failed: %s", e)
                 o["state"] = "filled"
                 log.info("Paper maker order %s filled on %s @ %.4f — no maker fee",
                          o.get("order_id"), slug, fill_price)
@@ -1143,6 +1215,14 @@ class PolyUSPaperTrader:
                 self._track_daily_realized(pnl)
                 # Task 2: reconcile settlement for rolling Brier calibration.
                 outcome = 1 if settlement >= 0.5 else 0  # 1 = Yes won
+                # D2: mirror the settlement into the local poly DB (best-effort).
+                try:
+                    pdb = self._poly_db()
+                    if pdb is not None:
+                        pdb.record_settlement(settle_key, slug, pos, pnl,
+                                              total_payout, outcome)
+                except Exception as e:
+                    log.debug("Poly DB settlement mirror failed: %s", e)
                 try:
                     self.cal_monitor.reconcile_settlement(slug, outcome)
                 except Exception as e:
@@ -1674,6 +1754,18 @@ class PolyUSPaperTrader:
                 "placed_at": datetime.now(timezone.utc).isoformat(),
                 "window_ts": self.state.get("current_window_ts"),
             })
+            # D2: record the resting order in the local poly DB (best-effort).
+            try:
+                pdb = self._poly_db()
+                if pdb is not None:
+                    pdb.record_order({
+                        "id": order_id, "ts": datetime.now(timezone.utc).isoformat(),
+                        "slug": slug, "side": side, "action": "buy", "qty": qty,
+                        "price": fill_price, "cost": cost, "fee": entry_fee,
+                        "status": "resting",
+                    })
+            except Exception as e:
+                log.debug("Poly DB resting-order record failed: %s", e)
             log.info("Live maker order resting: %s (id=%s) — cash reserved, position booked on confirmed fill",
                      slug, order_id)
         elif self.paper_fill_model == "maker":
@@ -1683,8 +1775,11 @@ class PolyUSPaperTrader:
             self.state["cash"] = round(self.state["cash"] - cost, 4)
             self.state["window_spent"] = round(window_spent + cost, 4)
             self.state["trades_count"] += 1
+            # Paper orders have no venue id; synthesize a deterministic one so
+            # the local DB can link orders/fills/settlements (D2).
+            book_id = order_id or f"paper:{self.state.get('current_window_ts')}:{slug}:{side}:{int(qty)}"
             self.state.setdefault("resting_orders", []).append({
-                "order_id": order_id,
+                "order_id": book_id,
                 "slug": slug,
                 "question": opp["question"],
                 "side": side,
@@ -1702,6 +1797,18 @@ class PolyUSPaperTrader:
                 "window_ts": self.state.get("current_window_ts"),
                 "paper_fill_model": "maker",
             })
+            # D2: record the resting order in the local poly DB (best-effort).
+            try:
+                pdb = self._poly_db()
+                if pdb is not None:
+                    pdb.record_order({
+                        "id": book_id, "ts": datetime.now(timezone.utc).isoformat(),
+                        "slug": slug, "side": side, "action": "buy", "qty": qty,
+                        "price": fill_price, "cost": cost, "fee": entry_fee,
+                        "status": "resting",
+                    })
+            except Exception as e:
+                log.debug("Poly DB resting-order record failed: %s", e)
             log.info("Paper maker order resting: %s (id=%s) — fills when the book trades through",
                      slug, order_id)
             emit_event("poly_us_trader", "order.placed",
@@ -2329,6 +2436,8 @@ def main():
     parser.add_argument("--status", action="store_true", help="Show current paper state and exit")
     parser.add_argument("--reset", nargs="?", const=35.0, type=float, default=None, help="Reset paper bankroll to starting balance (default: 35.0)")
     parser.add_argument("--live", action="store_true", help="Enable live trading mode (places real maker orders via Polymarket US API)")
+    parser.add_argument("--import-legacy", action="store_true",
+                        help="Import pre-D2 JSON state/JSONL ledgers into the local poly DB and exit")
     args = parser.parse_args()
 
     # R3: refuse --live unless POLY_CONFIRM_LIVE=true (exit non-zero).
@@ -2343,6 +2452,14 @@ def main():
     # writes, no quarantine. It reads the file and prints, nothing else.
     if args.status:
         _print_status(_read_state_for_status(STATE_FILE, init_cash), init_cash)
+        return
+
+    # D2: one-shot legacy import — state JSON + JSONL ledgers, idempotent.
+    if args.import_legacy:
+        counts = get_poly_db("live" if args.live else "dry").import_legacy(
+            STATE_FILE, LEDGER_FILE, CALIBRATION_FILE,
+            mode="live" if args.live else "dry")
+        print(json.dumps(counts, indent=2, sort_keys=True))
         return
 
     # A9: take the single-instance lock BEFORE constructing the trader, whose

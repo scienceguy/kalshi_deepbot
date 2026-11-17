@@ -406,6 +406,24 @@ class SupabaseClient:
             log.warning("insert_order error: %s", e)
             return False
 
+    # ─── D2: generic poly-table mirror ───────────────────────────────────────
+    def upsert_table(self, table: str, row: Dict[str, Any]) -> bool:
+        """Upsert one row into a remote table keyed on its `id` column (D2).
+
+        Poly tables keep their deterministic `id` in the payload (the local
+        sync path does not strip it) because the remote upsert targets that
+        column. Returns False on any failure; the row stays synced=0 and is
+        retried on a later sync cycle.
+        """
+        try:
+            result = self._request("POST", table, data=row,
+                                   params={"on_conflict": "id"},
+                                   extra_headers={"Prefer": "resolution=merge-duplicates"})
+            return result is not None
+        except Exception as e:
+            log.warning("upsert_table(%s) error: %s", table, e)
+            return False
+
     # ─── bot state ─────────────────────────────────────────────────────────────
     def _ns_key(self, key: str) -> str:
         """Namespace a bot_state key by host when BOT_STATE_HOST is set.

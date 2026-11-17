@@ -90,3 +90,104 @@ create index if not exists idx_pnl_ledger_synced on public.pnl_ledger(synced);
 alter table public.signals add column if not exists signal_id text;
 create unique index if not exists signals_signal_id_key
     on public.signals (signal_id) where signal_id is not null;
+
+-- ─── D2: Polymarket US local-first mirror tables (UNAPPLIED migration) ───
+-- The poly trader's system of record is local_data/superbot_local_poly_
+-- {dry,live}.db; the sync thread mirrors these same-named tables. Apply in
+-- the Supabase dashboard SQL editor (operator action required). Idempotent.
+create table if not exists public.poly_orders (
+    id     text primary key,
+    ts     timestamptz not null default now(),
+    slug   text not null,
+    side   text,
+    action text not null default 'buy',
+    qty    numeric,
+    price  numeric,
+    cost   numeric,
+    fee    numeric,
+    status text not null default 'resting',
+    mode   text not null default ''
+);
+create index if not exists poly_orders_slug_ts_idx on public.poly_orders (slug, ts desc);
+
+create table if not exists public.poly_positions (
+    id   text primary key,
+    slug text not null,
+    side text,
+    qty  numeric,
+    cost numeric,
+    price numeric,
+    mode text not null default ''
+);
+
+create table if not exists public.poly_fills (
+    id       text primary key,
+    ts       timestamptz not null default now(),
+    slug     text not null,
+    side     text,
+    action   text not null default 'buy',
+    qty      numeric,
+    price    numeric,
+    fee      numeric,
+    order_id text,
+    mode     text not null default ''
+);
+create index if not exists poly_fills_slug_ts_idx on public.poly_fills (slug, ts desc);
+
+create table if not exists public.poly_settlements (
+    id      text primary key,
+    ts      timestamptz not null default now(),
+    slug    text not null,
+    side    text,
+    qty     numeric,
+    payout  numeric,
+    pnl     numeric,
+    outcome integer,
+    mode    text not null default ''
+);
+create index if not exists poly_settlements_slug_ts_idx on public.poly_settlements (slug, ts desc);
+
+create table if not exists public.poly_ledger (
+    id          text primary key,
+    ts          timestamptz not null default now(),
+    event       text not null,
+    slug        text not null default '',
+    payload_json text,
+    mode        text not null default ''
+);
+
+create table if not exists public.poly_epochs (
+    id           text primary key,
+    started_at   timestamptz not null default now(),
+    start_balance numeric,
+    cash         numeric,
+    mode         text not null default ''
+);
+
+create table if not exists public.poly_calibration (
+    id           text primary key,
+    ts           timestamptz not null default now(),
+    payload_json text not null,
+    mode         text not null default ''
+);
+
+-- RLS on for all poly tables; service_role bypasses it (house rule), the
+-- policies exist for any future key-based access.
+alter table public.poly_orders      enable row level security;
+alter table public.poly_positions   enable row level security;
+alter table public.poly_fills       enable row level security;
+alter table public.poly_settlements enable row level security;
+alter table public.poly_ledger      enable row level security;
+alter table public.poly_epochs      enable row level security;
+alter table public.poly_calibration enable row level security;
+do $$
+declare t text;
+begin
+    foreach t in array array['poly_orders','poly_positions','poly_fills',
+                             'poly_settlements','poly_ledger','poly_epochs',
+                             'poly_calibration']
+    loop
+        execute format('create policy if not exists service_role_all on public.%I '
+                       'for all to service_role using (true) with check (true)', t);
+    end loop;
+end $$;

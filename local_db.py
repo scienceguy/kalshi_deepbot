@@ -26,6 +26,7 @@ Usage:
     db.sync_to_supabase()
 """
 
+import hashlib
 import os
 import json
 import random
@@ -79,6 +80,10 @@ SYNC_MAX_ROW_ATTEMPTS = int(config.LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS)
 
 class LocalDB:
     """Local SQLite database with background Supabase sync."""
+
+    # Tables the sync thread mirrors to Supabase. PolyLocalDB overrides this
+    # with its own table set (D2).
+    SYNC_TABLES = ("bot_state", "signals", "orders", "pnl_ledger", "backtest_runs")
 
     def __init__(self, db_path: str | None = None, auto_sync: bool = True):
         self.db_path = str(db_path or get_db_path())
@@ -710,7 +715,7 @@ class LocalDB:
         conn = self._get_conn()
         status = {}
         with self._lock:
-            for table in ("signals", "orders", "bot_state", "pnl_ledger", "backtest_runs"):
+            for table in self.SYNC_TABLES:
                 try:
                     count = conn.execute(f"SELECT count(*) FROM {table} WHERE synced = 0").fetchone()[0]
                     status[table] = int(count)
@@ -1049,7 +1054,9 @@ class LocalDB:
                 pk_val = row_dict[pk_col]
             else:
                 pk_col = "id"
-                pk_val = row_dict.pop("id")
+                pk_val = row_dict["id"]
+                if not table.startswith("poly_"):
+                    row_dict.pop("id")
 
             attempt_key = (table, str(pk_val))
             attempts = self._sync_row_attempts.get(attempt_key, 0)
@@ -1109,6 +1116,9 @@ class LocalDB:
                         params = {"raw": str(raw_params)}
                     metrics = {k: v for k, v in row_dict.items() if k != "ts"}
                     result = supabase_client.insert_backtest_run(params, metrics)
+                elif table.startswith("poly_"):
+                    # D2: poly tables mirror to same-named remote tables.
+                    result = supabase_client.upsert_table(table, row_dict)
                 else:
                     continue
 
@@ -1150,12 +1160,12 @@ class LocalDB:
         client.
         """
         if not supabase_is_enabled():
-            return {"signals": 0, "orders": 0, "bot_state": 0, "pnl_ledger": 0, "backtest_runs": 0}
+            return {t: 0 for t in self.SYNC_TABLES}
 
         # Circuit breaker check: if open, skip entire sync cycle
         if not self._sync_breaker_closed():
             self._sync_metrics["breaker_state"] = "open"
-            return {"signals": 0, "orders": 0, "bot_state": 0, "pnl_ledger": 0, "backtest_runs": 0}
+            return {t: 0 for t in self.SYNC_TABLES}
 
         if supabase_client is None:
             try:
@@ -1163,13 +1173,13 @@ class LocalDB:
             except Exception as e:
                 log.warning("Could not get Supabase client for sync: %s", e)
                 self._sync_breaker_failure()
-                return {"signals": 0, "orders": 0, "bot_state": 0, "pnl_ledger": 0, "backtest_runs": 0}
+                return {t: 0 for t in self.SYNC_TABLES}
 
         results = {}
         # Sync tables with compatible schemas
         # bot_state uses per-row upsert and is critical for PnL — sync it FIRST
         # so session_pnl isn't stalled behind large tables.
-        for table in ["bot_state", "signals", "orders", "pnl_ledger", "backtest_runs"]:
+        for table in self.SYNC_TABLES:
             count = self._sync_table(table, supabase_client)
             results[table] = count
             if count > 0:
@@ -1195,7 +1205,7 @@ class LocalDB:
         """N3: mirror lag for the sync.lag event — unsynced row count and the
         age (seconds) of the oldest unsynced row across the mirrored tables.
         """
-        tables = ("bot_state", "signals", "orders", "pnl_ledger", "backtest_runs")
+        tables = self.SYNC_TABLES
         total = 0
         oldest = 0.0
         conn = self._get_conn()
@@ -1311,7 +1321,513 @@ def get_local_db(db_path: str | None = None) -> LocalDB:
     return _local_dbs[path_str]
 
 
-# Compatibility layer: same API as SupabaseClient for easy migration
+def get_poly_db_path(mode: str = "dry") -> Path:
+    """D2: mode-isolated Polymarket database path (local_data/)."""
+    mode_suffix = "live" if mode == "live" else "dry"
+    return DB_DIR / f"superbot_local_poly_{mode_suffix}.db"
+
+
+_poly_dbs: Dict[str, "PolyLocalDB"] = {}
+
+
+def get_poly_db(mode: str = "dry") -> "PolyLocalDB":
+    """Get or create the mode-isolated Polymarket LocalDB instance (D2)."""
+    mode = "live" if mode == "live" else "dry"
+    if mode not in _poly_dbs:
+        _poly_dbs[mode] = PolyLocalDB(mode=mode)
+    return _poly_dbs[mode]
+
+
+class PolyLocalDB(LocalDB):
+    """D2: Polymarket US local-first system of record.
+
+    The JSON snapshot (poly_us_state.json) and JSONL ledgers remain the
+    crash-recovery export; this DB is the queryable record and the Supabase
+    sync source. Same WAL/backup properties as the kalshi LocalDB.
+    """
+
+    SYNC_TABLES = ("poly_orders", "poly_positions", "poly_fills",
+                   "poly_settlements", "poly_ledger", "poly_epochs",
+                   "poly_calibration")
+
+    def __init__(self, db_path: str | None = None, mode: str = "dry",
+                 auto_sync: bool = True):
+        self.mode = "live" if mode == "live" else "dry"
+        super().__init__(db_path=db_path or str(get_poly_db_path(self.mode)),
+                         auto_sync=auto_sync)
+
+    def _init_db(self):
+        """Poly tables only; the kalshi schema is not created here."""
+        conn = self._get_conn()
+        with self._lock:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS poly_orders (
+                    id TEXT PRIMARY KEY,
+                    ts TEXT NOT NULL,
+                    slug TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    action TEXT NOT NULL DEFAULT 'buy',
+                    qty REAL NOT NULL,
+                    price REAL NOT NULL,
+                    cost REAL,
+                    fee REAL,
+                    status TEXT NOT NULL DEFAULT 'resting',
+                    mode TEXT NOT NULL DEFAULT '',
+                    synced INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS poly_positions (
+                    id TEXT PRIMARY KEY,
+                    slug TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    qty REAL NOT NULL,
+                    cost REAL,
+                    price REAL,
+                    mode TEXT NOT NULL DEFAULT '',
+                    synced INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS poly_fills (
+                    id TEXT PRIMARY KEY,
+                    ts TEXT NOT NULL,
+                    slug TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    qty REAL NOT NULL,
+                    price REAL NOT NULL,
+                    fee REAL,
+                    order_id TEXT,
+                    mode TEXT NOT NULL DEFAULT '',
+                    synced INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS poly_settlements (
+                    id TEXT PRIMARY KEY,
+                    ts TEXT NOT NULL,
+                    slug TEXT NOT NULL,
+                    side TEXT,
+                    qty REAL,
+                    payout REAL,
+                    pnl REAL,
+                    outcome INTEGER,
+                    mode TEXT NOT NULL DEFAULT '',
+                    synced INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS poly_ledger (
+                    id TEXT PRIMARY KEY,
+                    ts TEXT NOT NULL,
+                    event TEXT NOT NULL,
+                    slug TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT,
+                    mode TEXT NOT NULL DEFAULT '',
+                    synced INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS poly_epochs (
+                    id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    start_balance REAL,
+                    cash REAL,
+                    mode TEXT NOT NULL DEFAULT '',
+                    synced INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS poly_calibration (
+                    id TEXT PRIMARY KEY,
+                    ts TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    mode TEXT NOT NULL DEFAULT '',
+                    synced INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            # N2 parity: the poly DB carries the same durable outbox table.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS event_outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
+                    type TEXT NOT NULL,
+                    delivery_class TEXT NOT NULL DEFAULT 'critical',
+                    payload_json TEXT NOT NULL,
+                    venue TEXT NOT NULL DEFAULT '',
+                    mode TEXT NOT NULL DEFAULT '',
+                    created_at TEXT DEFAULT (datetime('now')),
+                    attempts INTEGER DEFAULT 0,
+                    next_attempt_at TEXT DEFAULT (datetime('now')),
+                    last_error TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    delivered_at TEXT NOT NULL DEFAULT '',
+                    webhook_path TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_status ON event_outbox(status, next_attempt_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_event_id ON event_outbox(event_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_poly_orders_slug ON poly_orders(slug, ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_poly_fills_slug ON poly_fills(slug, ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_poly_settlements_slug ON poly_settlements(slug, ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_poly_ledger_event ON poly_ledger(event, ts)")
+            conn.commit()
+
+    # ── helpers ───────────────────────────────────────────────────────────
+
+    def table_count(self, table: str) -> int:
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            except Exception:
+                return 0
+
+    def unsynced_count(self, table: str) -> int:
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                return int(conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE synced = 0").fetchone()[0])
+            except Exception:
+                return 0
+
+    @staticmethod
+    def _fid(parts: str) -> str:
+        return hashlib.sha256(parts.encode("utf-8", errors="replace")).hexdigest()[:32]
+
+    @staticmethod
+    def _row_id(raw_line: str) -> str:
+        """Deterministic id for a JSONL source line (importer idempotency)."""
+        return hashlib.sha256(raw_line.encode("utf-8", errors="replace")).hexdigest()[:32]
+
+    # ── atomic cycle write (acceptance: one transaction per cycle) ─────────
+
+    def apply_poly_cycle(self, rows: Dict[str, Any]) -> Dict[str, int]:
+        """D2: write a full trading cycle atomically.
+
+        ``rows`` maps a poly table name to one row dict (or a list of them).
+        Everything commits in a single SQLite transaction: a crash mid-cycle
+        rolls back together — a position can never be left without its order
+        row. Re-applying the same rows is idempotent (upsert on id).
+        """
+        counts: Dict[str, int] = {}
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                for table, payload in (rows or {}).items():
+                    if payload is None:
+                        continue
+                    items = payload if isinstance(payload, list) else [payload]
+                    n = 0
+                    for row in items:
+                        if not row:
+                            continue
+                        data = dict(row)
+                        data.setdefault("mode", self.mode)
+                        cols = [c for c in data if c not in ("synced", "created_at")]
+                        vals = [data[c] for c in cols]
+                        ph = ", ".join(["?"] * len(cols))
+                        sets = ", ".join(f"{c} = excluded.{c}" for c in cols if c != "id")
+                        sql = (f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({ph}) "
+                               f"ON CONFLICT(id) DO UPDATE SET {sets}, synced = 0")
+                        conn.execute(sql, vals)
+                        n += 1
+                    counts[table] = n
+                conn.commit()
+                return counts
+            except Exception as e:
+                conn.rollback()
+                log.warning("apply_poly_cycle rollback: %s", e)
+                raise
+
+    # ── position snapshot mirror ───────────────────────────────────────────
+
+    def replace_positions(self, positions: List[Dict[str, Any]],
+                          mode: str | None = None) -> bool:
+        """Mirror the current JSON position snapshot into poly_positions.
+
+        Idempotent upsert keyed by ``slug|side``; rows for positions that are
+        no longer present are removed. Called at every _save_state point.
+        """
+        mode = mode or self.mode
+        conn = self._get_conn()
+        have: set = set()
+        with self._lock:
+            try:
+                for p in positions or []:
+                    pid = f"{p.get('slug', '')}|{p.get('side', '')}"
+                    have.add(pid)
+                    conn.execute(
+                        "INSERT INTO poly_positions (id, slug, side, qty, cost, price, mode, synced) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0) "
+                        "ON CONFLICT(id) DO UPDATE SET qty = excluded.qty, cost = excluded.cost, "
+                        "price = excluded.price, mode = excluded.mode, synced = 0",
+                        (pid, p.get("slug", ""), p.get("side", ""),
+                         float(p.get("qty", 0) or 0),
+                         float(p.get("cost", 0) or 0),
+                         float(p.get("price", 0) or 0), mode))
+                if have:
+                    placeholders = ", ".join("?" * len(have))
+                    conn.execute(
+                        f"DELETE FROM poly_positions WHERE mode = ? AND id NOT IN ({placeholders})",
+                        (mode, *sorted(have)))
+                else:
+                    conn.execute("DELETE FROM poly_positions WHERE mode = ?", (mode,))
+                conn.commit()
+                return True
+            except Exception as e:
+                conn.rollback()
+                log.warning("replace_positions error: %s", e)
+                return False
+
+    # ── recording helpers (used by the trader wiring) ─────────────────────
+
+    def record_settlement(self, settle_key: str, slug: str, position: Dict[str, Any],
+                          pnl: float, payout: float, outcome: int,
+                          mode: str | None = None) -> bool:
+        """D2: one idempotent settlement row (id = settle_key)."""
+        mode = mode or self.mode
+        try:
+            self.apply_poly_cycle({"poly_settlements": {
+                "id": settle_key,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "slug": slug,
+                "side": position.get("side", ""),
+                "qty": float(position.get("qty", 0) or 0),
+                "payout": float(payout),
+                "pnl": float(pnl),
+                "outcome": int(outcome),
+                "mode": mode,
+            }})
+            return True
+        except Exception:
+            return False
+
+    def record_order(self, order: Dict[str, Any], mode: str | None = None) -> bool:
+        """D2: one order row (id = caller's order id, e.g. venue id or coid)."""
+        mode = mode or self.mode
+        try:
+            self.apply_poly_cycle({"poly_orders": {
+                "id": str(order["id"]),
+                "ts": order.get("ts") or datetime.now(timezone.utc).isoformat(),
+                "slug": order.get("slug", ""),
+                "side": order.get("side", ""),
+                "action": order.get("action", "buy"),
+                "qty": float(order.get("qty", 0) or 0),
+                "price": float(order.get("price", 0) or 0),
+                "cost": float(order.get("cost", 0) or 0) if order.get("cost") is not None else None,
+                "fee": float(order.get("fee", 0) or 0) if order.get("fee") is not None else None,
+                "status": order.get("status", "resting"),
+                "mode": mode,
+            }})
+            return True
+        except Exception:
+            return False
+
+    def record_fill(self, fill: Dict[str, Any], mode: str | None = None) -> bool:
+        """D2: mark the order filled and append a fill row (acceptance: fills)."""
+        mode = mode or self.mode
+        oid = str(fill.get("order_id", ""))
+        ts = fill.get("ts") or datetime.now(timezone.utc).isoformat()
+        rows: Dict[str, Any] = {"poly_fills": {
+            "id": self._fid(f"{oid}|{fill.get('slug','')}|{fill.get('side','')}|"
+                            f"{fill.get('qty', 0)}|{fill.get('price', 0)}"),
+            "ts": ts,
+            "slug": fill.get("slug", ""),
+            "side": fill.get("side", ""),
+            "action": fill.get("action", "buy"),
+            "qty": float(fill.get("qty", 0) or 0),
+            "price": float(fill.get("price", 0) or 0),
+            "fee": float(fill.get("fee", 0) or 0),
+            "order_id": oid,
+            "mode": mode,
+        }}
+        if oid:
+            rows["poly_orders"] = {"id": oid, "ts": ts, "slug": fill.get("slug", ""),
+                                   "side": fill.get("side", ""),
+                                   "action": fill.get("action", "buy"),
+                                   "qty": float(fill.get("qty", 0) or 0),
+                                   "price": float(fill.get("price", 0) or 0),
+                                   "status": "filled", "mode": mode}
+        try:
+            self.apply_poly_cycle(rows)
+            return True
+        except Exception:
+            return False
+
+    def mirror_ledger(self, record: Dict[str, Any], mode: str | None = None) -> bool:
+        """Mirror one paper-ledger record: poly_ledger row plus order/fill rows
+        for trade events. Caller (poly_us_trader._append_ledger) wraps this in
+        try/except — trading never depends on it."""
+        mode = mode or self.mode
+        ev = record.get("event", "")
+        ts = record.get("timestamp", "")
+        raw = json.dumps(record, sort_keys=True, default=str)
+        lid = self._fid(raw)
+        rows: Dict[str, Any] = {"poly_ledger": [{
+            "id": lid, "ts": ts, "event": ev, "slug": record.get("slug", ""),
+            "payload_json": raw, "mode": mode,
+        }]}
+        if ev == "open":
+            oid = f"{lid}:o"
+            rows["poly_orders"] = [{
+                "id": oid, "ts": ts, "slug": record.get("slug", ""),
+                "side": record.get("side", ""), "action": "buy",
+                "qty": float(record.get("qty", 0) or 0),
+                "price": float(record.get("price", 0) or 0),
+                "cost": float(record.get("cost", 0) or 0),
+                "fee": float(record.get("fee", 0) or 0),
+                "status": "filled", "mode": mode,
+            }]
+            rows["poly_fills"] = [{
+                "id": f"{lid}:f", "ts": ts, "slug": record.get("slug", ""),
+                "side": record.get("side", ""), "action": "buy",
+                "qty": float(record.get("qty", 0) or 0),
+                "price": float(record.get("price", 0) or 0),
+                "fee": float(record.get("fee", 0) or 0),
+                "order_id": oid, "mode": mode,
+            }]
+        elif ev in ("rotate_exit", "exit", "close"):
+            oid = f"{lid}:o"
+            rows["poly_orders"] = [{
+                "id": oid, "ts": ts, "slug": record.get("slug", ""),
+                "side": record.get("side", ""), "action": "sell",
+                "qty": float(record.get("qty", 0) or 0),
+                "price": float(record.get("exit_price", record.get("price", 0)) or 0),
+                "cost": float(record.get("payout", 0) or 0),
+                "fee": float(record.get("fee", 0) or 0),
+                "status": "filled", "mode": mode,
+            }]
+            rows["poly_fills"] = [{
+                "id": f"{lid}:f", "ts": ts, "slug": record.get("slug", ""),
+                "side": record.get("side", ""), "action": "sell",
+                "qty": float(record.get("qty", 0) or 0),
+                "price": float(record.get("exit_price", record.get("price", 0)) or 0),
+                "fee": float(record.get("fee", 0) or 0),
+                "order_id": oid, "mode": mode,
+            }]
+        try:
+            self.apply_poly_cycle(rows)
+            return True
+        except Exception:
+            return False
+
+    # ── legacy importer ────────────────────────────────────────────────────
+
+    def import_legacy(self, state_file, ledger_file, calibration_file=None,
+                      mode: str | None = None) -> Dict[str, int]:
+        """D2: idempotently import the pre-D2 JSON state + JSONL ledgers.
+
+        Deterministic ids (raw-line hashes, settle keys, epoch timestamps)
+        make a second run a no-op. Returns row totals per table after import.
+        """
+        mode = mode or self.mode
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                state = {}
+                sp = Path(state_file) if state_file else None
+                if sp and sp.exists():
+                    try:
+                        state = json.loads(sp.read_text())
+                    except Exception as e:
+                        log.warning("import_legacy: unreadable state file %s: %s", sp, e)
+                epoch = state.get("epoch_started_at")
+                if epoch:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO poly_epochs "
+                        "(id, started_at, start_balance, cash, mode) VALUES (?, ?, ?, ?, ?)",
+                        (str(epoch), str(epoch),
+                         float(state.get("start_balance", 0) or 0),
+                         float(state.get("cash", 0) or 0), mode))
+                for p in state.get("positions", []) or []:
+                    pid = f"{p.get('slug', '')}|{p.get('side', '')}"
+                    conn.execute(
+                        "INSERT INTO poly_positions (id, slug, side, qty, cost, price, mode, synced) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0) "
+                        "ON CONFLICT(id) DO UPDATE SET qty = excluded.qty, cost = excluded.cost, "
+                        "price = excluded.price, synced = 0",
+                        (pid, p.get("slug", ""), p.get("side", ""),
+                         float(p.get("qty", 0) or 0),
+                         float(p.get("cost", 0) or 0),
+                         float(p.get("price", 0) or 0), mode))
+
+                lp = Path(ledger_file) if ledger_file else None
+                if lp and lp.exists():
+                    for raw in lp.read_text().splitlines():
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        lid = self._row_id(raw)
+                        try:
+                            rec = json.loads(raw)
+                        except Exception:
+                            continue
+                        ev = rec.get("event", "")
+                        ts = rec.get("timestamp", "")
+                        conn.execute(
+                            "INSERT OR IGNORE INTO poly_ledger (id, ts, event, slug, payload_json, mode) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (lid, ts, ev, rec.get("slug", ""), raw, mode))
+                        if ev == "open":
+                            self._import_legacy_trade(conn, rec, raw, "buy", mode)
+                        elif ev in ("rotate_exit", "exit", "close"):
+                            self._import_legacy_trade(conn, rec, raw, "sell", mode)
+
+                cp = Path(calibration_file) if calibration_file else None
+                if cp and cp.exists():
+                    for raw in cp.read_text().splitlines():
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        lid = self._row_id(raw)
+                        ts = ""
+                        try:
+                            rec = json.loads(raw)
+                            ts = rec.get("ts") or rec.get("timestamp") or ""
+                        except Exception:
+                            pass
+                        conn.execute(
+                            "INSERT OR IGNORE INTO poly_calibration (id, ts, payload_json, mode) "
+                            "VALUES (?, ?, ?, ?)",
+                            (lid, ts, raw, mode))
+                conn.commit()
+                return {t: self.table_count(t) for t in self.SYNC_TABLES}
+            except Exception as e:
+                conn.rollback()
+                raise
+
+    def _import_legacy_trade(self, conn, rec: Dict[str, Any], raw: str,
+                             action: str, mode: str) -> None:
+        """Import one open/exit ledger record as an order + fill pair."""
+        lid = self._row_id(raw)
+        ts = rec.get("timestamp", "")
+        slug = rec.get("slug", "")
+        side = rec.get("side", "")
+        qty = float(rec.get("qty", 0) or 0)
+        price = float(rec.get("exit_price", rec.get("price", 0)) or 0)
+        fee = float(rec.get("fee", 0) or 0)
+        cost = float(rec.get("cost", rec.get("payout", 0)) or 0)
+        oid = f"{lid}:o"
+        conn.execute(
+            "INSERT OR IGNORE INTO poly_orders "
+            "(id, ts, slug, side, action, qty, price, cost, fee, status, mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'filled', ?)",
+            (oid, ts, slug, side, action, qty, price, cost, fee, mode))
+        conn.execute(
+            "INSERT OR IGNORE INTO poly_fills "
+            "(id, ts, slug, side, action, qty, price, fee, order_id, mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (f"{lid}:f", ts, slug, side, action, qty, price, fee, oid, mode))
 class LocalDBAPI:
     """SupabaseClient-compatible API using local database."""
     
