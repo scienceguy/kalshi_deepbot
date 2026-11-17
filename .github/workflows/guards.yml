@@ -96,8 +96,17 @@ jobs:
           wc -l "$RUNNER_TEMP/review.diff"
           python scripts/verify_review_marked.py --diff-file "$RUNNER_TEMP/review.diff"
 
-      - name: full test suite
+      - name: test import side effects (needs Supabase creds to suppress warning)
         env:
           SUPABASE_URL: https://dummy.supabase.co
           SUPABASE_SERVICE_KEY: dummy-key
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/test_b16_import_side_effects.py -q
+
+- name: test n8n webhook auth (must run WITHOUT Supabase creds)
+        run: python -m pytest tests/test_n1_webhook_auth.py -q
+
+- name: test inject n8n workflows (must run WITHOUT Supabase creds)
+        run: python -m pytest tests/test_inject_n8n_workflows.py -q
+
+- name: remaining tests
+        run: python -m pytest tests/ -q --ignore=tests/test_b16_import_side_effects.py --ignore=tests/test_n1_webhook_auth.py --ignore=tests/test_inject_n8n_workflows.py
