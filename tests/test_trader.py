@@ -1486,7 +1486,7 @@ def test_handle_task_is_log_only(monkeypatch, caplog):
     fake_task = {
         "event_id": "evt_123",
         "correlation_id": "corr_456",
-        "from_agent": "termux:opencode:test",
+        "from_agent": "ubuntu:opencode:test",
         "body": "rm -rf /; executed.append(True)",
     }
 

@@ -13,8 +13,9 @@ _STORE = {}
 
 CHECKPOINT_ENTITY = "agent_continuity_checkpoint"
 
-# Agent identity: host:harness:project (per MemPalace protocol)
-AGENT_IDENTITY = "ubuntu:opencode:kalshi_deepbot"
+# Agent identity: host:harness:project (per MemPalace protocol) — one
+# canonical source for every identity in the repo (M3).
+from agent_identity import CODING_AGENT as AGENT_IDENTITY
 
 _MP = ""
 # Try shutil.which first (works when PATH includes ~/bin)
@@ -100,7 +101,8 @@ def get_latest_checkpoint() -> dict:
         "checkpoint_key": _STORE_get("_resume_key", "active"),
     }
 
-def checkpoint(state: dict | None = None, correlation_id: str | None = None) -> dict:
+def checkpoint(state: dict | None = None, correlation_id: str | None = None,
+               identity: str = AGENT_IDENTITY) -> dict:
     if state is None:
         state = {
             "last_activity": _serialize(_now_iso()),
@@ -126,7 +128,7 @@ def checkpoint(state: dict | None = None, correlation_id: str | None = None) -> 
         "--room", "continuity",
         "--topic", "agent-checkpoint",
         "--correlation-id", corr,
-        "--from-agent", AGENT_IDENTITY,
+        "--from-agent", identity,
         "--to-agent", "*",
         "--body", body,
     )
@@ -138,11 +140,11 @@ def checkpoint(state: dict | None = None, correlation_id: str | None = None) -> 
         _STORE_set("_" + k, v)
     return state
 
-def resume() -> dict | None:
+def resume(identity: str = AGENT_IDENTITY) -> dict | None:
     r = _mp(
         "logstream", "list",
         "--topic", "agent-checkpoint",
-        "--to-agent", AGENT_IDENTITY,
+        "--to-agent", identity,
         "--json",
         "--limit", "5",
     )
@@ -166,8 +168,8 @@ def resume() -> dict | None:
             return state
     return None
 
-def on_session_start() -> dict | None:
-    state = resume()
+def on_session_start(identity: str = AGENT_IDENTITY) -> dict | None:
+    state = resume(identity)
     if state is None:
         log.info("First session ever - no prior checkpoint; starting fresh")
         state = {
@@ -199,12 +201,12 @@ def on_session_start() -> dict | None:
     # Announce the agent is alive on the shared logstream so peers know this
     # session is active and continuous.
     try:
-        _post_status("online", {"session_total": state.get("session_total", 0), "resume_key": state.get("resume_key")})
+        _post_status("online", {"session_total": state.get("session_total", 0), "resume_key": state.get("resume_key")}, identity=identity)
     except Exception as e:
         log.debug("Could not post session-start status: %s", e)
     return state
 
-def on_session_end() -> None:
+def on_session_end(identity: str = AGENT_IDENTITY) -> None:
     state = {
         "last_activity": _STORE_get("_last_activity") or _now_iso(),
         "last_topic": _STORE_get("_last_topic"),
@@ -218,13 +220,13 @@ def on_session_end() -> None:
         "recent_urls": _STORE_get("_recent_urls", []),
         "session_total": _STORE_get("_session_total", 0) + 1,
     }
-    checkpoint(state)
+    checkpoint(state, identity=identity)
     log.info("Self-model checkpoint saved at session end: key=%s (session_total=%d)", state.get("resume_key", "unknown"), state.get("session_total", 0))
 
 
-def _post_status(status: str, extra: dict | None = None) -> None:
+def _post_status(status: str, extra: dict | None = None, identity: str = AGENT_IDENTITY) -> None:
     """Post a status event to the MemPalace logstream announcing agent state."""
-    body_parts = ["status=" + status, "agent=" + AGENT_IDENTITY, "ts=" + _now_iso()]
+    body_parts = ["status=" + status, "agent=" + identity, "ts=" + _now_iso()]
     if extra:
         body_parts.append("data=" + _serialize(extra))
     r = _mp(
@@ -234,7 +236,7 @@ def _post_status(status: str, extra: dict | None = None) -> None:
         "--room", "status",
         "--topic", "agent-heartbeat",
         "--correlation-id", _now_iso(),
-        "--from-agent", AGENT_IDENTITY,
+        "--from-agent", identity,
         "--to-agent", "*",
         "--body", " | ".join(body_parts),
     )

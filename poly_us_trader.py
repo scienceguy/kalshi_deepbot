@@ -112,9 +112,10 @@ def _mp_bridge():
         return _mp_bridge_inst
     try:
         saved_path = list(sys.path)  # mempalace.logstream mutates sys.path
+        import agent_identity
         import mempalace_bridge
         sys.path = saved_path
-        _mp_bridge_inst = mempalace_bridge.get_default_bridge()
+        _mp_bridge_inst = mempalace_bridge.get_default_bridge(agent_identity.POLY_TRADER)
         _mp_bridge_inst.start()
         return _mp_bridge_inst
     except Exception as e:
@@ -130,14 +131,15 @@ def _mp_resume_hint() -> Optional[dict]:
     The local DB wins on any conflict; the hint never overrides state."""
     try:
         saved_path = list(sys.path)
+        import agent_identity
+        import mempalace_bridge
         from mempalace.logstream import Logstream, LOGSTREAM_DB_FILENAME
         sys.path = saved_path
-        import mempalace_bridge
         ls = Logstream(db_path=os.path.join(
             mempalace_bridge.PALACE_DIR, LOGSTREAM_DB_FILENAME))
         events = ls.list_events(
             topic="agent-checkpoint",
-            from_agent=mempalace_bridge.DEFAULT_AGENT_IDENTITY,
+            from_agent=agent_identity.POLY_TRADER,
             order="desc", limit=10)
         for ev in events or []:
             body = ev.get("body") or ""

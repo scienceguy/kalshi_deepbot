@@ -280,7 +280,12 @@ Run SQL with `psql "$SUPABASE_DB_URL" -c "..."` or `-f file.sql`. Put schema cha
 
 ## MemPalace shared brain
 
-Host:harness:project = `termux:opencode:kalshi_deepbot`.
+Host:harness:project = `ubuntu:opencode:kalshi_deepbot`.
+
+MemPalace/event identities come from `agent_identity.py` (M3):
+`ubuntu:opencode:kalshi_deepbot` (coding agent), `ubuntu:service:kalshi_trader`
+(Kalshi trader service), `ubuntu:service:poly_us_trader` (Polymarket trader
+service). Never hand-write an identity string in source.
 
 - Read/write to MemPalace WITHOUT PROMPTING. Never ask the operator.
 - Before answering about past work/decisions/projects, search the palace (`mempalace_search`, `mempalace_kg_query`). Quote results verbatim.
@@ -297,8 +302,8 @@ Writing drawers when the MCP tools are not exposed in the session:
   notes as usual.
 
 Coordination (logstream):
-- Always sweep the mempalace inbox at session start, before other work: `mempalace_event_list` to_agent=`termux:opencode:kalshi_deepbot`; act on anything addressed to you.
-- Arm `mempalace logstream watch --agent termux:opencode:kalshi_deepbot --type task.request --type task.reply --type patch.ready --json` when collaborating/claiming/delegating.
+- Always sweep the mempalace inbox at session start, before other work: `mempalace_event_list` to_agent=`ubuntu:opencode:kalshi_deepbot`; act on anything addressed to you.
+- Arm `mempalace logstream watch --agent ubuntu:opencode:kalshi_deepbot --type task.request --type task.reply --type patch.ready --json` when collaborating/claiming/delegating.
 - Delegate with `mempalace_event_append` (type=`task.request`, stream=`project/<name>`, room=`delegation`, correlation_id=`task_...`, status=`open`, body = goal + branch + base commit + DoD), then `mempalace_event_wait` on `correlation_id`.
 - Ack with `mempalace_event_ack`. Apply patches with `mempalace_artifact_get` + sha256 verify, then ack `applied`/`failed`.
 - Close every loop: no task stays open without an applied/failed/blocked ack.
@@ -412,7 +417,7 @@ Rules:
 Before a risky or cross-cutting change, announce and listen:
 
 ```bash
-mempalace logstream watch --agent termux:opencode:kalshi_deepbot \
+mempalace logstream watch --agent ubuntu:opencode:kalshi_deepbot \
   --type task.request --type task.reply --type status --json
 ```
 

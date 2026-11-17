@@ -18,7 +18,7 @@ Expected stdin payload (produced by the Verify Signature node):
                  "x-superbot-signature": ...}}
 
 A message body looks like:
-    {"to_agent": "termux:opencode:<project>",  # or "*" for broadcast
+    {"to_agent": "ubuntu:opencode:<project>",  # or "*" for broadcast
      "type": "task.request|task.reply|status|patch.ready",
      "body": "message text",
      "topic": "optional-lane",
@@ -31,6 +31,7 @@ signature material (local dev only; logs a warning).
 import json
 import os
 import sys
+import agent_identity
 from datetime import datetime, timezone
 
 # Add mempalace to path so we can use its logstream CLI via subprocess
@@ -125,7 +126,7 @@ def main():
         "--stream", "project/kalshi_deepbot",
         "--room", "delegation",
         "--topic", topic,
-        "--from-agent", "termux:opencode:kalshi_deepbot",
+        "--from-agent", agent_identity.CODING_AGENT,
         "--to-agent", to_agent,
         "--body", msg_body,
     ]

@@ -98,6 +98,7 @@ from resilience import CycleSupervisor, systemd_notify  # noqa: E402
 from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, calibration_beats_chance as _llm_calibration_beats_chance  # noqa: E402
 from emit import emit_event, emit_sync_lag  # noqa: E402
 import control  # noqa: E402  — N4 signed control inbox (pause/resume/caps)
+import agent_identity  # noqa: E402  — M3: canonical agent identities
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
 import report_state  # noqa: E402  — B19 operator visibility hook
@@ -3170,7 +3171,7 @@ def _run_loop(args):
         global _local_module
         if _local_module is None:
             import local as _local_module
-        _local_module.on_session_start()
+        _local_module.on_session_start(agent_identity.KALSHI_TRADER)
     except Exception as e:
         log.warning("MemPalace session start failed: %s — continuing without continuity", e)
 
@@ -3178,7 +3179,7 @@ def _run_loop(args):
     # non-blocking on the trading path.
     try:
         if _bridge is None:
-            _bridge = mempalace_bridge.get_default_bridge()
+            _bridge = mempalace_bridge.get_default_bridge(agent_identity.KALSHI_TRADER)
         _bridge.start()
         log.info("MemPalace bridge started (writer + subscriber threads)")
     except Exception as e:
@@ -3472,7 +3473,7 @@ def _run_loop(args):
         # (non-blocking, under 1ms) instead of spawning a CLI process.
         try:
             if _bridge is None:
-                _bridge = mempalace_bridge.get_default_bridge()
+                _bridge = mempalace_bridge.get_default_bridge(agent_identity.KALSHI_TRADER)
                 _bridge.start()
             for task in _bridge.drain_tasks():
                 _handle_task(task)
@@ -3565,7 +3566,7 @@ def _run_loop(args):
     except Exception as e:
         log.warning("MemPalace bridge stop failed: %s", e)
     try:
-        _local_module.on_session_end()
+        _local_module.on_session_end(agent_identity.KALSHI_TRADER)
     except Exception as e:
         log.warning("MemPalace session end failed: %s", e)
 

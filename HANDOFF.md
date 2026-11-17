@@ -40,7 +40,7 @@ Last eight commits:
     22401ca Must fix: ASSESSMENT.md - remove engine splices from money-path arithmetic
     dd8904b Should fix: track the planning/audit docs; let the gate see markdown
     00d1798 Should fix: verify_source.py - stop failing on emoji variation selectors
-    438135f Must fix: identity - agent is termux:opencode:kalshi_deepbot, not kalshi_superbot
+    438135f Must fix: identity - single repo agent identity (pre-VPS host), not kalshi_superbot
     5773849 Should fix: HANDOFF.md - correct the stale pushed claims; record the integrity audit and the MemPalace lock
     df71e18 Nice to have: HANDOFF.md - torch for the next session at a verified green checkpoint
 
@@ -143,7 +143,7 @@ What would actually move this: real settled fills over weeks. 246 markets rests 
    path. Pickup commands:
 
        mempalace --palace /opt/mempalace/palace status
-       mempalace event list --to-agent termux:opencode:kalshi_deepbot --preview
+       mempalace event list --to-agent ubuntu:opencode:kalshi_deepbot --preview
 
    Findings to file once unlocked: the NO-side flooring bug; the
    4-loss/246-market limit; the stale-balance error (below).

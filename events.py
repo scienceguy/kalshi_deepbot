@@ -12,7 +12,7 @@ Envelope (N3 — one envelope for both traders):
                      deterministic key is given>",
         "ts": <unix seconds float>,
         "source": "kalshi_trader" | "poly_us_trader",
-        "agent_id": "<SUPERBOT_AGENT_ID or host:pid>",
+        "agent_id": "<SUPERBOT_AGENT_ID or the service identity for `source`>",
         "mode": "dry" | "live",
         "type": "order.placed" | ...,
         "severity": "debug" | "info" | "warning" | "critical",
@@ -37,8 +37,22 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
 
+import agent_identity
+
+
 def _default_origin() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
+
+
+_SOURCE_AGENTS = {
+    "kalshi_trader": agent_identity.KALSHI_TRADER,
+    "poly_us_trader": agent_identity.POLY_TRADER,
+}
+
+
+def _origin_for_source(source: str) -> str:
+    """M3: a service event carries that service's identity, not host:pid."""
+    return _SOURCE_AGENTS.get(source, _default_origin())
 
 
 # Event types emitted by both traders (N3 catalog; lanes assigned per N2).
@@ -168,7 +182,7 @@ def make_event(source: str, mode: str, event_type: str, payload: dict,
             else str(uuid.uuid4())),
         ts=ts if ts is not None else time.time(),
         source=source,
-        agent_id=agent_id or _default_origin(),
+        agent_id=agent_id or _origin_for_source(source),
         mode=mode,
         type=event_type,
         severity=severity or severity_for_lane(lane),

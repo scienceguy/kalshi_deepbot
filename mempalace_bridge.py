@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import agent_identity
 from mempalace.logstream import Logstream, LOGSTREAM_DB_FILENAME
 from mempalace.knowledge_graph import KnowledgeGraph
 
@@ -40,8 +41,25 @@ PALACE_DIR = str(Path.home() / ".mempalace")
 _LOGSTREAM_DB = os.path.join(PALACE_DIR, LOGSTREAM_DB_FILENAME)
 _KG_DB = os.path.join(PALACE_DIR, "knowledge_graph.sqlite3")
 
-# Shared agent identity until M3 splits the coding agent from the services.
-DEFAULT_AGENT_IDENTITY = "ubuntu:opencode:kalshi_deepbot"
+# Back-compat alias: the coding agent identity is the historical default.
+DEFAULT_AGENT_IDENTITY = agent_identity.CODING_AGENT
+
+_DEFAULT_BRIDGES = {}
+
+
+def get_default_bridge(identity: str = DEFAULT_AGENT_IDENTITY) -> "MemPalaceBridge":
+    """Return the per-identity module-level bridge, creating it on first use.
+
+    One identity per process-role (coding agent, kalshi service, poly
+    service): separate bridges so inbound `to_agent` filtering and the
+    `from_agent` on every outgoing event are unambiguous.
+    """
+    global _DEFAULT_BRIDGES
+    bridge = _DEFAULT_BRIDGES.get(identity)
+    if bridge is None:
+        bridge = MemPalaceBridge(identity)
+        _DEFAULT_BRIDGES[identity] = bridge
+    return bridge
 
 # Breaker defaults
 BREAKER_MAX_FAILURES = 5
@@ -365,13 +383,4 @@ class MemPalaceBridge:
                 continue
 
 
-# Module-level default bridge (lazy: start() must be called before use).
-_default_bridge: Optional[MemPalaceBridge] = None
 
-
-def get_default_bridge() -> MemPalaceBridge:
-    """Return the module-level bridge, creating it on first use."""
-    global _default_bridge
-    if _default_bridge is None:
-        _default_bridge = MemPalaceBridge(DEFAULT_AGENT_IDENTITY)
-    return _default_bridge
