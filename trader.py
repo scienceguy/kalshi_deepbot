@@ -3578,6 +3578,24 @@ def _run_loop(args):
             log.warning("Cycle took %.1fs (> %ds interval)", elapsed, args.interval)
         time.sleep(sleep_for)
 
+    # V2: live mode cancels every resting venue order on graceful shutdown —
+    # an unmanned maker order is naked exposure once this process is gone.
+    # cancel_order already no-ops (logs only) in DRY_RUN; the env gate keeps
+    # the whole block off the paper path.
+    if not config.DRY_RUN:
+        try:
+            for o in client.get_orders(status="resting"):
+                oid = o.get("order_id") or o.get("id")
+                if not oid:
+                    continue
+                try:
+                    client.cancel_order(oid, o.get("market_ticker", ""), o.get("exchange_index"))
+                    log.info("Shutdown cancel: resting order %s cancelled", oid)
+                except Exception as e:
+                    log.warning("Shutdown cancel failed for %s: %s", oid, e)
+        except Exception as e:
+            log.warning("Shutdown resting-order cancel skipped: %s", e)
+
     # Persist final state to MemPalace for continuity across restarts.
     try:
         if _bridge is not None:

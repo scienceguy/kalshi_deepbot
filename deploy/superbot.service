@@ -1,0 +1,45 @@
+# Kalshi SuperBot — LIVE trader, hardened (V2). REFERENCE UNIT.
+#
+# THIS UNIT RUNS WITH REAL MONEY. It is NOT installed or enabled by any
+# deploy path; installing it and starting it are operator actions:
+#   sudo install -m 644 deploy/superbot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl restart superbot.service
+# ExecStart keeps --live; the code additionally refuses live orders unless
+# KALSHI_CONFIRM_LIVE=true is set here. Never "fix" either without reading
+# the live gates in config.py / kalshi_client.py.
+#
+# After=/Wants= n8n.service (monitor webhook + control lane; n8n down must
+# not block trading). Writable paths mirror deploy/superbot-dry.service.
+
+[Unit]
+Description=Kalshi SuperBot live trader
+After=network-online.target n8n.service
+Wants=network-online.target n8n.service
+
+StartLimitIntervalSec=300
+StartLimitBurst=5
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/superbot
+Environment=DRY_RUN=false
+Environment=KALSHI_CONFIRM_LIVE=true
+Environment=TMPDIR=/opt/superbot/local_data
+ExecStart=/opt/superbot/.venv/bin/python trader.py --live --interval 15
+Restart=on-failure
+RestartSec=15
+# In-flight cycle drain + resting-order cancel + ledger flush + bridge stop.
+TimeoutStopSec=90
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/superbot/local_data /home/ubuntu/.mempalace /home/ubuntu/.config/mempalace -/opt/superbot/.lock_kalshi
+PrivateTmp=true
+LimitNOFILE=65536
+# Measured RSS of the dry twin ~306 MiB (2026-11-17); 1G = 3x headroom.
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

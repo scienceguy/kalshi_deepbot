@@ -1,0 +1,55 @@
+# Kalshi SuperBot — dry (paper) trader, hardened (V2).
+#
+# Install (operator action; NOT installed by deploy.py):
+#   sudo install -m 644 deploy/superbot-dry.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now superbot-dry.service
+#
+# Ordering: After=/Wants= n8n.service — the monitor webhook and the control
+# lane live there, but n8n being down must never block trading (Wants= is
+# best-effort; report_state/bridge degrade gracefully).
+#
+# Writes (ProtectSystem=strict makes everything else read-only):
+#   /opt/superbot/local_data        DB, ledgers, logs, bid_hist, backups
+#   /home/ubuntu/.mempalace         M1 bridge palace (heartbeat/checkpoint)
+#   /home/ubuntu/.config/mempalace  mempalace CLI palace
+#   /opt/superbot/.lock_kalshi      instance lock ("-" = may be absent)
+# TMPDIR is service-owned (under local_data); PrivateTmp=true keeps agent
+# scratch out of this process's /tmp.
+
+[Unit]
+Description=Kalshi SuperBot dry run (paper trader)
+After=network-online.target n8n.service
+Wants=network-online.target n8n.service
+
+StartLimitIntervalSec=300
+StartLimitBurst=5
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/superbot
+Environment=DRY_RUN=true
+Environment=DRY_LOG_FILE=/opt/superbot/local_data/bot_dry.log
+Environment=TMPDIR=/opt/superbot/local_data
+ExecStart=/opt/superbot/.venv/bin/python trader.py --dry --interval 15
+# V2: on-failure + burst — a crash loop stops instead of spinning forever.
+Restart=on-failure
+RestartSec=15
+# Graceful shutdown: in-flight cycle drain + resting-order cancel + ledger
+# flush + bridge stop, all bounded well under this (see docs/vps-runbook.md).
+TimeoutStopSec=90
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/superbot/local_data /home/ubuntu/.mempalace /home/ubuntu/.config/mempalace -/opt/superbot/.lock_kalshi
+PrivateTmp=true
+# Measured: bridge Errno 24 (too many open files) on the default 1024;
+# 65536 covers the venue session + palace + DB + log fds.
+LimitNOFILE=65536
+# Measured RSS of the dry trader: ~306 MiB (2026-11-17); 1G = 3x headroom.
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

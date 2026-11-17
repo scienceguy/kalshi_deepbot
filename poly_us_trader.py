@@ -956,6 +956,41 @@ class PolyUSPaperTrader:
                 return False
             time.sleep(0.005)
 
+    def cancel_all_resting_orders(self, reason: str = "shutdown") -> int:
+        """V2: cancel every venue resting order (live mode only).
+
+        A process that dies with maker orders on the book leaves unmanned
+        exposure — the L5 guard cannot evaluate them once this process is
+        gone, so graceful shutdown is the last safe moment to pull them.
+        Paper mode is a no-op (orders exist only in process state). Never
+        raises; returns the number cancelled.
+        """
+        if not getattr(self, "live_mode", False):
+            return 0
+        cancelled = 0
+        try:
+            orders = polymarket_us_client.get_open_orders()
+        except Exception as e:
+            log.warning("Shutdown cancel: could not list open orders: %s", e)
+            return 0
+        for o in orders or []:
+            oid = o.get("id")
+            slug = o.get("marketSlug") or o.get("slug") or ""
+            if not oid:
+                continue
+            try:
+                if polymarket_us_client.cancel_order(oid, slug):
+                    cancelled += 1
+                    log.info("Shutdown cancel: %s on %s cancelled (%s)", oid, slug, reason)
+                    emit_event("poly_us_trader", "order.cancelled",
+                               {"order_id": oid, "slug": slug, "reason": reason},
+                               key=f"order.cancelled:{oid}")
+                else:
+                    log.warning("Shutdown cancel: venue refused %s", oid)
+            except Exception as e:
+                log.warning("Shutdown cancel failed for %s: %s", oid, e)
+        return cancelled
+
     def _poly_db(self):
         """D2: the mode-isolated poly LocalDB, or None when unavailable.
 
@@ -3075,6 +3110,12 @@ def main():
         guard_stop.set()
         if guard_thread is not None:
             guard_thread.join(timeout=2.0)
+        # V2: live mode pulls venue resting orders before the slow teardown —
+        # an unmanned maker order is naked exposure once this process is gone.
+        try:
+            trader.cancel_all_resting_orders(reason="shutdown")
+        except Exception as e:
+            log.warning("Shutdown order cancel failed (non-fatal): %s", e)
         # L6: drain deferred ledger/DB writes so nothing is lost on shutdown.
         try:
             trader.flush_ledger(timeout=5.0)
