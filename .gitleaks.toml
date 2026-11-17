@@ -9,6 +9,7 @@ description = "Allow RSA key patterns in source code docstrings/help"
 paths = [
     "kalshi_client.py",
     "config.py",
+    "llm_eval.py",
     "tests/.*\\.py",
     "handoff.md",
     "KALSHI_API_RESEARCH.md",
