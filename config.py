@@ -228,6 +228,16 @@ POLY_DAILY_LOSS_LIMIT_DOLLARS = _env_float("POLY_DAILY_LOSS_LIMIT_DOLLARS", 5.0)
 POLY_CONFIRM_LIVE = _env_bool("POLY_CONFIRM_LIVE", False)
 # Resting order TTL (seconds) before auto-cancel (R3).
 POLY_RESTING_ORDER_TTL_SECONDS = _env_int("POLY_RESTING_ORDER_TTL_SECONDS", 900)
+# L5: resting-order guard. A fast loop cancels resting maker orders when
+# spot eats half the entry cushion, the book moves 5 ticks away, the feed
+# goes stale (dead-man switch while a stream is expected), or entries are
+# halted. PM_TICK_DOLLARS is the Polymarket US price tick.
+POLY_RESTING_GUARD_ENABLED = _env_bool("POLY_RESTING_GUARD_ENABLED", True)
+POLY_GUARD_INTERVAL_S = _env_float("POLY_GUARD_INTERVAL_S", 1.0)
+POLY_GUARD_SPOT_MOVE_FRACTION = _env_float("POLY_GUARD_SPOT_MOVE_FRACTION", 0.5)
+POLY_GUARD_BBO_TICKS = _env_int("POLY_GUARD_BBO_TICKS", 5)
+POLY_GUARD_FEED_STALE_SECONDS = _env_float("POLY_GUARD_FEED_STALE_SECONDS", 30.0)
+PM_TICK_DOLLARS = _env_float("PM_TICK_DOLLARS", 0.01)
 # A13: venue reconciliation (live mode only). Every N cycles, compare internal
 # cash/positions to the venue balance and positions endpoint. A mismatch beyond
 # the tolerance halts new entries until a manual --reset. API errors are not

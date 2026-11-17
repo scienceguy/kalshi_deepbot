@@ -79,6 +79,9 @@ class PolyStream:
         self._connected = threading.Event()
         self._tracked_slugs: set[str] = set()
         self._tracked_slugs_lock = threading.RLock()
+        # L5: last time any market/private message arrived. Dead-man's
+        # switch: None (stream never expected) vs a stale timestamp.
+        self.last_message_at: float = time.time()
 
         # WebSocket instances (set in _connect_and_subscribe)
         self._markets_ws = None
@@ -203,8 +206,13 @@ class PolyStream:
 
     # ── message handlers ─────────────────────────────────────────────
 
+    def _mark_message(self) -> None:
+        """Record that the feed delivered something (L5 dead-man switch)."""
+        self.last_message_at = time.time()
+
     def _on_market_data_lite(self, message: dict) -> None:
         """Handle market data lite (best bid/ask) messages."""
+        self._mark_message()
         lite = message.get("marketDataLite") or {}
         slug = lite.get("marketSlug")
         if not slug:
@@ -228,6 +236,7 @@ class PolyStream:
             return None
 
     def _on_trade(self, message: dict) -> None:
+        self._mark_message()
         trade = message.get("trade") or {}
         slug = trade.get("marketSlug")
         if slug:
@@ -239,6 +248,7 @@ class PolyStream:
             )
 
     def _on_order_update(self, message: dict) -> None:
+        self._mark_message()
         update = message.get("orderSubscriptionUpdate") or {}
         execution = update.get("execution") or {}
         order_id = execution.get("orderId") or execution.get("id")
@@ -253,6 +263,7 @@ class PolyStream:
                 }
 
     def _on_position_update(self, message: dict) -> None:
+        self._mark_message()
         update = message.get("positionSubscription") or {}
         after = update.get("afterPosition") or {}
         security_id = after.get("securityId") or ""
@@ -264,6 +275,7 @@ class PolyStream:
                 self._position_cache[str(security_id)] = after
 
     def _on_balance_update(self, message: dict) -> None:
+        self._mark_message()
         update = message.get("accountBalancesUpdate") or {}
         change = update.get("balanceChange") or {}
         after = change.get("afterBalance") or {}

@@ -21,6 +21,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,8 @@ def _load_bs_calibration():
 
 import polymarket_us_client
 import poly_us_stream  # L4: WebSocket price stream, REST fallback
+import resting_guard  # L5: resting-order protection
+import latency  # L1: latency recorder
 import crossvenue_edge
 import config
 import report_state  # B19 operator visibility hook
@@ -455,6 +458,25 @@ class PolyUSPaperTrader:
                         sorted(existing_models), self.paper_fill_model)
             self.paper_fill_model = None  # disable new entries until reset
 
+        # L5: resting-order guard. One shared lock serialises state mutation
+        # between the trading cycle and the guard's fast tick. Construction is
+        # inert — the guard only runs from the fast loop started in main().
+        self._guard_lock = threading.RLock()
+        self.resting_guard = resting_guard.RestingGuard(
+            lock=self._guard_lock,
+            list_orders=lambda: self.state.get("resting_orders") or [],
+            cancel_one=self._guard_cancel_order,
+            spot_for=crossvenue_edge.get_cached_spot,
+            bbo_for=_bbo_for_slug,
+            feed_age=self._guard_feed_age,
+            halt_active=self._guard_halt_active,
+            tick=float(getattr(config, "PM_TICK_DOLLARS", 0.01)),
+            spot_move_fraction=float(getattr(config, "POLY_GUARD_SPOT_MOVE_FRACTION", 0.5)),
+            bbo_ticks=int(getattr(config, "POLY_GUARD_BBO_TICKS", 5)),
+            feed_stale_seconds=float(getattr(config, "POLY_GUARD_FEED_STALE_SECONDS", 30.0)),
+            recorder=latency.default_recorder,
+        )
+
     def reset_state(self, initial_cash: float = 35.0) -> dict:
         """Manual reset to a fresh bankroll (--reset only; the bot never auto-resets).
 
@@ -832,7 +854,7 @@ class PolyUSPaperTrader:
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write to prevent file corruption
-        tmp_file = self.state_file.with_name(f"{self.state_file.name}.{os.getpid()}.tmp")
+        tmp_file = self.state_file.with_name(f"{self.state_file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp_file.write_text(json.dumps(state, indent=2))
         os.replace(tmp_file, self.state_file)
         # D2: best-effort position snapshot mirror; JSON stays authoritative.
@@ -1985,26 +2007,30 @@ class PolyUSPaperTrader:
             # sits in a `resting` record with cash reserved until reconciliation
             # confirms the fill (R3). trades_count increments on that confirmed
             # fill (A13), not here at placement.
-            self.state["cash"] = round(self.state["cash"] - cost, 4)
-            self.state["window_spent"] = round(window_spent + cost, 4)
-            self.state.setdefault("resting_orders", []).append({
-                "order_id": order_id,
-                "slug": slug,
-                "question": opp["question"],
-                "side": side,
-                "price": fill_price,
-                "qty": qty,
-                "cost": cost,
-                "fee": entry_fee,
-                "source": opp.get("source", ""),
-                "category": opp.get("category", ""),
-                "symbol": symbol,
-                "end_date": end_date,
-                "event_slug": opp.get("event_slug", ""),
-                "state": "resting",
-                "placed_at": datetime.now(timezone.utc).isoformat(),
-                "window_ts": self.state.get("current_window_ts"),
-            })
+            with self._guard_lock:
+                self.state["cash"] = round(self.state["cash"] - cost, 4)
+                self.state["window_spent"] = round(window_spent + cost, 4)
+                self.state.setdefault("resting_orders", []).append({
+                    "order_id": order_id,
+                    "slug": slug,
+                    "question": opp["question"],
+                    "side": side,
+                    "price": fill_price,
+                    "qty": qty,
+                    "cost": cost,
+                    "fee": entry_fee,
+                    "source": opp.get("source", ""),
+                    "category": opp.get("category", ""),
+                    "symbol": symbol,
+                    "end_date": end_date,
+                    "event_slug": opp.get("event_slug", ""),
+                    "strike": opp.get("strike"),
+                    "spot": opp.get("spot"),
+                    "above_market": ("above" in str(slug).lower()),
+                    "state": "resting",
+                    "placed_at": datetime.now(timezone.utc).isoformat(),
+                    "window_ts": self.state.get("current_window_ts"),
+                })
             # D2: record the resting order in the local poly DB (best-effort).
             try:
                 pdb = self._poly_db()
@@ -2023,31 +2049,35 @@ class PolyUSPaperTrader:
             # Paper maker model: do not fill immediately. Record a resting
             # paper order; it fills only when a later book observation trades
             # through the resting price within the order TTL (A3).
-            self.state["cash"] = round(self.state["cash"] - cost, 4)
-            self.state["window_spent"] = round(window_spent + cost, 4)
-            self.state["trades_count"] += 1
-            # Paper orders have no venue id; synthesize a deterministic one so
-            # the local DB can link orders/fills/settlements (D2).
-            book_id = order_id or f"paper:{self.state.get('current_window_ts')}:{slug}:{side}:{int(qty)}"
-            self.state.setdefault("resting_orders", []).append({
-                "order_id": book_id,
-                "slug": slug,
-                "question": opp["question"],
-                "side": side,
-                "price": fill_price,
-                "qty": qty,
-                "cost": cost,
-                "fee": entry_fee,
-                "source": opp.get("source", ""),
-                "category": opp.get("category", ""),
-                "symbol": symbol,
-                "end_date": end_date,
-                "event_slug": opp.get("event_slug", ""),
-                "state": "resting",
-                "placed_at": datetime.now(timezone.utc).isoformat(),
-                "window_ts": self.state.get("current_window_ts"),
-                "paper_fill_model": "maker",
-            })
+            with self._guard_lock:
+                self.state["cash"] = round(self.state["cash"] - cost, 4)
+                self.state["window_spent"] = round(window_spent + cost, 4)
+                self.state["trades_count"] += 1
+                # Paper orders have no venue id; synthesize a deterministic one so
+                # the local DB can link orders/fills/settlements (D2).
+                book_id = order_id or f"paper:{self.state.get('current_window_ts')}:{slug}:{side}:{int(qty)}"
+                self.state.setdefault("resting_orders", []).append({
+                    "order_id": book_id,
+                    "slug": slug,
+                    "question": opp["question"],
+                    "side": side,
+                    "price": fill_price,
+                    "qty": qty,
+                    "cost": cost,
+                    "fee": entry_fee,
+                    "source": opp.get("source", ""),
+                    "category": opp.get("category", ""),
+                    "symbol": symbol,
+                    "end_date": end_date,
+                    "event_slug": opp.get("event_slug", ""),
+                    "strike": opp.get("strike"),
+                    "spot": opp.get("spot"),
+                    "above_market": ("above" in str(slug).lower()),
+                    "state": "resting",
+                    "placed_at": datetime.now(timezone.utc).isoformat(),
+                    "window_ts": self.state.get("current_window_ts"),
+                    "paper_fill_model": "maker",
+                })
             # D2: record the resting order in the local poly DB (best-effort).
             try:
                 pdb = self._poly_db()
@@ -2146,6 +2176,59 @@ class PolyUSPaperTrader:
         })
         return True
 
+    # ── L5: resting-order guard callbacks ───────────────────────────
+
+    def _guard_feed_age(self) -> Optional[float]:
+        """Seconds since the stream last delivered; None when no stream is
+        expected (REST fallback mode — dead-man switch stays off)."""
+        stream = poly_us_stream.get_poly_stream()
+        if stream is None or not stream.has_credentials():
+            return None
+        return time.time() - float(getattr(stream, "last_message_at", time.time()))
+
+    def _guard_halt_active(self) -> bool:
+        """Entries are halted: ruin, venue-recon, daily-loss or a signed
+        pause_entries command. Read-only — no day-rollover side effects."""
+        if self.state.get("ruin_halted") or self.state.get("venue_recon_halted"):
+            return True
+        if self.state.get("daily_loss_halted"):
+            return True
+        try:
+            import control
+            return bool(control.STATE.pause_entries)
+        except Exception:
+            return False
+
+    def _guard_cancel_order(self, o: dict, reason: str) -> bool:
+        """Cancel one resting order for the guard. Paper: bookkeeping only.
+        Live: venue cancel first — False leaves the order resting and the
+        guard retries next tick. Caller (RestingGuard.evaluate) holds the
+        guard lock for the whole tick. The guard emits order.cancelled."""
+        oid = o.get("order_id")
+        slug = o.get("slug", "")
+        if self.live_mode:
+            try:
+                ok = polymarket_us_client.cancel_order(oid, slug)
+            except Exception as e:
+                log.warning("Guard cancel %s failed: %s", oid, e)
+                return False
+            if not ok:
+                log.info("Guard cancel %s on %s refused by venue — retry next tick", oid, slug)
+                return False
+        o["state"] = "cancelled"
+        release_cost = float(o.get("cost", 0.0) or 0.0)
+        self.state["cash"] = round(self.state["cash"] + release_cost, 4)
+        self.state["window_spent"] = max(0.0, round(
+            float(self.state.get("window_spent", 0.0) or 0.0) - release_cost, 4))
+        log.info("Guard cancel %s on %s (%s) — reserved cash released", oid, slug, reason)
+        self.state["resting_orders"] = [x for x in self.state.get("resting_orders") or []
+                                         if x.get("state") == "resting"]
+        try:
+            self._save_state(self.state)
+        except Exception as e:
+            log.warning("Guard state save failed (non-fatal): %s", e)
+        return True
+
     def cycle(self):
         """Run one full cycle."""
         self._cycle_requests = 0
@@ -2217,7 +2300,8 @@ class PolyUSPaperTrader:
         # Live mode: reconcile resting orders against venue fills (R3) — book
         # only confirmed filled quantity, cancel stale ones, release reserved cash.
         if self.live_mode:
-            self.reconcile_live_orders()
+            with self._guard_lock:
+                self.reconcile_live_orders()
             # A13: periodic venue-vs-state reconciliation (balance + positions).
             every = int(getattr(config, "POLY_VENUE_RECON_EVERY_CYCLES", 20) or 0)
             if every > 0:
@@ -2230,7 +2314,13 @@ class PolyUSPaperTrader:
         # Paper maker mode: fill resting paper orders when the book trades through
         # their resting price (no fee, maker fill).
         if not self.live_mode and self.paper_fill_model == "maker":
-            self.reconcile_paper_maker_orders(market_map)
+            with self._guard_lock:
+                self.reconcile_paper_maker_orders(market_map)
+
+        # L5: resting-order guard — one protection tick in-cycle as well as in
+        # the fast loop, so --once smoke runs and the 15s cycle are both covered.
+        if getattr(config, "POLY_RESTING_GUARD_ENABLED", True):
+            self.resting_guard.evaluate()
 
         # In paper mode, rotate out any stale long-dated positions (>24h) to free cash for active intraday compounding
         now = datetime.now(timezone.utc)
@@ -2793,11 +2883,23 @@ def main():
             signal.signal(sig, _request_stop)
         except (ValueError, OSError):
             pass  # not main thread / unsupported platform: KeyboardInterrupt still works
+    guard_stop = threading.Event()
+    guard_thread = None
     try:
         log.info("Starting Polymarket US Paper Trader with $%.2f Bankroll", trader.state["start_balance"])
         if args.once:
             trader.cycle()
             return
+        if getattr(config, "POLY_RESTING_GUARD_ENABLED", True):
+            guard_interval = float(getattr(config, "POLY_GUARD_INTERVAL_S", 1.0))
+
+            def _guard_loop():
+                while not guard_stop.wait(guard_interval):
+                    trader.resting_guard.evaluate()
+
+            guard_thread = threading.Thread(target=_guard_loop, name="resting-guard", daemon=True)
+            guard_thread.start()
+            log.info("Resting-order guard fast loop started (interval %.1fs)", guard_interval)
 
         cycle_failures = 0
         # Type=notify unit: init (state, lock, signals) is done; systemd may
@@ -2823,6 +2925,10 @@ def main():
         if _stop_requested:
             log.info("Stop signal received — shutting down cleanly.")
     finally:
+        # L5: stop the guard fast loop before the state/bridge teardown.
+        guard_stop.set()
+        if guard_thread is not None:
+            guard_thread.join(timeout=2.0)
         # M2: final operational checkpoint, then flush the bridge before
         # releasing the instance lock.
         try:
