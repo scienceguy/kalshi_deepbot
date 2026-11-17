@@ -14,6 +14,8 @@ Usage:
     # In the loop (non-blocking, under 1ms):
     bridge.heartbeat()
     bridge.checkpoint({"cycles": 42, "pnl": 12.50})
+    bridge.drawer("...", {"event": "risk_halt"})   # durable note artifact
+    bridge.kg_supersede("me", "measured_win_rate", "0.90@n=25", "0.95@n=30")
     tasks = bridge.drain_tasks()   # inbound task.request events
     bridge.stop()                  # flush pending writes on shutdown
 """
@@ -37,6 +39,9 @@ log = logging.getLogger(__name__)
 PALACE_DIR = str(Path.home() / ".mempalace")
 _LOGSTREAM_DB = os.path.join(PALACE_DIR, LOGSTREAM_DB_FILENAME)
 _KG_DB = os.path.join(PALACE_DIR, "knowledge_graph.sqlite3")
+
+# Shared agent identity until M3 splits the coding agent from the services.
+DEFAULT_AGENT_IDENTITY = "ubuntu:opencode:kalshi_deepbot"
 
 # Breaker defaults
 BREAKER_MAX_FAILURES = 5
@@ -127,6 +132,35 @@ class MemPalaceBridge:
             "source_drawer_id": source_drawer_id or "",
         })
 
+    def kg_supersede(self, subject: str, predicate: str,
+                     old_obj: str, new_obj: str,
+                     source_drawer_id: Optional[str] = None) -> None:
+        """Queue a knowledge-graph single-valued fact replacement. Non-blocking."""
+        self._enqueue("kg", "supersede", {
+            "subject": subject, "predicate": predicate,
+            "old_obj": old_obj, "new_obj": new_obj,
+            "source_drawer_id": source_drawer_id or "",
+        })
+
+    def kg_invalidate(self, subject: str, predicate: str, obj: str,
+                      ended: Optional[str] = None) -> None:
+        """Queue a knowledge-graph fact retirement. Non-blocking."""
+        self._enqueue("kg", "invalidate", {
+            "subject": subject, "predicate": predicate, "object": obj,
+            "ended": ended or "",
+        })
+
+    def drawer(self, content: str, metadata: Optional[dict] = None) -> None:
+        """Queue a durable drawer (note artifact). Non-blocking.
+
+        The writer thread stores the content verbatim; nothing here returns
+        or echoes it. One drawer per significant event, not per cycle.
+        """
+        self._enqueue("artifact", "put", {
+            "content": str(content),
+            "metadata": dict(metadata or {}),
+        })
+
     def drain_tasks(self) -> list:
         """Drain inbound task.request events from the subscriber queue.
 
@@ -192,6 +226,8 @@ class MemPalaceBridge:
             self._deliver_status(subtype, payload, correlation_id)
         elif cmd_type == "kg":
             self._deliver_kg(subtype, payload)
+        elif cmd_type == "artifact":
+            self._deliver_artifact(payload)
 
     def _deliver_status(self, status_type: str, payload: dict,
                         correlation_id: str) -> None:
@@ -227,18 +263,52 @@ class MemPalaceBridge:
     def _deliver_kg(self, subtype: str, payload: dict) -> None:
         if not self._breaker_closed():
             raise RuntimeError("circuit breaker open")
-        if subtype == "add":
-            try:
-                kg = KnowledgeGraph(db_path=_KG_DB)
+        kg = KnowledgeGraph(db_path=_KG_DB)
+        try:
+            if subtype == "add":
                 kg.add_triple(
                     payload["subject"], payload["predicate"], payload["object"],
                     source_drawer_id=payload.get("source_drawer_id", ""),
                 )
-                self._breaker_success()
-            except Exception as e:
-                self._breaker_failure()
-                log.warning("MemPalace kg add failed: %s", e)
-                raise
+            elif subtype == "supersede":
+                kg.supersede(
+                    payload["subject"], payload["predicate"],
+                    payload["old_obj"], payload["new_obj"],
+                    source_drawer_id=payload.get("source_drawer_id", ""),
+                )
+            elif subtype == "invalidate":
+                kg.invalidate(
+                    payload["subject"], payload["predicate"], payload["object"],
+                    ended=payload.get("ended") or None,
+                )
+            else:
+                raise ValueError(f"unknown kg subtype {subtype!r}")
+            self._breaker_success()
+        except Exception as e:
+            self._breaker_failure()
+            log.warning("MemPalace kg %s failed: %s", subtype, e)
+            raise
+
+    def _deliver_artifact(self, payload: dict) -> None:
+        """Store a drawer verbatim as a note artifact. Content is never
+        echoed into metrics or logs."""
+        if not self._breaker_closed():
+            raise RuntimeError("circuit breaker open")
+        try:
+            ls = Logstream(db_path=_LOGSTREAM_DB)
+            result = ls.put_artifact(
+                kind="note",
+                content=payload["content"],
+                created_by=self.agent_identity,
+                metadata=payload.get("metadata") or {},
+            )
+            self._breaker_success()
+            log.debug("MemPalace drawer stored: id=%s size=%s",
+                      result.get("id"), result.get("size"))
+        except Exception as e:
+            self._breaker_failure()
+            log.warning("MemPalace drawer put failed: %s", e)
+            raise
 
     # -- threads ---------------------------------------------------------
 
@@ -263,7 +333,18 @@ class MemPalaceBridge:
 
     def _subscriber_loop(self) -> None:
         """Long-lived inbound subscriber via mempalace library logstream wait."""
-        ls = Logstream(db_path=_LOGSTREAM_DB)
+        # A fresh DB can still be mid-creation when this thread starts —
+        # retry the constructor like the wait loop retries, or inbound
+        # delivery dies silently for the process lifetime.
+        ls = None
+        while not self._stop.is_set():
+            try:
+                ls = Logstream(db_path=_LOGSTREAM_DB)
+                break
+            except Exception:
+                time.sleep(1.0)
+        if ls is None:
+            return
         while not self._stop.is_set():
             try:
                 event = ls.wait_events(
@@ -292,5 +373,5 @@ def get_default_bridge() -> MemPalaceBridge:
     """Return the module-level bridge, creating it on first use."""
     global _default_bridge
     if _default_bridge is None:
-        _default_bridge = MemPalaceBridge("ubuntu:opencode:kalshi_deepbot")
+        _default_bridge = MemPalaceBridge(DEFAULT_AGENT_IDENTITY)
     return _default_bridge

@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -60,6 +61,98 @@ LEDGER_FILE = DATA_DIR / "poly_us_paper_ledger.jsonl"
 POLY_US_LOG_FILE = DATA_DIR / "poly_us_dry.log"
 LOCK_FILE = config.SUPERBOT_DATA_DIR / ".lock_poly"
 CALIBRATION_FILE = DATA_DIR / "bs_calibration_ledger.jsonl"  # D2 legacy importer
+
+# ── M2: MemPalace parity through the M1 bridge ────────────────────────
+# Operational-only checkpoint fields — never narrative text. The local DB
+# is the record; MemPalace carries hints and durable notes only.
+_MP_CHECKPOINT_EVERY = int(os.environ.get("MEMPALACE_CHECKPOINT_INTERVAL", 5))
+_MP_REPO_ROOT = Path(__file__).resolve().parent
+_MP_GIT_COMMIT = ""
+_MP_CONFIG_HASH = ""
+
+
+def _mp_git_commit() -> str:
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=2,
+                           cwd=str(_MP_REPO_ROOT))
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _mp_config_hash() -> str:
+    try:
+        import hashlib
+        items = []
+        for k in sorted(vars(config)):
+            if k.startswith("_"):
+                continue
+            # Never fold credential values into the hash input — the hash
+            # is identical for identical effective config without them.
+            if any(s in k.upper() for s in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
+                continue
+            v = getattr(config, k)
+            if v is None or isinstance(v, (str, int, float, bool)):
+                items.append(f"{k}={v}")
+        return hashlib.sha256("|".join(items).encode()).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+_MP_GIT_COMMIT = _mp_git_commit()
+_MP_CONFIG_HASH = _mp_config_hash()
+
+
+def _mp_bridge():
+    """The shared M1 bridge, started on first use. Returns None (never
+    raises) when MemPalace is unavailable — parity features degrade off."""
+    global _mp_bridge_inst
+    if _mp_bridge_inst is not None:
+        return _mp_bridge_inst
+    try:
+        saved_path = list(sys.path)  # mempalace.logstream mutates sys.path
+        import mempalace_bridge
+        sys.path = saved_path
+        _mp_bridge_inst = mempalace_bridge.get_default_bridge()
+        _mp_bridge_inst.start()
+        return _mp_bridge_inst
+    except Exception as e:
+        log.warning("MemPalace bridge unavailable (%s) — parity features disabled", e)
+        return None
+
+
+_mp_bridge_inst = None
+
+
+def _mp_resume_hint() -> Optional[dict]:
+    """Last checkpoint from this venue as a resume hint (startup-only read).
+    The local DB wins on any conflict; the hint never overrides state."""
+    try:
+        saved_path = list(sys.path)
+        from mempalace.logstream import Logstream, LOGSTREAM_DB_FILENAME
+        sys.path = saved_path
+        import mempalace_bridge
+        ls = Logstream(db_path=os.path.join(
+            mempalace_bridge.PALACE_DIR, LOGSTREAM_DB_FILENAME))
+        events = ls.list_events(
+            topic="agent-checkpoint",
+            from_agent=mempalace_bridge.DEFAULT_AGENT_IDENTITY,
+            order="desc", limit=10)
+        for ev in events or []:
+            body = ev.get("body") or ""
+            idx = body.find("data={")
+            if idx < 0:
+                continue
+            try:
+                data = json.loads(body[idx + 6:])
+            except ValueError:
+                continue
+            if data.get("venue") == "poly":
+                return data
+        return None
+    except Exception:
+        return None
 
 # B19: operator-visibility reporter, created lazily inside cycle().
 _poly_state_reporter = None
@@ -463,12 +556,168 @@ class PolyUSPaperTrader:
                            {"date_utc": _prev,
                             "daily_realized_loss": float(self.state.get("daily_realized_loss", 0.0) or 0.0)},
                            key=f"daily.summary:{_prev}")
+                self._mp_daily_calibration_drawer()
             except Exception:
                 pass
             self.state["daily_loss_date"] = today
             self.state["daily_realized_loss"] = 0.0
             self.state["daily_loss_halted"] = False
         return bool(self.state.get("daily_loss_halted", False))
+
+    # ── M2: MemPalace parity (through the M1 bridge) ─────────────────
+    def _mp_mode(self) -> str:
+        return "live" if self.live_mode else "dry"
+
+    def _mp_equity(self) -> float:
+        """Best-known equity: cash plus the last marked unrealized P&L."""
+        cash = float(self.state.get("cash", 0.0) or 0.0)
+        unreal = float(self.state.get("unrealized_pnl", 0.0) or 0.0)
+        return round(cash + unreal, 2)
+
+    def _mp_open_positions(self) -> list:
+        return list(self.state.get("positions") or [])
+
+    def _mp_breaker_state(self) -> dict:
+        try:
+            pdb = self._poly_db()
+            if pdb is not None:
+                return {"sync": pdb.get_sync_health().get("breaker_state", "unknown")}
+        except Exception:
+            pass
+        return {"sync": "unknown"}
+
+    def _mp_checkpoint_payload(self) -> dict:
+        """Operational-only checkpoint payload. No narrative fields."""
+        return {
+            "venue": "poly",
+            "mode": self._mp_mode(),
+            "epoch": int(time.time()),
+            "equity": self._mp_equity(),
+            "open_positions": len(self._mp_open_positions()),
+            "positions_summary": [
+                {"slug": p.get("slug", ""), "side": p.get("side", ""),
+                 "qty": p.get("qty"), "cost": p.get("cost")}
+                for p in self._mp_open_positions()[:10]],
+            "halt": {
+                "ruin": bool(self.state.get("ruin_halted")),
+                "venue_recon": bool(self.state.get("venue_recon_halted")),
+                "daily_loss": bool(self.state.get("daily_loss_halted")),
+                "a1_breaker": bool((self.state.get("a1_breaker") or {}).get("halted")),
+            },
+            "breaker": self._mp_breaker_state(),
+            "last_cycle_ts": datetime.now(timezone.utc).isoformat(),
+            "cycles_completed": int(self.state.get("cycles", 0) or 0),
+            "git_commit": _MP_GIT_COMMIT,
+            "config_hash": _MP_CONFIG_HASH,
+        }
+
+    def _mp_checkpoint(self, correlation_id: Optional[str] = None) -> None:
+        bridge = _mp_bridge()
+        if bridge is None:
+            return
+        bridge.checkpoint(
+            self._mp_checkpoint_payload(),
+            correlation_id=correlation_id or f"poly-checkpoint-{int(time.time())}")
+
+    def _mp_halt_drawer(self, reason: str) -> None:
+        """One durable drawer per risk halt / breaker trip (what, why, state)."""
+        bridge = _mp_bridge()
+        if bridge is None:
+            return
+        a1 = self.state.get("a1_breaker") or {}
+        ts = datetime.now(timezone.utc).isoformat()
+        bridge.drawer(
+            "POLY RISK HALT\n"
+            f"reason: {reason}\n"
+            f"mode: {self._mp_mode()}\n"
+            f"equity: {self._mp_equity():.2f}\n"
+            f"open_positions: {len(self._mp_open_positions())}\n"
+            f"ruin_halted: {bool(self.state.get('ruin_halted'))}\n"
+            f"venue_recon_halted: {bool(self.state.get('venue_recon_halted'))}\n"
+            f"daily_loss_halted: {bool(self.state.get('daily_loss_halted'))}\n"
+            f"daily_realized_loss: {float(self.state.get('daily_realized_loss', 0.0) or 0.0):.2f}\n"
+            f"a1_breaker: halted={bool(a1.get('halted'))} probing={bool(a1.get('probing'))} reason={a1.get('reason') or ''}\n"
+            f"ts: {ts}\n"
+            f"git_commit: {_MP_GIT_COMMIT}\n"
+            f"config_hash: {_MP_CONFIG_HASH}",
+            metadata={"venue": "poly", "event": "risk_halt",
+                      "reason": str(reason), "mode": self._mp_mode(), "ts": ts})
+
+    def _mp_daily_calibration_drawer(self) -> None:
+        """One durable drawer per UTC day with the calibration snapshot."""
+        bridge = _mp_bridge()
+        if bridge is None:
+            return
+        try:
+            snap = self.cal_monitor.snapshot_rolling()
+        except Exception:
+            return
+        band = snap.get("price_band_92_99c") or {}
+        ts = datetime.now(timezone.utc).isoformat()
+        bridge.drawer(
+            "POLY DAILY CALIBRATION\n"
+            f"date_utc: {self.state.get('daily_loss_date')}\n"
+            f"n_settled: {snap.get('n')}\n"
+            f"rolling_brier: {snap.get('rolling_brier')}\n"
+            f"ece: {snap.get('ece')}\n"
+            f"trailing_10_win_rate: {snap.get('trailing_10_win_rate')}\n"
+            f"overall_win_rate: {snap.get('overall_win_rate')}\n"
+            f"band_92_99c: n={band.get('n')} observed_wr={band.get('observed_win_rate')} "
+            f"mean_p={band.get('mean_predicted_p')} gap_pp={band.get('calibration_gap_pp')}\n"
+            f"ts: {ts}",
+            metadata={"venue": "poly", "event": "daily_calibration", "ts": ts})
+
+    def _publish_calibration_facts(self, snap: dict) -> None:
+        """Measured win rate per price band as KG facts. Single-valued:
+        supersede when the value changes, invalidate when the band stops
+        being measured (the rule is retired, the fact is not stale-true)."""
+        bridge = _mp_bridge()
+        if bridge is None:
+            return
+        band = snap.get("price_band_92_99c")
+        prev = self.state.get("_kg_wr_band_92_99c") or ""
+        if band and band.get("n") and band.get("observed_win_rate") is not None:
+            new = f"{band['observed_win_rate']:.4f}@n={band['n']}"
+            if new != prev:
+                if prev:
+                    bridge.kg_supersede("poly_us_trader",
+                                        "measured_win_rate_92_99c", prev, new)
+                else:
+                    bridge.kg_add("poly_us_trader",
+                                  "measured_win_rate_92_99c", new)
+                self.state["_kg_wr_band_92_99c"] = new
+        elif prev:
+            bridge.kg_invalidate("poly_us_trader",
+                                 "measured_win_rate_92_99c", prev)
+            self.state.pop("_kg_wr_band_92_99c", None)
+
+    def on_mempalace_session_start(self) -> None:
+        """Resume hint (advisory only — the local DB wins), then post online."""
+        bridge = _mp_bridge()
+        if bridge is None:
+            return
+        hint = _mp_resume_hint()
+        if hint:
+            log.info("MemPalace resume hint: cycles=%s equity=%s last_cycle=%s "
+                     "(local DB is authoritative on any conflict)",
+                     hint.get("cycles_completed"), hint.get("equity"),
+                     hint.get("last_cycle_ts"))
+        bridge.status("online", {
+            "venue": "poly",
+            "mode": self._mp_mode(),
+            "epoch": int(time.time()),
+            "equity": self._mp_equity(),
+            "open_positions": len(self._mp_open_positions()),
+            "git_commit": _MP_GIT_COMMIT,
+            "config_hash": _MP_CONFIG_HASH,
+        })
+
+    def on_mempalace_session_end(self) -> None:
+        """Final operational checkpoint at shutdown."""
+        try:
+            self._mp_checkpoint(correlation_id=f"poly-final-{int(time.time())}")
+        except Exception as e:
+            log.debug("MemPalace final checkpoint failed: %s", e)
 
     def _ledger_totals(self):
         """(net realized P&L, settlement count) recorded in the paper ledger."""
@@ -1898,6 +2147,7 @@ class PolyUSPaperTrader:
     def cycle(self):
         """Run one full cycle."""
         self._cycle_requests = 0
+        self.state["cycles"] = int(self.state.get("cycles", 0) or 0) + 1
         # N4: drain signed control commands from the shared local inbox.
         try:
             import control
@@ -2176,6 +2426,12 @@ class PolyUSPaperTrader:
         self.calibration_halted = halted
         self.calibration_probing = probing
         self.calibration_reason = reason
+        # M2: measured win rate per price band as KG facts (supersede on
+        # change, invalidate when the band stops being measured).
+        try:
+            self._publish_calibration_facts(snap)
+        except Exception as e:
+            log.debug("calibration fact publish failed: %s", e)
         # A13: persist for --status (read-only) to report.
         self.state["a1_breaker"] = {"halted": bool(halted), "probing": bool(probing),
                                     "reason": str(reason or "")}
@@ -2294,6 +2550,12 @@ class PolyUSPaperTrader:
                            "risk.halt" if halted else "risk.resume",
                            {"reason": reason if halted else "ok"},
                            key=f"{'risk.halt' if halted else 'risk.resume'}:{datetime.now(timezone.utc):%Y-%m-%d}")
+                if halted:
+                    # M2: one durable drawer per breaker trip / risk halt.
+                    try:
+                        self._mp_halt_drawer(reason)
+                    except Exception as e:
+                        log.debug("halt drawer failed: %s", e)
                 self.state["_last_halted_seen"] = bool(halted)
             if not markets:
                 emit_event("poly_us_trader", "cycle.degraded",
@@ -2320,6 +2582,17 @@ class PolyUSPaperTrader:
                                         calibration_reason=self.calibration_reason or "")
         except Exception as e:
             log.warning("report_state hook failed (non-fatal): %s", e)
+
+        # M2: MemPalace parity — heartbeat every cycle, operational
+        # checkpoint every _MP_CHECKPOINT_EVERY cycles (queued, never blocking).
+        try:
+            bridge = _mp_bridge()
+            if bridge is not None:
+                bridge.heartbeat(int(self.state.get("cycles", 0) or 0))
+                if (self.state.get("cycles", 0) or 0) % _MP_CHECKPOINT_EVERY == 0:
+                    self._mp_checkpoint()
+        except Exception as e:
+            log.debug("MemPalace heartbeat/checkpoint failed: %s", e)
 
         systemd_notify("WATCHDOG=1")
 
@@ -2486,6 +2759,13 @@ def main():
     trader = PolyUSPaperTrader(initial_cash=init_cash,
                                reset=args.reset is not None, live_mode=args.live)
 
+    # M2: MemPalace parity — resume hint (advisory; local DB wins),
+    # then announce this session as online.
+    try:
+        trader.on_mempalace_session_start()
+    except Exception as e:
+        log.warning("MemPalace session start failed: %s — continuing without continuity", e)
+
     # R17: SIGTERM/SIGINT -> clean shutdown after the current cycle finishes.
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -2522,6 +2802,18 @@ def main():
         if _stop_requested:
             log.info("Stop signal received — shutting down cleanly.")
     finally:
+        # M2: final operational checkpoint, then flush the bridge before
+        # releasing the instance lock.
+        try:
+            trader.on_mempalace_session_end()
+        except Exception as e:
+            log.warning("MemPalace session end failed: %s", e)
+        try:
+            _b = _mp_bridge()
+            if _b is not None:
+                _b.stop(timeout=5.0)
+        except Exception as e:
+            log.warning("MemPalace bridge stop failed: %s", e)
         if lock_fd is not None:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
