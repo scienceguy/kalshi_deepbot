@@ -1,0 +1,68 @@
+{
+  "name": "SuperBot Control",
+  "nodes": [
+    {
+      "id": "node_webhook",
+      "name": "Control Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "superbot-control",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "webhookId": "superbot-control",
+        "responseData": true,
+        "options": {}
+      },
+      "credentials": {"httpHeaderAuth": {"id": "", "name": "SuperBot Webhook Auth"}},
+      "webhookId": "superbot-control",
+      "isActive": true
+    },
+    {
+      "id": "node_verify",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst h = $json.headers || {};\nconst ts = String(h['x-superbot-timestamp'] || '');\nconst nonce = String(h['x-superbot-nonce'] || '');\nconst sig = String(h['x-superbot-signature'] || '');\nconst raw = typeof $json.body === 'string' ? $json.body : JSON.stringify($json.body);\nconst secret = $env.SUPERBOT_WEBHOOK_SECRET || '';\nif (!ts || !nonce || !sig || !secret) {\n  throw new Error('missing signed fields');\n}\nconst expected = crypto.createHmac('sha256', secret)\n  .update(ts + '.' + nonce + '.' + raw).digest('hex');\nconst fresh = Math.abs(Date.now() - Number(ts)) <= 60000;\nlet replay = false;\ntry {\n  const sd = $getWorkflowStaticData('global');\n  sd.seenNonces = sd.seenNonces || {};\n  if (sd.seenNonces[nonce]) { replay = true; } else { sd.seenNonces[nonce] = Date.now(); }\n} catch (e) { /* static data unavailable — signature freshness still enforced */ }\nconst ok = fresh && !replay && sig.length === expected.length &&\n  crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));\nif (!ok) {\n  throw new Error(replay ? 'replayed nonce' : (fresh ? 'signature mismatch' : 'stale timestamp'));\n}\nreturn [{ json: { ok: true, reason: 'ok', body: $json.body, headers: {\n  'x-superbot-timestamp': ts, 'x-superbot-nonce': nonce, 'x-superbot-signature': sig } } }];"
+      }
+    },
+    {
+      "id": "node_exec",
+      "name": "Enqueue Command",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [440, 0],
+      "parameters": {
+        "command": "/opt/superbot/.venv/bin/python /opt/superbot/scripts/send_command.py --stdin",
+        "executeOnce": true
+      }
+    },
+    {
+      "id": "node_respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [660, 0],
+      "parameters": {
+        "responseCode": "200",
+        "responseBody": "={{ { ok: true, command: $json.command || 'enqueued' } }}",
+        "respondWith": "json",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Control Webhook": {"main": [[{"node": "Verify Signature", "type": "main", "index": 0}]]},
+    "Verify Signature": {"main": [[{"node": "Enqueue Command", "type": "main", "index": 0}]]},
+    "Enqueue Command": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "N4 control plane: HMAC-verified signed commands (pause/resume/reduce caps/status/report) enqueued to the traders' local control_inbox. No secrets stored."},
+  "active": true
+}

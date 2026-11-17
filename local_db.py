@@ -261,6 +261,26 @@ class LocalDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_status ON event_outbox(status, next_attempt_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outbox_event_id ON event_outbox(event_id)")
 
+            # N4: signed control commands from n8n/operators land here first;
+            # the trader drains them at the top of each cycle. UNIQUE(nonce)
+            # is the replay guard; signature material is stored so the trader
+            # can re-verify before acting.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS control_inbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command TEXT NOT NULL,
+                    agent_id TEXT NOT NULL DEFAULT '',
+                    nonce TEXT NOT NULL UNIQUE,
+                    ts INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    signature TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    result TEXT NOT NULL DEFAULT '',
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_control_inbox_status ON control_inbox(status, created_at)")
+
             # D1: venue/mode/origin_host/schema_version on all activity tables.
             # Added via ALTER TABLE so existing databases are migrated in place.
             for _table, _cols in (
@@ -1192,6 +1212,54 @@ class LocalDB:
                 except Exception as e:
                     log.debug("get_sync_lag_stats(%s): %s", table, e)
         return {"unsynced_count": total, "oldest_unsynced_age_s": oldest}
+
+    def enqueue_control_command(self, command: str, agent_id: str, nonce: str,
+                                ts: int, payload_json: str, signature: str
+                                ) -> Optional[int]:
+        """N4: store a signed control command. Returns row id, or None when the
+        nonce is a replay (UNIQUE constraint) or the insert fails."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                cur = conn.execute(
+                    "INSERT INTO control_inbox "
+                    "(command, agent_id, nonce, ts, payload_json, signature) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (command, agent_id, nonce, ts, payload_json, signature))
+                conn.commit()
+                return cur.lastrowid
+            except Exception as e:
+                log.warning("enqueue_control_command(%s) error: %s", command, e)
+                return None
+
+    def get_pending_control_commands(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """N4: pending control commands, oldest first."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                rows = conn.execute(
+                    "SELECT id, command, agent_id, nonce, ts, payload_json, signature "
+                    "FROM control_inbox WHERE status = 'pending' "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?", (limit,)).fetchall()
+                return [dict(zip(("id", "command", "agent_id", "nonce", "ts",
+                                  "payload_json", "signature"), r)) for r in rows]
+            except Exception as e:
+                log.warning("get_pending_control_commands error: %s", e)
+                return []
+
+    def set_control_command_result(self, row_id: int, status: str, result: str) -> bool:
+        """N4: mark a control command applied/rejected with its result."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                conn.execute(
+                    "UPDATE control_inbox SET status = ?, result = ? WHERE id = ?",
+                    (status, result, row_id))
+                conn.commit()
+                return True
+            except Exception as e:
+                log.warning("set_control_command_result(%s) error: %s", row_id, e)
+                return False
 
     def _sync_loop(self):
         """Background sync loop."""

@@ -95,6 +95,7 @@ import signals as se  # noqa: E402
 from resilience import CycleSupervisor, systemd_notify  # noqa: E402
 from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, calibration_beats_chance as _llm_calibration_beats_chance  # noqa: E402
 from emit import emit_event, emit_sync_lag  # noqa: E402
+import control  # noqa: E402  — N4 signed control inbox (pause/resume/caps)
 import paper_mode  # noqa: E402
 import gates  # noqa: E402
 import report_state  # noqa: E402  — B19 operator visibility hook
@@ -1882,6 +1883,14 @@ def cycle(client: KalshiClient):
     state.cycles += 1
     log.info("── Cycle %d ──────────────────────", state.cycles)
 
+    # N4: drain signed control commands from the inbox before any work so a
+    # pause_entries lands within one tick. Never raises.
+    try:
+        control.drain_and_apply(get_local_db(), risk_halted=state.risk.state.halted,
+                                positions=state.positions, source="kalshi_trader")
+    except Exception as e:
+        log.warning("control drain failed: %s", e)
+
     # Maintenance
     try:
         se._maybe_save_bid_hist(time.time())
@@ -2608,6 +2617,10 @@ def cycle(client: KalshiClient):
     # Hard stops
     if state.risk.state.halted:
         log.warning("🛑 Risk halt active — no new entries")
+        return
+    # N4: signed pause_entries command — blocks new entries until resumed.
+    if control.STATE.pause_entries:  # reviewed: signed control pause gates entries
+        log.info("Pause entries active — no new entries")
         return
 
     min_cash_req = config.PAPER_MIN_CASH_ABSOLUTE if config.DRY_RUN else config.MIN_CASH_ABSOLUTE

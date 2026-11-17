@@ -62,12 +62,16 @@ EVENT_TYPES = frozenset({
     "calibration.alert",   # vol/model calibration drift
     "latency.alert",       # p95 exceeded budget
     "heartbeat",           # liveness ping
+    "control.applied",     # a signed control command was applied (N4)
+    "control.rejected",    # a control command was rejected (N4)
+    "control.status",      # response to request_status (N4)
+    "control.report",      # response to request_report (N4)
 })
 
 # Delivery class per event type (N2: three lanes).
 CRITICAL_TYPES = frozenset({
     "risk.halt", "risk.resume", "breaker.trip", "breaker.clear",
-    "reconcile.mismatch", "auth.failure",
+    "reconcile.mismatch", "auth.failure", "control.rejected",
 })
 NORMAL_TYPES = frozenset({
     "order.placed", "order.filled", "order.cancelled", "order.state",
@@ -76,6 +80,7 @@ NORMAL_TYPES = frozenset({
 TELEMETRY_TYPES = frozenset({
     "heartbeat", "latency.alert", "sync.lag", "calibration.alert",
     "daily.summary", "cycle.degraded",
+    "control.applied", "control.status", "control.report",
 })
 
 LANES = ("critical", "normal", "telemetry")

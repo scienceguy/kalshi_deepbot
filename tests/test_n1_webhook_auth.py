@@ -313,13 +313,13 @@ def test_installer_rest_idempotent_no_db(monkeypatch, capsys):
     st = fake.state
     names = sorted(w["name"] for w in st["workflows"].values())
     assert names == [
-        "SuperBot Backtest", "SuperBot Coordinate", "SuperBot Critical Alert",
-        "SuperBot Daily Digest", "SuperBot Data Collect",
+        "SuperBot Backtest", "SuperBot Control", "SuperBot Coordinate",
+        "SuperBot Critical Alert", "SuperBot Daily Digest", "SuperBot Data Collect",
         "SuperBot Heartbeat Watchdog Kalshi", "SuperBot Heartbeat Watchdog Poly",
         "SuperBot Monitor", "SuperBot Position Watchdog", "SuperBot Sync Lag",
     ]
     # settlement processor skipped without Supabase creds; everything else present
-    assert len(st["workflows"]) == 10
+    assert len(st["workflows"]) == 11
     assert st["updates"] >= 4                   # second run updated, never duplicated
     assert len(st["credentials"]) == 1          # credential created once
 
@@ -333,7 +333,8 @@ def test_installer_rest_idempotent_no_db(monkeypatch, capsys):
     hooked = sorted(
         w["name"] for w in st["workflows"].values()
         if any(n["type"] == "n8n-nodes-base.webhook" for n in w["nodes"]))
-    assert hooked == ["SuperBot Backtest", "SuperBot Coordinate",
+    assert hooked == ["SuperBot Backtest", "SuperBot Control",
+                      "SuperBot Coordinate",
                       "SuperBot Critical Alert", "SuperBot Data Collect",
                       "SuperBot Monitor"]
 

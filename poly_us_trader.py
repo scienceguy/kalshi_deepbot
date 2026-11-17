@@ -1461,6 +1461,14 @@ class PolyUSPaperTrader:
         if self.state.get("ruin_halted"):
             log.info("Ruin halt active — refusing new entries (manual --reset required)")
             return False
+        # N4: signed pause_entries command from n8n — no new entries.
+        try:
+            import control
+            if control.STATE.pause_entries:
+                log.info("Control pause active — refusing new entries")
+                return False
+        except Exception as e:
+            log.debug("control pause check failed: %s", e)
         # A13: venue reconciliation mismatch — no new entries until manual --reset.
         if self.state.get("venue_recon_halted"):
             log.info("Venue reconcile mismatch halt active — refusing new entries (manual --reset required)")
@@ -1783,6 +1791,16 @@ class PolyUSPaperTrader:
     def cycle(self):
         """Run one full cycle."""
         self._cycle_requests = 0
+        # N4: drain signed control commands from the shared local inbox.
+        try:
+            import control
+            from local_db import get_local_db
+            control.drain_and_apply(get_local_db(),
+                                    risk_halted=bool(self.state.get("ruin_halted")),
+                                    positions=self.state.get("positions") or {},
+                                    source="poly_us_trader")
+        except Exception as e:
+            log.warning("control drain failed: %s", e)
         markets = self.scan_markets()
         market_map = {m["slug"]: m for m in markets if "slug" in m}
 

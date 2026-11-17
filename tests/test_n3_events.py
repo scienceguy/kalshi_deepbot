@@ -221,7 +221,7 @@ WORKFLOWS = sorted((REPO / "n8n" / "workflows").glob("*.json"))
 EXPECTED_WORKFLOWS = {
     "superbot-critical-alert", "superbot-daily-digest",
     "superbot-heartbeat-watchdog-kalshi", "superbot-heartbeat-watchdog-poly",
-    "superbot-sync-lag", "superbot-position-watchdog",
+    "superbot-sync-lag", "superbot-position-watchdog", "superbot-control",
 }
 
 
@@ -367,7 +367,8 @@ def test_json_workflows_install_idempotently(monkeypatch, capsys):
     json_names = {"SuperBot Critical Alert", "SuperBot Daily Digest",
                   "SuperBot Heartbeat Watchdog Kalshi",
                   "SuperBot Heartbeat Watchdog Poly",
-                  "SuperBot Sync Lag", "SuperBot Position Watchdog"}
+                  "SuperBot Sync Lag", "SuperBot Position Watchdog",
+                  "SuperBot Control"}
     assert json_names <= set(names), names
     # second run updated JSON workflows instead of duplicating them
     assert state["updates"] >= len(json_names)
