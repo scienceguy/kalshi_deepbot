@@ -591,8 +591,9 @@ SERIES_FEE_REFRESH_HOURS = _env_float("SERIES_FEE_REFRESH_HOURS", 6.0)
 # ══════════════════════════════════════════════════════════════════════
 # FINANCIAL GUARDRAILS (Hardening Pillar B)
 # ═════════════════════════════════════════════════════════════════════
-# Daily loss circuit breaker: halt all trading + cancel open orders if daily
-# P&L drops below this fraction of starting balance (e.g., 0.05 = 5% daily loss limit).
+# Daily loss circuit breaker: halt new entries if daily P&L drops below this
+# fraction of starting balance (e.g., 0.05 = 5% daily loss limit). Open orders
+# are not cancelled by the halt.
 DAILY_LOSS_LIMIT_PCT = _env_float("DAILY_LOSS_LIMIT_PCT", 0.05)
 # Max exposure per single ticker as fraction of total portfolio (cash + exposure).
 MAX_POSITION_PER_TICKER_PCT = _env_float("MAX_POSITION_PER_TICKER_PCT", 0.15)

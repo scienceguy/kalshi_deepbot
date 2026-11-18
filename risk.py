@@ -150,34 +150,50 @@ class RiskManager:
             log.info("✅ Risk halt auto-resumed after %d min (HALT_AUTO_RESUME=true; peak $%.2f)",
                      config.HALT_MIN_MINUTES, peak)
 
+    def _maybe_reset_daily(self) -> None:
+        """Roll the daily P&L window at midnight UTC. Never adds P&L."""
+        now = time.time()
+        # reviewed: K6 midnight roll same as update_daily_pnl, never adds P&L
+        if now - self.state.daily_pnl_reset_ts < 86400:  # 24 hours
+            return
+        # reviewed: K6 only log/emit when P&L was actually non-zero
+        if self.state.daily_pnl != 0.0:
+            log.info("📅 Daily P&L reset: was $%.2f", self.state.daily_pnl)
+            try:
+                import emit
+                emit.emit_event(
+                    "kalshi_trader", "daily.summary",
+                    {"date_utc": time.strftime("%Y-%m-%d", time.gmtime(now - 86400)),
+                     "daily_pnl_dollars": round(self.state.daily_pnl, 4),
+                     "start_balance_dollars": round(self.state.start_balance, 2)},
+                    key=f"daily.summary:{time.strftime('%Y-%m-%d', time.gmtime(now - 86400))}")
+            except Exception:
+                pass
+        self.state.daily_pnl = 0.0
+        self.state.daily_pnl_reset_ts = now
+        # A new day starts fresh: clear a daily-loss halt so trading can resume
+        # reviewed: K6 daily-loss halt cleared at midnight roll
+        if self.state.halted and "daily loss" in self.state.halt_reason:
+            self.state.halted = False
+            self.state.halted_at = 0.0
+            self.state.halt_reason = ""
+
+    def is_halted(self) -> bool:
+        """True when a halt blocks new entries (K6).
+
+        Rolls the daily window like update_daily_pnl, but never adds P&L, so a
+        pre-order check cannot mutate the loss total.
+        """
+        self._maybe_reset_daily()
+        return self.state.halted
+
     def update_daily_pnl(self, pnl_delta: float) -> Tuple[bool, str]:
         """Update daily P&L and check daily loss circuit breaker.
         
-        Returns (halted, reason). If halted is True, trading should stop and
-        open orders should be cancelled.
+        Returns (halted, reason). If halted is True, trading should stop
+        placing new entries (open orders are not cancelled).
         """
-        # Reset daily P&L at midnight UTC
-        now = time.time()
-        if now - self.state.daily_pnl_reset_ts >= 86400:  # 24 hours
-            if self.state.daily_pnl != 0.0:
-                log.info("📅 Daily P&L reset: was $%.2f", self.state.daily_pnl)
-                try:
-                    import emit
-                    emit.emit_event(
-                        "kalshi_trader", "daily.summary",
-                        {"date_utc": time.strftime("%Y-%m-%d", time.gmtime(now - 86400)),
-                         "daily_pnl_dollars": round(self.state.daily_pnl, 4),
-                         "start_balance_dollars": round(self.state.start_balance, 2)},
-                        key=f"daily.summary:{time.strftime('%Y-%m-%d', time.gmtime(now - 86400))}")
-                except Exception:
-                    pass
-            self.state.daily_pnl = 0.0
-            self.state.daily_pnl_reset_ts = now
-            # A new day starts fresh: clear a daily-loss halt so trading can resume
-            if self.state.halted and "daily loss" in self.state.halt_reason:
-                self.state.halted = False
-                self.state.halted_at = 0.0
-                self.state.halt_reason = ""
+        self._maybe_reset_daily()
 
         self.state.daily_pnl += pnl_delta
         daily_limit = self.state.start_balance * config.DAILY_LOSS_LIMIT_PCT
@@ -187,12 +203,14 @@ class RiskManager:
         if daily_limit > 0.0 and self.state.daily_pnl <= -daily_limit:
             if not self.state.halted:
                 self.state.halted = True
+                now = time.time()
                 self.state.halted_at = now
                 self.state.halt_reason = (
                     f"daily loss limit: ${self.state.daily_pnl:.2f} <= -${daily_limit:.2f} "
                     f"({config.DAILY_LOSS_LIMIT_PCT*100:.0f}% of ${self.state.start_balance:.2f})"
                 )
-                log.warning("🛑 DAILY LOSS CIRCUIT BREAKER — %s. Halt trading & cancel open orders.",
+                log.warning("🛑 DAILY LOSS CIRCUIT BREAKER — %s. Halting new entries "
+                            "(open orders are not cancelled).",
                             self.state.halt_reason)
                 return True, self.state.halt_reason
         return False, "ok"
@@ -471,19 +489,18 @@ class RiskManager:
         # Paper-only guard bypass (PAPER_GUARDS_ENABLED=false); the live path
         # still enforces the halt, cooldown and per-market loss limit.
         if not _paper_guards_relaxed():  # reviewed: bypass is paper-only, live always runs the guards
-            # Daily loss circuit breaker takes precedence over generic halt message
-            if self.state.halted and "daily loss" in self.state.halt_reason:
-                return False, f"daily loss circuit breaker: {self.state.halt_reason}"
-            if self.state.halted:  # reviewed: live drawdown halt blocks every new order
+            # K6: read the halt without adding P&L; the daily window still rolls.
+            # reviewed: K6 is_halted() rolls daily window but never adds P&L
+            if self.is_halted():
+                # Daily loss circuit breaker takes precedence over generic halt message
+                # reviewed: K6 daily-loss halt message priority
+                if "daily loss" in self.state.halt_reason:
+                    return False, f"daily loss circuit breaker: {self.state.halt_reason}"
+                # reviewed: live drawdown halt blocks every new order
                 return False, f"session halted ({self.state.halt_reason})"
 
             if self._loss_cooldown_active():  # reviewed: live cooling-off after 3 straight losses, expires LOSS_COOLDOWN_MINUTES after it started
                 return False, "consecutive loss cooldown"
-
-            # Daily loss circuit breaker (Pillar B)
-            halted, reason = self.update_daily_pnl(0.0)  # Just check, don't add P&L
-            if halted:
-                return False, f"daily loss circuit breaker: {reason}"
 
             # Per-market daily loss limit check. The config value is a fraction of
             # total portfolio value (cash + exposure), so it scales with the full

@@ -419,3 +419,59 @@ def test_liquidity_check_rejects_missing_book(monkeypatch):
     assert "no yes book" in reason
 
 
+def test_is_halted_rolls_daily_window(monkeypatch):
+    """K6: is_halted() rolls the daily window without adding P&L."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "DAILY_LOSS_LIMIT_PCT", 0.05)
+
+    r = RiskManager()
+    r.initialize(100.0)
+
+    # Simulate a daily loss that would halt if the window hasn't rolled
+    r.state.daily_pnl = -10.0  # exceeds 5% limit
+    r.state.halted = True
+    r.state.halt_reason = "daily loss limit: $-10.00 <= -$5.00"
+
+    # Before midnight: is_halted returns True
+    assert r.is_halted() is True
+
+    # After midnight roll: window rolls, halt clears
+    clock["t"] = 90000.0  # > 86400 seconds later
+    assert r.is_halted() is False
+    assert r.state.halted is False
+    assert r.state.daily_pnl == 0.0
+
+
+def test_check_calls_is_halted(monkeypatch):
+    """K6: check() calls is_halted() which rolls the daily window."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "DAILY_LOSS_LIMIT_PCT", 0.05)
+    monkeypatch.setattr(config, "PAPER_GUARDS_ENABLED", True)
+
+    r = RiskManager()
+    r.initialize(100.0)
+
+    # Set up a daily loss that would halt
+    r.state.daily_pnl = -10.0
+    r.state.halted = True
+    r.state.halt_reason = "daily loss limit: $-10.00 <= -$5.00"
+
+    # check() should call is_halted() which rolls the window at midnight
+    # Before midnight: blocked
+    ok, reason = r.check(100.0, 0.0, 10.0, "KXBTC15M-1", total_value=100.0, paper=True)
+    assert ok is False
+    assert "daily loss circuit breaker" in reason
+
+    # After midnight: window rolls, not blocked
+    clock["t"] = 90000.0
+    ok, reason = r.check(100.0, 0.0, 10.0, "KXBTC15M-1", total_value=100.0, paper=True)
+    assert ok is True
+    assert reason == "ok"
+
+
