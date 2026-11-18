@@ -512,16 +512,6 @@ class TestPositionHelpers:
              "no_position": 0, "no_avg_price_dollars": "0"}
         assert trader._pos_cost_basis(p) == 2 * 0.85
 
-    def test_order_count_new_schema(self):
-        assert trader._order_count({"initial_count_fp": "10.00"}) == 10
-
-    def test_order_count_legacy_count(self):
-        assert trader._order_count({"count": "5"}) == 5
-
-    def test_order_count_zero_or_missing(self):
-        assert trader._order_count({}) == 0
-        assert trader._order_count({"count": 0}) == 0
-
     def test_order_price_dollars_new_schema_yes(self):
         assert trader._order_price_dollars({"yes_price_dollars": "0.6100"}) == 0.61
 
@@ -1722,3 +1712,26 @@ def test_p11_touch_window_over_ten_unchanged(monkeypatch):
     assert test_state.window["reserved_cash"] == pytest.approx(
         100.0 * config.CASH_RESERVED_PCT
     )
+
+
+def test_ticker_close_time_converts_et_to_utc():
+    # Nov 14 2026 is after the DST end, so 14:00 ET = 19:00 UTC (EST).
+    dt = trader._ticker_close_time("KXBTC15M-26NOV141400-00")
+    assert dt is not None
+    assert dt.hour == 19 and dt.tzinfo is not None
+
+
+def test_ticker_close_time_dst_fallback_honours_first_sunday(monkeypatch):
+    """When zoneinfo is unavailable the ET->UTC fallback must treat the days
+    before the first Sunday of November as DST. The old `(month == 11 and
+    day < 1)` disjunct was always false, so Nov 1-6 were read as EST."""
+    import zoneinfo
+
+    def _no_tz(*_a, **_k):
+        raise RuntimeError("tzdata unavailable")
+
+    monkeypatch.setattr(zoneinfo, "ZoneInfo", _no_tz)
+    # 2027-11-01 is a Monday, so DST still in effect: 14:00 EDT = 18:00 UTC.
+    assert trader._ticker_close_time("KXBTC15M-27NOV011400-00").hour == 18
+    # 2027-11-30 is after the first Sunday (Nov 7): 14:00 EST = 19:00 UTC.
+    assert trader._ticker_close_time("KXBTC15M-27NOV301400-00").hour == 19

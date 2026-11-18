@@ -741,19 +741,6 @@ def _pos_cost_basis(p):
     return yes * yp + no * np_
 
 
-def _order_count(o):
-    """Contract count from an order record (new + legacy shape)."""
-    for k in ("remaining_count_fp", "initial_count_fp", "count", "quantity"):
-        v = o.get(k)
-        if v in (None, "", 0, "0", "0.00"):
-            continue
-        try:
-            return float(float(v))
-        except (TypeError, ValueError):
-            continue
-    return 0
-
-
 def _order_initial_count(o):
     """Initial (original) contract count from an order record (new + legacy)."""
     for k in ("initial_count_fp", "count", "quantity"):
@@ -836,7 +823,11 @@ def _ticker_close_time(ticker: str) -> Optional[datetime]:
                 return dt_naive.replace(tzinfo=ZoneInfo("America/New_York")).astimezone(timezone.utc)
             except Exception:
                 month, day = dt_naive.month, dt_naive.day
-                is_dst = (3 < month < 11) or (month == 3 and day >= 8) or (month == 11 and day < 1)
+                # reviewed: US DST ends on the first Sunday in November; the old
+                # `day < 1` was always false, so the fallback treated all of
+                # November as standard time. Days before that Sunday are still DST.
+                first_sunday = 1 + (6 - dt_naive.replace(day=1).weekday()) % 7
+                is_dst = (3 < month < 11) or (month == 3 and day >= 8) or (month == 11 and day < first_sunday)
                 offset_hours = 4 if is_dst else 5
                 # reviewed: robust Eastern Time to UTC conversion for accurate close time comparison
                 return dt_naive.replace(tzinfo=timezone.utc) + timedelta(hours=offset_hours)

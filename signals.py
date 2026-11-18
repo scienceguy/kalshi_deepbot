@@ -293,11 +293,6 @@ def _maybe_save_bid_hist(now: float):
         _bid_hist_loaded_at = now
 
 
-def _load_bid_hist_for_read():
-    """Load bid history with shared lock for concurrent reads (alias for _load_bid_hist)."""
-    return _load_bid_hist(force=True)
-
-
 def _force_save_bid_hist():
     """Force save bid history to disk immediately (used on shutdown)."""
     try:
