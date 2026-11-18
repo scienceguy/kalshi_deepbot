@@ -1614,8 +1614,12 @@ class LocalDB:
     # H11: durable bus inbox for the coding agent
     def enqueue_bus_message(self, message_id: str, type: str, from_agent: str,
                             correlation_id: str, body: str) -> Optional[int]:
-        """H11: store a bus message for the coding agent. Returns row id, or
-        None when message_id is a duplicate (UNIQUE constraint) or insert fails."""
+        """H11: store a bus message for the coding agent. Returns the row id.
+
+        A duplicate message_id returns the EXISTING row id (it is already
+        durable) so the caller can tell "already stored" from "not stored";
+        only a real insert failure returns None.
+        """
         conn = self._get_conn()
         with self._lock:
             try:
@@ -1626,6 +1630,11 @@ class LocalDB:
                     (message_id, type, from_agent, correlation_id, body))
                 conn.commit()
                 return cur.lastrowid
+            except sqlite3.IntegrityError:
+                row = conn.execute(
+                    "SELECT id FROM bus_inbox WHERE message_id = ?",
+                    (message_id,)).fetchone()
+                return row[0] if row else None
             except Exception as e:
                 log.warning("enqueue_bus_message(%s) error: %s", message_id, e)
                 return None

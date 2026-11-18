@@ -57,6 +57,14 @@ def test_handler_duplicate_message_id_no_raise_no_second_row(tmp_path, monkeypat
     assert [r["message_id"] for r in pending] == ["msg-1"]
 
 
+def test_handler_reports_not_durable_when_enqueue_returns_none(tmp_path, monkeypatch):
+    """A failed INSERT is swallowed by enqueue and returns None — the handler
+    must not claim durability just because nothing raised."""
+    db = _db(tmp_path, monkeypatch)
+    monkeypatch.setattr(db, "enqueue_bus_message", lambda *a, **kw: None)
+    assert agent_bus._log_only_handler(_env(message_id="msg-none")) == {"persisted": False}
+
+
 def test_handler_swallows_enqueue_failure(tmp_path, monkeypatch):
     db = _db(tmp_path, monkeypatch)
     monkeypatch.setattr(db, "enqueue_bus_message",

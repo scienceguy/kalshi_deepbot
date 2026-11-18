@@ -32,7 +32,8 @@ def test_duplicate_message_id_rejected(tmp_path):
     first = db.enqueue_bus_message("dup-1", "task.request", "a", "c", "{}")
     second = db.enqueue_bus_message("dup-1", "task.request", "a", "c", "{}")
     assert first is not None
-    assert second is None
+    # a duplicate is still durable: report the existing row, not a failure
+    assert second == first
     assert [r["message_id"] for r in db.get_pending_bus_messages()] == ["dup-1"]
 
 

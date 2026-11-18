@@ -406,11 +406,12 @@ def _log_only_handler(env: dict) -> dict:
         body = env.get("body", "")
         if not isinstance(body, str):
             body = json.dumps(body)
-        get_local_db().enqueue_bus_message(
+        rid = get_local_db().enqueue_bus_message(
             str(env.get("message_id", "")), str(env.get("type", "")),
             str(env.get("from_agent", "")), str(env.get("correlation_id", "")),
             body)
-        persisted = True
+        # None means the row is NOT stored (a duplicate returns its existing id)
+        persisted = rid is not None
     except Exception as e:
         log.error("bus_inbox enqueue FAILED (message_id=%s) — message accepted "
                   "but NOT durable: %s", env.get("message_id", ""), e)
