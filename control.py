@@ -70,7 +70,13 @@ STATE = ControlState()
 
 
 def verify_command(row: dict) -> tuple:
-    """Re-verify a stored command. Returns (ok, reason, body, agent_id, event_id)."""
+    """Re-verify a stored command at drain time.
+    
+    H1: At ingest (send_command.py) we verify with freshness check.
+    At drain we only verify HMAC integrity (check_freshness=False) so a
+    command queued minutes ago can still be applied. Replay protection
+    is handled by the UNIQUE nonce constraint in control_inbox.
+    Returns (ok, reason, body, agent_id, event_id)."""
     sig = row.get("signature") or ""
     ts = row.get("ts")
     nonce = row.get("nonce") or ""
@@ -78,7 +84,8 @@ def verify_command(row: dict) -> tuple:
     agent_id = row.get("agent_id") or "unknown"
     if not sig:
         return False, "missing signature", {}, agent_id, ""
-    ok, reason = n8n_webhook_auth.verify_request(ts, nonce, body, sig)
+    # H1: verify HMAC integrity only at drain; freshness was checked at ingest
+    ok, reason = n8n_webhook_auth.verify_request(ts, nonce, body, sig, check_freshness=False)
     if not ok:
         return False, f"signature: {reason}", {}, agent_id, ""
     try:
@@ -88,6 +95,24 @@ def verify_command(row: dict) -> tuple:
     except Exception as e:
         return False, f"payload: {e}", {}, agent_id, ""
     return True, "ok", payload, agent_id, f"control:{row.get('command')}:{nonce}"
+
+
+def _persist_pause(db, value: dict) -> bool:
+    """H1: write pause state to the local DB, loudly on failure.
+
+    A failed write means memory says paused but a restart would un-pause the
+    bot, so this is logged at ERROR rather than swallowed.
+    """
+    import logging
+    try:
+        ok = bool(db.set_control_state("pause_entries", value))
+    except Exception:
+        ok = False
+    if not ok:
+        logging.getLogger(__name__).error(
+            "control state persistence FAILED — memory and DB now disagree; "
+            "re-issue the command after fixing the DB")
+    return ok
 
 
 def _reject(db, row: dict, reason: str, source: str) -> dict:
@@ -148,7 +173,17 @@ def apply_command(db, row: dict, *, risk_halted: bool = False,
         context = {"risk_halted": risk_halted, "positions": positions}
         if command == "pause_entries":
             STATE.pause_entries = True
-            result = _apply(db, row, source, {"paused": True, "reason": payload.get("reason") or ""})
+            # H1: persist pause state so it survives restarts
+            persisted = _persist_pause(db, {
+                "paused": True,
+                "paused_by": agent_id,
+                "paused_at": int(time.time()),
+                "reason": payload.get("reason") or "",
+                "command_nonce": row.get("nonce"),
+            })
+            result = _apply(db, row, source, {"paused": True,
+                                              "reason": payload.get("reason") or "",
+                                              "persisted": persisted})
             return result
 
         if command == "resume_entries":
@@ -162,11 +197,18 @@ def apply_command(db, row: dict, *, risk_halted: bool = False,
                 # second confirmation accepted: lift the control pause only; the
                 # risk halt itself still needs HALT_AUTO_RESUME / VPS --resume.
                 STATE.pause_entries = False
+                # H1: clear persisted pause state
+                persisted = _persist_pause(db, {"paused": False})
                 return _apply(db, row, source,
                               {"paused": False, "confirmed_by": confirm_by,
-                               "risk_halt_still_active": True})
+                               "risk_halt_still_active": True,
+                               "persisted": persisted})
             STATE.pause_entries = False
-            return _apply(db, row, source, {"paused": False, "confirmed_by": confirm_by or ""})
+            # H1: clear persisted pause state
+            persisted = _persist_pause(db, {"paused": False})
+            return _apply(db, row, source, {"paused": False,
+                                            "confirmed_by": confirm_by or "",
+                                            "persisted": persisted})
 
         if command == "reduce_exposure_caps":
             new_caps = {}

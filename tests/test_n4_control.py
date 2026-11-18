@@ -127,13 +127,15 @@ def test_unsigned_command_rejected_and_logged(control_db, monkeypatch, caplog):
     assert control.STATE.pause_entries is False
 
 
-def test_expired_command_rejected(control_db, caplog):
+def test_expired_command_applied_at_drain(control_db, caplog):
+    """H1: at drain we only verify HMAC integrity (check_freshness=False).
+    Freshness was already verified at ingest (send_command.py).
+    A command queued 2 min ago should still be applied."""
     _signed_row(control_db, "pause_entries", ts_offset_ms=-120_000)  # 2 min old
     with caplog.at_level("WARNING"):
         results = control.drain_and_apply(control_db, risk_halted=False)
-    assert results[0]["status"] == "rejected"
-    assert "timestamp" in results[0]["reason"].lower()
-    assert control.STATE.pause_entries is False
+    assert results[0]["status"] == "applied"
+    assert control.STATE.pause_entries is True
 
 
 def test_replayed_command_rejected_at_enqueue(control_db):

@@ -490,6 +490,14 @@ class BotState:
         self.position_risk[ticker] = filled_risk
         _save_paper_positions(self.positions)
 
+        # H9: confirm the order intent as filled (resolves by ticker+side;
+        # only one resting entry per ticker is allowed, so it is unambiguous)
+        try:
+            get_local_db().confirm_order_intent_by_ticker(
+                ticker, sig.side, venue_order_id=oid, venue_status=status)
+        except Exception as e:
+            log.warning("confirm_order_intent failed for %s: %s", ticker, e)
+
 
 # Global bot state — created lazily by get_state() (B16: import must stay
 # side-effect free). main() and the test fixture in tests/conftest.py call
@@ -1868,6 +1876,7 @@ def _report_cycle_state(cash, positions, risk_state):
 
 def cycle(client: KalshiClient):
     state.cycles += 1
+    _cycle_t0 = time.time()
     log.info("── Cycle %d ──────────────────────", state.cycles)
 
     # N4: drain signed control commands from the inbox before any work so a
@@ -1926,6 +1935,14 @@ def cycle(client: KalshiClient):
     state.tradeable_brackets = len(markets)
     state.available_active_markets = getattr(markets, "total_available", len(markets))
     state.available_markets_count = state.available_active_markets
+    # H8: record market-discovery stage latency (event-driven decisions measure
+    # first — the discovery call dominates a cold cycle).
+    try:
+        get_local_db().record_latency(
+            "market_find", (time.time() - _cycle_t0) * 1000.0,
+            venue="kalshi", mode="live" if not config.DRY_RUN else "dry")
+    except Exception:
+        pass
 
     # For dry-run: compute paper mark-to-market exposure from local paper positions
     # and current market mids, so cash sizing reflects unrealized gains/losses.
@@ -2848,9 +2865,41 @@ def cycle(client: KalshiClient):
             continue
 
         coid = _coid(sig.market.ticker, sig.side)
+        # H9: write-ahead order intent — record BEFORE the REST call
+        # so a crash after the call but before fill recording leaves a
+        # pending_send row that reconcile_on_startup can resolve.
+        _order_t0 = time.time()
+        try:
+            get_local_db().record_order_intent(
+                order_id=coid,
+                ticker=sig.market.ticker,
+                side=sig.side,
+                price_cents=sig.entry_price,
+                contracts=sig.contracts,
+                dollar_risk=sig.dollar_risk,
+                venue="kalshi",
+                mode="live" if not config.DRY_RUN else "dry",
+            )
+        except Exception as e:
+            log.error("record_order_intent FAILED for %s — this order has no "
+                      "crash protection: %s", coid, e)
+
         resp = state._place_order(client, sig, coid)
         if resp is None:
+            # H9: placement outcome is unknown (a clean venue miss and a
+            # timed-out POST that adoption could not resolve both land here),
+            # so leave the intent 'pending'. A crash now still leaves a row for
+            # startup reconcile; prune marks it abandoned after 24h.
+            log.info("H9: intent %s unresolved after placement — left pending", coid)
             continue
+
+        # H8: record the order-placement stage latency
+        try:
+            get_local_db().record_latency(
+                "order_place", (time.time() - _order_t0) * 1000.0,
+                venue="kalshi", mode="live" if not config.DRY_RUN else "dry")
+        except Exception:
+            pass
 
         oid = (resp.get("order") or {}).get("order_id") or resp.get("order_id", "")
         if oid:
@@ -3211,6 +3260,45 @@ def _run_loop(args):
         log.info("MemPalace bridge started (writer + subscriber threads)")
     except Exception as e:
         log.warning("MemPalace bridge start failed: %s — MemPalace features disabled", e)
+
+    # H1: Load persisted control pause state at startup
+    try:
+        db = get_local_db()
+        pause_state = db.get_control_state("pause_entries")
+        # reviewed: persisted pause must win at startup, else a restart silently resumes trading
+        if pause_state and pause_state.get("paused"):
+            import control
+            control.STATE.pause_entries = True
+            log.warning("H1: Resumed persistent pause_entries (paused_by=%s, reason=%s)",
+                        pause_state.get("paused_by"), pause_state.get("reason"))
+    except Exception as e:
+        # fail closed: a signed pause we cannot read still means paused
+        import control
+        control.STATE.pause_entries = True
+        log.error("H1: could not read persisted pause state (%s) — pausing entries "
+                  "until an operator resumes", e)
+
+    # H9: reconcile pending_send orders at startup
+    # shortcut: an unfilled resting order stays 'pending' until the next
+    # restart; upgrade when pending_send depth is monitored or grows.
+    try:
+        db = get_local_db()
+        pending = db.get_pending_sends()
+        # reviewed: surviving intents must be closed so they cannot double-count exposure
+        if pending:
+            log.warning("H9: Found %d pending order intents at startup — reconciling", len(pending))
+            for p in pending:
+                try:
+                    # No venue query here: an intent that survived a restart is
+                    # marked cancelled so it cannot double-count exposure. A
+                    # real fill is still recovered when live positions are
+                    # seeded from the venue later in startup.
+                    db.cancel_order_intent(p["order_id"], venue_status="reconciled_startup")
+                    log.info("H9: pending_send %s marked cancelled/unverified at startup (fills recovered from venue)", p["order_id"])
+                except Exception as e:
+                    log.warning("H9: Failed to reconcile %s: %s", p.get("order_id"), e)
+    except Exception as e:
+        log.warning("H9: reconcile_on_startup failed: %s", e)
 
     # C1: localhost push bus for peer messages. Advisory only — the
     # logstream stays the audit trail and the fallback poll.

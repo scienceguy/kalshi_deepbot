@@ -164,13 +164,17 @@ class NonceStore:
 
 def verify_request(timestamp_ms, nonce: str, body: str, signature: str,
                    *, now_ms: Optional[int] = None,
-                   store: Optional[NonceStore] = None):
+                   store: Optional[NonceStore] = None,
+                   check_freshness: bool = True):
     """Receiver-side verification. Returns (ok: bool, reason: str).
 
     Checks, in order: presence of signed fields, integer timestamp,
     freshness window (±60s), signature, then nonce freshness (if a store is
     supplied). Never raises. H2: the signature is checked before the nonce is
     marked, so unsigned junk cannot fill (and evict) the replay store.
+
+    If check_freshness=False, the timestamp window is not enforced (used at
+    drain time to verify HMAC integrity without rejecting stale-but-valid commands).
     """
     if timestamp_ms is None or not body or not nonce or not signature:
         return False, "missing signed fields"
@@ -179,7 +183,7 @@ def verify_request(timestamp_ms, nonce: str, body: str, signature: str,
     except (TypeError, ValueError):
         return False, "bad timestamp"
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
-    if abs(now_ms - ts) > SIGNATURE_WINDOW_MS:
+    if check_freshness and abs(now_ms - ts) > SIGNATURE_WINDOW_MS:
         return False, f"timestamp outside {SIGNATURE_WINDOW_MS}ms window"
     try:
         expected = sign_body(ts, nonce, body)

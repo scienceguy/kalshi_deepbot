@@ -80,6 +80,7 @@ SYNC_MAX_ROW_ATTEMPTS = int(config.LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS)
 # D4: online-backup retention + nightly cadence for the local mirror DBs.
 BACKUP_KEEP = 7          # most recent backups to keep per DB
 NIGHTLY_INTERVAL_S = 20 * 3600
+_PRUNE_EVERY_S = 3600    # min seconds between hourly retention prunes
 
 
 def default_backup_dir() -> str:
@@ -313,6 +314,73 @@ class LocalDB:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_control_inbox_status ON control_inbox(status, created_at)")
+
+            # H1: persistent control state (pause_entries, who set it, when).
+            # Survives restarts so a paused bot stays paused until explicit resume.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS control_state (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+
+            # H11: durable inbox for the coding agent — bus messages addressed
+            # to it land here when it is not running, so they are not lost.
+            # Status: pending | delivered.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS bus_inbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT NOT NULL UNIQUE,
+                    type TEXT,
+                    from_agent TEXT,
+                    correlation_id TEXT,
+                    body TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT DEFAULT (datetime('now')),
+                    delivered_at TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_bus_inbox_status ON bus_inbox(status, created_at)")
+
+            # H9: write-ahead order intent — pending_send records the intent
+            # to place an order BEFORE the REST call. If the process crashes,
+            # reconcile_on_startup reads pending_send and resolves (confirm fill
+            # or cancel). Status: pending | confirmed | cancelled | failed.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pending_send (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id TEXT NOT NULL UNIQUE,
+                    ticker TEXT NOT NULL,
+                    side TEXT NOT NULL,           -- yes | no
+                    price_cents INTEGER NOT NULL, -- limit price
+                    contracts REAL NOT NULL,
+                    dollar_risk REAL NOT NULL,
+                    venue TEXT NOT NULL,          -- kalshi | polymarket
+                    mode TEXT NOT NULL,           -- live | dry
+                    created_at TEXT DEFAULT (datetime('now')),
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    confirmed_at TEXT DEFAULT '',
+                    venue_order_id TEXT DEFAULT '',
+                    venue_status TEXT DEFAULT ''
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_send_status ON pending_send(status, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_send_order_id ON pending_send(order_id)")
+
+            # H8: latency measurement — per-stage timing for event-driven wake
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS latency_measurements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stage TEXT NOT NULL,          -- e.g., 'poll', 'eval', 'order', 'ack'
+                    duration_ms REAL NOT NULL,
+                    event_id TEXT,                -- correlation to control/event
+                    venue TEXT,
+                    mode TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_latency_stage ON latency_measurements(stage, created_at)")
 
             # D3: durable per-row sync bookkeeping + quarantine for poison rows.
             conn.execute("""
@@ -1542,6 +1610,274 @@ class LocalDB:
             except Exception as e:
                 log.warning("set_control_command_result(%s) error: %s", row_id, e)
                 return False
+
+    # H11: durable bus inbox for the coding agent
+    def enqueue_bus_message(self, message_id: str, type: str, from_agent: str,
+                            correlation_id: str, body: str) -> Optional[int]:
+        """H11: store a bus message for the coding agent. Returns row id, or
+        None when message_id is a duplicate (UNIQUE constraint) or insert fails."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                cur = conn.execute(
+                    "INSERT INTO bus_inbox "
+                    "(message_id, type, from_agent, correlation_id, body) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (message_id, type, from_agent, correlation_id, body))
+                conn.commit()
+                return cur.lastrowid
+            except Exception as e:
+                log.warning("enqueue_bus_message(%s) error: %s", message_id, e)
+                return None
+
+    def get_pending_bus_messages(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """H11: pending bus inbox messages for the coding agent, oldest first."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                rows = conn.execute(
+                    "SELECT id, message_id, type, from_agent, correlation_id, body, created_at "
+                    "FROM bus_inbox WHERE status = 'pending' "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?", (limit,)).fetchall()
+                return [dict(zip(("id", "message_id", "type", "from_agent",
+                                  "correlation_id", "body", "created_at"), r)) for r in rows]
+            except Exception as e:
+                log.warning("get_pending_bus_messages error: %s", e)
+                return []
+
+    def mark_bus_message_delivered(self, row_id: int) -> bool:
+        """H11: mark a bus inbox message delivered and stamp delivered_at."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                cur = conn.execute(
+                    "UPDATE bus_inbox SET status = 'delivered', "
+                    "delivered_at = datetime('now') WHERE id = ?",
+                    (row_id,))
+                conn.commit()
+                return cur.rowcount > 0
+            except Exception as e:
+                log.warning("mark_bus_message_delivered(%s) error: %s", row_id, e)
+                return False
+
+    # H1: persistent control state (pause_entries, caps, who set them, when)
+    def get_control_state(self, key: str) -> Optional[dict]:
+        """Get a control state value by key. Returns None if not found."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                row = conn.execute(
+                    "SELECT value_json FROM control_state WHERE key = ?", (key,)).fetchone()
+                if row:
+                    return json.loads(row[0])
+                return None
+            except Exception as e:
+                log.warning("get_control_state(%s) error: %s", key, e)
+                return None
+
+    def set_control_state(self, key: str, value: dict) -> bool:
+        """Set a control state value. Upserts by key."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO control_state (key, value_json, updated_at) "
+                    "VALUES (?, ?, datetime('now'))",
+                    (key, json.dumps(value, separators=(",", ":"), ensure_ascii=False)))
+                conn.commit()
+                return True
+            except Exception as e:
+                log.warning("set_control_state(%s) error: %s", key, e)
+                return False
+
+    # H9: write-ahead order intent
+    def record_order_intent(self, order_id: str, ticker: str, side: str,
+                            price_cents: int, contracts: float, dollar_risk: float,
+                            venue: str, mode: str) -> bool:
+        """Record intent to place an order BEFORE the REST call.
+        Returns False on conflict (duplicate order_id)."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                conn.execute(
+                    "INSERT INTO pending_send "
+                    "(order_id, ticker, side, price_cents, contracts, dollar_risk, venue, mode) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (order_id, ticker, side, price_cents, contracts, dollar_risk, venue, mode))
+                conn.commit()
+                return True
+            except Exception as e:
+                log.warning("record_order_intent(%s) error: %s", order_id, e)
+                return False
+
+    def confirm_order_intent_by_ticker(self, ticker: str, side: str,
+                                       venue_order_id: str = "",
+                                       venue_status: str = "filled") -> bool:
+        """H9: confirm the oldest pending intent for ticker+side. The order loop
+        allows only one resting entry per ticker, so this is unambiguous."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                cur = conn.execute(
+                    "UPDATE pending_send SET status = 'confirmed', "
+                    "confirmed_at = datetime('now'), venue_order_id = ?, "
+                    "venue_status = ? WHERE id = ("
+                    " SELECT id FROM pending_send WHERE status = 'pending'"
+                    " AND ticker = ? AND side = ? ORDER BY id ASC LIMIT 1)",
+                    (venue_order_id, venue_status, ticker, side))
+                conn.commit()
+                if cur.rowcount == 0:
+                    log.warning("confirm_order_intent_by_ticker(%s,%s): no pending intent matched",
+                                ticker, side)
+                return cur.rowcount > 0
+            except Exception as e:
+                log.warning("confirm_order_intent_by_ticker(%s,%s) error: %s",
+                            ticker, side, e)
+                return False
+
+    def cancel_order_intent(self, order_id: str, venue_status: str = "cancelled") -> bool:
+        """Mark an order intent as cancelled (no fill)."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                conn.execute(
+                    "UPDATE pending_send SET status = 'cancelled', "
+                    "confirmed_at = datetime('now'), venue_status = ? "
+                    "WHERE order_id = ?",
+                    (venue_status, order_id))
+                conn.commit()
+                return True
+            except Exception as e:
+                log.warning("cancel_order_intent(%s) error: %s", order_id, e)
+                return False
+
+    def get_pending_sends(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get pending order intents for reconciliation."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                rows = conn.execute(
+                    "SELECT order_id, ticker, side, price_cents, contracts, "
+                    "dollar_risk, venue, mode, created_at "
+                    "FROM pending_send WHERE status = 'pending' "
+                    "ORDER BY created_at ASC LIMIT ?", (limit,)).fetchall()
+                return [dict(zip(("order_id", "ticker", "side", "price_cents",
+                                  "contracts", "dollar_risk", "venue", "mode", "created_at"), r))
+                        for r in rows]
+            except Exception as e:
+                log.warning("get_pending_sends error: %s", e)
+                return []
+
+    # H8: latency measurement
+    def record_latency(self, stage: str, duration_ms: float,
+                       event_id: str = "", venue: str = "", mode: str = "") -> bool:
+        """Record a latency measurement for a pipeline stage."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                conn.execute(
+                    "INSERT INTO latency_measurements "
+                    "(stage, duration_ms, event_id, venue, mode) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (stage, duration_ms, event_id, venue, mode))
+                conn.commit()
+                self._maybe_prune()
+                return True
+            except Exception as e:
+                log.warning("record_latency(%s) error: %s", stage, e)
+                return False
+
+    def _maybe_prune(self) -> None:
+        """Hourly retention prune; never raises into the caller."""
+        now = time.time()
+        if now - getattr(self, "_last_prune_at", 0.0) < _PRUNE_EVERY_S:
+            return
+        self._last_prune_at = now
+        try:
+            self.prune_control_tables()
+        except Exception as e:
+            log.warning("prune_control_tables error: %s", e)
+
+    def prune_control_tables(self, latency_keep_days: int = 7,
+                             pending_keep_days: int = 7,
+                             inbox_keep_days: int = 7,
+                             stale_pending_hours: int = 24) -> dict:
+        """Retention for unbounded control tables.
+
+        Deletes latency_measurements rows older than latency_keep_days (by
+        created_at) and terminal pending_send rows ('confirmed', 'cancelled',
+        'failed') older than pending_keep_days. Delivered bus_inbox rows older
+        than inbox_keep_days go too. A 'pending' intent older than
+        stale_pending_hours is marked 'failed' rather than deleted: a 15-minute
+        market has long settled, so the intent is dead, but the audit trail
+        stays. 'pending' rows are never deleted — they are live intents.
+        """
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                cur = conn.execute(
+                    "DELETE FROM latency_measurements "
+                    "WHERE created_at < datetime('now', ?)",
+                    (f"-{int(latency_keep_days)} days",))
+                latency_deleted = cur.rowcount
+                cur = conn.execute(
+                    "DELETE FROM pending_send "
+                    "WHERE status IN ('confirmed', 'cancelled', 'failed') "
+                    "AND created_at < datetime('now', ?)",
+                    (f"-{int(pending_keep_days)} days",))
+                pending_deleted = cur.rowcount
+                cur = conn.execute(
+                    "DELETE FROM bus_inbox WHERE status = 'delivered' "
+                    "AND delivered_at IS NOT NULL "
+                    "AND delivered_at < datetime('now', ?)",
+                    (f"-{int(inbox_keep_days)} days",))
+                inbox_deleted = cur.rowcount
+                cur = conn.execute(
+                    "UPDATE pending_send SET status = 'failed', "
+                    "venue_status = 'abandoned_stale', "
+                    "confirmed_at = datetime('now') "
+                    "WHERE status = 'pending' AND created_at < datetime('now', ?)",
+                    (f"-{int(stale_pending_hours)} hours",))
+                pending_abandoned = cur.rowcount
+                conn.commit()
+                return {"latency_deleted": latency_deleted,
+                        "pending_deleted": pending_deleted,
+                        "inbox_deleted": inbox_deleted,
+                        "pending_abandoned": pending_abandoned}
+            except Exception as e:
+                log.warning("prune_control_tables error: %s", e)
+                return {"latency_deleted": 0, "pending_deleted": 0,
+                        "inbox_deleted": 0, "pending_abandoned": 0}
+
+    def get_latency_stats(self, stage: Optional[str] = None,
+                          limit: int = 1000) -> List[Dict[str, Any]]:
+        """H8: per-stage latency summary (count, avg, p50, p95 max) over the
+        most recent measurements. Returns one dict per stage."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                where = "WHERE stage = ?" if stage else ""
+                params = (stage, limit) if stage else (limit,)
+                rows = conn.execute(
+                    "SELECT stage, duration_ms FROM latency_measurements "
+                    f"{where} ORDER BY id DESC LIMIT ?", params).fetchall()
+            except Exception as e:
+                log.warning("get_latency_stats error: %s", e)
+                return []
+        by_stage: Dict[str, List[float]] = {}
+        for s, d in rows:
+            by_stage.setdefault(s, []).append(float(d))
+        out = []
+        for s, vals in by_stage.items():
+            vals.sort()
+            n = len(vals)
+            p50 = vals[n // 2]
+            p95 = vals[min(n - 1, int(n * 0.95))]
+            out.append({"stage": s, "count": n,
+                        "avg_ms": round(sum(vals) / n, 2),
+                        "p50_ms": round(p50, 2), "p95_ms": round(p95, 2),
+                        "max_ms": round(vals[-1], 2)})
+        return out
 
     def _sync_loop(self):
         """Background sync loop."""

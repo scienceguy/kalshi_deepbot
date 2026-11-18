@@ -2378,11 +2378,23 @@ class PolyUSPaperTrader:
 
     def _guard_halt_active(self) -> bool:
         """Entries are halted: ruin, venue-recon, daily-loss or a signed
-        pause_entries command. Read-only — no day-rollover side effects."""
+        pause_entries command (memory or persisted). Read-only — no day-rollover side effects."""
         if self.state.get("ruin_halted") or self.state.get("venue_recon_halted"):
             return True
         if self.state.get("daily_loss_halted"):
             return True
+        # H1: check persisted pause state in local_db (survives restarts)
+        try:
+            from local_db import get_local_db
+            pause_state = get_local_db().get_control_state("pause_entries")
+            if pause_state and pause_state.get("paused"):
+                return True
+        except Exception as e:
+            # not fail-closed here: a transient DB lock must not cancel resting
+            # orders every tick; the startup reload (which IS fail-closed) covers
+            # the restart case, and this read is only the mid-run peer-pause path
+            log.error("H1: persisted pause read failed, falling back to memory: %s", e)
+        # Also check in-memory control state
         try:
             import control
             return bool(control.STATE.pause_entries)
@@ -2988,6 +3000,29 @@ def _print_status(state: dict, init_cash: float) -> None:
         print(f"  - {cat}{p['slug']} | {p['side'].upper()} {p['qty']}x @ ${p['price']:.2f} -> Cur: ${cur_p:.2f} (cost: ${p['cost']:.2f}, MTM: ${p.get('mtm_value', p['cost']):.2f}, Unrealized: ${u_pnl:+.2f})")
 
 
+def _load_persisted_pause() -> None:
+    """H1: resume a persisted pause_entries command at startup.
+
+    A restart must not silently un-pause the bot: the signed command is
+    applied in-memory by cycle()'s drain, but only the row in local_db's
+    control_state survives the restart. Never raises.
+    """
+    try:
+        from local_db import get_local_db
+        ps = get_local_db().get_control_state("pause_entries")
+        if ps and ps.get("paused"):
+            import control
+            control.STATE.pause_entries = True
+            log.warning("H1: resumed persisted pause_entries (paused_by=%s, reason=%s)",
+                        ps.get("paused_by"), ps.get("reason"))
+    except Exception as e:
+        # fail closed: a signed pause we cannot read still means paused
+        import control
+        control.STATE.pause_entries = True
+        log.error("H1: could not read persisted pause state (%s) — pausing "
+                  "entries until an operator resumes", e)
+
+
 def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -3047,6 +3082,11 @@ def main():
         LOCK_FILE, attempts=1 if args.reset is not None else _LOCK_ATTEMPTS)
     trader = PolyUSPaperTrader(initial_cash=init_cash,
                                reset=args.reset is not None, live_mode=args.live)
+
+    # H1: resume a signed pause_entries persisted before the restart, so the
+    # entry path (which reads control.STATE.pause_entries in memory) refuses
+    # new entries after a restart exactly as it did before it.
+    _load_persisted_pause()
 
     # H6: start the spot WebSocket streams for the assets in scope. The resting
     # guard reads these ticks (max_age 1.5s); without them every guard spot is
