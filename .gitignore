@@ -154,3 +154,9 @@ package-lock.json
 
 # Operator-local credential copies (audit 2026-11-17) — live keys live in ~/.secrets/, never here
 secrets/
+
+# Never commit the virtualenv: it is host-specific and 2+ GB.
+.venv/
+
+# Supervisor plugin runtime state (sessions), host-local.
+.supervisor/

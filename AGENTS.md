@@ -24,7 +24,6 @@ routes settlement P&L through n8n webhooks.
 | `n8n_client.py` | n8n webhook/API client; `n8n_health_check()` used at startup. |
 | `supabase_client.py` | Supabase REST client with circuit breaker + batch bot-state writes. |
 | `llm_eval.py` | 7-layer LLM evaluation (OpenRouter/Groq/DeepSeek/OpenAI/Gemini/DSH/Ollama). |
-| `latency_arb.py` | Last-minute taker edge strategy (unused in main flow). |
 | `backtest.py` / `parallel_backtest.py` | Parameter-sweep backtests (public + authenticated API). |
 | `backtest_engine.py` | Shared backtest engine (entry logic, P&L, sweep grid). |
 | `data_collector.py` | Historical market snapshot collector for backtest data. |
@@ -348,7 +347,7 @@ Coordination (logstream):
 | 25 | `trader.py:402` | Calls private `signals._maybe_save_bid_hist` | FIXED — public `se._maybe_save_bid_hist` called |
 | 26 | `supabase_client.py:333-344` | `get_bot_state` returns None on corrupt JSON | FIXED — logs warning on decode failure |
 | 27 | `kalshi_client.py:41-49` | `KALSHI_BASE_URL` validation hard-fails on non-standard URLs | FIXED — warns instead of failing |
-| 28 | `trader.py:870-872` | `SIGALRM` can interrupt in-flight `requests` call | NOT FIXED — per-call `timeout=` used; session rebuilt on timeout |
+| 28 | `trader.py:870-872` | `SIGALRM` can interrupt in-flight `requests` call | FIXED — no SIGALRM handler; per-call `timeout=` (trader.py:3597) |
 | 29 | `add_n8n_credentials.py:117-126` | Module-level side effects mutate n8n DB on import | FIXED — config read moved into `load_encryption_key()` called from `main()` |
 | 30 | `inject_n8n_workflows.py` | Direct n8n SQLite writes bypass API | FIXED — idempotent (deletes by webhook path before insert) |
 | 31 | `fees.py:19` | Hardcoded 0.07 fee multiplier | FIXED — `KALSHI_FEE_RATE` env var (default 0.07) |
@@ -363,19 +362,19 @@ Coordination (logstream):
 | 40 | `data_collector.py:13-12` | Docstring says dry-run, collects closed historical | FIXED — docstring corrected |
 | 41 | `config.py:63` | `_env_bool` silently returns default for unparseable values | FIXED — raises `ValueError` on unparseable values (config.py:86-89) |
 | 42 | `tests/` — `test_kalshi_price_data_client.py`, `test_n8n_client.py` shallow | Weak coverage | PARTIAL — added `tests/test_trader.py` (8 tests) |
-| 43 | `tests/` — no tests for `market_finder.find_active_markets` / `rank_signals` | NOT FIXED | FIXED — `tests/test_market_finder.py` exists |
+| 43 | `tests/` — no tests for `market_finder.find_active_markets` / `rank_signals` | FIXED — `tests/test_market_finder.py` exists |
 | 44 | `trader.py` — no per-market/day loss limit beyond drawdown | FIXED — `record_market_loss` / `market_loss_exceeded` (risk.py:91-112) |
 | 45 | `backtest_engine.py:258-255` | Sweep tests ignored params (`MIN_SKEW`, etc.) | FIXED — `StratParams` aligns with grid |
 | 46 | `kalshi_price_data_client.py:133-142` | `health_check()` may call missing SDK method | FIXED — `hasattr` check (lines 133-147) |
 | 47 | `add_n8n_credentials.py` / `inject_n8n_workflows.py` | Keys visible in process list | FIXED — Supabase credentials removed from workflow JSON (inject_n8n_workflows.py) |
-| 48 | `config.py:233-339` | `validate_*` not auto-called on import | NOT FIXED — called explicitly by `trader.py` |
+| 48 | `config.py:233-339` | `validate_*` not auto-called on import | FIXED — `validate_all()` runs at import (config.py:978) |
 | 49 | `resilience.py:44` | Backoff starts at `base_backoff` (5s) on first failure | FIXED — first failure delay=0 (resilience.py:48-49) |
 | 50 | `kalshi_client.py:265` | `get_markets` cache keyed by `(series, status, limit)`, no invalidation | FIXED — `invalidate_markets()` method (kalshi_client.py:277-299) |
 | 51 | `trader.py:586-593` | `set_bot_state` writes every cycle even when unchanged | FIXED — batched single write |
 | 52 | `historical_data/`, `hf_data/` in repo | Repo bloat | FIXED — directories removed |
 | 53 | `bot.log`, `*_result.json` in working tree | Clutter | FIXED — `.gitignore` excludes `*.log` and `*_result.json` |
 | 54 | `llm_eval.py:324-332` | System prompt says 2 keys, parser accepts extra | FIXED — raises `ValueError` on extra keys (llm_eval.py:179-186) |
-| 55 | `parallel_backtest_hf.py:77-85` | NO branch uses `100 - mid_proxy`, no skew/trend gates | NOT FIXED — HF results not applicable to live |
+| 55 | `parallel_backtest_hf.py:77-85` | NO branch uses `100 - mid_proxy`, no skew/trend gates | GONE — file deleted; HF sweep scripts live under `scripts/hf_*` |
 | 57 | `config.py:143-144` | `CASH_FLOOR_PCT=0.70` + `EXPOSURE_CEILING_PCT=0.30` sum to 1.0 | NOT FIXED (rounding epsilon handled) |
 | 58 | `signals.py:46-50` | `is_trade` allows empty `side` | FIXED — checks `side != ""` (signals.py:44-47) |
 | 60 | `supabase_client.py:72-140` | Credential loading order opaque | FIXED — `_load_credentials()` documents priority order (supabase_client.py:136-171) |
