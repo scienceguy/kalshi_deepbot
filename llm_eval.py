@@ -1,19 +1,17 @@
 """
-llm_eval.py — LLM trade evaluation with an 8-layer fallback across providers.
+llm_eval.py — LLM trade evaluation with a 4-layer fallback over two providers.
 
-Layers are tried in order; a layer is skipped when its API key / ADC is unset or
-its circuit breaker is open:
+LAYERS is the source of truth (grep LAYERS below); it holds exactly four
+entries. Layers are tried in order; a layer is skipped when its API key is
+unset or its circuit breaker is open:
 
-  1. Vertex AI (Google Cloud ADC at ~/.config/gcloud/application_default_credentials.json)
-  2. NVIDIA  (NVIDIA_API_KEY, integrate.api.nvidia.com)
-  3. OpenRouter free models (OPENROUTER_API_KEY)
-  4. Groq free tier (GROQ_API_KEY)
-  5. DeepSeek (DEEPSEEK_API_KEY)
-  6. OpenAI (OPENAI_API_KEY)
-  7. Gemini (GEMINI_API_KEY)
-  8. DSH our-free-model local gateway (http://127.0.0.1:18900, no key)
+  1. NVIDIA Bolt       (NVIDIA_API_KEY, integrate.api.nvidia.com)
+  2. Groq Qwen         (GROQ_API_KEY,   api.groq.com)
+  3. Groq Allam        (GROQ_API_KEY)
+  4. NVIDIA Lightning  (NVIDIA_API_KEY)
 
-Ollama local is deliberately not a layer.
+So there are two providers, not the eight once documented here. Ollama local is
+deliberately not a layer.
 
 Each call returns a dict:
   {"probability_of_net_profit": float (0-1), "confidence_hold_to_expiry": float (0-1),

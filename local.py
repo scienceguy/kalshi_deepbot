@@ -405,7 +405,7 @@ def _load_self_model() -> dict:
                 "created": datetime.now(timezone.utc).isoformat(),
                 "version": "1.0.0",
             },
-            "self_narrative": "I am a Kalshi SuperBot agent focused on 15-minute binary crypto markets. I place favorite-maker limit orders (YES/NO at 75-95c), evaluate signals via a 7-layer LLM fallback, write signals/orders/bot-state to Supabase, and assist with market analysis and trade review.",
+            "self_narrative": "I am a Kalshi SuperBot agent focused on 15-minute binary crypto markets. I place favorite-maker limit orders (YES/NO at 75-95c), evaluate signals via a 4-layer LLM fallback, write signals/orders/bot-state to Supabase, and assist with market analysis and trade review.",
             "core_interests": ["crypto options", "LLM signal evaluation", "risk management"],
             "preferences": {
                 "fee_rate": 0.07,

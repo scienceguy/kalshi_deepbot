@@ -4,7 +4,7 @@ Single-operator live-trading bot for Kalshi 15-minute binary crypto markets.
 
 ## Overview
 
-Places favourite-maker limit orders (two-sided YES/NO at 92–99c), evaluates signals via an LLM with 8-layer fallback, writes signals/orders/bot-state to Supabase, and routes settlement P&L through n8n webhooks.
+Places favourite-maker limit orders (two-sided YES/NO at 92–99c), evaluates signals via an LLM with 4-layer fallback, writes signals/orders/bot-state to Supabase, and routes settlement P&L through n8n webhooks.
 
 ## Quick Start
 
@@ -32,7 +32,7 @@ See `.env.example` for all required variables. Never commit real credentials.
 - `resilience.py` — Cycle supervisor
 - `n8n_client.py` — n8n webhook/API client
 - `supabase_client.py` — Supabase REST client
-- `llm_eval.py` — LLM trade evaluation (8-layer fallback)
+- `llm_eval.py` — LLM trade evaluation (4-layer fallback)
 - `backtest.py` — Parameter sweep backtester
 - `data_collector.py` — Market data collector
 - `kalshieye_downloader.py` — Kalshi Eye data downloader

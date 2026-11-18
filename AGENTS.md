@@ -1,8 +1,8 @@
 # Kalshi SuperBot — AGENTS.md
 
 Single-operator live-trading bot for Kalshi 15-minute binary crypto markets.
-Places favourite-maker limit orders (YES/NO at 75–95c), evaluates signals via an
-LLM with 7-layer fallback, writes signals/orders/bot-state to Supabase, and
+Places favourite-maker limit orders (YES/NO at 92–99c), evaluates signals via an
+LLM with 4-layer fallback, writes signals/orders/bot-state to Supabase, and
 routes settlement P&L through n8n webhooks.
 
 ## System constraints (all agents)
@@ -23,7 +23,7 @@ routes settlement P&L through n8n webhooks.
 | `resilience.py` | Cycle backoff + client-rebuild supervisor with rebuild cap. |
 | `n8n_client.py` | n8n webhook/API client; `n8n_health_check()` used at startup. |
 | `supabase_client.py` | Supabase REST client with circuit breaker + batch bot-state writes. |
-| `llm_eval.py` | 7-layer LLM evaluation (OpenRouter/Groq/DeepSeek/OpenAI/Gemini/DSH/Ollama). |
+| `llm_eval.py` | 4-layer LLM evaluation (2 providers: NVIDIA Bolt/Lightning, Groq Qwen/Allam). |
 | `backtest.py` / `parallel_backtest.py` | Parameter-sweep backtests (public + authenticated API). |
 | `backtest_engine.py` | Shared backtest engine (entry logic, P&L, sweep grid). |
 | `data_collector.py` | Historical market snapshot collector for backtest data. |
@@ -349,7 +349,7 @@ Coordination (logstream):
 | 27 | `kalshi_client.py:41-49` | `KALSHI_BASE_URL` validation hard-fails on non-standard URLs | FIXED — warns instead of failing |
 | 28 | `trader.py:870-872` | `SIGALRM` can interrupt in-flight `requests` call | FIXED — no SIGALRM handler; per-call `timeout=` (trader.py:3597) |
 | 29 | `add_n8n_credentials.py:117-126` | Module-level side effects mutate n8n DB on import | FIXED — config read moved into `load_encryption_key()` called from `main()` |
-| 30 | `inject_n8n_workflows.py` | Direct n8n SQLite writes bypass API | FIXED — idempotent (deletes by webhook path before insert) |
+| 30 | `inject_n8n_workflows.py` | Direct n8n SQLite writes bypass API | FIXED — upserts by workflow name (get-by-name then update/create); stale `SuperBot *` workflows pruned |
 | 31 | `fees.py:19` | Hardcoded 0.07 fee multiplier | FIXED — `KALSHI_FEE_RATE` env var (default 0.07) |
 | 32 | `.env` / `kalshi_private.pem` present locally | Secret-scanning guard | FIXED — `.git/hooks/pre-commit` blocks `.env`/`*.pem` commits; `scripts/install-pre-commit.sh` installs it |
 | 33 | `trader.py:711` | Startup initialises Supabase client and logs state | FIXED — graceful degradation |
