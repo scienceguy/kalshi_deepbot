@@ -81,6 +81,14 @@ def test_hardening_parity(directive):
     assert len(set(values.values())) == 1, f"{directive} diverges: {values}"
 
 
+def test_working_directory_under_releases_root():
+    """H13: Kalshi trader units run from /opt/superbot-releases/current."""
+    for u in ("superbot-dry.service", "superbot.service"):
+        wd = _unit(u)["Service"].get("WorkingDirectory")
+        assert wd == "/opt/superbot-releases/current", \
+            f"{u} WorkingDirectory={wd!r}, expected /opt/superbot-releases/current"
+
+
 def test_every_trader_unit_uses_strict_protection():
     for u in UNITS:
         s = _unit(u)["Service"]

@@ -28,7 +28,7 @@ StartLimitBurst=5
 Type=simple
 User=ubuntu
 Group=superbot
-WorkingDirectory=/opt/superbot
+WorkingDirectory=/opt/superbot-releases/current
 Environment=DRY_RUN=true
 Environment=DRY_LOG_FILE=/opt/superbot/local_data/bot_dry.log
 Environment=TMPDIR=/opt/superbot/local_data

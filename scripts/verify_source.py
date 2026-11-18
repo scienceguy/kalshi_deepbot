@@ -65,6 +65,21 @@ SKIP_DIRS = {".git", "__pycache__", "legacy", "venv", ".venv", "node_modules"}
 _IGNORED_MARKS = {"VARIATION SELECTOR-15", "VARIATION SELECTOR-16"}
 
 
+def _tracked(pattern):
+    # Tracked files plus untracked-but-not-ignored ones: a brand-new file about
+    # to be staged is exactly when a corrupted write slips in. .gitignore'd
+    # files stay excluded (--exclude-standard).
+    tracked = subprocess.run(
+        ["git", "ls-files", pattern], capture_output=True, text=True, check=True,
+    ).stdout
+    others = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", pattern],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return sorted({f for f in (tracked + others).split()
+                   if not any(p in SKIP_DIRS for p in pathlib.Path(f).parts)})
+
+
 def _is_letter(ch):
     """True for a non-ASCII character that is a letter (a splice candidate)."""
     if ord(ch) <= 127:
@@ -141,18 +156,12 @@ def main():
     args = ap.parse_args()
 
     if args.docs_only:
-        out = subprocess.run(["git", "ls-files", "*.md"], capture_output=True,
-                             text=True, check=True).stdout
-        paths = [f for f in out.split()
-                 if not any(p in SKIP_DIRS for p in pathlib.Path(f).parts)]
+        paths = _tracked("*.md")
     elif args.all:
         # Code only. Docs legitimately quote CJK as examples (HANDOFF.md documents
         # this gate's own failure class verbatim), so scanning them here would make
         # the enforcing gate permanently red. Use --docs-only --prose for prose.
-        out = subprocess.run(["git", "ls-files", "*.py"], capture_output=True,
-                             text=True, check=True).stdout
-        paths = [f for f in out.split()
-                 if not any(p in SKIP_DIRS for p in pathlib.Path(f).parts)]
+        paths = _tracked("*.py")
     else:
         paths = args.files
 

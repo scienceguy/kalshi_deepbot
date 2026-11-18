@@ -56,12 +56,20 @@ FINDING_CLASSES = ("UndefinedName", "UndefinedLocal")
 
 
 def _tracked(pattern):
-    out = subprocess.run(
+    # Tracked files plus untracked-but-not-ignored ones: a brand-new file about
+    # to be staged is exactly when a corrupted write slips in. .gitignore'd
+    # files stay excluded (--exclude-standard).
+    tracked = subprocess.run(
         ["git", "ls-files", pattern],
         capture_output=True, text=True, check=True,
     ).stdout
-    return [f for f in out.split()
-            if not any(p in SKIP_DIRS for p in pathlib.Path(f).parts)]
+    others = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", pattern],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    out = tracked + others
+    return sorted({f for f in out.split()
+                   if not any(p in SKIP_DIRS for p in pathlib.Path(f).parts)})
 
 
 def find_undefined(path):

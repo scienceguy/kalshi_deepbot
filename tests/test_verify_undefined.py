@@ -58,3 +58,17 @@ def test_undefined_name_fails_the_gate(tmp_path, monkeypatch):
     bad.write_text("y = oder\n", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["verify_undefined.py", str(bad)])
     assert verify_undefined.main() == 1
+
+
+def test_all_enumeration_includes_untracked_not_ignored(tmp_path, monkeypatch):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "untracked.py").write_text("y = 2\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+    (repo / "ignored.py").write_text("z = 3\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "tracked.py"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+    assert verify_undefined._tracked("*.py") == ["tracked.py", "untracked.py"]

@@ -74,3 +74,17 @@ def test_market_counts_separates_available_from_tradable():
     broken.fail_series("KXBTCD")
     assert broken.fetch_errors == 1
     assert not broken.empty_book  # fetch failure is not an empty book
+
+
+def test_all_enumeration_includes_untracked_not_ignored(tmp_path, monkeypatch):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "untracked.py").write_text("y = 2\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+    (repo / "ignored.py").write_text("z = 3\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "tracked.py"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+    assert verify_source._tracked("*.py") == ["tracked.py", "untracked.py"]

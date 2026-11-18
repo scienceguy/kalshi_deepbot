@@ -33,7 +33,7 @@ StartLimitBurst=5
 Type=simple
 User=ubuntu
 Group=superbot
-WorkingDirectory=/opt/superbot
+WorkingDirectory=/opt/superbot-releases/current
 Environment=DRY_RUN=false
 Environment=TMPDIR=/opt/superbot/local_data
 Environment=MEMPALACE_DIR=/var/lib/superbot/mempalace

@@ -56,3 +56,17 @@ def test_every_tracked_python_file_parses():
         if verify_compiles.check_file(p) is not None:
             bad.append(str(p.relative_to(root)))
     assert not bad, "files that do not parse: %r" % bad
+
+
+def test_all_enumeration_includes_untracked_not_ignored(tmp_path, monkeypatch):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "untracked.py").write_text("y = 2\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+    (repo / "ignored.py").write_text("z = 3\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "tracked.py"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+    assert verify_compiles._tracked("*.py") == ["tracked.py", "untracked.py"]

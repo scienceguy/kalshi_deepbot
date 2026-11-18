@@ -24,14 +24,15 @@ is actually installed — reinstall the unit after editing (see below).
 | Unit | Process | User | WorkingDirectory | ReadWritePaths (ProtectSystem=strict) | After=/Wants= | Restart |
 |---|---|---|---|---|---|---|
 | `poly-us-dry.service` | `poly_us_trader.py --interval 15` | `polybot` | `/opt/superbot-releases/current` (V1 release symlink) | `local_data/`, `-/opt/superbot/.lock_poly`, `-/opt/superbot/.mempalace` | `network-online.target`, `n8n.service` | `on-failure`, burst 5 / 300s |
-| `superbot-dry.service` (deploy/ ref) | `trader.py --dry --interval 15` | `ubuntu` | `/opt/superbot` | `local_data/`, `/home/ubuntu/.mempalace`, `/home/ubuntu/.config/mempalace`, `-/opt/superbot/.lock_kalshi` | `network-online.target`, `n8n.service` | `on-failure`, burst 5 / 300s |
-| `superbot.service` (deploy/ ref) | `trader.py --live --interval 15` | `ubuntu` | `/opt/superbot` | same as dry twin | `network-online.target`, `n8n.service` | `on-failure`, burst 5 / 300s |
+| `superbot-dry.service` (deploy/ ref) | `trader.py --dry --interval 15` | `ubuntu` | `/opt/superbot-releases/current` | `local_data/`, `/home/ubuntu/.mempalace`, `/home/ubuntu/.config/mempalace`, `-/opt/superbot/.lock_kalshi` | `network-online.target`, `n8n.service` | `on-failure`, burst 5 / 300s |
+| `superbot.service` (deploy/ ref) | `trader.py --live --interval 15` | `ubuntu` | `/opt/superbot-releases/current` | same as dry twin | `network-online.target`, `n8n.service` | `on-failure`, burst 5 / 300s |
 | `n8n.service` | `n8n start` | `ubuntu` | `/home/ubuntu` | `~/.n8n` (its own DB) | `network.target` | `always` |
 | `poly15m-paper.service`, `poly5m-collector.service` | legacy collectors | `ubuntu` | `/opt/superbot` | repo tree | `network-online.target` | `always` |
 | `superbot-jobs.timer` → `superbot-jobs.service` | `scripts/scheduled_jobs.py` (digest, watchdogs, sync lag) | `ubuntu` | `/opt/superbot` | `local_data/` | `network-online.target` | `oneshot`, ticks 1/min |
 | `superbot-job-bridge.service` | `scripts/job_bridge.py` (loopback only) | `ubuntu` | `/opt/superbot` | `local_data/` | `network-online.target` | `on-failure`, burst 5 / 300s |
 | `superbot-creds-guard.timer` → `superbot-creds-guard.service` | `scripts/n8n_creds_guard.sh` | `ubuntu` | `/opt/superbot` | `local_data/` | `network-online.target`, `n8n.service` | `oneshot`, every 15 min |
 | `superbot-retrain.timer` → `superbot-retrain.service` | `scripts/retrain_ml.sh` (paper artifact) | `ubuntu` | `/opt/superbot` | `local_data/`, `data/` | `network-online.target` | `oneshot`, every 6 h |
+| `superbot-bus-inbox.service` | `python -m agent_bus` (H11 bus inbox receiver) | `ubuntu` (group `superbot`) | `/opt/superbot` | `local_data/` | `network-online.target` | `on-failure`, burst 5 / 300s |
 
 Notes:
 
@@ -64,6 +65,8 @@ Notes:
   `LimitNOFILE=65536` after the bridge hit `Errno 24` at the 1024 default.
 - `TMPDIR` is service-owned (`/opt/superbot/local_data`); `PrivateTmp=true`
   keeps agent scratch (`/tmp/opencode`) out of the service namespace.
+- `superbot-bus-inbox.service` is **not installed** by `scripts/deploy.py`;
+  install it by hand (see "Agent bus inbox, retention and pause persistence").
 
 ## SSH exposure (H15)
 
@@ -121,6 +124,14 @@ scripts/deploy.sh <sha>          # lease + worktree + verify + smoke + swap +
 `/etc/systemd/system/`, daemon-reloads, restarts, waits for the
 `reported_state:poly_us` heartbeat and rolls back on failure). The first
 hardened deploy is also what installs the unit update from this change.
+
+Ordering matters for the Kalshi units: `/opt/superbot-releases/current` must
+exist before the first `superbot.service` / `superbot-dry.service` start. The
+symlink is created by `scripts/deploy.py`, which also symlinks `.env` and
+`local_data` into each release; without it, systemd fails with a chdir error
+because the working directory — and therefore the relative `trader.py` in
+`ExecStart=... trader.py` — does not resolve.
+
 Manual dev-loop checks still apply:
 
 ```bash
@@ -274,6 +285,66 @@ stopped.
 
 The automated path above is exercised in `tests/test_d4_backup_restore.py`
 against temp dirs.
+
+## Agent bus inbox, retention and pause persistence (H11 / H1)
+
+### superbot-bus-inbox.service (H11)
+
+New unit `deploy/superbot-bus-inbox.service`; **not installed by
+`scripts/deploy.py`**. It runs `/opt/superbot/.venv/bin/python -m agent_bus` as
+`ubuntu` (group `superbot`), `ProtectSystem=strict` with only
+`/opt/superbot/local_data` writable, `TMPDIR=/opt/superbot/local_data`,
+`Restart=on-failure` (burst 5 / 300 s). Every verified bus envelope is
+persisted to the `bus_inbox` table in the local DB, so messages survive the
+coding agent being down:
+
+```bash
+sudo install -m 644 deploy/superbot-bus-inbox.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now superbot-bus-inbox.service
+```
+
+### scripts/bus_inbox.py (H11)
+
+CLI over the `bus_inbox` table (from the repo root):
+
+```bash
+.venv/bin/python scripts/bus_inbox.py list           # pending messages as JSON
+.venv/bin/python scripts/bus_inbox.py list --table   # tabular
+.venv/bin/python scripts/bus_inbox.py ack <id>       # mark one delivered
+.venv/bin/python scripts/bus_inbox.py drain          # print all pending, then mark delivered
+```
+
+`ack` prints `{"ok": ..., "id": ...}` and exits 1 when the id does not exist;
+acking an already-delivered row still exits 0.
+
+### Retention: prune_control_tables (H8)
+
+`LocalDB.prune_control_tables()` (defaults `latency_keep_days=7`,
+`pending_keep_days=7`) deletes `latency_measurements` rows older than 7 days
+and terminal `pending_send` rows (`confirmed` / `cancelled` / `failed`) older
+than 7 days. `status='pending'` rows are live intents and are never deleted.
+
+It runs at most once an hour per process (`_PRUNE_EVERY_S = 3600`) and is
+triggered from `record_latency` — a completely idle trader that records no
+latency measurements never prunes. Only `trader.py` calls `record_latency`;
+`poly_us_trader.py` does not, so the Poly path never triggers the prune.
+
+### Pause persistence (H1)
+
+A signed `pause_entries` command is persisted to the local DB
+(`control_state`) and reloaded at startup by both traders — `poly_us_trader.py`
+via `_load_persisted_pause()`, `trader.py` via an inline equivalent — so a
+restart no longer un-pauses the bot.
+
+If the persist write fails, `control.py` logs at ERROR and the command result
+carries `persisted: false`. An operator seeing that must fix the DB and
+re-issue the pause: the pause is then only in memory and a restart resumes
+trading. Read-only check of what survived a restart:
+
+```bash
+.venv/bin/python -c "from local_db import get_local_db; print(get_local_db().get_control_state('pause_entries'))"
+```
 
 ## Modes
 
