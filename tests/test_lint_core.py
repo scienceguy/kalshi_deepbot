@@ -14,12 +14,10 @@ import pyflakes.reporter
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 CORE_FILES = [
-    "backtest_real.py",
     "binance_client.py",
     "binance_feed.py",
     "crossvenue.py",
     "crossvenue_history.py",
-    "historical_downloader.py",
     "ml_model.py",
     "rate_limit.py",
     "trader.py",
