@@ -116,6 +116,21 @@ def _cached(cache: dict, key: str, ttl: float, fn):
     return value
 
 
+def sweep_caches(max_age_seconds: float = 3600.0) -> int:
+    """Remove cache entries older than max_age_seconds from all gate caches.
+    
+    Returns the total number of entries removed.
+    """
+    now = time.time()
+    removed = 0
+    for cache in (_spot_cache, _atr_cache, _sigma_cache):
+        stale_keys = [k for k, v in cache.items() if now - v[1] > max_age_seconds]
+        for k in stale_keys:
+            cache.pop(k, None)
+            removed += 1
+    return removed
+
+
 def spot_for(asset: str) -> float | None:
     """Median venue spot price, cached for GATES_SPOT_CACHE_SECONDS.
 

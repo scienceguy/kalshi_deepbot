@@ -103,10 +103,8 @@ def _env_bool(name, default):
     if not val:
         return default
     if val not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
-        raise ValueError(
-            f"Unrecognized boolean value for {name}: '{val}'. "
-            f"Expected one of: 1, true, yes, on, 0, false, no, off"
-        )
+        log.warning("Unrecognized boolean value for %s: '%s' — using default %s", name, val, default)
+        return default
     return val in ("1", "true", "yes", "on")
 
 
@@ -959,5 +957,29 @@ def validate_bands():
     if errors:
         raise ValueError("Configuration invalid:\n" + "\n".join(errors))
 
-# Validation is called explicitly by trader.py at startup.
-# Do not run on import to allow graceful handling of config errors.
+
+def validate_all(silent: bool = False):
+    """Run all validation checks. Called at module import for early failure detection."""
+    validate_credentials()
+    validate_bands()
+    # validate_dry_run not called here — requires live_explicit context
+    import fees
+    fees.validate_fee_rate()
+    if not silent:
+        log.info("All config validations passed")
+
+
+# Auto-validate on import (NH2) — completely silent to avoid import-time side effects
+# Temporarily suppress logging during import validation
+import logging
+_log_level = log.level
+log.setLevel(logging.ERROR)
+try:
+    validate_all(silent=True)
+except ValueError as e:
+    log.error("Config validation failed at import: %s", e)
+    # Don't raise — allow graceful handling in trader.py
+except Exception as e:
+    log.warning("Config validation error at import: %s", e)
+finally:
+    log.setLevel(_log_level)

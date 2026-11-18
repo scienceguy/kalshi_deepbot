@@ -1,0 +1,11 @@
+# H5: drives superbot-jobs.service once a minute.
+
+[Unit]
+Description=SuperBot scheduled jobs tick
+
+[Timer]
+OnCalendar=*:*:00
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,27 @@
+# H15: periodic n8n credential guard (the Termux job-scheduler entry point is
+# gone). Idempotent: recreates only credentials that are missing.
+#
+# Install (operator action; NOT installed by deploy.py):
+#   sudo install -m 644 deploy/superbot-creds-guard.service \
+#                    deploy/superbot-creds-guard.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now superbot-creds-guard.timer
+
+[Unit]
+Description=SuperBot n8n credential guard (idempotent re-sync)
+After=network-online.target n8n.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=superbot
+WorkingDirectory=/opt/superbot
+EnvironmentFile=-/opt/superbot/.env
+Environment=TMPDIR=/opt/superbot/local_data
+ExecStart=/bin/sh /opt/superbot/scripts/n8n_creds_guard.sh
+TimeoutStartSec=300
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/superbot/local_data
+PrivateTmp=true

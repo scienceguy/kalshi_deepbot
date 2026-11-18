@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import queue
+import sys
 import threading
 import time
 import uuid
@@ -32,14 +33,31 @@ from pathlib import Path
 from typing import Any, Optional
 
 import agent_identity
-from mempalace.logstream import Logstream, LOGSTREAM_DB_FILENAME
-from mempalace.knowledge_graph import KnowledgeGraph
+
+# H3: Make mempalace imports optional with no-op fallback
+try:
+    from mempalace.logstream import Logstream, LOGSTREAM_DB_FILENAME
+    from mempalace.knowledge_graph import KnowledgeGraph
+    _MEMPALACE_AVAILABLE = True
+except ImportError:
+    _MEMPALACE_AVAILABLE = False
+    # Type stubs for when mempalace is not available
+    Logstream = None
+    LOGSTREAM_DB_FILENAME = "logstream.sqlite3"
+    KnowledgeGraph = None
 
 log = logging.getLogger(__name__)
 
-PALACE_DIR = str(Path.home() / ".mempalace")
+# H4: Allow override via MEMPALACE_DIR env var
+PALACE_DIR = os.environ.get("MEMPALACE_DIR") or str(Path.home() / ".mempalace")
 _LOGSTREAM_DB = os.path.join(PALACE_DIR, LOGSTREAM_DB_FILENAME)
 _KG_DB = os.path.join(PALACE_DIR, "knowledge_graph.sqlite3")
+
+# Log the resolved palace directory at startup
+if _MEMPALACE_AVAILABLE:
+    log.info("MemPalace bridge using directory: %s", PALACE_DIR)
+else:
+    log.warning("MemPalace library not available — running with no-op bridge. Palace dir would be: %s", PALACE_DIR)
 
 # Back-compat alias: the coding agent identity is the historical default.
 DEFAULT_AGENT_IDENTITY = agent_identity.CODING_AGENT
@@ -244,6 +262,10 @@ class MemPalaceBridge:
 
     def _deliver(self, cmd_type: str, subtype: str, payload: dict,
                  correlation_id: str) -> None:
+        if not _MEMPALACE_AVAILABLE:
+            # No-op when mempalace library is not available (H3)
+            self._breaker_success()  # Track as successful no-op
+            return
         if cmd_type == "status":
             self._deliver_status(subtype, payload, correlation_id)
         elif cmd_type == "kg":
@@ -371,6 +393,9 @@ class MemPalaceBridge:
 
     def _subscriber_loop(self) -> None:
         """Long-lived inbound subscriber via mempalace library logstream wait."""
+        # H3: No-op when mempalace library is not available
+        if not _MEMPALACE_AVAILABLE:
+            return
         # A fresh DB can still be mid-creation when this thread starts —
         # retry the constructor like the wait loop retries, or inbound
         # delivery dies silently for the process lifetime.

@@ -1,0 +1,37 @@
+# H5: loopback HTTP bridge that replaces n8n's Execute Command node.
+#
+# Install (operator action; NOT installed by deploy.py):
+#   sudo install -m 644 deploy/superbot-job-bridge.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now superbot-job-bridge.service
+#
+# n8n workflow nodes POST to http://127.0.0.1:18711/<route>; the route picks
+# a fixed script from an allowlist. No request data ever reaches a shell.
+# The command/coordinate routes re-verify the HMAC in the script itself.
+
+[Unit]
+Description=SuperBot job bridge (loopback, replaces n8n Execute Command)
+After=network-online.target
+Wants=network-online.target
+
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+Group=superbot
+WorkingDirectory=/opt/superbot
+EnvironmentFile=-/opt/superbot/.env
+Environment=TMPDIR=/opt/superbot/local_data
+Environment=SUPERBOT_JOB_BRIDGE_PORT=18711
+ExecStart=/opt/superbot/.venv/bin/python /opt/superbot/scripts/job_bridge.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/superbot/local_data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Block staged additions that write to /tmp.
+"""Block staged additions that write to bare /tmp.
 
-/tmp is NOT writable on this termux/proot device (tmpfs owned by shell:shell
-0771; the app user gets only ``--x``). Temp files must go to $TMPDIR
-(/data/data/com.termux/files/home/tmp) or
-/data/data/com.termux/files/usr/tmp/opencode instead.
+/tmp is shared with every other process on the VPS, and the harness wipes
+/tmp/opencode on a schedule. Temp files go to ``$TMPDIR`` (for the units that
+is ``/opt/superbot/local_data``) or to the approved scratch directory
+``/tmp/opencode`` — never bare ``/tmp``.
 
 See AGENTS.md "System constraints (all agents)".
 
@@ -95,8 +95,8 @@ def main():
 
     if any_violation:
         print()
-        print("/tmp is NOT writable on this device.")
-        print("Use $TMPDIR or /data/data/com.termux/files/usr/tmp/opencode.")
+        print("Bare /tmp is not a scratch directory on this host.")
+        print("Use $TMPDIR or /tmp/opencode.")
         print("See AGENTS.md 'System constraints (all agents)'.")
         return 1
 

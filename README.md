@@ -57,15 +57,12 @@ only** and is **not** wired into `trader.py` — the model loads only when
 `--ml-model` is passed, so retraining cannot change live behaviour on its own.
 
 `scripts/retrain_ml.sh` wraps it and is scheduled every 6 hours by
-`termux-job-scheduler` job **7002**. Re-register on a fresh clone:
+`deploy/superbot-retrain.timer` (operator install: `sudo install -m 644
+deploy/superbot-retrain.service deploy/superbot-retrain.timer
+/etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl
+enable --now superbot-retrain.timer`).
 
-```bash
-termux-job-scheduler --job-id 7002 --period-ms 21600000 --network any \
-    --persisted true --battery-not-low true --script "$PWD/scripts/retrain_ml.sh"
-termux-job-scheduler --cancel 7002          # remove it
-```
-
-Logs append to `~/tmp/opencode/retrain_ml.log`.
+Logs append to `local_data/retrain_ml.log`.
 
 ## License
 

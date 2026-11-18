@@ -28,12 +28,27 @@ is actually installed — reinstall the unit after editing (see below).
 | `superbot.service` (deploy/ ref) | `trader.py --live --interval 15` | `ubuntu` | `/opt/superbot` | same as dry twin | `network-online.target`, `n8n.service` | `on-failure`, burst 5 / 300s |
 | `n8n.service` | `n8n start` | `ubuntu` | `/home/ubuntu` | `~/.n8n` (its own DB) | `network.target` | `always` |
 | `poly15m-paper.service`, `poly5m-collector.service` | legacy collectors | `ubuntu` | `/opt/superbot` | repo tree | `network-online.target` | `always` |
+| `superbot-jobs.timer` → `superbot-jobs.service` | `scripts/scheduled_jobs.py` (digest, watchdogs, sync lag) | `ubuntu` | `/opt/superbot` | `local_data/` | `network-online.target` | `oneshot`, ticks 1/min |
+| `superbot-job-bridge.service` | `scripts/job_bridge.py` (loopback only) | `ubuntu` | `/opt/superbot` | `local_data/` | `network-online.target` | `on-failure`, burst 5 / 300s |
+| `superbot-creds-guard.timer` → `superbot-creds-guard.service` | `scripts/n8n_creds_guard.sh` | `ubuntu` | `/opt/superbot` | `local_data/` | `network-online.target`, `n8n.service` | `oneshot`, every 15 min |
+| `superbot-retrain.timer` → `superbot-retrain.service` | `scripts/retrain_ml.sh` (paper artifact) | `ubuntu` | `/opt/superbot` | `local_data/`, `data/` | `network-online.target` | `oneshot`, every 6 h |
 
 Notes:
 
 - `superbot.service` is the **live** kalshi unit — reference only in `deploy/`,
-  not installed by any deploy path. Real money: `DRY_RUN=false` +
-  `KALSHI_CONFIRM_LIVE=true` + `--live`. Never start it as part of testing.
+  not installed by any deploy path. Real money: `DRY_RUN=false` + `--live`,
+  and the second key is a **drop-in the operator owns** (H14) — the repo unit
+  deliberately does not contain `KALSHI_CONFIRM_LIVE`:
+  ```
+  sudo install -d -m 755 /etc/systemd/system/superbot.service.d
+  printf '[Service]\nEnvironment=KALSHI_CONFIRM_LIVE=true\n' | \
+      sudo tee /etc/systemd/system/superbot.service.d/live-confirm.conf
+  sudo chmod 644 /etc/systemd/system/superbot.service.d/live-confirm.conf
+  sudo systemctl daemon-reload
+  ```
+  The same pattern applies to `POLY_CONFIRM_LIVE=true` for a Polymarket live
+  unit. Without the drop-in the trader logs an ERROR and refuses live orders.
+  Never start this unit as part of testing.
 - The hardened `superbot-dry.service`/`superbot.service` in `deploy/` are
   **not yet installed**; `/etc/systemd/system/superbot-dry.service` is still
   the older unhardened copy. Install with the commands in "Unit / watchdog".
@@ -50,16 +65,38 @@ Notes:
 - `TMPDIR` is service-owned (`/opt/superbot/local_data`); `PrivateTmp=true`
   keeps agent scratch (`/tmp/opencode`) out of the service namespace.
 
+## SSH exposure (H15)
+
+The OCI launcher opens **only TCP/22**, and only from the CIDR passed as
+`--ssh-allow-cidr` (or `$OCI_SSH_ALLOW_CIDR`); `--allow-world-ssh` is the
+explicit opt-out and prints a warning. Examples:
+
+```
+python3 scripts/oci_launch.py --ssh-allow-cidr 198.51.100.7/32   # your address
+python3 scripts/oci_launch.py --status                           # inspect only
+```
+
+The launcher also replaces an older world-open TCP/22 rule in the security
+list it manages. On the host, keep key-only auth (`PasswordAuthentication no`,
+`PermitRootLogin no`) and run fail2ban on `sshd`; n8n and the job bridge are
+never exposed (bridge is loopback, n8n is firewalled).
+
 ## n8n
 
-- Unit: `n8n.service` (User `ubuntu`, `NODES_EXCLUDE=[]` is required —
-  n8n 2.x disables `executeCommand` by default and the backtest/collect
-  webhooks fail without it; start via `sh scripts/start_n8n.sh`).
+- Unit: `n8n.service` (User `ubuntu`). Do **not** set `NODES_EXCLUDE='[]'`:
+  n8n must not have shell access (H5). Scripts run through
+  `superbot-job-bridge.service` (`scripts/job_bridge.py`, loopback only) and
+  scheduled jobs through `superbot-jobs.timer`.
 - **Bind address: `*:5678` (all interfaces)**, not loopback — `ss -tlnp`
   shows `*:5678`. The REST API and webhooks are reachable from the network
   unless a firewall restricts them; the N1 installer's webhook secret is the
   only auth on the trade lane. Restrict exposure at the firewall if the host
   is not trusted.
+- H5 hardening still to apply on the VPS: run `n8n.service` as a dedicated
+  unprivileged user that cannot read `/opt/superbot/.env`, the local trading DB
+  or `~/.secrets/`, bind it to `127.0.0.1`, and require owner authentication on
+  the editor. With the Execute Command node gone, editor access no longer
+  implies shell, but the credentials are still readable by the `ubuntu` user.
 - The n8n REST API returns 401 (upstream bug #31011); webhooks + direct DB
   injection are the working paths.
 

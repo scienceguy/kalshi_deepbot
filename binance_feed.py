@@ -44,8 +44,17 @@ log = logging.getLogger("binance_feed")
 
 _session = requests.Session()
 
-BINANCE_REST = os.environ.get("BINANCE_REST_URL", "https://api.binance.us/api/v3")
-BINANCE_WS = os.environ.get("BINANCE_WS_URL", "wss://stream.binance.us:9443/stream")
+# Default to global Binance market-data endpoints (data-api.binance.vision /
+# data-stream.binance.vision). These serve the same spot/klines data as the
+# main exchange but without geo restrictions. Binance.US (api.binance.us) returns
+# HTTP 451 from non-US IPs. Set BINANCE_USE_US=1 to opt-in to .us endpoints.
+_USE_US = os.environ.get("BINANCE_USE_US", "").strip().lower() in ("1", "true", "yes", "on")
+if _USE_US:
+    BINANCE_REST = os.environ.get("BINANCE_REST_URL", "https://api.binance.us/api/v3")
+    BINANCE_WS = os.environ.get("BINANCE_WS_URL", "wss://stream.binance.us:9443/stream")
+else:
+    BINANCE_REST = os.environ.get("BINANCE_REST_URL", "https://data-api.binance.vision/api/v3")
+    BINANCE_WS = os.environ.get("BINANCE_WS_URL", "wss://data-stream.binance.vision/ws")
 
 _KRAKEN_PAIR = {
     "BTC": "XBTUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
@@ -89,6 +98,21 @@ def _ws_price(symbol: str) -> Optional[float]:
     if time.monotonic() - ts > _WS_STALE_SECONDS:
         return None
     return price
+
+
+def spot_with_age(symbol: str) -> tuple[Optional[float], Optional[float]]:
+    """H6: latest WS tick and its age in seconds, regardless of staleness.
+
+    Returns (price, age) from the live stream, or (None, None) if the symbol
+    has never ticked. Callers choose their own maximum age — the guard needs
+    sub-second freshness, the slow loop tolerates more.
+    """
+    with _ws_lock:
+        entry = _ws_prices.get(symbol.upper())
+    if not entry:
+        return None, None
+    price, ts = entry
+    return price, max(0.0, time.monotonic() - ts)
 
 
 def _ws_set(symbol: str, price: float) -> None:

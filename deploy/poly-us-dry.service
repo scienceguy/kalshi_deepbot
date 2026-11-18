@@ -18,12 +18,15 @@ TimeoutStartSec=90
 TimeoutStopSec=90
 # A10: dedicated unprivileged service account. Create once:
 #   sudo useradd --system --home /opt/superbot --shell /usr/sbin/nologin polybot
+#   sudo usermod -a -G superbot polybot
 #   sudo chown -R polybot:polybot /opt/superbot/local_data
 #   sudo install -m 600 -o polybot -g polybot /opt/superbot/.env /opt/superbot/.env
+# H4: Shared MemPalace directory at /var/lib/superbot/mempalace (superbot group, setgid)
 User=polybot
-Group=polybot
+Group=superbot
 WorkingDirectory=/opt/superbot-releases/current
 Environment=TMPDIR=/opt/superbot/local_data
+Environment=MEMPALACE_DIR=/var/lib/superbot/mempalace
 ExecStart=/opt/superbot/.venv/bin/python poly_us_trader.py --interval 15
 # V2: on-failure + burst — a crash loop stops instead of spinning forever.
 Restart=on-failure
@@ -35,17 +38,15 @@ StandardError=journal
 # the lock path be absent on first start).
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/superbot/local_data -/opt/superbot/.lock_poly -/opt/superbot/.mempalace
+ReadWritePaths=/opt/superbot/local_data -/opt/superbot/.lock_poly /var/lib/superbot/mempalace
 PrivateTmp=true
-# V2: the M1 bridge palace for the polybot user is /opt/superbot/.mempalace
-# (Path.home() for its --home). "-" = service starts without it; create it
-# once for parity:  sudo install -d -o polybot -g polybot /opt/superbot/.mempalace
-# Else heartbeat/checkpoint events are dropped (trading unaffected).
+# H4: Shared MemPalace directory at /var/lib/superbot/mempalace (superbot group, setgid)
 # V2: 1024 fds was not enough for venue session + palace + DB + log.
 LimitNOFILE=65536
 # Measured RSS of sibling traders (kalshi dry ~306 MiB, collectors ~36 MiB);
 # 1G is >3x headroom. MemPalace/Chroma can be large — measure before raising.
 MemoryMax=1G
+UMask=0002
 
 [Install]
 WantedBy=multi-user.target

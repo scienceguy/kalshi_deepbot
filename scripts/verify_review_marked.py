@@ -201,17 +201,22 @@ def main(argv=None):
             capture_output=True, text=True, check=True,
         ).stdout
 
-    # Advisory only (B10): markers record that someone looked; the test-ship
-    # rule below is the gate. Findings are printed, not enforced.
+    # Hard gate (NH3): unreviewed conditions in money path fail the commit.
+    # Test coverage is also required (B10).
     hits = unreviewed(diff_text)
-    for path, lineno, src in hits:
-        print("note: %s:%d: new condition without '# reviewed: <why>' (advisory)" % (path, lineno))
-        print("    %s" % src.strip())
+    failed = False
+    if hits:
+        failed = True
+        for path, lineno, src in hits:
+            print("error: %s:%d: new condition without '# reviewed: <why>' (NH3 hard gate)" % (path, lineno))
+            print("    %s" % src.strip())
     if not test_coverage_ok(diff_text):
+        failed = True
         print("")
         print("money-path diff has no test (or the test does not reference the change)")
         print("Add or modify a tests/test_*.py file whose added lines mention a changed")
         print("function name (or any tests/ file for an inline fix).")
+    if failed:
         return 1
     print("")
     print("all clean")

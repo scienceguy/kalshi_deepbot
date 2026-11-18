@@ -163,7 +163,9 @@ def _roundtrip(monkeypatch, payload):
 def test_signed_webhook_roundtrip_ascii(monkeypatch):
     cap = _roundtrip(monkeypatch, {"order_id": "abc", "pnl": 1.5})
     assert cap["path"] == "/webhook/probe"
-    assert cap["headers"]["X-Superbot-Key"] == "roundtrip-secret"
+    # H2: the header carries the gate key, never the HMAC secret.
+    assert cap["headers"]["X-Superbot-Key"] == n8n_webhook_auth.gate_key()
+    assert cap["headers"]["X-Superbot-Key"] != "roundtrip-secret"
 
 
 def test_signed_webhook_roundtrip_non_ascii(monkeypatch):
@@ -312,19 +314,19 @@ def test_installer_rest_idempotent_no_db(monkeypatch, capsys):
 
     st = fake.state
     names = sorted(w["name"] for w in st["workflows"].values())
+    # H5: the digest + watchdog workflows moved to systemd timers, so only the
+    # webhook lanes remain installed in n8n.
     assert names == [
         "SuperBot Backtest", "SuperBot Control", "SuperBot Coordinate",
-        "SuperBot Critical Alert", "SuperBot Daily Digest", "SuperBot Data Collect",
-        "SuperBot Heartbeat Watchdog Kalshi", "SuperBot Heartbeat Watchdog Poly",
-        "SuperBot Monitor", "SuperBot Position Watchdog", "SuperBot Sync Lag",
+        "SuperBot Critical Alert", "SuperBot Data Collect", "SuperBot Monitor",
     ]
-    # settlement processor skipped without Supabase creds; everything else present
-    assert len(st["workflows"]) == 11
+    # settlement processor skipped without Supabase creds; six workflows remain
+    assert len(st["workflows"]) == 6
     assert st["updates"] >= 4                   # second run updated, never duplicated
     assert len(st["credentials"]) == 1          # credential created once
 
     # every webhook node (if any) is headerAuth-gated with the shared credential;
-    # scheduled workflows (digest/watchdogs) have no webhook at all.
+    # H5: nothing in the installed set may carry the Execute Command node.
     for w in st["workflows"].values():
         webhooks = [n for n in w["nodes"] if n["type"] == "n8n-nodes-base.webhook"]
         for wh in webhooks:

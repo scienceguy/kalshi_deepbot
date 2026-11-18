@@ -1,0 +1,29 @@
+# H15: every-6-hours retrain of the paper fair-value model. Not wired into the
+# trader (the artifact loads only with --ml-model).
+#
+# Install (operator action; NOT installed by deploy.py):
+#   sudo install -m 644 deploy/superbot-retrain.service \
+#                    deploy/superbot-retrain.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now superbot-retrain.timer
+
+[Unit]
+Description=SuperBot ML retrain (KXBTCD, paper artifact)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=superbot
+WorkingDirectory=/opt/superbot
+EnvironmentFile=-/opt/superbot/.env
+Environment=TMPDIR=/opt/superbot/local_data
+ExecStart=/bin/sh /opt/superbot/scripts/retrain_ml.sh
+TimeoutStartSec=7200
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/superbot/local_data /opt/superbot/data
+PrivateTmp=true

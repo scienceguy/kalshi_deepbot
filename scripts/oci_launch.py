@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
 """Launch a free-tier ARM VPS on Oracle Cloud and print its public IP.
 
-Why the SDK and not the CLI: `pip install oci-cli` fails building crc32c on
-termux, while the pure-python `oci` SDK installs fine.
+Why the SDK and not the CLI: `pip install oci-cli` builds crc32c from source,
+while the pure-python `oci` SDK installs fine.
 
 Idempotent: reuses the VCN/subnet/instance if they already exist, so it is safe
 to run in a retry loop until ARM capacity appears ("Out of host capacity").
 
+H15: SSH is never opened to the world by default. Pass the operator's address
+range (or a bastion) as `--ssh-allow-cidr`; only TCP/22 from that CIDR is added
+to the security list. `--allow-world-ssh` is the explicit opt-out.
+
 Usage:
-  python3 scripts/oci_launch.py              # ensure network, launch, print IP
+  python3 scripts/oci_launch.py --ssh-allow-cidr 198.51.100.7/32
   python3 scripts/oci_launch.py --status     # just show instances + IPs
-  python3 scripts/oci_launch.py --ssh-key ~/.ssh/oci_ed25519.pub
+  python3 scripts/oci_launch.py --ssh-key ~/.ssh/oci_ed25519.pub \
+      --ssh-allow-cidr 198.51.100.7/32
 """
 from __future__ import annotations
 
 import argparse
 import base64
+import ipaddress
 import os
 import sys
 import time
 
-import oci
+try:  # the SDK is only needed to talk to OCI; the rule helpers stay importable
+    import oci
+except ImportError:  # a venv without the SDK can still be inspected/tested
+    oci = None
 
 COMPARTMENT = os.environ.get(
     "OCI_COMPARTMENT",
@@ -42,7 +51,39 @@ runcmd:
 """
 
 
+def ssh_ingress_specs(cidr: str, allow_world: bool = False) -> list:
+    """The only ingress rule this launcher creates: TCP/22 from one CIDR.
+
+    Raises ValueError for an unparseable CIDR, and for a world-open range
+    (prefix length 0) unless `allow_world` is set explicitly.
+    """
+    if not cidr:
+        raise ValueError("no --ssh-allow-cidr given")
+    try:
+        network = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as e:
+        raise ValueError(f"--ssh-allow-cidr is not a CIDR: {cidr!r}") from e
+    if network.prefixlen == 0 and not allow_world:
+        raise ValueError(
+            f"refusing world-open SSH ({network}); pass --allow-world-ssh "
+            "if that is really intended")
+    return [{"protocol": "6", "source": str(network),
+             "port_min": 22, "port_max": 22}]
+
+
+def _is_ssh_rule(rule) -> bool:
+    """True for a TCP rule covering port 22."""
+    try:
+        ports = rule.tcp_options.destination_port_range
+    except AttributeError:
+        return False
+    return (str(rule.protocol) == "6" and ports is not None
+            and ports.min <= 22 <= ports.max)
+
+
 def _cfg(args) -> dict:
+    if oci is None:
+        raise SystemExit("the oci SDK is not installed: pip install oci")
     c = oci.config.from_file(os.path.expanduser("~/.oci/config"), "DEFAULT")
     c["region"] = c.get("region", "us-phoenix-1")
     return c
@@ -55,8 +96,9 @@ def _find(coll, pred):
     return None
 
 
-def ensure_network(net, cid) -> str:
+def ensure_network(net, cid, ssh_cidr: str, allow_world: bool = False) -> str:
     """Ensure VCN + internet gateway + route + security list + public subnet."""
+    specs = ssh_ingress_specs(ssh_cidr, allow_world)
     vcns = net.list_vcns(cid, display_name=VCN_NAME).data
     vcn = vcns[0] if vcns else net.create_vcn(
         oci.core.models.CreateVcnDetails(
@@ -88,15 +130,25 @@ def ensure_network(net, cid) -> str:
     sls = net.list_security_lists(cid, vcn_id=vcn_id).data
     sl = sls[0]
     want = [oci.core.models.IngressSecurityRule(
-        protocol="6", source="0.0.0.0/0",
+        protocol=s["protocol"], source=s["source"],
         tcp_options=oci.core.models.TcpOptions(
-            destination_port_range=oci.core.models.PortRange(min=22, max=22)))]
-    if not sl.ingress_security_rules:
+            destination_port_range=oci.core.models.PortRange(
+                min=s["port_min"], max=s["port_max"]))) for s in specs]
+
+    # H15: adopt an existing rule only when it is exactly ours, and never leave
+    # an older world-open TCP/22 rule in place unless --allow-world-ssh asked
+    # for one. Non-SSH rules (operator additions) are preserved untouched.
+    wanted_source = specs[0]["source"]
+    ssh_rules = [r for r in sl.ingress_security_rules if _is_ssh_rule(r)]
+    stale = [r for r in ssh_rules
+             if r.source != wanted_source or r.source in ("0.0.0.0/0", "::/0")]
+    if not ssh_rules or (stale and not allow_world):
+        kept = [r for r in sl.ingress_security_rules if not _is_ssh_rule(r)]
         net.update_security_list(sl.id, oci.core.models.UpdateSecurityListDetails(
-            ingress_security_rules=want,
+            ingress_security_rules=kept + want,
             egress_security_rules=sl.egress_security_rules or [
                 oci.core.models.EgressSecurityRule(protocol="all", destination="0.0.0.0/0")]))
-        print("ssh ingress added", flush=True)
+        print(f"ssh ingress set to {wanted_source} (tcp/22 only)", flush=True)
 
     subs = net.list_subnets(cid, vcn_id=vcn_id).data
     if subs:
@@ -141,7 +193,30 @@ def main() -> int:
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--ssh-key", default=os.path.expanduser("~/.ssh/oci_ed25519.pub"))
     ap.add_argument("--tries", type=int, default=1, help="launch attempts per AD")
+    ap.add_argument("--ssh-allow-cidr",
+                    default=os.environ.get("OCI_SSH_ALLOW_CIDR", ""),
+                    help="CIDR allowed to reach TCP/22 (your address or bastion); "
+                         "defaults to $OCI_SSH_ALLOW_CIDR")
+    ap.add_argument("--allow-world-ssh", action="store_true",
+                    help="explicitly allow 0.0.0.0/0 to reach SSH (discouraged)")
     a = ap.parse_args()
+
+    if not a.status:
+        if not a.ssh_allow_cidr and not a.allow_world_ssh:
+            ap.error("--ssh-allow-cidr is required (e.g. 198.51.100.7/32), or "
+                     "pass --allow-world-ssh to deliberately expose SSH. "
+                     "Set OCI_SSH_ALLOW_CIDR to avoid repeating it.")
+        try:
+            ssh_ingress_specs(a.ssh_allow_cidr or "0.0.0.0/0", a.allow_world_ssh)
+        except ValueError as e:
+            ap.error(str(e))
+        if a.allow_world_ssh:
+            print("WARN: SSH is open to the world (--allow-world-ssh); prefer "
+                  "a /32 or a bastion.", file=sys.stderr, flush=True)
+    if oci is None:
+        print("ERROR: the oci SDK is not installed in this interpreter "
+              "(pip install oci).", file=sys.stderr)
+        return 2
 
     cfg = _cfg(a)
     cid = COMPARTMENT
@@ -167,7 +242,8 @@ def main() -> int:
     else:
         print(f"WARN: no ssh public key at {a.ssh_key}; console access only", flush=True)
 
-    subnet_id = ensure_network(net, cid)
+    subnet_id = ensure_network(net, cid, a.ssh_allow_cidr or "0.0.0.0/0",
+                               a.allow_world_ssh)
     image_id = ubuntu_image(compute, cid)
     ads = oci.identity.IdentityClient(cfg).list_availability_domains(cid).data
     print(f"image {image_id}\nads {[ad.name for ad in ads]}", flush=True)

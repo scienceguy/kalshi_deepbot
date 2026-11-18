@@ -41,6 +41,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -276,6 +277,35 @@ def _start_outbox_sender():
             _outbox_sender_started = True
 
 
+def drain_outbox(timeout_seconds: float = 10.0) -> int:
+    """Drain pending outbox events synchronously (for graceful shutdown).
+    
+    Delivers all pending critical/normal events up to timeout_seconds.
+    Returns number of events delivered.
+    """
+    from local_db import get_local_db
+    db = get_local_db()
+    delivered = 0
+    start = time.time()
+    for lane in ("critical", "normal"):
+        while time.time() - start < timeout_seconds:
+            rows = db.get_pending_outbox_events(limit=50, lane=lane)
+            if not rows:
+                break
+            for row in rows:
+                if time.time() - start >= timeout_seconds:
+                    break
+                try:
+                    _deliver_outbox_row(db, row)
+                    delivered += 1
+                except Exception as e:
+                    log.warning("Outbox drain failed for %s: %s", row.get("type"), e)
+            if lane == "normal":
+                # Also try to drain telemetry
+                _drain_telemetry()
+    return delivered
+
+
 def outbox_metrics() -> Dict[str, Any]:
     """N2 export: outbox_depth, oldest_undelivered_age_s, dropped_total.
 
@@ -354,10 +384,32 @@ def load_api_key() -> Optional[str]:
     return _read_api_key_file(key_file)
 
 
+def _assert_transport_safe(base_url: str) -> None:
+    """H2: refuse plaintext to a non-loopback host.
+
+    The gate key and every HMAC signature ride in headers, so a plaintext hop
+    to another machine hands both to anyone on the path. `https://` is allowed
+    from anywhere (warned when not loopback, so a tunnel stays visible in the
+    logs); loopback `http://` is the normal local case.
+    """
+    parsed = urlparse(base_url)
+    host = (parsed.hostname or "").lower()
+    loopback = (host in ("localhost", "::1", "0.0.0.0")
+                or host.startswith("127."))
+    if parsed.scheme == "http" and not loopback:
+        raise ValueError(
+            f"refusing plaintext http:// to non-loopback host {host!r}: "
+            "use https:// or a loopback address")
+    if parsed.scheme == "https" and not loopback:
+        log.warning("n8n base URL %s is not loopback — gate key and HMAC "
+                    "signatures cross the network (TLS only)", host)
+
+
 class N8nClient:
     """Client for n8n REST API and signed webhook delivery."""
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, api_key: Optional[str] = None):
+        _assert_transport_safe(base_url)
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key or load_api_key()
 
@@ -512,8 +564,8 @@ class N8nClient:
         """Execute a webhook with HMAC signing on the no-API-key session.
 
         Signature covers ``{timestamp_ms}.{nonce}.{body}`` (N1: nonce replay
-        cover); the static shared secret rides in X-Superbot-Key as the
-        n8n webhook headerAuth possession gate.
+        cover); the gate key rides in X-Superbot-Key as the n8n webhook
+        headerAuth possession gate. H2: the gate key is never the HMAC key.
         """
         timestamp = str(int(time.time() * 1000))
         nonce = uuid.uuid4().hex
@@ -525,7 +577,7 @@ class N8nClient:
             "X-Superbot-Timestamp": timestamp,
             "X-Superbot-Nonce": nonce,
             "X-Superbot-Signature": signature,
-            "X-Superbot-Key": n8n_webhook_auth.static_key(),
+            "X-Superbot-Key": n8n_webhook_auth.gate_key(),
         }
         if extra_headers:
             headers.update(extra_headers)
@@ -681,17 +733,45 @@ def n8n_health_check() -> bool:
         return False
 
 
+def _execute_command_enabled() -> bool:
+    """H5: True when n8n's environment re-enables the Execute Command node.
+
+    n8n 2.x excludes it by default, so unset/absent means disabled. Setting
+    NODES_EXCLUDE to a list that omits it, or NODES_INCLUDE to name it, turns
+    arbitrary shell back on for anyone with editor or API access.
+    """
+    if "executeCommand" in (os.environ.get("NODES_INCLUDE") or ""):
+        return True
+    raw = os.environ.get("NODES_EXCLUDE")
+    if raw is None:
+        return False
+    try:
+        excluded = json.loads(raw)
+    except ValueError:
+        return False
+    if not isinstance(excluded, list):
+        return False
+    return "n8n-nodes-base.executeCommand" not in excluded
+
+
 def n8n_startup_check() -> bool:
     """N1 startup gate: warn on non-loopback bind or unsigned acceptance.
 
     - WARNING when n8n appears bound to a non-loopback address
       (N8N_HOST / N8N_LISTEN_ADDRESS / configured base URL host).
+    - ERROR when the Execute Command node is re-enabled (H5): n8n must never
+      be able to run shell, scripts go through the loopback job bridge.
     - CRITICAL when an unsigned webhook request is accepted: the superbot-*
       webhooks must reject requests without the shared secret.
     Returns True when no issue was found.
     """
     from urllib.parse import urlparse
     issues = []
+    if _execute_command_enabled():
+        log.error("n8n has the Execute Command node ENABLED (NODES_EXCLUDE/"
+                  "NODES_INCLUDE) — anyone with editor or API access can run "
+                  "shell as the n8n user; use scripts/job_bridge.py instead")
+        issues.append("execute-command-enabled")
     bind = (os.environ.get("N8N_HOST") or os.environ.get("N8N_LISTEN_ADDRESS") or "").strip()
     if not bind:
         try:

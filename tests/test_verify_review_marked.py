@@ -122,6 +122,7 @@ def _risk_diff(with_test=False, new_def=False):
         "@@ -1,2 +1,4 @@\n"
         " total = self.mark_to_market()\n"
         + guard +
+        "+        # reviewed: no action on non-positive exposure\n"
         "+        if total <= 0:\n"
         "+            return False\n"
         "         return total < self.ceiling\n"

@@ -20,12 +20,17 @@ log = logging.getLogger(__name__)
 
 # Kalshi taker fee rate (0.07 = 7% of contracts * price * (1-price)).
 # Configurable via KALSHI_FEE_RATE env var in case the fee schedule changes.
-# Validated at startup via validate_fee_rate(), not at import time.
+# Validated immediately at import (and again at startup via validate_fee_rate()).
 _FEE_RATE_STR = os.environ.get("KALSHI_FEE_RATE", "0.07")
 try:
     FEE_RATE = float(_FEE_RATE_STR)
 except ValueError:
     log.warning("Invalid KALSHI_FEE_RATE='%s', using default 0.07", _FEE_RATE_STR)
+    FEE_RATE = 0.07
+# Bounds check immediately after parse (SF8)
+# reviewed: clamping is defensive; a misconfigured env var must not crash or allow fee > 100%
+if not 0 <= FEE_RATE <= 1:
+    log.warning("KALSHI_FEE_RATE=%.4f out of bounds [0,1], clamping to 0.07", FEE_RATE)
     FEE_RATE = 0.07
 
 

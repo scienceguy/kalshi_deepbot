@@ -13,6 +13,7 @@ fair value after fees.
 import bisect
 import logging
 import math
+import os
 import time
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Sequence, Tuple
@@ -34,6 +35,10 @@ _vol_cache: dict[str, tuple[float, float]] = {}
 _SPOT_MAX_AGE_SECONDS = 30.0
 _VOL_MAX_AGE_SECONDS = 600.0
 
+# H6: slow-loop spot cache TTL, configurable. The guard does NOT use this
+# cache — it reads the live WebSocket tick via get_spot_with_age().
+_SPOT_CACHE_TTL_SECONDS = float(os.environ.get("SPOT_CACHE_TTL_SECONDS", "5.0"))
+
 # Resolution sources already logged, so a mismatch warns once per market type.
 _resolution_source_warned: set = set()
 
@@ -42,7 +47,7 @@ def get_cached_spot(symbol: str) -> Optional[float]:
     """Fetch spot price for symbol with a 5s cache to avoid HTTP thrashing."""
     now = time.time()
     cached = _spot_cache.get(symbol)
-    if cached and now - cached[0] < 5.0:
+    if cached and now - cached[0] < _SPOT_CACHE_TTL_SECONDS:
         return cached[1]
     try:
         spot = binance_feed.spot_price(f"{symbol}USDT")
@@ -54,6 +59,22 @@ def get_cached_spot(symbol: str) -> Optional[float]:
     if cached and now - cached[0] <= _SPOT_MAX_AGE_SECONDS:  # reviewed: stale spots are dropped, never silently reused (A7)
         return cached[1]
     return None
+
+
+def get_spot_with_age(symbol: str, max_age_s: float = 1.5) -> tuple[Optional[float], Optional[float]]:
+    """H6: sub-second spot for the resting-order guard.
+
+    Prefers the live WebSocket tick. Returns (price, age_seconds) when the
+    tick is fresher than `max_age_s`, else (None, age) so the caller can
+    report `feed_stale`. Never falls back to a REST call here: a guard tick
+    must not block on the network (H7).
+    """
+    price, age = binance_feed.spot_with_age(f"{symbol}USDT")
+    if price is None:
+        return None, age
+    if age is not None and age > max_age_s:
+        return None, age
+    return price, age
 
 
 def get_cached_vol(symbol: str) -> Optional[float]:

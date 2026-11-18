@@ -69,16 +69,24 @@ python trader.py --live
 
 ## n8n
 
-- n8n runs at `http://127.0.0.1:5678`.
-- 4 workflows injected into n8n's SQLite DB: `superbot-backtest`, `superbot-collect`, `superbot-trade`, `superbot-monitor`.
+- n8n runs at `http://127.0.0.1:5678` (bind it to loopback; the webhook secret
+  is the only auth on the trade lane).
+- Webhook workflows: `superbot-backtest`, `superbot-collect`, `superbot-trade`,
+  `superbot-monitor`, `superbot-coordinate`, `superbot-control`. The digest and
+  the watchdogs are **not** in n8n any more — they run from
+  `superbot-jobs.timer` (`scripts/scheduled_jobs.py`).
 - Inject with the real project/user ids (defaults are now correct):
   `python inject_n8n_workflows.py` — needs `SUPABASE_URL` and
   `SUPABASE_SERVICE_KEY` for the settlement workflow, which is skipped without them.
-- Start n8n with **`sh scripts/start_n8n.sh`**, not plain `n8n start`. n8n 2.x
-  disables `n8n-nodes-base.executeCommand` by default; without
-  `NODES_EXCLUDE=[]` the backtest/collect webhooks fail with
-  "Unrecognized node type". After a restart n8n reconciles and registers the
-  webhooks (a few seconds after `/healthz` returns 200).
+- **n8n must never have the Execute Command node (H5).** n8n 2.x disables
+  `n8n-nodes-base.executeCommand` by default — leave it that way; do not set
+  `NODES_EXCLUDE='[]'`. Workflows that need to run a script POST to the
+  loopback job bridge instead (`scripts/job_bridge.py`, `127.0.0.1:18711`,
+  fixed allowlisted argv, request data only on stdin):
+  `/command` → `send_command.py --stdin`, `/coordinate` → `n8n_coordination.py`,
+  `/backtest`, `/collect`. `n8n_startup_check()` logs an ERROR if the node is
+  re-enabled. Start n8n with `sh scripts/start_n8n.sh`; after a restart n8n
+  reconciles and registers the webhooks (a few seconds after `/healthz`).
 - Workflow wiring facts learned against n8n 2.45.6: connections key by node
   **name** (not id); a Respond node requires `responseMode: "responseNode"`;
   webhook v2 payloads are under `$json.body`; PostgREST filters use `eq.`
@@ -135,8 +143,8 @@ n8n holds a **copy** of every credential, recreated from the mirror at any time.
     produces and it is unrelated to the US bot. `polymarket_us_client.py` is
     deliberately read-only; order placement for US goes through the
     `polymarket_us` SDK's `PolymarketUS.orders` resource.
-- A background guard (`scripts/n8n_creds_guard.sh`, termux-job-scheduler job
-  **7001**, every 15 min, persisted) re-runs the sync automatically.
+- A background guard (`deploy/superbot-creds-guard.timer` →
+  `scripts/n8n_creds_guard.sh`, every 15 min) re-runs the sync automatically.
 - `add_n8n_credentials.py` is deprecated; use `scripts/n8n_creds_sync.py`.
 - **Never hardcode a secret in source.** A pre-commit hook
   (`scripts/install-pre-commit.sh`) blocks `.env`/`*.pem` and scans staged

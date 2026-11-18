@@ -31,14 +31,22 @@
       }
     },
     {
-      "id": "node_exec",
+      "id": "node_bridge",
       "name": "Enqueue Command",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [440, 0],
       "parameters": {
-        "command": "/opt/superbot/.venv/bin/python /opt/superbot/scripts/send_command.py --stdin",
-        "executeOnce": true
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/command",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {"timeout": 15000}
       }
     },
     {
@@ -49,7 +57,7 @@
       "position": [660, 0],
       "parameters": {
         "responseCode": "200",
-        "responseBody": "={{ { ok: true, command: $json.command || 'enqueued' } }}",
+        "responseBody": "={{ { ok: ($json.result || {}).ok !== false, command: ($json.result || {}).command || 'enqueued' } }}",
         "respondWith": "json",
         "options": {}
       }

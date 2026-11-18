@@ -52,10 +52,6 @@ class RiskState:
     # Daily P&L tracking for daily loss circuit breaker (Pillar B)
     daily_pnl: float = 0.0
     daily_pnl_reset_ts: float = 0.0
-    # Per-ticker exposure tracking (Pillar B)
-    ticker_exposure: dict = field(default_factory=dict)
-    # Total open exposure (Pillar B)
-    total_exposure: float = 0.0
 
     @property
     def peak(self) -> float:
@@ -77,17 +73,13 @@ class RiskManager:
         self.state.session_high = starting_balance
         self.state.daily_pnl = 0.0
         self.state.daily_pnl_reset_ts = time.time()
-        self.state.ticker_exposure = {}
-        self.state.total_exposure = 0.0
         log.info(
             "Risk: start=$%.2f | floor=%.0f%% cash | ceiling=%.0f%% exposure "
-            "| %.0f%% per-trade | halt at -%.0f%% | daily_loss_limit=%.0f%% | max_ticker=%.0f%% | max_total=%.0f%% | kelly=%.0f%% | min_ev=%.0f%%",
+            "| %.0f%% per-trade | halt at -%.0f%% | daily_loss_limit=%.0f%% | kelly=%.0f%% | min_ev=%.0f%%",
             starting_balance,
             config.CASH_FLOOR_PCT * 100, config.EXPOSURE_CEILING_PCT * 100,
             config.PER_TRADE_PCT * 100, config.DRAWDOWN_HALT_PCT * 100,
             config.DAILY_LOSS_LIMIT_PCT * 100,
-            config.MAX_POSITION_PER_TICKER_PCT * 100,
-            config.MAX_POSITION_TOTAL_PCT * 100,
             config.KELLY_FRACTION * 100,
             config.MIN_EV_EDGE_PCT * 100,
         )
@@ -254,41 +246,6 @@ class RiskManager:
         # Cap at MAX_TRADE_DOLLARS
         return min(kelly_dollars, config.MAX_TRADE_DOLLARS)
 
-    def update_ticker_exposure(self, ticker: str, exposure_delta: float):
-        """Update per-ticker exposure tracking."""
-        current = self.state.ticker_exposure.get(ticker, 0.0)
-        new_exposure = current + exposure_delta
-        if new_exposure <= 0:
-            self.state.ticker_exposure.pop(ticker, None)
-        else:
-            self.state.ticker_exposure[ticker] = new_exposure
-        # Update total exposure
-        self.state.total_exposure = sum(self.state.ticker_exposure.values())
-
-    def check_ticker_exposure(self, ticker: str, additional_exposure: float, 
-                               total_portfolio: float) -> Tuple[bool, str]:
-        """Check if adding exposure would exceed per-ticker or total caps."""
-        # Per-ticker cap
-        current_ticker_exp = self.state.ticker_exposure.get(ticker, 0.0)
-        new_ticker_exp = current_ticker_exp + additional_exposure
-        ticker_cap = total_portfolio * config.MAX_POSITION_PER_TICKER_PCT
-        if new_ticker_exp > ticker_cap:
-            return False, (
-                f"ticker exposure cap: ${new_ticker_exp:.2f} > ${ticker_cap:.2f} "
-                f"({config.MAX_POSITION_PER_TICKER_PCT*100:.0f}% of ${total_portfolio:.2f})"
-            )
-        
-        # Total exposure cap
-        new_total_exp = self.state.total_exposure + additional_exposure
-        total_cap = total_portfolio * config.MAX_POSITION_TOTAL_PCT
-        if new_total_exp > total_cap:
-            return False, (
-                f"total exposure cap: ${new_total_exp:.2f} > ${total_cap:.2f} "
-                f"({config.MAX_POSITION_TOTAL_PCT*100:.0f}% of ${total_portfolio:.2f})"
-            )
-        
-        return True, "ok"
-
     def check_liquidity(self, market, side: str) -> Tuple[bool, str]:
         """Check orderbook spread and depth for liquidity protection."""
         if side == "yes":
@@ -390,10 +347,6 @@ class RiskManager:
             return
         self.state.market_daily_losses[key] = [{"ts": time.time(),
                                               "loss": float(unrealized_loss)}]
-
-    def record_realized_loss(self, ticker: str, loss: float):
-        """Track realized loss for a settled position (same bucket as market loss)."""
-        self.record_market_loss(ticker, loss)
 
     def market_loss_total(self, ticker: str) -> float:
         """Realized loss currently counted against ticker's asset bucket (B4)."""
@@ -498,18 +451,11 @@ class RiskManager:
             kelly_dollars = self.kelly_size(win_prob, entry_price_cents, portfolio)
             per_trade_cap = min(per_trade_cap, kelly_dollars)
 
-        # Per-ticker exposure cap (Pillar B)
-        if ticker:
-            ticker_exp = self.state.ticker_exposure.get(ticker, 0.0)
-            ticker_cap = cash * config.MAX_POSITION_PER_TICKER_PCT
-            ticker_room = max(0.0, ticker_cap - ticker_exp)
-            exposure_room = min(exposure_room, ticker_room)
-        
-        # Total exposure cap (Pillar B)
-        total_exp_cap = cash * config.MAX_POSITION_TOTAL_PCT
-        total_exp_room = max(0.0, total_exp_cap - self.state.total_exposure)
-        exposure_room = min(exposure_room, total_exp_room)
-
+        # H10: the per-ticker and total-exposure maps were never populated, so
+        # their caps never bound (each 15-minute contract has a unique ticker,
+        # so keying by ticker cannot bind across windows). They were removed
+        # rather than left looking like protection; per_trade_cap and the
+        # mark-to-market ceiling above are the limits that actually apply.
         return min(exposure_room, cash_room, per_trade_cap, config.MAX_TRADE_DOLLARS)
 
     def check(self, cash: float, exposure: float,

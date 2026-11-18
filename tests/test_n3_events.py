@@ -219,9 +219,9 @@ def test_daily_summary_emitted_on_day_rollover(monkeypatch):
 
 WORKFLOWS = sorted((REPO / "n8n" / "workflows").glob("*.json"))
 EXPECTED_WORKFLOWS = {
-    "superbot-critical-alert", "superbot-daily-digest",
-    "superbot-heartbeat-watchdog-kalshi", "superbot-heartbeat-watchdog-poly",
-    "superbot-sync-lag", "superbot-position-watchdog", "superbot-control",
+    # H5: the digest and the watchdogs moved to superbot-jobs.timer; only the
+    # webhook lanes stay in n8n.
+    "superbot-critical-alert", "superbot-control",
 }
 
 
@@ -364,11 +364,9 @@ def test_json_workflows_install_idempotently(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc1 == 0 and rc2 == 0, out
     names = sorted(w["name"] for w in state["workflows"].values())
-    json_names = {"SuperBot Critical Alert", "SuperBot Daily Digest",
-                  "SuperBot Heartbeat Watchdog Kalshi",
-                  "SuperBot Heartbeat Watchdog Poly",
-                  "SuperBot Sync Lag", "SuperBot Position Watchdog",
-                  "SuperBot Control"}
+    # H5: only the webhook lanes ship as JSON now; the digest and the
+    # watchdogs run from superbot-jobs.timer.
+    json_names = {"SuperBot Critical Alert", "SuperBot Control"}
     assert json_names <= set(names), names
     # second run updated JSON workflows instead of duplicating them
     assert state["updates"] >= len(json_names)
@@ -381,10 +379,14 @@ def test_json_workflows_install_idempotently(monkeypatch, capsys):
     wh = next(n for n in crit["nodes"] if n["type"] == "n8n-nodes-base.webhook")
     assert wh["credentials"]["httpHeaderAuth"]["id"] == "cred-1"
     assert wh["parameters"]["authentication"] == "headerAuth"
-    # scheduled digest/watchdog JSONs install without a webhook path
-    digest = next(w for w in state["workflows"].values()
-                  if w["name"] == "SuperBot Daily Digest")
-    assert any(n["type"] == "n8n-nodes-base.scheduleTrigger" for n in digest["nodes"])
+    # H5: the control lane reaches the loopback bridge, never a shell
+    ctrl = next(w for w in state["workflows"].values()
+                if w["name"] == "SuperBot Control")
+    assert not [n for n in ctrl["nodes"]
+                if n["type"] == "n8n-nodes-base.executeCommand"]
+    assert any(n["type"] == "n8n-nodes-base.httpRequest"
+               and n["parameters"]["url"].endswith("/command")
+               for n in ctrl["nodes"])
 
 
 def test_install_deletes_nothing_from_disk():

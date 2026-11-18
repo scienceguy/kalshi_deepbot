@@ -96,34 +96,43 @@ class RestingGuard:
             return {"checked": 0, "cancelled": [], "error": str(e)}
 
     def _evaluate(self) -> dict:
+        # H7: hold the lock only to snapshot state. Trigger evaluation and the
+        # venue cancel happen outside it so a slow venue call cannot block the
+        # trading cycle, and a slow cycle cannot freeze protection.
         with self._lock:
             orders = [o for o in (self._list_orders() or [])
                       if o.get("state") == "resting"]
-            if not orders:
-                return {"checked": 0, "cancelled": []}
-            halt = self._safe(self._halt_active) or False
-            feed_age = self._safe(self._feed_age)
-            cancelled = []
-            for o in orders:
-                reason = self._trigger(o, halt=halt, feed_age=feed_age)
-                if reason is None:
-                    continue
-                oid = o.get("order_id")
-                t0 = time.monotonic()
-                try:
-                    ok = bool(self._cancel_one(o, reason))
-                except Exception as e:
-                    log.warning("guard cancel %s failed (retry next tick): %s",
-                                oid, e)
-                    ok = False
-                dt_ms = (time.monotonic() - t0) * 1000.0
-                self._record(reason, dt_ms)
-                if not ok:
-                    continue
-                cancelled.append({"order_id": oid, "trigger": reason,
-                                  "cancel_latency_ms": round(dt_ms, 2)})
-                self._emit(o, reason, dt_ms)
-            return {"checked": len(orders), "cancelled": cancelled}
+        if not orders:
+            return {"checked": 0, "cancelled": []}
+        halt = self._safe(self._halt_active) or False
+        feed_age = self._safe(self._feed_age)
+        cancelled = []
+        t_tick = time.monotonic()
+        for o in orders:
+            if o.get("state") != "resting":
+                continue  # cancelled by the cycle while we were evaluating
+            reason = self._trigger(o, halt=halt, feed_age=feed_age)
+            if reason is None:
+                continue
+            oid = o.get("order_id")
+            t0 = time.monotonic()
+            try:
+                ok = bool(self._cancel_one(o, reason))
+            except Exception as e:
+                log.warning("guard cancel %s failed (retry next tick): %s",
+                            oid, e)
+                ok = False
+            dt_ms = (time.monotonic() - t0) * 1000.0
+            self._record(reason, dt_ms)
+            if not ok:
+                continue
+            cancelled.append({"order_id": oid, "trigger": reason,
+                              "cancel_latency_ms": round(dt_ms, 2)})
+            self._emit(o, reason, dt_ms)
+        tick_ms = (time.monotonic() - t_tick) * 1000.0
+        if tick_ms > 250.0:
+            log.warning("guard tick took %.0fms (budget 250ms)", tick_ms)
+        return {"checked": len(orders), "cancelled": cancelled}
 
     def _trigger(self, o, *, halt, feed_age) -> str | None:
         if halt:

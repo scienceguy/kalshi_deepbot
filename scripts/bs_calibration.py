@@ -32,6 +32,7 @@ import json
 import logging
 import math
 import os
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from statistics import NormalDist
@@ -828,8 +829,7 @@ def main():
     args = ap.parse_args()
 
     if args.demo:
-        path = "/data/data/com.termux/files/home/tmp/opencode/bs_calib_demo.csv"
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        path = os.path.join(tempfile.gettempdir(), "bs_calib_demo.csv")
         demo_dataset(path)
         return run_csv(path)
 

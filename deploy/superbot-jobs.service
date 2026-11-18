@@ -1,0 +1,28 @@
+# H5: the jobs n8n used to run through the Execute Command node.
+#
+# Install (operator action; NOT installed by deploy.py):
+#   sudo install -m 644 deploy/superbot-jobs.service deploy/superbot-jobs.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now superbot-jobs.timer
+#
+# One tick per minute; scripts/scheduled_jobs.py decides what is due, so a
+# missed tick costs one interval. Alerts go to SUPERBOT_ALERT_WEBHOOK_URL.
+
+[Unit]
+Description=SuperBot scheduled jobs (digest, watchdogs, sync lag)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=superbot
+WorkingDirectory=/opt/superbot
+EnvironmentFile=-/opt/superbot/.env
+Environment=TMPDIR=/opt/superbot/local_data
+ExecStart=/opt/superbot/.venv/bin/python /opt/superbot/scripts/scheduled_jobs.py
+TimeoutStartSec=600
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/superbot/local_data
+PrivateTmp=true

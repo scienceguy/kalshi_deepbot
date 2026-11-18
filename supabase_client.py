@@ -310,6 +310,7 @@ class SupabaseClient:
                         "Supabase %s %s: HTTP %s (%s) — skipping row, keeping client enabled",
                         method, path, resp.status_code, resp.text[:200],
                     )
+                    _supabase_record_failure()
                     return None
                 # Other 4xx — log but don't disable (could be transient)
                 log.warning("Supabase %s %s: HTTP %s — non-retryable error, not recording failure",

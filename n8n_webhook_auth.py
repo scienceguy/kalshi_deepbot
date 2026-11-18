@@ -33,6 +33,7 @@ import hmac
 import logging
 import os
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -83,25 +84,62 @@ def sign_body(timestamp_ms, nonce: str, body: str) -> str:
     return hmac.new(_secret_bytes(), message, hashlib.sha256).hexdigest()
 
 
-def static_key() -> str:
-    """Static shared-secret value for the X-Superbot-Key header.
+def gate_key() -> str:
+    """H2: value for the X-Superbot-Key header — never the HMAC key.
+
+    The gate key travels in plaintext on every request and is stored in n8n's
+    header-auth credential, so it must not be the key that signs bodies.
+    Resolution order: ``SUPERBOT_GATE_KEY`` env / ``SUPERBOT_GATE_KEY_FILE``,
+    else a value derived from the webhook secret (compatible with existing
+    installs, but then it cannot be rotated independently — set the explicit
+    key to get that).
 
     Returns "" when unconfigured (the receiver rejects it); never raises,
     never logs the value.
     """
+    explicit = os.environ.get("SUPERBOT_GATE_KEY") or getattr(
+        config, "SUPERBOT_GATE_KEY", "")
+    if not explicit:
+        gate_file = Path(os.environ.get(
+            "SUPERBOT_GATE_KEY_FILE",
+            os.path.expanduser("~/.secrets/superbot_gate_key")))
+        try:
+            mode = gate_file.stat().st_mode & 0o777
+            if mode & 0o077:
+                log.warning("%s has insecure permissions (mode %o); refusing it",
+                            gate_file, mode)
+            else:
+                explicit = gate_file.read_text().strip()
+        except OSError:
+            explicit = ""
+    if explicit:
+        return explicit
     try:
-        return _secret_bytes().decode()
+        secret = _secret_bytes()
     except RuntimeError:
         return ""
+    # Derived value: distinct from the HMAC key, so a leaked header cannot
+    # forge a signature. Not independently rotatable — set SUPERBOT_GATE_KEY.
+    return hmac.new(secret, b"superbot-gate-key-v1", hashlib.sha256).hexdigest()
+
+
+def static_key() -> str:
+    """Back-compat alias for :func:`gate_key` (the header value)."""
+    return gate_key()
 
 
 class NonceStore:
-    """Bounded set of seen nonces with TTL (replay protection)."""
+    """Bounded set of seen nonces with TTL (replay protection).
+
+    H2: insertion-ordered so TTL pruning and cap eviction are O(1) per entry
+    instead of re-sorting the whole store on every insert (a flood of junk
+    made every mark quadratic).
+    """
 
     def __init__(self, ttl_ms: int = _NONCE_TTL_MS, max_entries: int = 4096):
         self._ttl_ms = ttl_ms
         self._max = max_entries
-        self._seen: dict = {}
+        self._seen: "OrderedDict[str, int]" = OrderedDict()
 
     def check_and_mark(self, nonce: str, now_ms: Optional[int] = None) -> bool:
         """True when the nonce is fresh; False if replayed or malformed."""
@@ -111,14 +149,16 @@ class NonceStore:
         # Expire entries past the TTL before checking, so an old nonce may be
         # reused once any signature window that could still carry it has shut.
         cutoff = now_ms - self._ttl_ms
-        if any(t < cutoff for t in self._seen.values()):
-            self._seen = {n: t for n, t in self._seen.items() if t >= cutoff}
+        while self._seen:
+            oldest_ts = next(iter(self._seen.values()))
+            if oldest_ts >= cutoff:
+                break
+            self._seen.popitem(last=False)
         if nonce in self._seen:
             return False
         self._seen[nonce] = now_ms
-        if len(self._seen) > self._max:
-            keep = sorted(self._seen.items(), key=lambda kv: kv[1], reverse=True)[: self._max]
-            self._seen = dict(keep)
+        while len(self._seen) > self._max:
+            self._seen.popitem(last=False)
         return True
 
 
@@ -128,8 +168,9 @@ def verify_request(timestamp_ms, nonce: str, body: str, signature: str,
     """Receiver-side verification. Returns (ok: bool, reason: str).
 
     Checks, in order: presence of signed fields, integer timestamp,
-    freshness window (±60s), nonce freshness (if a store is supplied),
-    and a constant-time HMAC comparison. Never raises.
+    freshness window (±60s), signature, then nonce freshness (if a store is
+    supplied). Never raises. H2: the signature is checked before the nonce is
+    marked, so unsigned junk cannot fill (and evict) the replay store.
     """
     if timestamp_ms is None or not body or not nonce or not signature:
         return False, "missing signed fields"
@@ -140,12 +181,12 @@ def verify_request(timestamp_ms, nonce: str, body: str, signature: str,
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     if abs(now_ms - ts) > SIGNATURE_WINDOW_MS:
         return False, f"timestamp outside {SIGNATURE_WINDOW_MS}ms window"
-    if store is not None and not store.check_and_mark(nonce, now_ms):
-        return False, "replayed or malformed nonce"
     try:
         expected = sign_body(ts, nonce, body)
     except RuntimeError:
         return False, "no webhook secret configured"
     if not hmac.compare_digest(expected, signature):
         return False, "signature mismatch"
+    if store is not None and not store.check_and_mark(nonce, now_ms):
+        return False, "replayed or malformed nonce"
     return True, "ok"

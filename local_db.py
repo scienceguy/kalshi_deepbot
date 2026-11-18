@@ -92,7 +92,8 @@ class LocalDB:
 
     # Tables the sync thread mirrors to Supabase. PolyLocalDB overrides this
     # with its own table set (D2).
-    SYNC_TABLES = ("bot_state", "signals", "orders", "pnl_ledger", "backtest_runs")
+    # pnl_ledger before orders for idempotency (SF9: settlement PnL before order state)
+    SYNC_TABLES = ("bot_state", "signals", "pnl_ledger", "orders", "backtest_runs")
 
     # D4: source tag for critical integrity events (N3 catalog).
     EVENT_SOURCE = "kalshi_trader"
@@ -1280,6 +1281,11 @@ class LocalDB:
         """
         if not self._sync_breaker_closed():
             self._sync_metrics["breaker_state"] = "open"
+            return 0
+
+        # Validate table name against whitelist to prevent SQL injection
+        if table not in self.SYNC_TABLES:
+            log.warning("Sync rejected: table %r not in SYNC_TABLES whitelist", table)
             return 0
 
         conn = self._get_conn()

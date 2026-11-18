@@ -26,7 +26,6 @@ before any side effect runs.
 
 import json
 import os
-import shlex
 import sys
 
 
@@ -49,6 +48,15 @@ WORKFLOWS_JSON_DIR = os.path.join(BASE_DIR, "n8n", "workflows")
 # Header-auth credential name (created idempotently via REST).
 CREDENTIAL_NAME = "SuperBot Webhook Auth"
 HEADER_NAME = "X-Superbot-Key"
+
+# H5: webhook path -> route on scripts/job_bridge.py (127.0.0.1 only).
+BRIDGE_PORT = os.environ.get("SUPERBOT_JOB_BRIDGE_PORT", "18711")
+BRIDGE_ROUTES = {
+    "superbot-backtest": "backtest",
+    "superbot-collect": "collect",
+    "superbot-coordinate": "coordinate",
+    "superbot-control": "command",
+}
 
 # The coordination workflow's receiver verifies signatures with this JS
 # mirror of n8n_webhook_auth.verify_request. Kept as a constant so the
@@ -88,15 +96,33 @@ return [{ json: { ok: true, reason: 'ok', body: $json.body, headers: {
 """
 
 
-def make_command(script, args):
-    """Shell command for the Execute Command node.
+def _bridge_node(webhook_path: str) -> dict:
+    """H5: HTTP Request node to the loopback job bridge.
 
-    n8n 2.x blocks ``require('child_process')`` in Code nodes, so the scripts
-    run through n8n-nodes-base.executeCommand instead. None of the SuperBot
-    scripts read stdin; each one is invoked for its side effect and CLI flags.
+    Replaces n8n-nodes-base.executeCommand: n8n no longer needs shell access
+    because scripts/job_bridge.py runs a fixed, allowlisted argv for each
+    route. The verified payload is forwarded verbatim on the request body.
     """
-    return shlex.join(["env", f"PYTHONPATH={BASE_DIR}", sys.executable,
-                       script] + shlex.split(args))
+    route = BRIDGE_ROUTES[webhook_path]
+    return {
+        "id": "node_bridge",
+        "name": "Run Job",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [400, 0],
+        "parameters": {
+            "method": "POST",
+            "url": f"http://127.0.0.1:{BRIDGE_PORT}/{route}",
+            "sendHeaders": True,
+            "headerParameters": {
+                "parameters": [{"name": "Content-Type", "value": "application/json"}]
+            },
+            "sendBody": True,
+            "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify($json) }}",
+            "options": {"timeout": 900000},
+        },
+    }
 
 
 def make_header_auth_credential(secret: str) -> dict:
@@ -191,40 +217,21 @@ def make_workflow(name, webhook_path, node_name, workflow_type="python_script",
             "position": [200, 0],
             "parameters": {"jsCode": VERIFY_JS},
         }
-        command = make_command(python_script, python_args)
-        code_node = {
-            "id": "node_exec",
-            "name": "Execute Python",
-            "type": "n8n-nodes-base.executeCommand",
-            "typeVersion": 1,
-            "position": [500, 0],
-            "parameters": {"command": command, "executeOnce": True}
-        }
+        bridge_node = _bridge_node(webhook_path)
         respond_node = _respond_node()
-        nodes = [webhook_node, verify_node, code_node, respond_node]
+        nodes = [webhook_node, verify_node, bridge_node, respond_node]
         connections = {
             node_name: {"main": [[{"node": "Verify Signature", "type": "main", "index": 0}]]},
-            "Verify Signature": {"main": [[{"node": "Execute Python", "type": "main", "index": 0}]]},
-            "Execute Python": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]},
+            "Verify Signature": {"main": [[{"node": "Run Job", "type": "main", "index": 0}]]},
+            "Run Job": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]},
         }
     else:
-        command = make_command(python_script, python_args)
-        code_node = {
-            "id": "node_exec",
-            "name": "Execute Python",
-            "type": "n8n-nodes-base.executeCommand",
-            "typeVersion": 1,
-            "position": [300, 0],
-            "parameters": {
-                "command": command,
-                "executeOnce": True
-            }
-        }
+        bridge_node = _bridge_node(webhook_path)
         respond_node = _respond_node()
-        nodes = [webhook_node, code_node, respond_node]
+        nodes = [webhook_node, bridge_node, respond_node]
         connections = {
-            node_name: {"main": [[{"node": "Execute Python", "type": "main", "index": 0}]]},
-            "Execute Python": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]},
+            node_name: {"main": [[{"node": "Run Job", "type": "main", "index": 0}]]},
+            "Run Job": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]},
         }
 
     return {
@@ -346,6 +353,28 @@ def _upsert_workflow(client: N8nClient, definition: dict, label: str = "") -> No
         print("Created workflow: %s (id=%s)%s" % (name, created["id"], label))
 
 
+def _prune_removed_workflows(client, keep_names) -> None:
+    """H5: delete SuperBot workflows that this run no longer defines.
+
+    Only names managed here (``SuperBot ...``) are considered, and a failure
+    to delete is reported rather than fatal: a stale copy is a reason to
+    clean up, not to abort the rest of the install.
+    """
+    try:
+        existing = client.list_workflows(limit=250).get("data", [])
+    except Exception as e:
+        print("Prune skipped (workflow list unavailable: %s)" % e)
+        return
+    for wf in existing:
+        name = wf.get("name") or ""
+        if name.startswith("SuperBot ") and name not in keep_names:
+            try:
+                client.delete_workflow(wf["id"])
+                print("Deleted stale workflow: %s (id=%s)" % (name, wf["id"]))
+            except Exception as e:
+                print("Could not delete stale workflow %s: %s" % (name, e))
+
+
 def main():
     api_key = load_api_key()
     if not api_key:
@@ -368,6 +397,7 @@ def main():
 
     credential_id = _ensure_credential(client, secret)
 
+    keep_names = set()
     for wf in get_workflows():
         # The settlement workflow writes the Supabase key into the n8n node.
         # Refuse to install it with empty credentials rather than create a
@@ -377,6 +407,7 @@ def main():
             print("SKIP %s: SUPABASE_URL / SUPABASE_SERVICE_KEY not set "
                   "(settlement routing needs both)" % wf["name"])
             continue
+        keep_names.add(wf["name"])
         definition = make_workflow(
             wf["name"], wf["webhook_path"], wf["node_name"],
             wf.get("workflow_type", "python_script"),
@@ -386,9 +417,15 @@ def main():
         _upsert_workflow(client, definition, " (webhook: %s)" % wf["webhook_path"])
 
     # N3: workflows shipped as JSON in n8n/workflows/ (critical alert routing,
-    # daily digest, heartbeat watchdogs, sync-lag and position watchdogs).
+    # the control lane). Scheduled jobs now run from superbot-jobs.timer.
     for definition in _load_json_workflows(credential_id):
+        keep_names.add(definition["name"])
         _upsert_workflow(client, definition, " (from n8n/workflows/)")
+
+    # H5: drop SuperBot workflows that no longer exist. The digest and the
+    # watchdogs moved to systemd timers; leaving their old copies installed
+    # would keep their Execute Command nodes reachable on a live instance.
+    _prune_removed_workflows(client, keep_names)
 
     # Verify: signed health request must succeed, unsigned must be rejected.
     ok_signed = n8n_health_check()

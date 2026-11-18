@@ -22,14 +22,23 @@ def _reload_with(monkeypatch, **env):
     return config
 
 
-def test_env_bool_unrecognized_raises(monkeypatch):
-    # Unrecognized values must raise ValueError, NOT silently fall back to default.
-    with pytest.raises(ValueError, match="Unrecognized boolean value"):
-        _reload_with(monkeypatch, DRY_RUN="maybe")
-    with pytest.raises(ValueError, match="Unrecognized boolean value"):
-        _reload_with(monkeypatch, DRY_RUN="garbage")
-    with pytest.raises(ValueError, match="Unrecognized boolean value"):
-        _reload_with(monkeypatch, AGGRESSIVE_FILL="garbage")
+def test_env_bool_unrecognized_returns_default(monkeypatch, caplog):
+    # Unrecognized values log a warning and return the safe default (not raise).
+    import logging
+    with caplog.at_level(logging.WARNING, logger="config"):
+        cfg = _reload_with(monkeypatch, DRY_RUN="maybe")
+        assert cfg.DRY_RUN is True  # default
+        assert any("Unrecognized boolean value for DRY_RUN: 'maybe'" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="config"):
+        cfg = _reload_with(monkeypatch, DRY_RUN="garbage")
+        assert cfg.DRY_RUN is True
+        assert any("Unrecognized boolean value for DRY_RUN: 'garbage'" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="config"):
+        cfg = _reload_with(monkeypatch, AGGRESSIVE_FILL="garbage")
+        assert cfg.AGGRESSIVE_FILL is False  # default
+        assert any("Unrecognized boolean value for AGGRESSIVE_FILL: 'garbage'" in r.getMessage() for r in caplog.records)
 
     # Valid values still work (each call isolates env vars)
     cfg = _reload_with(monkeypatch, DRY_RUN="yes", AGGRESSIVE_FILL="false")
@@ -85,14 +94,20 @@ def test_log_rotation_custom_values(monkeypatch):
     assert cfg.LOG_BACKUP_COUNT == 7
 
 
-def test_llm_fail_open_allowlist_rejects_garbage(monkeypatch):
-    """LLM_EVAL_FAIL_OPEN must accept only the explicit allowlist values and
-    raise (never silently fall back) on an unrecognized value. A typo'd flag
-    like 'trrue' must not silently flip fail-open behavior."""
-    with pytest.raises(ValueError, match="Unrecognized boolean value"):
-        _reload_with(monkeypatch, LLM_EVAL_FAIL_OPEN="trrue")
-    with pytest.raises(ValueError, match="Unrecognized boolean value"):
-        _reload_with(monkeypatch, LLM_EVAL_FAIL_OPEN="maybe")
+def test_llm_fail_open_allowlist_returns_default_on_garbage(monkeypatch, caplog):
+    """LLM_EVAL_FAIL_OPEN must accept only the explicit allowlist values.
+    On unrecognized values, log a warning and return the safe default (not raise).
+    A typo'd flag like 'trrue' must not silently flip fail-open behavior."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="config"):
+        cfg = _reload_with(monkeypatch, LLM_EVAL_FAIL_OPEN="trrue")
+        assert cfg.LLM_EVAL_FAIL_OPEN is True  # default
+        assert any("Unrecognized boolean value for LLM_EVAL_FAIL_OPEN: 'trrue'" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="config"):
+        cfg = _reload_with(monkeypatch, LLM_EVAL_FAIL_OPEN="maybe")
+        assert cfg.LLM_EVAL_FAIL_OPEN is True
+        assert any("Unrecognized boolean value for LLM_EVAL_FAIL_OPEN: 'maybe'" in r.getMessage() for r in caplog.records)
     # Allowed values still parse.
     cfg = _reload_with(monkeypatch, LLM_EVAL_FAIL_OPEN="false")
     assert cfg.LLM_EVAL_FAIL_OPEN is False

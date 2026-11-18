@@ -47,7 +47,6 @@ class TradeSignal:
         return (
             self.direction != "PASS"
             and self.side in ("yes", "no")
-            and self.side != ""
             and self.entry_price > 0
             and self.contracts > 0
         )

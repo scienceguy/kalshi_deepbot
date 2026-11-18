@@ -13,6 +13,7 @@ dependencies = [
     "cryptography",
     "pytest",
     "websockets",
+    "mempalace>=0.1.0",
 ]
 
 [tool.setuptools]

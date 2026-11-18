@@ -1,0 +1,12 @@
+# H15: drives superbot-retrain.service every 6 hours.
+
+[Unit]
+Description=SuperBot ML retrain timer
+
+[Timer]
+OnCalendar=00/6:20
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

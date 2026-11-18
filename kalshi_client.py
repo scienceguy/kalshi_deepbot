@@ -585,11 +585,18 @@ class KalshiClient:
                 for key in keys_to_remove:
                     self._markets_cache.pop(key, None)
 
-    def get_market(self, ticker: str) -> dict:
-        """Fetch a single market's details including expiration_value for settlement."""
+    def get_market(self, ticker: str, timeout: int | None = None) -> dict:
+        """Fetch a single market's details including expiration_value for settlement.
+
+        Args:
+            ticker: Market ticker
+            timeout: Optional timeout in seconds (connect/read). Defaults to
+                     config.REQUEST_TIMEOUT_SECONDS. Use a shorter timeout for
+                     settlement polling to avoid blocking the trading cycle.
+        """
         params = {}
         _add_exchange_index(params, ticker)
-        data = self._request("GET", f"/markets/{ticker}", params=params)
+        data = self._request("GET", f"/markets/{ticker}", params=params, timeout=timeout)
         if "market" not in data:
             log.warning("get_market(%s): API response missing 'market' key — "
                         "using whole response as fallback", ticker)

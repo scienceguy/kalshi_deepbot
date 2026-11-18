@@ -244,3 +244,84 @@
 5. **Wire Polymarket CLOB or remove cross-venue dead code** — clarify strategy
 6. **Add correlation limit** — `MAX_OPEN_POSITIONS=1` for crypto or correlation check
 7. **Add dead-letter queue for Supabase sync** — prevent silent data loss
+
+---
+
+## Polymarket-Specific Findings (Live Testing 2026-11-17)
+
+### Must Fix (Polymarket)
+
+#### 21. **Polymarket WebSocket Stream Not Connected — Falls Back to REST Every Cycle** `poly_us_stream.py:99-101, poly_us_trader.py:2410-2416`
+- **What this is:** `PolyStream` singleton created in `get_poly_stream()` but `start()` is never called because `auto_start=False` and no code invokes it. The stream has credentials from Bitwarden mirror but the background thread is never started.
+- **Problem:** `_bbo_for_slug()` in `poly_us_trader.py:236-250` checks `stream.is_connected()` which returns `False`, so every market evaluation falls back to REST `get_market_book()`. This adds ~200-500ms latency per market and hits Cloudflare rate limits (see Finding 23). The L4 streaming layer is completely inactive.
+- **Fix:** Call `stream.start()` in `PolyUSPaperTrader.__init__()` or at the start of `cycle()` before tracking slugs. The stream is designed to auto-reconnect; just need to start it once.
+- **If we skip it:** Every cycle pays REST latency + rate limit risk; no subsecond price updates for paper maker fills or guard feed-age checks.
+
+#### 22. **Favourite-Maker Band (92-99c) Has No Markets — Strategy Mismatch** `config.py:149, poly_us_trader.py:2150-2180`
+- **What this is:** `POLYMARKET_ENABLED=False` by default (config.py:149). Live scan found 4 active 15m up/down markets (BTC, ETH, SOL, XRP expiring ~20:45Z). Outcome prices are 0.50-0.58 (not 0.92-0.99). The bot's favourite-maker strategy expects 92-99c bands; these markets are at 50-58c.
+- **Problem:** `evaluate_opportunity()` returns `None` for all 4 markets because `outcomePrices` are ~0.50-0.58, outside the 92-99c entry band. The bot finds markets but never trades them. The strategy assumes "favourite" pricing which doesn't exist on Polymarket US crypto 15m (preprod only, symmetric 50/50 pricing).
+- **Fix:** Either (a) change strategy for Polymarket to trade near-50c markets with a different edge model, or (b) accept that Polymarket US crypto 15m is not tradeable with the current favourite-maker strategy and keep `POLYMARKET_ENABLED=False`. The cross-venue arb logic in `crossvenue_edge.py` expects basis deviation, not favourite pricing.
+- **If we skip it:** Polymarket paper trader runs, scans 2388 markets, finds 0 opportunities, burns cycles.
+
+#### 23. **Cloudflare 1015 Rate Limit on `get_market_book` — REST Fallback Unreliable** `polymarket_us_client.py:2400-2450`
+- **What this is:** `get_market_book(slug)` hits `gateway.polymarket.us` which is behind Cloudflare. One market (BTC 15m up/down) returned a full Cloudflare challenge HTML page (Error 1015) instead of JSON. The client doesn't detect/handle this; `_book_yes_prices()` receives HTML and returns `None, None`.
+- **Problem:** REST fallback is the **only** price source since WS stream is not started (Finding 21). Rate limits will cause silent evaluation failures (no bid/ask → no opportunity). No backoff, no retry, no alert on Cloudflare challenge.
+- **Fix:** 
+  - Detect Cloudflare challenge (check `Content-Type` or HTML doctype in response)
+  - Add exponential backoff with jitter on 429/1015
+  - Fire n8n alert when rate limited
+  - **Primary fix:** Start the WebSocket stream (Finding 21) so REST is rarely needed
+
+#### 24. **Market Scan Hits Pagination Cap — Results Truncated at 10,000 Markets** `poly_us_trader.py:169-173`
+- **What this is:** `_SCAN_MAX_PAGES=10`, `_SCAN_PAGE_SIZE=1000`. Two queries (crypto + all) each hit 10 full pages → "market scan truncated" warning logged. Actual market count unknown; 2388 returned but could be more.
+- **Problem:** If >10,000 active markets exist, scan silently misses them. The warning is logged but not alerted. For a paper trader this is acceptable; for live it would miss opportunities.
+- **Fix:** Increase `_SCAN_MAX_PAGES` or implement cursor-based pagination (API supports `offset`). Alert on truncation via n8n.
+
+#### 25. **`POLYMARKET_ENABLED=False` Default Is Correct But Undocumented for Paper Trading** `config.py:144-149`
+- **What this is:** Config comment says crypto Up/Down 15m are in PREPROD on `api.polymarket.us` and "no crypto markets exist on the US retail API yet". But the paper trader *does* find 4 active 15m markets — they just have 50/50 pricing, not favourite pricing.
+- **Problem:** The comment is misleading — markets exist but are not tradeable with the current strategy. An operator enabling `POLYMARKET_ENABLED=True` would expect trades but get zero (band mismatch).
+- **Fix:** Update comment: "Crypto 15m markets exist in preprod but price at ~50c (no favourite). Current favourite-maker strategy (92-99c) finds no entries. Set `POLYMARKET_ENABLED=true` only when (a) production markets launch with asymmetric pricing, or (b) strategy is adapted for 50c markets."
+
+### Should Fix (Polymarket)
+
+#### 26. **Paper Maker Fill Model Requires WebSocket Stream — Dead Without It** `poly_us_trader.py:2473-2475, poly_us_stream.py:306-321`
+- **What this is:** Paper maker mode (`paper_fill_model == "maker"`) calls `reconcile_paper_maker_orders()` which needs book data to detect trade-throughs. Without WS stream, it falls back to REST which is too slow to catch intra-minute trade-throughs.
+- **Problem:** Maker paper fills will never trigger via REST polling (15s cycle vs subsecond trade-through). The maker fill model is effectively disabled.
+- **Fix:** Start WS stream (Finding 21) or switch default to `paper_fill_model="taker"` for Polymarket (already default per config.py:176).
+
+#### 27. **Resting Guard Feed-Age Check Returns `None` When Stream Not Expected — Defeats Dead-Man Switch** `poly_us_trader.py:2339-2345`
+- **What this is:** `_guard_feed_age()` returns `None` when `stream.has_credentials()` is false OR stream is `None`. But credentials exist (from Bitwarden mirror), stream is created but not started → `has_credentials()=True`, `is_connected()=False` → returns stale age since `last_message_at` init (epoch).
+- **Problem:** The dead-man switch L5 thinks the feed is healthy (returns `None` = "no stream expected") when actually the stream is created but dead. Guard never halts on stale feed.
+- **Fix:** `_guard_feed_age()` should return large age when stream has creds but `not is_connected()`, so guard can halt entries. Or: only return `None` when `not has_credentials()`.
+
+### Nice to Have (Polymarket)
+
+#### 28. **Cross-Venue Edge Calculation Unused in Paper Trader — Dead Code Path** `poly_us_trader.py:2318, crossvenue_edge.py`
+- **What this is:** `evaluate_opportunity()` returns `crossvenue_edge_cents` in `opp` dict, logged at line 2318 but never used for sizing, entry decision, or risk.
+- **Problem:** The cross-venue edge (Polymarket vs Kalshi basis) is computed but ignored. Paper trader could use it to prefer markets where Polymarket is cheaper than Kalshi (or vice versa) but doesn't.
+- **Fix:** Use `cross_edge_cents` to boost `edge_cents` in `evaluate_opportunity()` or as a tiebreaker in `rank_signals()`.
+
+---
+
+## Updated Verdict
+
+| Focus Area | Status | Blocking Issue |
+|------------|--------|----------------|
+| Cross-Venue Execution | **Not Implemented** | Polymarket US has no crypto 15m markets with favourite pricing; CLOB path not wired |
+| Subsecond Spot Momentum | **Partial** | Kalshi WS cache has no health metric, 5s staleness threshold too long; **Polymarket WS stream not started** |
+| Compounding $1.67→$100k | **Theoretically Sound** | But depends on GBM vol calibration (Finding 5) and gate enforcement (Finding 3) |
+
+---
+
+## Updated Immediate Action Items (Priority Order)
+
+1. **Set `GATES_SHADOW_MODE=False`** — gates must actually block to provide value
+2. **Reduce `WS_SPOT_STALE_SECONDS=1.0`** — subsecond momentum requires fresh spot
+3. **Add model calibration logging** — `markout_log.jsonl` must include `model_prob`
+4. **Disable NO favourite entry** — `MIN_NO_ENTRY_CENTS=99` until measured
+5. **Wire Polymarket CLOB or remove cross-venue dead code** — clarify strategy
+6. **Add correlation limit** — `MAX_OPEN_POSITIONS=1` for crypto or correlation check
+7. **Add dead-letter queue for Supabase sync** — prevent silent data loss
+8. **Start Polymarket WebSocket stream** — call `stream.start()` in `PolyUSPaperTrader.__init__()` (enables L4/L5 features, avoids Cloudflare rate limits)
+9. **Fix Cloudflare 1015 handling** — detect challenge, backoff, alert (mitigated by #8)
+10. **Decide Polymarket strategy** — favourite-maker (92-99c) finds zero entries on current 50c markets; adapt or disable

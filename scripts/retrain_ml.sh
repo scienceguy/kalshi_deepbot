@@ -1,19 +1,17 @@
-#!/data/data/com.termux/files/usr/bin/bash
-# Scheduled continuous retrain of the torch fair-value model (paper-only).
+#!/usr/bin/env bash
+# Continuous retrain of the torch fair-value model (paper-only artifact).
 #
-# termux-job-scheduler entry point. Re-register on a fresh clone with:
-#   termux-job-scheduler --job-id 7002 --period-ms 21600000 --network any \
-#       --persisted --script "$PWD/scripts/retrain_ml.sh"
-# Remove with:  termux-job-scheduler --cancel 7002
-#
-# Writes only the gitignored artifact data/ml_model.pt and appends a log under
-# the approved scratch dir. It cannot place orders and is not wired into
-# trader.py (the model loads only with --ml-model).
-set -e
+# Scheduled by superbot-retrain.timer (deploy/), every 6 hours. Writes only the
+# gitignored data/ml_model.pt and appends to local_data/retrain_ml.log. It
+# cannot place orders: trader.py loads the model only with --ml-model.
+set -euo pipefail
 cd "$(dirname "$0")/.."
-LOG="${HOME}/tmp/opencode/retrain_ml.log"
+PY=.venv/bin/python
+if [ ! -x "$PY" ]; then
+    PY=python3
+fi
+LOG="${SUPERBOT_RETRAIN_LOG:-$PWD/local_data/retrain_ml.log}"
 {
-  echo "=== $(date -u +%FT%TZ) retrain start ==="
-  /data/data/com.termux/files/usr/bin/python3 scripts/train_ml.py \
-      --series KXBTCD --events 6 --out data/ml_model.pt
+    echo "=== $(date -u +%FT%TZ) retrain start ==="
+    "$PY" scripts/train_ml.py --series KXBTCD --events 6 --out data/ml_model.pt
 } >>"$LOG" 2>&1

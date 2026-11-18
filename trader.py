@@ -2163,11 +2163,12 @@ def cycle(client: KalshiClient):
             log.info("Position %s detected as settled — waiting for settlement data", t)
 
         # Fetch actual settlement price from Kalshi market data.
+        # Use a short timeout (3s) to avoid blocking the 15s trading cycle.
         exit_price = None
         event_ticker = t
         market = None
         try:
-            market = client.get_market(t)
+            market = client.get_market(t, timeout=3)
             event_ticker = market.get("event_ticker", t)
             settled_yes = _settle_yes_cents(market)
             if settled_yes is not None:
@@ -3104,6 +3105,8 @@ def main():
         return
     _configure_logging()
     get_state()
+    # Load bid history for stability gate (persists across restarts)
+    se._load_bid_hist()
 
     # Runtime guard: if .env has DRY_RUN=false but the user didn't pass --live,
     # refuse to start. This prevents a silent env flip from enabling live trading.
@@ -3164,6 +3167,30 @@ def _run_loop(args):
     # Supabase is non-fatal — writes degrade gracefully when credentials are
     # missing or the service is down. The bot trades without it (dry-run).
     log.info("=" * 58)
+    # NH1: Emit single JSON line with key params at startup
+    import json
+    startup_params = {
+        "version": config.__version__,
+        "mode": "dry" if config.DRY_RUN else "live",
+        "series": config.TARGET_SERIES,
+        "min_skew_cents": config.MIN_SKEW_CENTS,
+        "min_trend_cents": config.MIN_TREND_CENTS,
+        "entry_window_min": [config.ENTRY_WINDOW_START_MIN, config.ENTRY_WINDOW_END_MIN],
+        "price_band_cents": [config.MIN_YES_PRICE_CENTS, config.MAX_YES_PRICE_CENTS],
+        "maker_mode": not config.AGGRESSIVE_FILL,
+        "max_trade_dollars": config.MAX_TRADE_DOLLARS,
+        "max_positions": config.MAX_OPEN_POSITIONS,
+        "cash_floor_pct": config.PAPER_CASH_FLOOR_PCT if config.DRY_RUN else config.CASH_FLOOR_PCT,
+        "exposure_ceiling_pct": config.PAPER_EXPOSURE_CEILING_PCT if config.DRY_RUN else config.EXPOSURE_CEILING_PCT,
+        "per_trade_pct": config.PAPER_PER_TRADE_PCT if config.DRY_RUN else config.PER_TRADE_PCT,
+        "drawdown_halt_pct": config.DRAWDOWN_HALT_PCT,
+        "model_type": config.MODEL_TYPE,
+        "model_vol_dynamic": config.MODEL_VOL_DYNAMIC,
+        "model_volatility": config.MODEL_VOLATILITY,
+        "llm_eval": llm_active,
+        "supabase": supabase_client.is_enabled(),
+    }
+    print(json.dumps(startup_params, separators=(",", ":")))
 
     # Announce this session is alive on the MemPalace logstream and resume
     # from the last checkpoint so consciousness is continuous across restarts.
@@ -3467,6 +3494,15 @@ def _run_loop(args):
         sig_name = "SIGTERM" if signum == sig_mod.SIGTERM else "SIGINT"
         log.info("%s received — shutting down gracefully", sig_name)
         state.running = False
+        # Drain outbox on shutdown to avoid losing pending events (SF5)
+        try:
+            from n8n_client import drain_outbox
+            n = drain_outbox(timeout_seconds=10.0)
+            # reviewed: shutdown must not hang on outbox; best-effort drain
+            if n:
+                log.info("Drained %d outbox events on shutdown", n)
+        except Exception as e:
+            log.warning("Outbox drain on shutdown failed: %s", e)
 
     sig_mod.signal(sig_mod.SIGTERM, _shutdown_handler)
     sig_mod.signal(sig_mod.SIGINT, _shutdown_handler)
@@ -3487,6 +3523,18 @@ def _run_loop(args):
             except Exception as e:
                 log.warning("Series fee refresh failed (keeping previous model): %s", e)
             state.last_series_fee_refresh = time.time()
+        # Sweep gate caches (spot, ATR, sigma) to prevent unbounded memory growth
+        # from stale asset entries. Runs every cycle; removes entries older than 1 hour.
+        try:
+            from gates import sweep_caches
+            sweep_caches(max_age_seconds=3600.0)
+        except Exception as e:
+            log.debug("Gate cache sweep failed: %s", e)
+        # Invalidate markets cache each cycle to ensure fresh market data (SF2)
+        try:
+            client.invalidate_markets()
+        except Exception as e:
+            log.debug("Markets cache invalidation failed: %s", e)
         # Sweep the MemPalace inbox for task.request events addressed to this
         # agent before each cycle so the operator can delegate work mid-run.
         # M1: bridge.drain_tasks() reads from the inbound subscriber queue

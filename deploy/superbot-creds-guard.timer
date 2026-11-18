@@ -1,0 +1,12 @@
+# H15: drives superbot-creds-guard.service every 15 minutes.
+
+[Unit]
+Description=SuperBot n8n credential guard timer
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

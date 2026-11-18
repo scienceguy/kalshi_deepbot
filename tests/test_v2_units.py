@@ -100,10 +100,9 @@ def test_writable_paths_cover_state_and_palace():
         assert "/opt/superbot/local_data" in rw
         if u.startswith("poly-"):
             assert "/opt/superbot/.lock_poly" in rw
-            assert ".mempalace" in rw          # M1 bridge palace, dash-prefixed
+            assert "/var/lib/superbot/mempalace" in rw  # H4: shared MemPalace directory
         else:  # kalshi units (User=ubuntu)
-            assert "/home/ubuntu/.mempalace" in rw
-            assert "/home/ubuntu/.config/mempalace" in rw
+            assert "/var/lib/superbot/mempalace" in rw  # H4: shared MemPalace directory
             assert ".lock_kalshi" in rw
     for u in UNITS:
         assert "n8n.service" in _unit(u)["Unit"].get("After", "")
@@ -123,9 +122,22 @@ def test_poly_unit_stays_type_notify_with_watchdog():
 def test_live_unit_is_live_gated():
     raw = (DEPLOY / "superbot.service").read_text()
     assert "Environment=DRY_RUN=false" in raw
-    assert "Environment=KALSHI_CONFIRM_LIVE=true" in raw
     s = _unit("superbot.service")["Service"]
     assert "--live" in s.get("ExecStart")
+
+
+def test_no_unit_ships_the_live_confirmation():
+    """H14: the second key is operator-owned, outside git."""
+    for path in sorted(DEPLOY.rglob("*")):
+        if not path.is_file():
+            continue
+        directive_lines = [
+            ln for ln in path.read_text(errors="replace").splitlines()
+            if not ln.lstrip().startswith("#")]
+        assert not any("CONFIRM_LIVE=true" in ln for ln in directive_lines), \
+            f"{path.name} ships the live confirmation; use the drop-in instead"
+    runbook = (REPO / "docs" / "vps-runbook.md").read_text()
+    assert "live-confirm.conf" in runbook
 
 
 # ── 4. Runbook: every unit, its user, writable paths, dependencies ──

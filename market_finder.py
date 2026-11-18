@@ -404,9 +404,15 @@ def find_active_markets(client: KalshiClient, extra_band=None, target_series=Non
     # Process ALL mains passing the REAL entry band (using fresh orderbook prices).
     # A market is tradeable if YES ask is in band OR NO ask is in band
     # (final-minute taker pays the ask on the favourite side).
+    # SF3: Cap mains per series at 1 to avoid over-concentration
+    seen_main_series = set()
     for mkt, ct, ml, mid in all_mains:
         ob = ob_map.get(mkt["ticker"], ({}, None))[0]
         series = mkt.get("series_ticker", "")
+        # Cap at 1 main per series
+        # reviewed: prevents duplicate MAIN entries per series (each 15m window has a unique ticker)
+        if series in seen_main_series:
+            continue
         info = _build(mkt, series, ct, ml, ob, "MAIN")
         yes_ask = info.yes_ask
         no_ask = info.no_ask
@@ -420,12 +426,14 @@ def find_active_markets(client: KalshiClient, extra_band=None, target_series=Non
         no_tradeable = getattr(config, "ALLOW_NO_BUYS", False) and no_ask and MIN_P <= no_ask <= MAX_P and info.no_liquidity >= 5  # reviewed: allow NO favourite in band when NO liquidity >=5 contracts and ALLOW_NO_BUYS is enabled
         if yes_tradeable:
             result.append(info)
+            seen_main_series.add(series)
             side = "YES"
             price = yes_ask
             log.info("✓ MAIN  %s %.1fmin %s ask=%dc mid=%.0fc bid=%dc skew=%+dc",
                      info.ticker, ml, side, price, info.mid_yes or 0, info.yes_bid, info.skew)
         elif no_tradeable:  # reviewed: elif prevents duplicate ticker when both sides match band
             result.append(info)
+            seen_main_series.add(series)
             side = "NO"
             price = no_ask
             log.info("✓ MAIN_NO %s %.1fmin %s ask=%dc mid=%.0fc bid=%dc skew=%+dc",

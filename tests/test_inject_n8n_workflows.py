@@ -17,18 +17,19 @@ def test_python_script_workflow_shape():
         credential_id="cred-1")
     types = [n["type"] for n in wf["nodes"]]
     assert "n8n-nodes-base.webhook" in types
-    assert "n8n-nodes-base.executeCommand" in types
+    # H5: no shell — the job runs through the loopback bridge
+    assert "n8n-nodes-base.executeCommand" not in types
+    assert "n8n-nodes-base.httpRequest" in types
     assert "n8n-nodes-base.code" not in types
     assert "n8n-nodes-base.respondToWebhook" in types
-    # the command must invoke the script with its flags
-    cmd = next(n for n in wf["nodes"] if n["type"] == "n8n-nodes-base.executeCommand")
-    assert "/tmp/backtest.py --quick" in cmd["parameters"]["command"]
-    assert "PYTHONPATH=" in cmd["parameters"]["command"]
+    bridge = next(n for n in wf["nodes"] if n["name"] == "Run Job")
+    assert bridge["parameters"]["url"].endswith("/backtest")
+    assert bridge["parameters"]["method"] == "POST"
     conns = wf["connections"]
-    assert set(conns) == {"SuperBot Backtest", "Execute Python"}
+    assert set(conns) == {"SuperBot Backtest", "Run Job"}
     # targets must be node NAMES, not ids (n8n resolves by name)
-    assert conns["SuperBot Backtest"]["main"][0][0]["node"] == "Execute Python"
-    assert conns["Execute Python"]["main"][0][0]["node"] == "Respond to Webhook"
+    assert conns["SuperBot Backtest"]["main"][0][0]["node"] == "Run Job"
+    assert conns["Run Job"]["main"][0][0]["node"] == "Respond to Webhook"
     # the webhook node carries the headerAuth credential and the path
     webhook = wf["nodes"][0]
     assert webhook["parameters"]["path"] == "superbot-backtest"
@@ -66,13 +67,15 @@ def test_coordinate_workflow_verifies_before_any_side_effect():
         python_args="", credential_id="cred-1")
     names = [n["name"] for n in wf["nodes"]]
     assert names == ["SuperBot Coordinate", "Verify Signature",
-                     "Execute Python", "Respond to Webhook"]
+                     "Run Job", "Respond to Webhook"]
     verify = wf["nodes"][1]
     assert verify["type"] == "n8n-nodes-base.code"
     assert "createHmac" in verify["parameters"]["jsCode"]
-    # no path from the webhook to the subprocess that skips the HMAC check
+    # H5: the side effect is an HTTP call to the loopback bridge, not a shell
+    assert wf["nodes"][2]["parameters"]["url"].endswith("/coordinate")
+    # no path from the webhook to the side effect that skips the HMAC check
     assert wf["connections"]["SuperBot Coordinate"]["main"][0][0]["node"] == "Verify Signature"
-    assert wf["connections"]["Verify Signature"]["main"][0][0]["node"] == "Execute Python"
+    assert wf["connections"]["Verify Signature"]["main"][0][0]["node"] == "Run Job"
 
 
 def test_every_configured_workflow_builds():
@@ -92,6 +95,8 @@ def test_every_configured_workflow_builds():
         for node in wf["nodes"]:
             if node["type"] == "n8n-nodes-base.webhook":
                 assert node["parameters"]["authentication"] == "headerAuth"
+            # H5: no workflow may carry the shell node
+            assert node["type"] != "n8n-nodes-base.executeCommand"
 
 
 def test_workflow_payload_json_round_trips():

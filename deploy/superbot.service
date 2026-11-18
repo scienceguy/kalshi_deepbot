@@ -3,13 +3,24 @@
 # THIS UNIT RUNS WITH REAL MONEY. It is NOT installed or enabled by any
 # deploy path; installing it and starting it are operator actions:
 #   sudo install -m 644 deploy/superbot.service /etc/systemd/system/
+#   sudo install -d -m 755 /etc/systemd/system/superbot.service.d
+#   printf '[Service]\nEnvironment=KALSHI_CONFIRM_LIVE=true\n' | \
+#       sudo tee /etc/systemd/system/superbot.service.d/live-confirm.conf
+#   sudo chmod 644 /etc/systemd/system/superbot.service.d/live-confirm.conf
 #   sudo systemctl daemon-reload && sudo systemctl restart superbot.service
-# ExecStart keeps --live; the code additionally refuses live orders unless
-# KALSHI_CONFIRM_LIVE=true is set here. Never "fix" either without reading
-# the live gates in config.py / kalshi_client.py.
+#
+# H14: the second key is deliberately NOT in this file. The repo ships the
+# unit without the confirmation, so a clone cannot start live trading; the
+# operator creates the drop-in above, outside git, owned by root. Without it
+# the code refuses live orders (config.require_live_confirmation) and logs an
+# ERROR. Never add it back to this file.
 #
 # After=/Wants= n8n.service (monitor webhook + control lane; n8n down must
 # not block trading). Writable paths mirror deploy/superbot-dry.service.
+#
+# H4: Shared MemPalace directory for all identities. The superbot group
+# (containing ubuntu and polybot) owns /var/lib/superbot/mempalace with
+# setgid bit so SQLite -wal/-shm files stay writable by all.
 
 [Unit]
 Description=Kalshi SuperBot live trader
@@ -21,11 +32,11 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=ubuntu
-Group=ubuntu
+Group=superbot
 WorkingDirectory=/opt/superbot
 Environment=DRY_RUN=false
-Environment=KALSHI_CONFIRM_LIVE=true
 Environment=TMPDIR=/opt/superbot/local_data
+Environment=MEMPALACE_DIR=/var/lib/superbot/mempalace
 ExecStart=/opt/superbot/.venv/bin/python trader.py --live --interval 15
 Restart=on-failure
 RestartSec=15
@@ -35,11 +46,12 @@ StandardOutput=journal
 StandardError=journal
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/superbot/local_data /home/ubuntu/.mempalace /home/ubuntu/.config/mempalace -/opt/superbot/.lock_kalshi
+ReadWritePaths=/opt/superbot/local_data /var/lib/superbot/mempalace -/opt/superbot/.lock_kalshi
 PrivateTmp=true
 LimitNOFILE=65536
 # Measured RSS of the dry twin ~306 MiB (2026-11-17); 1G = 3x headroom.
 MemoryMax=1G
+UMask=0002
 
 [Install]
 WantedBy=multi-user.target
