@@ -190,6 +190,20 @@ class TestBookExit:
         trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 52, 2, "take profit")
         assert trader.state.session_pnl == 0.0
 
+    def test_ledger_none_write_enqueues_the_exit_for_replay(self, monkeypatch):
+        # apply_settlement_pnl returns None (write failed) WITHOUT raising, so
+        # the caller never re-queues — _book_exit must enqueue the exit itself
+        # or the realized P&L is lost for good.
+        self._wire(monkeypatch, applied=None)
+        enq = []
+        monkeypatch.setattr(trader, "_enqueue_settlement", lambda p: enq.append(p))
+        trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 52, 2, "take profit")
+        assert trader.state.session_pnl == 0.0
+        assert len(enq) == 1
+        assert enq[0]["action"] == "exit"
+        assert enq[0]["order_id"] == "ord-1"
+        assert enq[0]["pnl_dollars"] == pytest.approx(0.40)
+
     def test_stop_loss_is_recorded_as_a_losing_trade(self, monkeypatch):
         _, _, risk = self._wire(monkeypatch)
         trader._book_exit(MagicMock(), "KXBTC15M-1", _pos(30, contracts=2), 18, 2, "stop loss")

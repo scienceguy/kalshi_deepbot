@@ -10,7 +10,7 @@ Features:
 - Confidence scoring
 - Fee-aware P&L calculation (kalshi_live_bot fees.py)
 - Supabase integration for all signals, orders, bot state
-- LLM evaluation with 7-layer fallback from free model providers
+- LLM evaluation with 4-layer fallback from free model providers
 - Resilience / cycle supervisor with auto client rebuild
 - Stop loss and profit take scanning
 - Dry run mode
@@ -377,6 +377,7 @@ class BotState:
         allowed, reason = self.risk.check(
             cash, exposure, sig.dollar_risk, ticker, total_value,
             resting_orders_value=sum(v["dollars"] for v in self.resting_value.values()),
+            side=sig.side,
             paper=config.DRY_RUN,
             win_prob=getattr(sig, "win_prob", 0.5),
             entry_price_cents=sig.entry_price,
@@ -897,7 +898,11 @@ INSTANCE_LOCK_NAME = ".lock_kalshi"
 def _load_settlement_queue() -> list:
     """Load pending settlements from the local queue file.
 
-    Uses a dedicated lock file for read-modify-write atomicity.
+    Takes a SHARED lock only for a consistent read; it does NOT make the
+    load -> mutate -> save sequence atomic. Serialization comes from the
+    per-mode instance lock (INSTANCE_LOCK_NAME), so only one trader process
+    reads and writes this file. Never add a second writer without moving the
+    lock out to cover the whole sequence.
     On corrupt JSON, renames the file to .corrupt-<timestamp> and logs ERROR.
     """
     try:
@@ -1464,6 +1469,29 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
             log.warning("Failed to record exit P&L to local ledger for %s — P&L NOT credited", ticker)
     except Exception:
         log.warning("Failed to record exit P&L to local ledger for %s — P&L NOT credited", ticker)
+
+    if applied is None:  # reviewed: write failed without raising; the caller only re-queues on an exception
+        # The ledger write failed. The caller only re-queues on an exception,
+        # and this path returns normally, so enqueue the exit here or the
+        # realized P&L is lost for good. The replay path recomputes the same
+        # exit: key, so a later successful write cannot double-book.
+        _enqueue_settlement({
+            "action": "exit",
+            "order_id": order_id,
+            "exit_order_id": exit_order_id,
+            "status": "settled",
+            "fill_price_cents": int(exit_cents),
+            "outcome_won": won,
+            "pnl_dollars": realized_pnl,
+            "fee_dollars": fees_dollars,
+            "ticker": ticker,
+            "side": side,
+            "contracts": filled,
+            "entry_price_cents": entry_price,
+            "entry_was_taker": entry_taker,
+            "paper": is_paper,
+            "exit_reason": reason,
+        })
 
     # applied=True → new, credit PnL. applied=False → duplicate, skip.
     # applied=None → ledger write failed, PnL NOT credited, retry later.
@@ -2632,8 +2660,10 @@ def cycle(client: KalshiClient):
     if config.DRY_RUN:
         open_count = len(state.positions)
     else:
+        # positions is None on a fetch failure (see the positions fetch above);
+        # the designed "skip order placement" fallback below must stay reachable.
         open_count = sum(
-            1 for p in positions
+            1 for p in (positions or [])
             if "15M" in p.get("ticker", "").upper()
             and (_pos_yes(p) or _pos_no(p))
         )

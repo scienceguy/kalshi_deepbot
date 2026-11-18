@@ -465,7 +465,8 @@ class RiskManager:
               paper: bool = False,
               win_prob: float = None,
               entry_price_cents: int = None,
-              market=None) -> Tuple[bool, str]:
+              market=None,
+              side: str = "") -> Tuple[bool, str]:
         """Final pre-order check. Returns (allowed, reason)."""
         # Paper-only guard bypass (PAPER_GUARDS_ENABLED=false); the live path
         # still enforces the halt, cooldown and per-market loss limit.
@@ -496,7 +497,11 @@ class RiskManager:
 
             # Liquidity/slippage protection (Pillar B)
             if market:
-                liq_ok, liq_reason = self.check_liquidity(market, "yes" if "YES" in ticker.upper() else "no")
+                # reviewed: Kalshi tickers never contain "YES", so the old guess
+                # always checked the NO book for a YES entry; use the real side.
+                liq_ok, liq_reason = self.check_liquidity(
+                    market, side if side in ("yes", "no")
+                    else ("yes" if "YES" in ticker.upper() else "no"))
                 if not liq_ok:
                     return False, f"liquidity check failed: {liq_reason}"
 
