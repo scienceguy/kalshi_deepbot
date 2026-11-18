@@ -16,8 +16,9 @@ Usage (from the repo root):
 import argparse
 import json
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/opt/superbot")  # when run from elsewhere
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # when run from elsewhere
 
 from local_db import get_local_db  # noqa: E402
 

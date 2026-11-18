@@ -44,12 +44,6 @@ jobs:
           python -m pip install pyflakes
           if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
 
-      # Create venv for systemd unit tests (they check Executable=/opt/superbot/.venv/bin/python)
-      - name: Create venv for systemd tests
-        run: |
-          python -m venv /opt/superbot/.venv
-          /opt/superbot/.venv/bin/pip install -r requirements.txt
-
       # Each gate is a separate step so a failure names the corruption class
       # instead of a bare "job failed".
 

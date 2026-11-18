@@ -35,7 +35,15 @@ def test_import_prints_nothing_creates_nothing_ignores_argv(tmp_path):
          "--definitely-not-a-real-flag"],
         capture_output=True, text=True, timeout=300,
         cwd=tmp_path,
-        env={**os.environ, "PYTHONPATH": str(REPO)},
+        # A clean clone has no .env, so config logs an ERROR at import for the
+        # missing credentials. Give the child the minimum valid values so this
+        # test measures import side effects, not the host's secrets.
+        env={**os.environ, "PYTHONPATH": str(REPO),
+             "KALSHI_KEY_ID": "dummy",
+             "KALSHI_PRIVATE_KEY": "dummy",
+             "KALSHI_KEY_FILE": "",
+             "SUPABASE_URL": "https://dummy.supabase.co",
+             "SUPABASE_SERVICE_KEY": "dummy-key"},
     )
     assert proc.returncode == 0, (
         f"import exited {proc.returncode}; stderr:\n{proc.stderr[:800]}")

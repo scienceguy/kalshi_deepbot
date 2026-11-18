@@ -80,3 +80,16 @@ def test_deploy_creates_current_symlink_under_releases_root():
     # _swap_current points releases/current at the new release dir
     assert re.search(r'releases\s*/\s*"current"', src), "deploy.py no longer swaps releases/current"
     assert "mkdir(parents=True, exist_ok=True)" in src, "deploy.py no longer creates the releases root"
+
+
+def test_render_unit_rewrites_a_custom_releases_root():
+    """A custom SUPERBOT_RELEASES_DIR must be rendered into the copied unit."""
+    mod = _deploy_module()
+    if mod is None or not hasattr(mod, "_render_unit"):
+        # deploy.py imports leases/local_db; if that fails, check the source
+        src = DEPLOY_PY.read_text()
+        assert 'text.replace("/opt/superbot-releases", str(releases))' in src
+        return
+    unit = '[Service]\nWorkingDirectory=/opt/superbot-releases/current\n'
+    out = mod._render_unit(unit, Path("/srv/superbot-releases"))
+    assert out == '[Service]\nWorkingDirectory=/srv/superbot-releases/current\n'

@@ -61,7 +61,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, "/opt/superbot")  # when run from elsewhere
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # when run from elsewhere
 
 try:
     import agent_identity
@@ -121,6 +121,15 @@ def main(argv=None) -> int:
 def _run(cmd, cwd=None, env=None, shell=False):
     return subprocess.run(cmd, cwd=cwd, env=env, shell=shell,
                           check=False, capture_output=True, text=True)
+
+
+def _render_unit(text: str, releases: Path) -> str:
+    """Point a unit at the configured release root.
+
+    The unit files ship with the default path; a custom SUPERBOT_RELEASES_DIR
+    would otherwise install a unit that runs someone else's tree.
+    """
+    return text.replace("/opt/superbot-releases", str(releases))
 
 
 def _swap_current(releases: Path, target: Path) -> None:
@@ -253,7 +262,12 @@ def _deploy_release(args) -> int:
     unit_src = release_dir / "deploy" / unit
     if unit_src.exists():
         unit_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(unit_src, unit_dir / unit)
+        dest = unit_dir / unit
+        shutil.copy2(unit_src, dest)
+        text = dest.read_text()
+        rendered = _render_unit(text, releases)
+        if rendered != text:
+            dest.write_text(rendered)
     r = _run([systemctl, "daemon-reload"])
     if r.returncode != 0:
         return _rollback(systemctl, current, previous, releases, unit, args, "daemon-reload failed")

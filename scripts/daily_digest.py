@@ -11,8 +11,9 @@ import argparse
 import json
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-sys.path.insert(0, "/opt/superbot")  # when run by n8n from elsewhere
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # when run by n8n from elsewhere
 
 from local_db import get_local_db  # noqa: E402
 
