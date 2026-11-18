@@ -81,13 +81,14 @@ EVENT_TYPES = frozenset({
     "control.rejected",    # a control command was rejected (N4)
     "control.status",      # response to request_status (N4)
     "control.report",      # response to request_report (N4)
+    "outbox.failed",       # I4: critical outbox delivery failed, sidecar written
 })
 
 # Delivery class per event type (N2: three lanes).
 CRITICAL_TYPES = frozenset({
     "risk.halt", "risk.resume", "breaker.trip", "breaker.clear",
     "reconcile.mismatch", "auth.failure", "control.rejected",
-    "db.integrity_failed",
+    "db.integrity_failed", "outbox.failed",
 })
 NORMAL_TYPES = frozenset({
     "order.placed", "order.filled", "order.cancelled", "order.state",

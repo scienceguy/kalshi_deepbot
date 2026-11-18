@@ -41,7 +41,6 @@ from collections import OrderedDict
 from typing import Optional
 from pathlib import Path
 import time
-from collections import OrderedDict
 
 # Add mempalace to path so we can use its logstream CLI via subprocess
 MEMPALACE_HOME = os.environ.get("MEMPALACE_HOME", os.path.expanduser("~/mempalace"))
@@ -85,8 +84,11 @@ class _NonceStore:
     def _save(self):
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._path, "w") as f:
+            # Open r+ to avoid truncate-before-lock race; truncate after lock.
+            with open(self._path, "a+") as f:
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                f.seek(0)
+                f.truncate()
                 json.dump(self._seen, f)
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         except Exception:

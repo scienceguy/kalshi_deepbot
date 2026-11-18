@@ -15,6 +15,7 @@ themselves (send_command.py --stdin, n8n_coordination.py).
 """
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -22,6 +23,8 @@ import hmac
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 HOST = "127.0.0.1"
@@ -38,7 +41,12 @@ def _verify_hmac(request: BaseHTTPRequestHandler, body: bytes) -> bool:
     secret = os.environ.get("SUPERBOT_WEBHOOK_SECRET") or os.environ.get(
         "SUPERBOT_JOB_BRIDGE_HMAC_SECRET")
     if not secret:
-        return True  # no secret configured: allow (dev only)
+        # No secret configured: reject in production, allow only if explicitly dev
+        if os.environ.get("SUPERBOT_ALLOW_NO_HMAC") == "1":
+            log.warning("HMAC verification disabled (SUPERBOT_ALLOW_NO_HMAC=1)")
+            return True
+        log.error("HMAC secret not configured - rejecting request")
+        return False
     ts = request.headers.get("X-Superbot-Timestamp")
     nonce = request.headers.get("X-Superbot-Nonce")
     sig = request.headers.get("X-Superbot-Signature")

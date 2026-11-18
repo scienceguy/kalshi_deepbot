@@ -981,7 +981,8 @@ class LocalDB:
 
     def claim_pending_outbox_events(self, limit: int = 100,
                                     lane: Optional[str] = None,
-                                    claim_ttl_seconds: int = 300
+                                    claim_ttl_seconds: int = 300,
+                                    critical_ttl_seconds: int = 30
                                     ) -> List[Dict[str, Any]]:
         """Atomically claim pending outbox rows for one delivery attempt (I2).
 
@@ -997,6 +998,10 @@ class LocalDB:
                 now = datetime.now(timezone.utc).isoformat()
                 lane_filter = " AND delivery_class = ?" if lane else ""
                 params: list = [now, now, f"-{int(claim_ttl_seconds)} seconds"]
+                # Critical lane uses shorter TTL so stuck critical messages
+                # don't block the lane for 5 minutes.
+                if lane == "critical":
+                    params = [now, now, f"-{int(critical_ttl_seconds)} seconds"]
                 if lane:
                     params.append(lane)
                 params.append(limit)
@@ -1326,15 +1331,18 @@ class LocalDB:
     def restore_latest_backup(self, backup_dir: str | None = None) -> bool:
         """D4: swap in the newest backup that passes its own integrity_check.
 
-        I3: takes an exclusive flock on a sidecar lock file and refuses to
-        mutate the DB while another process may be trading on it (advisory:
-        only processes that take the same lock are excluded, but that is the
-        trader's instance lock). The swap is a rename async from the live
-        path, not a copy over a file other processes may have open.
-        Closes live connections first and drops stale -wal/-shm sidecars.
+        I3: takes an exclusive flock on a sidecar lock file adjacent to the
+        DB file and refuses to mutate the DB while another process may be
+        trading on it. The swap is a rename async from the live path, not a
+        copy over a file other processes may have open. Closes live
+        connections first and drops stale -wal/-shm sidecars.
         """
         dest_dir = backup_dir or self.backup_dir or default_backup_dir()
-        lock_path = self.db_path + ".restore.lock"
+        # Per-DB lock file so multiple DBs (e.g., test temp DBs) don't conflict.
+        # The trader's instance lock (config.SUPERBOT_DATA_DIR / ".lock_kalshi")
+        # prevents multiple trader processes; this lock prevents restore while
+        # any process has the DB open.
+        lock_path = Path(self.db_path).with_suffix(".restore.lock")
         try:
             lock_f = open(lock_path, "w")
         except OSError as e:
@@ -1935,7 +1943,7 @@ class LocalDB:
             return
         self._last_prune_at = now
         try:
-            self.prune_control_tables()
+            self.prune_control_tables(outbox_keep_days=7)
         except Exception as e:
             log.warning("prune_control_tables error: %s", e)
 

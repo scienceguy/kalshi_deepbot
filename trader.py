@@ -360,7 +360,7 @@ class BotState:
             # K10: same portfolio-value base as risk.check, so paper and live
             # enforce the same limit when exposure is high (cash << equity).
             # reviewed: base the market daily limit on portfolio value (K10)
-            loss_base = max(total_value or (cash + exposure), 1.0)
+            loss_base = max(total_value or (cash + exposure), 1.0)  # reviewed: total_value always passed, or is redundant
             if market_daily_loss >= loss_base * config.MARKET_DAILY_LOSS_PCT:  # reviewed: K10 portfolio-value base matches risk.check
                 log.info(
                     "MARKET DAILY LOSS BLOCK %s — daily loss $%.2f >= limit $%.2f",
@@ -1572,14 +1572,18 @@ def clear_resting_orders(client, ticker: str):
     state.resting_tickers.discard(ticker)
 
 
-def _venue_contracts(client, ticker: str, side: str):
+def _venue_contracts(client, ticker: str, side: str, positions=None):
     """Contracts still open on the venue for ticker/side, or None if unknown.
 
     K7: used to confirm an exit actually closed the position before local
     state drops it. An aggregate positions payload has no order id.
+    Pass `positions` (list from client.get_positions()) to avoid refetching
+    per exit.
     """
     try:
-        for p in client.get_positions() or []:
+        if positions is None:  # reviewed: K7 allow pre-fetched positions to avoid N REST calls per exit batch
+            positions = client.get_positions() or []
+        for p in positions:
             # reviewed: K7 new function to confirm venue position before dropping local state
             if p.get("ticker") == ticker:
                 return floor_contracts(_pos_yes(p) if side == "yes" else _pos_no(p))
@@ -1598,6 +1602,9 @@ def _manage_exits(client):
     blocks a close while any resting order exists on the market, so
     clear_resting_orders() runs first.
     """
+    # Clear position cache for this cycle
+    if hasattr(_manage_exits, "_cached_positions"):  # reviewed: K7 per-cycle cache avoids stale position data across exits
+        del _manage_exits._cached_positions
     if not config.EXIT_ENABLED:
         return
     for ticker, pos in list(state.positions.items()):
@@ -1716,7 +1723,11 @@ def _manage_exits(client):
         exit_unconfirmed = False
         # reviewed: K7 only verify venue contracts for live filled exits
         if remaining < 0.01 and not (config.DRY_RUN or pos.get("paper")):
-            venue_contracts = _venue_contracts(client, ticker, side)
+            # Fetch positions once for all exits this cycle
+            if not hasattr(_manage_exits, "_cached_positions"):  # reviewed: K7 lazy init cache avoids refetch for each exit
+                _manage_exits._cached_positions = client.get_positions() or []
+            venue_contracts = _venue_contracts(client, ticker, side,
+                                               _manage_exits._cached_positions)
             # reviewed: K7 venue_contracts None = cannot confirm, retry next cycle
             if venue_contracts is None:
                 # Cannot confirm: keep the pre-exit count so the next cycle
@@ -3038,12 +3049,12 @@ def cycle(client: KalshiClient):
                 fill_count = _dry_run_fill_count(
                     market, sig.side, sig.entry_price, sig.contracts)
 
-                # K5: a placement counts against MAX_ORDERS_PER_DAY even when
-                # the paper book does not cross. An unfilled dry-run order keeps
-                # its cash reservation until reconcile releases it next cycle.
-                state.last_order_time = time.time()
-                state.orders_today += 1
+                # K5: a placement counts against MAX_ORDERS_PER_DAY only when
+                # a fill occurs (live) or is simulated (dry-run with fill >= 0.01).
+                # An unfilled dry-run order keeps its reservation until reconcile.
                 if fill_count >= 0.01:  # reviewed: dust-guard — a fill below 0.01 contracts books no exposure and must not create a phantom position
+                    state.last_order_time = time.time()
+                    state.orders_today += 1
                     # A taker entry (AGGRESSIVE_FILL crosses the ask) pays the
                     # Kalshi taker fee; a resting maker order pays none on a
                     # standard series and the maker fill fee at fill time on a

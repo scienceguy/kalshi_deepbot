@@ -258,6 +258,7 @@ def _write_outbox_sidecar(event_id: str, event_type: str,
     The local DB is the normal durable store; this only runs when that insert
     failed and the synchronous fallback also failed, so the event is not lost
     silently. Operator replay is manual — one file per failed event.
+    Also emits an alert event so the operator is notified.
     """
     try:
         d = Path(config.SUPERBOT_DATA_DIR) / "outbox_failed"
@@ -268,6 +269,16 @@ def _write_outbox_sidecar(event_id: str, event_type: str,
         (d / f"{event_id}.json").write_text(json.dumps(rec))
     except Exception as e:
         log.error("Could not write outbox sidecar for %s: %s", event_id, e)
+    # Emit alert so operator sees it in digest
+    try:
+        import emit
+        emit.emit_event(
+            "kalshi_trader", "outbox.failed",
+            {"event_id": event_id, "type": event_type,
+             "webhook_path": webhook_path, "error": error[:200]},
+            key=f"outbox.failed:{event_id}")
+    except Exception:
+        pass
 
 
 def _sign_body(timestamp: str, body: str, nonce: str = "") -> str:
