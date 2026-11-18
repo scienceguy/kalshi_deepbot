@@ -82,6 +82,21 @@ BACKUP_KEEP = 7          # most recent backups to keep per DB
 NIGHTLY_INTERVAL_S = 20 * 3600
 _PRUNE_EVERY_S = 3600    # min seconds between hourly retention prunes
 
+# Columns the remote Supabase `signals` / `pnl_ledger` tables actually have.
+# The local tables also carry D1/D3 bookkeeping columns (venue, mode,
+# origin_host, schema_version, sync_attempts, last_error, next_attempt_at);
+# posting those made every upsert fail, and the attempt cap then quarantined
+# and DELETEd the local audit/P&L row.
+_REMOTE_SIGNAL_COLS = frozenset((
+    "ts", "type", "ticker", "side", "price_cents", "contracts", "edge",
+    "model_prob", "reason", "executed", "blocked_reason", "outcome_won",
+    "outcome_pnl", "settled_at",
+))
+_REMOTE_PNL_LEDGER_COLS = frozenset((
+    "idempotency_key", "market_ticker", "realized_pnl_dollars", "fee_dollars",
+    "applied_at", "source",
+))
+
 
 def default_backup_dir() -> str:
     """Where nightly online backups live (SUPERBOT_DATA_DIR/backups/sqlite)."""
@@ -489,14 +504,17 @@ class LocalDB:
         conn = self._get_conn()
         with self._lock:
             try:
-                columns = list(clean[0].keys())
+                # Union of keys across the batch: a later row missing a column
+                # that the first row had would otherwise get NULL and abort the
+                # whole executemany, dropping every row in the batch.
+                columns = list(dict.fromkeys(k for s in clean for k in s))
                 placeholders = ", ".join(["?" for _ in columns]) + ", 0"
                 columns.append("synced")
-                
+
                 sql = f"INSERT INTO signals ({', '.join(columns)}) VALUES ({placeholders})"
                 values = []
                 for s in clean:
-                    row = [s.get(c) for c in clean[0].keys()]
+                    row = [s.get(c) for c in columns[:-1]]
                     row.append(0)  # synced
                     values.append(row)
                 
@@ -1135,9 +1153,13 @@ class LocalDB:
 
     def _record_sync_failure(self, table: str, pk_col: str, pk_val, attempts: int,
                              wait: int, row_dict: Dict[str, Any], error: str) -> None:
-        """D3: persist one sync failure. Past the attempt cap the row moves to
-        sync_quarantine (durable poison row) and is deleted from the source
-        table so it stops blocking the batch."""
+        """D3: persist one sync failure. Past the attempt cap the row is copied
+        to sync_quarantine (durable poison record) and marked synced = -1 so it
+        stops being retried.
+
+        It is NOT deleted: the local table is the system of record for realized
+        P&L and the trade audit, and losing it is worse than a sticky row.
+        """
         conn = self._get_conn()
         with self._lock:
             try:
@@ -1148,9 +1170,15 @@ class LocalDB:
                         "VALUES (?, ?, ?, ?, ?)",
                         (table, str(pk_val), json.dumps(row_dict, default=str),
                          attempts, error[:500]))
+                    # -1, not a DELETE: synced = 0 stops retrying it, and the
+                    # row stays for audit / manual re-sync.
                     conn.execute(
-                        f"DELETE FROM {table} WHERE {pk_col} = ?", (pk_val,))
-                    log.warning("quarantined poison %s row %s after %d attempts",
+                        f"UPDATE {table} SET synced = -1, sync_attempts = ?, "
+                        f"last_error = ?, next_attempt_at = NULL "
+                        f"WHERE {pk_col} = ?",
+                        (attempts, error[:500], pk_val))
+                    log.warning("quarantined poison %s row %s after %d attempts "
+                                "(kept locally, synced = -1)",
                                 table, pk_val, attempts)
                 else:
                     conn.execute(
@@ -1409,7 +1437,11 @@ class LocalDB:
                 if table == "signals":
                     if not row_dict.get("type"):
                         row_dict["type"] = "taker"
-                    result = supabase_client.insert_signal(row_dict)
+                    # Whitelist to the remote schema (see _REMOTE_SIGNAL_COLS);
+                    # row_dict keeps the local-only columns for quarantine.
+                    signal_data = {k: v for k, v in row_dict.items()
+                                   if k in _REMOTE_SIGNAL_COLS}
+                    result = supabase_client.insert_signal(signal_data)
                 elif table == "orders":
                     # Strip columns that may not exist in remote Supabase schema yet
                     # (fill_price_cents, outcome_won, pnl_dollars, settled_at may
@@ -1431,7 +1463,9 @@ class LocalDB:
                         value = str(raw_val)
                     result = supabase_client.set_bot_state(key, value)
                 elif table == "pnl_ledger":
-                    result = supabase_client.insert_pnl_ledger(row_dict)
+                    ledger_data = {k: v for k, v in row_dict.items()
+                                   if k in _REMOTE_PNL_LEDGER_COLS}
+                    result = supabase_client.insert_pnl_ledger(ledger_data)
                 elif table == "backtest_runs":
                     raw_params = row_dict.pop("params_json")
                     try:

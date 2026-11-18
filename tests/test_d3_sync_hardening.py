@@ -65,7 +65,10 @@ def test_poison_row_quarantined_others_sync(tmp_path, monkeypatch):
     assert "poison" in row["row_json"]
     assert row["attempts"] == 3
     assert row["last_error"]
-    assert conn.execute("SELECT COUNT(*) FROM orders WHERE order_id = 'poison'").fetchone()[0] == 0
+    # Kept locally with synced = -1 (never DELETEd — this is the audit row).
+    kept = conn.execute(
+        "SELECT synced FROM orders WHERE order_id = 'poison'").fetchone()
+    assert kept is not None and kept["synced"] == -1
     assert db.quarantine_count() == 1
 
 
@@ -131,3 +134,74 @@ def test_poly_trader_exposes_sync_status_flag():
     import poly_us_trader
     src = inspect.getsource(poly_us_trader)
     assert '"--sync-status"' in src
+
+
+class _RecordingClient:
+    """Records the payload each insert receives."""
+
+    def __init__(self, ok=True):
+        self.payloads = []
+        self.ok = ok
+
+    def insert_signal(self, data):
+        self.payloads.append(("signals", dict(data)))
+        return self.ok
+
+    def insert_pnl_ledger(self, data):
+        self.payloads.append(("pnl_ledger", dict(data)))
+        return self.ok
+
+
+def test_sync_posts_only_remote_columns_and_keeps_a_poison_row(tmp_path, monkeypatch):
+    """A signal row carrying the local-only D1/D3 columns must sync, not be
+    quarantined-and-deleted: posting those columns made every upsert fail."""
+    monkeypatch.setattr(local_db, "supabase_is_enabled", lambda: True)
+    db = _db(tmp_path)
+    conn = db._get_conn()  # noqa: SLF001
+    conn.execute(
+        "INSERT INTO signals (ts, ticker, side, price_cents, contracts, venue, mode, "
+        "origin_host, schema_version) VALUES (datetime('now'), 'KXBTC15M-X', 'yes', "
+        "92, 3, 'kalshi', 'dry', 'host', '1')")
+    conn.commit()
+
+    fake = _RecordingClient(ok=True)
+    assert db._sync_table("signals", fake) == 1  # noqa: SLF001
+    (table, payload), = fake.payloads
+    assert table == "signals"
+    local_only = {"id", "synced", "created_at", "updated_at", "venue", "mode",
+                  "origin_host", "schema_version", "sync_attempts",
+                  "last_error", "next_attempt_at"}
+    assert not (set(payload) & local_only), sorted(set(payload) & local_only)
+    assert {"ts", "ticker", "side", "price_cents", "contracts"} <= set(payload)
+    assert conn.execute("SELECT synced FROM signals").fetchone()[0] == 1
+
+    # A permanently failing row stays in the table (synced = -1), never deleted.
+    monkeypatch.setattr(local_db, "SYNC_MAX_ROW_ATTEMPTS", 2)
+    conn.execute("INSERT INTO signals (ts, ticker, side, price_cents, contracts) "
+                 "VALUES (datetime('now'), 'KXBTC15M-Y', 'no', 8, 2)")
+    conn.commit()
+    bad = _RecordingClient(ok=False)
+    for _ in range(3):
+        db._sync_table("signals", bad)  # noqa: SLF001
+        conn.execute("UPDATE signals SET next_attempt_at = NULL "
+                     "WHERE ticker = 'KXBTC15M-Y'")
+        conn.commit()
+    row = conn.execute(
+        "SELECT synced FROM signals WHERE ticker = 'KXBTC15M-Y'").fetchone()
+    assert row is not None, "a poison signal row must not be deleted"
+    assert row["synced"] == -1
+
+
+def test_pnl_ledger_sync_posts_only_remote_columns(tmp_path, monkeypatch):
+    """pnl_ledger is the realized-money audit; its remote payload must be the
+    remote schema's columns only."""
+    monkeypatch.setattr(local_db, "supabase_is_enabled", lambda: True)
+    db = _db(tmp_path)
+    db.apply_settlement_pnl("k1", "KXBTC15M-X", 1.25, venue="", mode="dry")
+    fake = _RecordingClient(ok=True)
+    assert db._sync_table("pnl_ledger", fake) == 1  # noqa: SLF001
+    (table, payload), = fake.payloads
+    assert table == "pnl_ledger"
+    assert "venue" not in payload and "mode" not in payload
+    assert "idempotency_key" in payload
+    assert "realized_pnl_dollars" in payload

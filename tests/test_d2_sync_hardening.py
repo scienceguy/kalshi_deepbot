@@ -239,14 +239,16 @@ def test_poison_row_quarantined_after_max_attempts(mock_enabled, tmp_path, monke
         db.sync_to_supabase(fake)
         _rewind_backoff(db)
 
-    # After max_attempts failures the row is quarantined (moved out of the
-    # source table), so later syncs never call Supabase for it again.
+    # After max_attempts failures the row is quarantined and marked synced = -1,
+    # so later syncs never call Supabase for it again — but the row is KEPT
+    # (the local table is the system of record; a DELETE would lose it).
     conn = db._get_conn()  # noqa: SLF001
     qrow = conn.execute("SELECT pk, attempts, row_json FROM sync_quarantine").fetchone()
     assert qrow is not None, "poison row should be in sync_quarantine"
     assert qrow["attempts"] == max_attempts
     assert "oid1" in qrow["row_json"]
-    assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 1
+    assert conn.execute("SELECT synced FROM orders").fetchone()[0] == -1
     call_count_before = len(fake.calls)
     db.sync_to_supabase(fake)
     assert len(fake.calls) == call_count_before, "quarantined row should not be retried"
