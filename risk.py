@@ -178,11 +178,22 @@ class RiskManager:
             self.state.halted_at = 0.0
             self.state.halt_reason = ""
 
+    @property
     def is_halted(self) -> bool:
-        """True when a halt blocks new entries (K6).
+        """Pure read: True when a halt blocks new entries (no side effects).
 
-        Rolls the daily window like update_daily_pnl, but never adds P&L, so a
-        pre-order check cannot mutate the loss total.
+        For status checks and external visibility. Does NOT roll the daily
+        window or mutate state. Use check_halt_and_reset() for the K6 behavior
+        that rolls the daily window at midnight.
+        """
+        return self.state.halted
+
+    def check_halt_and_reset(self) -> bool:
+        """K6: Check halt status and roll the daily window if needed.
+
+        This is the version that rolls the daily window at midnight, clears
+        daily-loss halts, and returns the updated halt state. Called by
+        check() before evaluating a new trade.
         """
         self._maybe_reset_daily()
         return self.state.halted
@@ -489,9 +500,9 @@ class RiskManager:
         # Paper-only guard bypass (PAPER_GUARDS_ENABLED=false); the live path
         # still enforces the halt, cooldown and per-market loss limit.
         if not _paper_guards_relaxed():  # reviewed: bypass is paper-only, live always runs the guards
-            # K6: read the halt without adding P&L; the daily window still rolls.
-            # reviewed: K6 is_halted() rolls daily window but never adds P&L
-            if self.is_halted():
+            # K6: check halt and roll the daily window if needed; the daily window still rolls.
+            # reviewed: K6 check_halt_and_reset() rolls daily window but never adds P&L
+            if self.check_halt_and_reset():
                 # Daily loss circuit breaker takes precedence over generic halt message
                 # reviewed: K6 daily-loss halt message priority
                 if "daily loss" in self.state.halt_reason:
@@ -514,11 +525,9 @@ class RiskManager:
 
             # Liquidity/slippage protection (Pillar B)
             if market:
-                # reviewed: Kalshi tickers never contain "YES", so the old guess
-                # always checked the NO book for a YES entry; use the real side.
-                liq_ok, liq_reason = self.check_liquidity(
-                    market, side if side in ("yes", "no")
-                    else ("yes" if "YES" in ticker.upper() else "no"))
+                # reviewed: side must be "yes" or "no" — no fallback guess from ticker
+                assert side in ("yes", "no"), f"risk.check called with invalid side={side!r}"
+                liq_ok, liq_reason = self.check_liquidity(market, side)
                 if not liq_ok:
                     return False, f"liquidity check failed: {liq_reason}"
 

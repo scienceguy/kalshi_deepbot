@@ -88,7 +88,7 @@ def test_risk_check_blocks():
     config.MIN_CASH_ABSOLUTE = 1.00
     config.PER_TRADE_PCT = 0.08
     config.MAX_TRADE_DOLLARS = 3.00
-    allowed, reason = r.check(100.0, 0.0, 50.0, "TEST")
+    allowed, reason = r.check(100.0, 0.0, 50.0, "TEST", side="yes")
     assert not allowed
     assert "risk cap" in reason
 
@@ -116,10 +116,10 @@ def test_consecutive_loss_cooldown_expires_after_configured_minutes(monkeypatch)
     for _ in range(3):
         r.record_trade_outcome(False, -1.0)
     assert r.state.cooldown_started_at == 1000.0
-    allowed, reason = r.check(100.0, 0.0, 1.0, "TESTTICKER")
+    allowed, reason = r.check(100.0, 0.0, 1.0, "TESTTICKER", side="yes")
     assert allowed is False and "cooldown" in reason
     clock["t"] += (config.LOSS_COOLDOWN_MINUTES + 1) * 60.0
-    allowed, reason = r.check(100.0, 0.0, 1.0, "TESTTICKER")
+    allowed, reason = r.check(100.0, 0.0, 1.0, "TESTTICKER", side="yes")
     assert allowed is True
     assert r.state.consecutive_losses == 0
 
@@ -219,7 +219,7 @@ def test_daily_loss_circuit_breaker_halts_trading(monkeypatch):
     assert r.state.halt_reason == reason
     
     # Subsequent checks should also block
-    allowed, reason = r.check(100.0, 0.0, 1.0, "TEST", total_value=100.0)
+    allowed, reason = r.check(100.0, 0.0, 1.0, "TEST", total_value=100.0, side="yes")
     assert allowed is False
     assert "daily loss circuit breaker" in reason
 
@@ -420,7 +420,7 @@ def test_liquidity_check_rejects_missing_book(monkeypatch):
 
 
 def test_is_halted_rolls_daily_window(monkeypatch):
-    """K6: is_halted() rolls the daily window without adding P&L."""
+    """K6: check_halt_and_reset() rolls the daily window without adding P&L."""
     import risk
     clock = {"t": 1000.0}
     monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
@@ -435,18 +435,45 @@ def test_is_halted_rolls_daily_window(monkeypatch):
     r.state.halted = True
     r.state.halt_reason = "daily loss limit: $-10.00 <= -$5.00"
 
-    # Before midnight: is_halted returns True
-    assert r.is_halted() is True
+    # Before midnight: check_halt_and_reset returns True
+    assert r.check_halt_and_reset() is True
 
     # After midnight roll: window rolls, halt clears
     clock["t"] = 90000.0  # > 86400 seconds later
-    assert r.is_halted() is False
+    assert r.check_halt_and_reset() is False
     assert r.state.halted is False
     assert r.state.daily_pnl == 0.0
 
 
-def test_check_calls_is_halted(monkeypatch):
-    """K6: check() calls is_halted() which rolls the daily window."""
+def test_is_halted_pure_read(monkeypatch):
+    """is_halted property is a pure read - no side effects."""
+    import risk
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "DAILY_LOSS_LIMIT_PCT", 0.05)
+
+    r = RiskManager()
+    r.initialize(100.0)
+
+    # Simulate a daily loss that would halt if the window hasn't rolled
+    r.state.daily_pnl = -10.0  # exceeds 5% limit
+    r.state.halted = True
+    r.state.halt_reason = "daily loss limit: $-10.00 <= -$5.00"
+
+    # is_halted property should NOT roll the window
+    assert r.is_halted is True
+    assert r.state.daily_pnl == -10.0  # unchanged
+    assert r.state.halted is True  # unchanged
+
+    # After midnight, is_halted still returns True (no roll)
+    clock["t"] = 90000.0
+    assert r.is_halted is True
+    assert r.state.daily_pnl == -10.0  # still unchanged
+
+
+def test_check_calls_check_halt_and_reset(monkeypatch):
+    """K6: check() calls check_halt_and_reset() which rolls the daily window."""
     import risk
     clock = {"t": 1000.0}
     monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
@@ -462,15 +489,15 @@ def test_check_calls_is_halted(monkeypatch):
     r.state.halted = True
     r.state.halt_reason = "daily loss limit: $-10.00 <= -$5.00"
 
-    # check() should call is_halted() which rolls the window at midnight
+    # check() should call check_halt_and_reset() which rolls the window at midnight
     # Before midnight: blocked
-    ok, reason = r.check(100.0, 0.0, 10.0, "KXBTC15M-1", total_value=100.0, paper=True)
+    ok, reason = r.check(100.0, 0.0, 10.0, "KXBTC15M-1", total_value=100.0, paper=True, side="yes")
     assert ok is False
     assert "daily loss circuit breaker" in reason
 
     # After midnight: window rolls, not blocked
     clock["t"] = 90000.0
-    ok, reason = r.check(100.0, 0.0, 10.0, "KXBTC15M-1", total_value=100.0, paper=True)
+    ok, reason = r.check(100.0, 0.0, 10.0, "KXBTC15M-1", total_value=100.0, paper=True, side="yes")
     assert ok is True
     assert reason == "ok"
 

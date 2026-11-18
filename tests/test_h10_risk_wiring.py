@@ -79,7 +79,7 @@ def test_liquidity_guard_blocks_a_wide_entry(monkeypatch):
     monkeypatch.setattr(config, "MIN_DEPTH_CONTRACTS", 5)
     r = _manager(monkeypatch)
     ok, reason = r.check(100.0, 0.0, 1.0, "KXBTC15M-YES", 100.0,
-                         market=_market(90, 99, 100))
+                         market=_market(90, 99, 100), side="yes")
     assert ok is False
     assert "liquidity" in reason
 
@@ -100,6 +100,6 @@ def test_kelly_guard_shrinks_a_thin_edge(monkeypatch):
     assert fat > thin > 0.0
     # Below the EV floor Kelly returns 0 -> check() refuses any trade cost.
     ok, reason = r.check(100.0, 0.0, 1.0, "KXBTC15M-YES", 100.0,
-                         win_prob=0.50, entry_price_cents=80, market=market)
+                         win_prob=0.50, entry_price_cents=80, market=market, side="yes")
     assert ok is False
     assert "risk cap" in reason

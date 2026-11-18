@@ -52,6 +52,7 @@ def test_pre_trade_check_blocks_over_cap(fresh_state, mock_client):
     sig = MagicMock()
     sig.dollar_risk = 50.0
     sig.entry_price = 50
+    sig.side = "yes"
     sig.market = MagicMock()
     sig.market.ticker = "TEST"
     sig.market.yes_bid = 48
@@ -77,6 +78,7 @@ def test_pre_trade_check_blocks_cash_floor(fresh_state, mock_client):
     sig = MagicMock()
     sig.dollar_risk = 99.0
     sig.entry_price = 50
+    sig.side = "yes"
     sig.market = MagicMock()
     sig.market.ticker = "TEST"
     sig.market.yes_bid = 48
@@ -103,6 +105,7 @@ def test_pre_trade_check_allows_small_trade(fresh_state, mock_client, monkeypatc
     sig = MagicMock()
     sig.dollar_risk = 5.0
     sig.entry_price = 50
+    sig.side = "yes"
     sig.market = MagicMock()
     sig.market.ticker = "TEST"
     sig.market.yes_bid = 48

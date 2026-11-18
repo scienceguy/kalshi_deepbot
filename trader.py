@@ -779,6 +779,16 @@ def _order_price_dollars(o):
                 return float(v)
             except (TypeError, ValueError):
                 pass
+        # Fallback: compute NO price as complement of YES price
+        # reviewed: config flag controls whether NO is 1-YES or fetched directly
+        if config.NO_PRICE_IS_COMPLEMENT:
+            v = o.get("yes_price_dollars")
+            # reviewed: skip if YES price is missing or empty string
+            if v not in (None, ""):
+                try:
+                    return 1.0 - float(v)
+                except (TypeError, ValueError):
+                    pass
     v = o.get("yes_price_dollars")
     if v not in (None, ""):
         try:
@@ -1680,7 +1690,7 @@ def _manage_exits(client):
 
         try:
             resp = client.sell_position(
-                ticker, side, contracts, int(bid),
+                ticker, side, floor_contracts(contracts), int(bid),
                 client_order_id=f"exit-{ticker}-{int(time.time())}",
             )
         except Exception as e:
@@ -2275,12 +2285,12 @@ def cycle(client: KalshiClient):
             log.info("Position %s detected as settled — waiting for settlement data", t)
 
         # Fetch actual settlement price from Kalshi market data.
-        # Use a short timeout (3s) to avoid blocking the 15s trading cycle.
+        # Use a short tuple timeout (connect=1.5s, read=2.5s) to avoid blocking the 15s trading cycle.
         exit_price = None
         event_ticker = t
         market = None
         try:
-            market = client.get_market(t, timeout=3)
+            market = client.get_market(t, timeout=(1.5, 2.5))
             event_ticker = market.get("event_ticker", t)
             settled_yes = _settle_yes_cents(market)
             if settled_yes is not None:
@@ -2619,7 +2629,7 @@ def cycle(client: KalshiClient):
                 live_exposure = client.get_portfolio_value()
             except Exception:
                 live_exposure = 0.0
-        state.risk.update_balance(total_account_cash, live_exposure, mark_to_market_exposure=live_exposure)
+        state.risk.update_balance(effective_cash, live_exposure, mark_to_market_exposure=live_exposure)
         now_dt = datetime.now(timezone.utc)
         _touch_window(now_dt, total_account_cash, live_exposure)
 
@@ -2697,7 +2707,11 @@ def cycle(client: KalshiClient):
         "balance": cash if cash_available else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    if current_state != last_logged:
+    # Compare without timestamp to avoid writing on every cycle just because time changed
+    compare_state = {k: v for k, v in current_state.items() if k != "timestamp"}
+    last_compare = {k: v for k, v in last_logged.items() if k != "timestamp"} if last_logged else None
+    # reviewed: only write when state actually changed (ignoring timestamp)
+    if compare_state != last_compare:
         try:
             # reviewed: D1 local snapshot replaces the inline Supabase write
             if get_local_db().set_bot_state_batch(current_state):
@@ -2725,10 +2739,13 @@ def cycle(client: KalshiClient):
         return
 
     if config.DRY_RUN:
+        # Dry-run mode: count local paper positions only (mode-isolated from live).
+        # A dry-run and live instance can run concurrently with different position counts.
         open_count = len(state.positions)
     else:
-        # positions is None on a fetch failure (see the positions fetch above);
-        # the designed "skip order placement" fallback below must stay reachable.
+        # Live mode: count exchange positions from API.
+        # positions is None on a fetch failure; the designed "skip order placement"
+        # fallback below must stay reachable.
         open_count = sum(
             1 for p in (positions or [])
             if "15M" in p.get("ticker", "").upper()
@@ -2741,9 +2758,10 @@ def cycle(client: KalshiClient):
     # reviewed: dry-run sizing uses paper_cash reflecting MTM exposure
     effective_cash = paper_cash if (config.DRY_RUN and cash_available) else (cash if cash_available else 0.0)
     max_trade = state.risk.max_trade_dollars(
-        effective_cash, mark_to_market_exposure,
+        effective_cash, cost_exposure,
         resting_orders_value=sum(v["dollars"] for v in state.resting_value.values()),
         paper=config.DRY_RUN,
+        mark_to_market_exposure=mark_to_market_exposure,
     )
     # reviewed: protect cash floor if effective cash is available but max trade is negligible
     if cash_available and max_trade < 0.01:
@@ -3683,6 +3701,13 @@ def _run_loop(args):
         sig_name = "SIGTERM" if signum == sig_mod.SIGTERM else "SIGINT"
         log.info("%s received — shutting down gracefully", sig_name)
         state.running = False
+        # Force-save bid history on shutdown (S15)
+        try:
+            import signals
+            signals._force_save_bid_hist()
+            log.info("Bid history saved on shutdown")
+        except Exception as e:
+            log.warning("Bid history save on shutdown failed: %s", e)
         # Drain outbox on shutdown to avoid losing pending events (SF5)
         try:
             from n8n_client import drain_outbox
@@ -3871,9 +3896,10 @@ def acquire_instance_lock(lock_path: Path) -> int:
     """Take the single-instance lock. Returns an fd that must stay open.
 
     The fd has to live for the whole process: closing it releases the flock.
-    The lock file's contents are never read, so no PID is written — a stale PID
-    would only mislead a human about whether a bot is running.
+    The lock file stores the PID so a stale lock (dead process) can be detected
+    and cleaned up instead of blocking a new start.
     """
+    my_pid = os.getpid()
     for attempt in range(5):
         # Open the lock file (created if needed). Any failure here (permissions,
         # read-only dir) is a real error and propagates with its own message.
@@ -3881,18 +3907,33 @@ def acquire_instance_lock(lock_path: Path) -> int:
         try:
             # Try to acquire exclusive non-blocking lock
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Write our PID so other instances can check if we're alive
+            os.write(fd, str(my_pid).encode())
+            os.fsync(fd)
             return fd
         except BlockingIOError:
-            # Lock held by another process. Only contention is retried.
+            # Lock held by another process. Check if the holder is still alive.
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                holder_pid = int(os.read(fd, 32).decode().strip())
+                # Check if the holder process exists
+                try:
+                    os.kill(holder_pid, 0)  # Signal 0 just checks existence
+                    log.warning("Lock held by PID %d — still alive, retrying in 1s (attempt %d/5)",
+                                holder_pid, attempt + 2)
+                except OSError:
+                    # Holder process is dead; steal the lock by closing our fd
+                    # and letting the next attempt grab it
+                    log.warning("Lock held by dead PID %d — stealing lock", holder_pid)
+                    os.close(fd)
+                    continue  # Immediate retry without sleep
+            except (OSError, ValueError):
+                # Couldn't read PID from lock file; treat as alive
+                log.warning("Lock held by another process (unknown PID) — retrying in 1s (attempt %d/5)", attempt + 2)
             os.close(fd)
             if attempt < 4:
-                log.warning("Lock held by another process — retrying in 1s (attempt %d/5)", attempt + 2)
                 time.sleep(1)
                 continue
-            # Never proceed without the lock. The old check read the shell's
-            # DRY_RUN, but --live only changes config.DRY_RUN, so a live bot
-            # started with the documented env saw "dry run" and ran anyway —
-            # two live bots, one account, two ideas of available cash.
             log.error("Could not acquire lock after 5 attempts — another instance running")
             raise SystemExit(1)
 

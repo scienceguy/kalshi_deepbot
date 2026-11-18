@@ -112,7 +112,15 @@ def _cached(cache: dict, key: str, ttl: float, fn):
     if len(cache) > 64:
         for k in sorted(cache.keys(), key=lambda k: cache[k][1])[:16]:
             cache.pop(k, None)
-    cache[key] = (now, now, value)
+    # Preserve last_good_ts on failure (fail closed) - only update on success.
+    # last_good_ts = now only when value is not None; last_attempt_ts = now always.
+    # reviewed: success updates both timestamps; failure preserves last_good_ts
+    if value is not None:
+        cache[key] = (now, now, value)
+    else:
+        # Failure: keep last_good_ts from hit (or 0 if never had one), update last_attempt_ts
+        last_good_ts = hit[0] if hit else 0.0
+        cache[key] = (last_good_ts, now, None)
     return value
 
 
@@ -513,7 +521,7 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
             metrics["sigma_atr_v2"] = sigma_v2
             metrics["sigma_source"] = "atr_v2" if config.GATES_SIGMA_FROM_ATR_V2 else "atr_v1"
             if sigma is None:  # reviewed: no ATR and no spot means no derivable vol; the fixed model vol keeps gate 3 dimensionally sane instead of failing open (B11)
-                sigma = 0.0007 if spot else None
+                sigma = 0.003 if spot else None
                 metrics["sigma_source"] = "fixed_fallback"
         if minutes <= config.GATES_HIGH_GAMMA_MINUTES:
             metrics["high_gamma_zone"] = True

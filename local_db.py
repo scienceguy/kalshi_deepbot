@@ -109,8 +109,8 @@ class LocalDB:
 
     # Tables the sync thread mirrors to Supabase. PolyLocalDB overrides this
     # with its own table set (D2).
-    # pnl_ledger before orders for idempotency (SF9: settlement PnL before order state)
-    SYNC_TABLES = ("bot_state", "signals", "pnl_ledger", "orders", "backtest_runs")
+    # pnl_ledger before signals for idempotency (settlement PnL before signal state)
+    SYNC_TABLES = ("bot_state", "pnl_ledger", "signals", "orders", "backtest_runs")
 
     # D4: source tag for critical integrity events (N3 catalog).
     EVENT_SOURCE = "kalshi_trader"

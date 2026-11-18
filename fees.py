@@ -60,6 +60,7 @@ def series_from_ticker(ticker: str) -> str:
 
 def set_series_fees(models) -> None:
     """Replace the series fee cache from {series: {fee_type, fee_multiplier}}."""
+    from config import MAX_FEE_MULTIPLIER
     _SERIES_FEES.clear()
     for series, info in (models or {}).items():
         if not series:  # reviewed: skip catalogue entries with no series name — they carry no fee info (B6)
@@ -68,6 +69,12 @@ def set_series_fees(models) -> None:
             mult = float((info or {}).get("fee_multiplier", 1.0) or 1.0)
         except (TypeError, ValueError):
             mult = 1.0
+        # Cap runaway multipliers from the API
+        # reviewed: clamping prevents a runaway API multiplier from blowing up fee math
+        if mult > MAX_FEE_MULTIPLIER:
+            log.warning("Series %s fee_multiplier=%.2f exceeds MAX_FEE_MULTIPLIER=%d, clamping",
+                        series, mult, MAX_FEE_MULTIPLIER)
+            mult = float(MAX_FEE_MULTIPLIER)
         fee_type = str((info or {}).get("fee_type", "") or "")
         _SERIES_FEES[str(series).upper()] = {"fee_type": fee_type,
                                              "fee_multiplier": mult}

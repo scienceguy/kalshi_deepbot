@@ -102,10 +102,12 @@ def _env_bool(name, default):
     val = os.environ.get(name, "").strip().lower()
     if not val:
         return default
-    if val not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
+    true_vals = ("1", "true", "yes", "on", "y", "t", "enabled")
+    false_vals = ("0", "false", "no", "off", "n", "f", "disabled")
+    if val not in true_vals + false_vals:
         log.warning("Unrecognized boolean value for %s: '%s' — using default %s", name, val, default)
         return default
-    return val in ("1", "true", "yes", "on")
+    return val in true_vals
 
 
 def _env_str(name, default):
@@ -165,6 +167,10 @@ if PM_FEE_MODEL not in ("us_tier", "legacy_rate"):
 PM_TAKER_COEFFICIENT = _env_float("PM_TAKER_COEFFICIENT", 0.095)
 PM_FEE_RATE = _env_float("PM_FEE_RATE", 0.07)
 PM_SLIPPAGE_TICKS = _env_int("PM_SLIPPAGE_TICKS", 1)
+# Maximum allowed fee multiplier from Kalshi series API.
+# A runaway multiplier would make fee math explode. Default 10x covers
+# all known series (typically 1.0-2.0).
+MAX_FEE_MULTIPLIER = _env_int("MAX_FEE_MULTIPLIER", 10)
 # Minimum modelled edge (cents) required on top of fee + slippage to enter.
 PM_EDGE_MARGIN_CENTS = _env_float("PM_EDGE_MARGIN_CENTS", 0.5)
 # Fallback (non-cross-venue) entries need a model to score the market. Set
@@ -959,10 +965,31 @@ def validate_bands():
         raise ValueError("Configuration invalid:\n" + "\n".join(errors))
 
 
+def validate_kalshi_base_url() -> None:
+    """Validate KALSHI_BASE_URL contains the required API path.
+    
+    Called from validate_all() for early failure detection (S16).
+    """
+    if "/trade-api/v2" not in KALSHI_BASE_URL:
+        if not globals().get("KALSHI_ALLOW_NONSTANDARD_URL", False):
+            raise ValueError(
+                f"KALSHI_BASE_URL ({KALSHI_BASE_URL}) must contain '/trade-api/v2' "
+                f"so that signature paths are computed correctly. "
+                f"Set KALSHI_ALLOW_NONSTANDARD_URL=true to override."
+            )
+        else:
+            log.warning(
+                "KALSHI_BASE_URL (%s) does not contain '/trade-api/v2' — "
+                "signature paths may be incorrect. KALSHI_ALLOW_NONSTANDARD_URL=true set.",
+                KALSHI_BASE_URL,
+            )
+
+
 def validate_all(silent: bool = False):
     """Run all validation checks. Called at module import for early failure detection."""
     validate_credentials()
     validate_bands()
+    validate_kalshi_base_url()  # S16
     # validate_dry_run not called here — requires live_explicit context
     import fees
     fees.validate_fee_rate()

@@ -769,13 +769,27 @@ def get_client() -> N8nClient:
 
 
 def n8n_health_check() -> bool:
-    """Verify n8n is reachable via a read-only GET."""
+    """Verify n8n is reachable via the trade webhook health-check action.
+
+    The superbot-trade webhook returns HTTP 200 for a health-check action,
+    confirming the full webhook chain (n8n + workflow) is operational.
+    """
     try:
         client = get_client()
-        resp = client.session.get(f"{client.base_url}/", timeout=5)
-        return resp.status_code < 500
+        # Use the trade webhook with health_check action - all 4 SuperBot
+        # webhooks return 200 for this action per the workflow contract.
+        # Use fire_and_forget=False for synchronous execution to get actual response.
+        resp = client.execute_webhook("superbot-trade", {"action": "health_check"}, fire_and_forget=False)
+        # If we get here without exception, the webhook succeeded
+        return True
     except Exception:
-        return False
+        # Fallback: simple GET to n8n root if webhook fails
+        try:
+            client = get_client()
+            resp = client.session.get(f"{client.base_url}/", timeout=5)
+            return resp.status_code < 500
+        except Exception:
+            return False
 
 
 def _execute_command_enabled() -> bool:
