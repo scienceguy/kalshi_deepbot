@@ -357,10 +357,14 @@ class BotState:
         # Per-market daily loss limit (skip if cash unknown)
         if cash is not None:
             market_daily_loss = self.risk.market_loss_total(ticker)
-            if market_daily_loss >= cash * config.MARKET_DAILY_LOSS_PCT:
+            # K10: same portfolio-value base as risk.check, so paper and live
+            # enforce the same limit when exposure is high (cash << equity).
+            # reviewed: base the market daily limit on portfolio value (K10)
+            loss_base = max(total_value or (cash + exposure), 1.0)
+            if market_daily_loss >= loss_base * config.MARKET_DAILY_LOSS_PCT:  # reviewed: K10 portfolio-value base matches risk.check
                 log.info(
                     "MARKET DAILY LOSS BLOCK %s — daily loss $%.2f >= limit $%.2f",
-                    ticker, market_daily_loss, cash * config.MARKET_DAILY_LOSS_PCT,
+                    ticker, market_daily_loss, loss_base * config.MARKET_DAILY_LOSS_PCT,
                 )
                 return False
 
@@ -1568,6 +1572,23 @@ def clear_resting_orders(client, ticker: str):
     state.resting_tickers.discard(ticker)
 
 
+def _venue_contracts(client, ticker: str, side: str):
+    """Contracts still open on the venue for ticker/side, or None if unknown.
+
+    K7: used to confirm an exit actually closed the position before local
+    state drops it. An aggregate positions payload has no order id.
+    """
+    try:
+        for p in client.get_positions() or []:
+            # reviewed: K7 new function to confirm venue position before dropping local state
+            if p.get("ticker") == ticker:
+                return floor_contracts(_pos_yes(p) if side == "yes" else _pos_no(p))
+    except Exception as e:
+        log.warning("Could not confirm venue contracts for %s: %s", ticker, e)
+        return None
+    return 0.0
+
+
 def _manage_exits(client):
     """Sell open positions that hit the profit target or the stop.
 
@@ -1601,7 +1622,9 @@ def _manage_exits(client):
             continue
 
         # reviewed: require spot to confirm loss before triggering stop loss
-        is_losing_spot = True
+        # K8: fail safe. Without a spot/strike pair we cannot tell whether the
+        # position is winning, so a bid past the stop threshold still exits.
+        spot_confirms_loss = True
         try:
             series = ticker.split("-")[0] if "-" in ticker else ticker
             asset = series[2:] if series.startswith("KX") else series
@@ -1614,10 +1637,10 @@ def _manage_exits(client):
             if spot is not None and mkt_strike is not None:
                 # reviewed: YES position is winning when spot is above strike
                 if side == "yes" and spot >= mkt_strike:
-                    is_losing_spot = False  # spot is above strike, position is winning
+                    spot_confirms_loss = False  # spot is above strike, position is winning
                 # reviewed: NO position is winning when spot is below strike
                 elif side == "no" and spot <= mkt_strike:
-                    is_losing_spot = False  # spot is below strike, position is winning
+                    spot_confirms_loss = False  # spot is below strike, position is winning
         except Exception:
             pass
 
@@ -1637,7 +1660,7 @@ def _manage_exits(client):
                 continue
             reason = f"take profit +{delta}c"
         # reviewed: only trigger stop loss if delta dropped past stop threshold AND spot confirms loss
-        elif -delta >= config.EXIT_STOP_LOSS_CENTS and is_losing_spot:
+        elif -delta >= config.EXIT_STOP_LOSS_CENTS and spot_confirms_loss:  # reviewed: K8 fail-safe exit when spot unavailable
             reason = f"stop loss {delta}c"
         else:
             continue
@@ -1687,6 +1710,26 @@ def _manage_exits(client):
         # and popping the whole position would drop the unsold contracts from
         # local state (they would reappear next cycle at a recomputed basis).
         remaining = round(contracts - filled, 2)
+        # K7: the local fill report is not proof the position is gone. Confirm
+        # against the venue before dropping it, or the basis is lost and the
+        # position is re-adopted next cycle at a recomputed cost.
+        exit_unconfirmed = False
+        # reviewed: K7 only verify venue contracts for live filled exits
+        if remaining < 0.01 and not (config.DRY_RUN or pos.get("paper")):
+            venue_contracts = _venue_contracts(client, ticker, side)
+            # reviewed: K7 venue_contracts None = cannot confirm, retry next cycle
+            if venue_contracts is None:
+                # Cannot confirm: keep the pre-exit count so the next cycle
+                # retries (the venue rejects selling more than is held), and
+                # stop settlement re-booking P&L this exit already booked.
+                remaining = contracts
+                exit_unconfirmed = True
+            else:
+                remaining = round(venue_contracts, 2)
+                pos.pop("exit_unconfirmed", None)
+        # reviewed: K7 exit_unconfirmed blocks settlement replay for this position
+        if exit_unconfirmed:
+            pos["exit_unconfirmed"] = True
         if remaining >= 0.01:
             pos["contracts"] = remaining
             state.position_risk[ticker] = remaining * entry / 100.0
@@ -1695,6 +1738,9 @@ def _manage_exits(client):
             state.positions.pop(ticker, None)
             state.position_risk.pop(ticker, None)
             _save_paper_positions(state.positions)
+        # reviewed: K7 do not book exit if venue confirmation failed (retry next cycle)
+        if exit_unconfirmed:
+            continue
         exit_oid = pos.get("exit_order_id", "")
         order_id = pos.get("order_id", ticker)
         try:
@@ -2009,8 +2055,9 @@ def cycle(client: KalshiClient):
     state.live_resting_orders = resting_orders or []
     try:
         now = time.time()
-        # A dry run simulates an immediate taker fill, so no order ever rests:
-        # every reservation is released in the same cycle it is made.
+        # A dry run has no exchange orders: a paper reservation is released by
+        # the prune below one cycle after placement (K5 keeps an unfilled
+        # paper order's reservation for the cycle it was placed in).
         live_ids = set()
         for o in resting_orders:
             oid = o.get("order_id") or o.get("id")
@@ -2122,9 +2169,18 @@ def cycle(client: KalshiClient):
                     "Top-up %s: exchange contracts %d > stored %d (exposure $%.2f)",
                     tk, exch_contracts, existing.get("contracts", 0), exposure
                 )
+                prev_risk = state.position_risk.get(tk, 0.0)
                 existing["contracts"] = exch_contracts
                 existing["entry_price"] = new_entry_price
                 state.position_risk[tk] = exposure
+                # K4: a fill that landed inside the current 15m window consumed
+                # this window's budget at placement time; charge the increase so
+                # later entries in the same window cannot overspend it.
+                close_dt = _ticker_close_time(tk)
+                # reviewed: K4 charge window budget only for fills in current window
+                if (close_dt is not None and exposure > prev_risk
+                        and close_dt > datetime.now(timezone.utc)):
+                    state.window["used"] += exposure - prev_risk
             continue
         # If there's a settlement queue entry for this ticker, skip adoption.
         # The replay will handle the P&L using the queue entry's order_id.
@@ -2185,6 +2241,15 @@ def cycle(client: KalshiClient):
             except Exception:
                 continue
         pos_info = state.positions.get(t, {})
+        # K7: an exit whose close the venue had not yet confirmed already booked
+        # this position's P&L — do not book a settlement for it as well.
+        # reviewed: K7 skip settlement when exit was unconfirmed (already booked P&L)
+        if pos_info.get("exit_unconfirmed"):
+            state.positions.pop(t, None)
+            state.position_risk.pop(t, None)
+            state.settled_since.pop(t, None)
+            _save_paper_positions(state.positions)
+            continue
         reserved = state.position_risk.get(t, 0.0)
         is_paper = bool(pos_info.get("paper"))
         side = pos_info.get("side", "")
@@ -2972,7 +3037,12 @@ def cycle(client: KalshiClient):
                 market = sig.market
                 fill_count = _dry_run_fill_count(
                     market, sig.side, sig.entry_price, sig.contracts)
-                
+
+                # K5: a placement counts against MAX_ORDERS_PER_DAY even when
+                # the paper book does not cross. An unfilled dry-run order keeps
+                # its cash reservation until reconcile releases it next cycle.
+                state.last_order_time = time.time()
+                state.orders_today += 1
                 if fill_count >= 0.01:  # reviewed: dust-guard — a fill below 0.01 contracts books no exposure and must not create a phantom position
                     # A taker entry (AGGRESSIVE_FILL crosses the ask) pays the
                     # Kalshi taker fee; a resting maker order pays none on a
@@ -2981,17 +3051,16 @@ def cycle(client: KalshiClient):
                     fees_dollars = _entry_fee_dollars(
                         fill_count, sig.entry_price, config.AGGRESSIVE_FILL,
                         series=market.series)
+                    # _record_filled_order releases the resting reservation.
                     state._record_filled_order(
                         client, sig, oid, fill_count, "executed", fees_dollars,
                         state.cycles, entry_taker=config.AGGRESSIVE_FILL)
-                    state.last_order_time = time.time()
-                    state.orders_today += 1
                     current_exposure += fill_count * sig.entry_price / 100.0
                 else:
                     fill_count = 0.0
-                
-                state.resting_value.pop(oid, None)
-                state.resting_tickers.discard(sig.market.ticker)
+                    log.info("↳ %s order_id=%s resting (no paper fill this cycle)",
+                             sig.market.ticker, oid)
+
                 client.invalidate_markets(series_ticker=sig.market.series)
             else:
                 # Live mode: check placement response first for immediate fills.
@@ -3639,11 +3708,9 @@ def _run_loop(args):
             sweep_caches(max_age_seconds=3600.0)
         except Exception as e:
             log.debug("Gate cache sweep failed: %s", e)
-        # Invalidate markets cache each cycle to ensure fresh market data (SF2)
-        try:
-            client.invalidate_markets()
-        except Exception as e:
-            log.debug("Markets cache invalidation failed: %s", e)
+        # K9: do not invalidate the market cache every cycle — get_markets already
+        # caches for 30s, and fills/settlements invalidate their own series, so
+        # a per-cycle clear just forced a fresh 9-series fetch each loop.
         # Sweep the MemPalace inbox for task.request events addressed to this
         # agent before each cycle so the operator can delegate work mid-run.
         # M1: bridge.drain_tasks() reads from the inbound subscriber queue

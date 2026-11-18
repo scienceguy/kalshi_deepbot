@@ -5,9 +5,11 @@ pattern as test_n1_webhook_auth). One real 127.0.0.1 round-trip exercises
 the socket path; the rest are socket-free or inject fakes.
 """
 import json
+import os
 import time
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +24,8 @@ import n8n_webhook_auth
 def _secret(monkeypatch, value="c1-test-secret"):
     monkeypatch.setattr(config, "SUPERBOT_WEBHOOK_SECRET", value)
     monkeypatch.delenv("SUPERBOT_WEBHOOK_SECRET_FILE", raising=False)
+    # B3: clear the nonce store so tests don't hit replay protection
+    n8n_coordination._clear_nonce_store_for_test()
 
 
 def _iso(ts):

@@ -209,7 +209,7 @@ def _outbox_sender(db=None, lane: str = "normal"):
             if not _outbox_breaker.allow():
                 time.sleep(5.0)
                 continue
-            rows = db.get_pending_outbox_events(limit=50, lane=lane)
+            rows = db.claim_pending_outbox_events(limit=50, lane=lane)
             if not rows:
                 if lane == "normal":
                     _drain_telemetry()
@@ -237,7 +237,7 @@ def _deliver_outbox_row(db, row: Dict[str, Any]) -> None:
     payload = json.loads(row["payload_json"] or "{}")
     lane = row.get("delivery_class") or "normal"
 
-    client = N8nClient()  # API methods not needed; only _execute_webhook_signed
+    client = get_client()  # I7: reuse one signing session, not one per delivery
     try:
         client._execute_webhook_signed(webhook_path, payload, "POST",
                                        _lane_timeout(lane), 1)
@@ -248,6 +248,26 @@ def _deliver_outbox_row(db, row: Dict[str, Any]) -> None:
         log.warning("Outbox event %s failed (%s): %s", event_id, row["type"], e)
         db.mark_outbox_dead(event_id, str(e)[:200], max_attempts=MAX_OUTBOX_ATTEMPTS)
         _outbox_breaker.record_failure()
+
+
+def _write_outbox_sidecar(event_id: str, event_type: str,
+                          payload: Dict[str, Any], webhook_path: str,
+                          error: str) -> None:
+    """I4: last-resort record when a critical event cannot be delivered at all.
+
+    The local DB is the normal durable store; this only runs when that insert
+    failed and the synchronous fallback also failed, so the event is not lost
+    silently. Operator replay is manual — one file per failed event.
+    """
+    try:
+        d = Path(config.SUPERBOT_DATA_DIR) / "outbox_failed"
+        d.mkdir(parents=True, exist_ok=True)
+        rec = {"event_id": event_id, "type": event_type,
+               "webhook_path": webhook_path, "payload": payload, "error": error,
+               "ts": datetime.now(timezone.utc).isoformat()}
+        (d / f"{event_id}.json").write_text(json.dumps(rec))
+    except Exception as e:
+        log.error("Could not write outbox sidecar for %s: %s", event_id, e)
 
 
 def _sign_body(timestamp: str, body: str, nonce: str = "") -> str:
@@ -289,7 +309,7 @@ def drain_outbox(timeout_seconds: float = 10.0) -> int:
     start = time.time()
     for lane in ("critical", "normal"):
         while time.time() - start < timeout_seconds:
-            rows = db.get_pending_outbox_events(limit=50, lane=lane)
+            rows = db.claim_pending_outbox_events(limit=50, lane=lane)
             if not rows:
                 break
             for row in rows:
@@ -668,7 +688,7 @@ class N8nClient:
             try:
                 from local_db import get_local_db
                 db = get_local_db()
-                db.insert_outbox_event(
+                rowid = db.insert_outbox_event(
                     event_type=event_type,
                     payload_json=json.dumps(data),
                     delivery_class=cls,
@@ -677,8 +697,22 @@ class N8nClient:
                     event_id=event_id,
                     webhook_path=webhook_path,
                 )
+                if rowid is None:
+                    raise RuntimeError("insert_outbox_event returned None")
             except Exception as e:
                 log.warning("N2: outbox insert failed for %s: %s", webhook_path, e)
+                if cls == "critical":
+                    # I4: a critical event must not be dropped because the local
+                    # DB is unavailable. Deliver synchronously; only if that
+                    # fails too, leave a sidecar for manual replay.
+                    try:
+                        self._execute_webhook_sync(webhook_path, data, method,
+                                                   timeout, max_retries)
+                    except Exception as e2:
+                        log.error("I4: synchronous critical delivery failed for "
+                                  "%s: %s — writing sidecar", webhook_path, e2)
+                        _write_outbox_sidecar(event_id, event_type, data,
+                                              webhook_path, str(e2)[:200])
             return {}
         else:
             return self._execute_webhook_sync(webhook_path, data, method, timeout, max_retries)

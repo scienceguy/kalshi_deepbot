@@ -9,8 +9,8 @@ themselves (send_command.py --stdin, n8n_coordination.py).
 
     POST /command     -> scripts/send_command.py --stdin   (signed body)
     POST /coordinate  -> scripts/n8n_coordination.py       (signed body)
-    POST /backtest    -> backtest.py --quick ...           (no input)
-    POST /collect     -> legacy/data_collector.py ...      (no input)
+    POST /backtest    -> backtest.py --quick ...           (no input, HMAC)
+    POST /collect     -> legacy/data_collector.py ...      (no input, HMAC)
     GET  /healthz
 """
 
@@ -18,32 +18,62 @@ import json
 import os
 import subprocess
 import sys
+import hmac
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
-BASE_DIR = "/opt/superbot"
+BASE_DIR = Path(__file__).resolve().parents[1]
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("SUPERBOT_JOB_BRIDGE_PORT", "18711"))
 TIMEOUT_SECONDS = float(os.environ.get("SUPERBOT_JOB_TIMEOUT_SECONDS", "600"))
 
-# route -> (argv, forwards the request body on stdin)
+# B1: require HMAC on backtest/collect so n8n callers can't trigger them
+# without the shared secret. command/coordinate already verify inside their
+# scripts (send_command.py --stdin, n8n_coordination.py).
+REQUIRE_HMAC = {"backtest", "collect"}
+
+
+def _verify_hmac(request: BaseHTTPRequestHandler, body: bytes) -> bool:
+    secret = os.environ.get("SUPERBOT_WEBHOOK_SECRET") or os.environ.get(
+        "SUPERBOT_JOB_BRIDGE_HMAC_SECRET")
+    if not secret:
+        return True  # no secret configured: allow (dev only)
+    ts = request.headers.get("X-Superbot-Timestamp")
+    nonce = request.headers.get("X-Superbot-Nonce")
+    sig = request.headers.get("X-Superbot-Signature")
+    if not (ts and nonce and sig):
+        return False
+    try:
+        expected = hmac.new(
+            secret.encode(),
+            f"{int(ts)}.{nonce}.{body.decode()}".encode(),
+            hashlib.sha256
+        ).hexdigest()
+    except Exception:
+        return False
+    return hmac.compare_digest(expected, sig)
+
+
+# route -> (argv, wants_stdin, requires_hmac)
 ROUTES = {
-    "command": (["scripts/send_command.py", "--stdin"], True),
-    "coordinate": (["scripts/n8n_coordination.py"], True),
+    "command": (["scripts/send_command.py", "--stdin"], True, False),
+    "coordinate": (["scripts/n8n_coordination.py"], True, False),
     "backtest": (["backtest.py", "--quick", "--limit", "50", "--top", "10",
-                  "--jobs", "2"], False),
+                  "--jobs", "2"], False, True),
     "collect": (["legacy/data_collector.py", "--series", "KXBTC15M", "KXETH15M",
-                 "KXSOL15M", "KXXRP15M", "KXDOGE15M", "--limit", "100"], False),
+                 "KXSOL15M", "KXXRP15M", "KXDOGE15M", "--limit", "100"], False, True),
 }
 
 
 def run_route(route: str, body: bytes, timeout: float = TIMEOUT_SECONDS) -> dict:
     """Run one allowlisted route's script. Raises KeyError for unknown routes."""
-    argv, wants_stdin = ROUTES[route]
+    argv, wants_stdin, _ = ROUTES[route]
     proc = subprocess.run(
         [sys.executable, *argv], cwd=BASE_DIR,
         input=body if wants_stdin else None,
         capture_output=True, timeout=timeout,
-        env={**os.environ, "PYTHONPATH": BASE_DIR})
+        env={**os.environ, "PYTHONPATH": str(BASE_DIR)})
     out = proc.stdout.decode(errors="replace").strip()
     try:
         result = json.loads(out) if out else {}
@@ -61,11 +91,14 @@ class _Handler(BaseHTTPRequestHandler):
         route = self.path.split("?")[0].strip("/")
         if route not in ROUTES:
             return self._json(404, {"ok": False, "reason": "unknown route"})
+        _, _, needs_hmac = ROUTES[route]
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
         body = self.rfile.read(min(length, 1 << 20))  # 1 MiB cap
+        if needs_hmac and not _verify_hmac(self, body):
+            return self._json(401, {"ok": False, "reason": "invalid HMAC"})
         try:
             return self._json(200, run_route(route, body))
         except subprocess.TimeoutExpired:

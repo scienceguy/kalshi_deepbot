@@ -90,5 +90,5 @@ def test_run_job_reports_a_failed_script_as_an_alert():
 
 def test_job_bridge_allowlist_only():
     assert set(job_bridge.ROUTES) == {"command", "coordinate", "backtest", "collect"}
-    for argv, _stdin in job_bridge.ROUTES.values():
+    for argv, _stdin, _hmac in job_bridge.ROUTES.values():
         assert all(isinstance(a, str) for a in argv)  # argv list, never a shell string

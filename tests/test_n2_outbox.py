@@ -84,6 +84,9 @@ def _patch_base_url(monkeypatch, server):
     real = n8n_client.N8nClient
     monkeypatch.setattr(n8n_client, "N8nClient",
                         lambda *a, **k: real(base_url=url, *a, **k))
+    # I7: _deliver_outbox_row reuses the module singleton, so drop any cached
+    # client built against the real base URL.
+    monkeypatch.setattr(n8n_client, "_client", None)
 
 
 def _serve(handler):

@@ -35,6 +35,7 @@ import socket
 import sqlite3
 import threading
 import time
+import fcntl
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
@@ -429,6 +430,8 @@ class LocalDB:
                 # path to deliver to (event type alone cannot route).
                 ("event_outbox", "delivered_at TEXT NOT NULL DEFAULT ''"),
                 ("event_outbox", "webhook_path TEXT NOT NULL DEFAULT ''"),
+                # I2: atomic delivery claim, so two senders never deliver a row twice.
+                ("event_outbox", "claimed_at TEXT NOT NULL DEFAULT ''"),
             ):
                 for _col in _cols.split(", "):
                     _col_name = _col.split(" ")[0]
@@ -700,7 +703,7 @@ class LocalDB:
         with self._lock:
             try:
                 ts = datetime.now(timezone.utc).isoformat()
-                conn.execute(
+                cursor = conn.execute(
                     """
                     INSERT INTO pnl_ledger
                         (idempotency_key, market_ticker, realized_pnl_dollars,
@@ -713,10 +716,9 @@ class LocalDB:
                      fee_dollars, ts, source, venue, mode, origin_host),
                 )
                 conn.commit()
-                # Check if row was actually inserted (changes > 0 means new)
-                cursor = conn.execute("SELECT changes()")
-                new_rows = cursor.fetchone()[0]
-                return new_rows > 0
+                # I8: rowcount is 0 on a conflict, same contract as
+                # apply_poly_settlement (SELECT changes() adds a round-trip).
+                return cursor.rowcount > 0
             except Exception as e:
                 log.warning("apply_settlement_pnl(%s, %s) error: %s",
                             idempotency_key, market_ticker, e)
@@ -975,6 +977,56 @@ class LocalDB:
                      "last_error", "status", "webhook_path"], row)) for row in rows]
             except Exception as e:
                 log.warning("get_pending_outbox_events error: %s", e)
+                return []
+
+    def claim_pending_outbox_events(self, limit: int = 100,
+                                    lane: Optional[str] = None,
+                                    claim_ttl_seconds: int = 300
+                                    ) -> List[Dict[str, Any]]:
+        """Atomically claim pending outbox rows for one delivery attempt (I2).
+
+        Two senders (the per-lane sender and the shutdown drain) must never
+        deliver the same row twice. A single UPDATE flips the rows to
+        'sending', so only one claimer can see them. A claim older than
+        claim_ttl_seconds is reclaimable: a process that died mid-delivery
+        must not strand the row forever.
+        """
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                now = datetime.now(timezone.utc).isoformat()
+                lane_filter = " AND delivery_class = ?" if lane else ""
+                params: list = [now, now, f"-{int(claim_ttl_seconds)} seconds"]
+                if lane:
+                    params.append(lane)
+                params.append(limit)
+                rows = conn.execute(f"""
+                    UPDATE event_outbox
+                    SET status = 'sending', claimed_at = ?
+                    WHERE id IN (
+                        SELECT id FROM event_outbox
+                        WHERE ((status = 'pending'
+                                AND julianday(next_attempt_at) <= julianday(?))
+                               OR (status = 'sending' AND claimed_at != ''
+                                   AND julianday(claimed_at) <= julianday('now', ?)))
+                          {lane_filter}
+                        ORDER BY
+                            CASE delivery_class WHEN 'critical' THEN 0
+                                                WHEN 'normal' THEN 1 ELSE 2 END,
+                            created_at ASC
+                        LIMIT ?
+                    )
+                    RETURNING id, event_id, type, delivery_class, payload_json,
+                              venue, mode, created_at, attempts, next_attempt_at,
+                              last_error, status, webhook_path
+                """, params).fetchall()
+                conn.commit()
+                return [dict(zip(
+                    ["id", "event_id", "type", "delivery_class", "payload_json",
+                     "venue", "mode", "created_at", "attempts", "next_attempt_at",
+                     "last_error", "status", "webhook_path"], row)) for row in rows]
+            except Exception as e:
+                log.warning("claim_pending_outbox_events error: %s", e)
                 return []
 
     def mark_outbox_sent(self, event_id: int) -> bool:
@@ -1273,8 +1325,36 @@ class LocalDB:
 
     def restore_latest_backup(self, backup_dir: str | None = None) -> bool:
         """D4: swap in the newest backup that passes its own integrity_check.
-        Closes live connections first and drops stale -wal/-shm sidecars."""
+
+        I3: takes an exclusive flock on a sidecar lock file and refuses to
+        mutate the DB while another process may be trading on it (advisory:
+        only processes that take the same lock are excluded, but that is the
+        trader's instance lock). The swap is a rename async from the live
+        path, not a copy over a file other processes may have open.
+        Closes live connections first and drops stale -wal/-shm sidecars.
+        """
         dest_dir = backup_dir or self.backup_dir or default_backup_dir()
+        lock_path = self.db_path + ".restore.lock"
+        try:
+            lock_f = open(lock_path, "w")
+        except OSError as e:
+            log.warning("restore refused: cannot open lock %s: %s", lock_path, e)
+            return False
+        try:
+            try:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                log.warning("restore refused: another process holds %s", lock_path)
+                return False
+            return self._restore_latest_backup_locked(dest_dir)
+        finally:
+            try:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            lock_f.close()
+
+    def _restore_latest_backup_locked(self, dest_dir: str) -> bool:
         for name in self.list_backups(dest_dir):
             path = os.path.join(dest_dir, name)
             try:
@@ -1294,7 +1374,19 @@ class LocalDB:
                 except Exception:
                     pass
                 self._local.conn = None
-            shutil.copy2(path, self.db_path)
+            # Rename-aside: never copy over the live file path.
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            aside = f"{self.db_path}.pre-restore-{stamp}"
+            try:
+                os.replace(self.db_path, aside)
+            except OSError as e:
+                log.warning("restore: cannot move live DB aside: %s", e)
+                return False
+            try:
+                os.replace(path, self.db_path)
+            except OSError:
+                # Different filesystem (backup dir elsewhere): fall back to copy.
+                shutil.copy2(path, self.db_path)
             for ext in ("-wal", "-shm"):
                 side = self.db_path + ext
                 if os.path.exists(side):
@@ -1850,16 +1942,19 @@ class LocalDB:
     def prune_control_tables(self, latency_keep_days: int = 7,
                              pending_keep_days: int = 7,
                              inbox_keep_days: int = 7,
-                             stale_pending_hours: int = 24) -> dict:
+                             stale_pending_hours: int = 24,
+                             outbox_keep_days: int = 7) -> dict:
         """Retention for unbounded control tables.
 
         Deletes latency_measurements rows older than latency_keep_days (by
-        created_at) and terminal pending_send rows ('confirmed', 'cancelled',
-        'failed') older than pending_keep_days. Delivered bus_inbox rows older
-        than inbox_keep_days go too. A 'pending' intent older than
-        stale_pending_hours is marked 'failed' rather than deleted: a 15-minute
-        market has long settled, so the intent is dead, but the audit trail
-        stays. 'pending' rows are never deleted — they are live intents.
+        created_at), terminal pending_send rows ('confirmed', 'cancelled',
+        'failed') older than pending_keep_days, delivered bus_inbox rows older
+        than inbox_keep_days, and terminal control_inbox/event_outbox rows
+        (applied/rejected/sent/dead) older than inbox_keep_days. A 'pending'
+        intent older than stale_pending_hours is marked 'failed' rather than
+        deleted: a 15-minute market has long settled, so the intent is dead,
+        but the audit trail stays. 'pending' rows are never deleted — they are
+        live intents.
         """
         conn = self._get_conn()
         with self._lock:
@@ -1881,6 +1976,18 @@ class LocalDB:
                     "AND delivered_at < datetime('now', ?)",
                     (f"-{int(inbox_keep_days)} days",))
                 inbox_deleted = cur.rowcount
+                # I6: terminal controls and delivered outbox rows had no retention.
+                cur = conn.execute(
+                    "DELETE FROM control_inbox "
+                    "WHERE status IN ('applied', 'rejected', 'failed') "
+                    "AND created_at < datetime('now', ?)",
+                    (f"-{int(inbox_keep_days)} days",))
+                control_deleted = cur.rowcount
+                cur = conn.execute(
+                    "DELETE FROM event_outbox WHERE status IN ('sent', 'dead') "
+                    "AND created_at < datetime('now', ?)",
+                    (f"-{int(outbox_keep_days)} days",))
+                outbox_deleted = cur.rowcount
                 cur = conn.execute(
                     "UPDATE pending_send SET status = 'failed', "
                     "venue_status = 'abandoned_stale', "
@@ -1892,11 +1999,14 @@ class LocalDB:
                 return {"latency_deleted": latency_deleted,
                         "pending_deleted": pending_deleted,
                         "inbox_deleted": inbox_deleted,
-                        "pending_abandoned": pending_abandoned}
+                        "pending_abandoned": pending_abandoned,
+                        "control_deleted": control_deleted,
+                        "outbox_deleted": outbox_deleted}
             except Exception as e:
                 log.warning("prune_control_tables error: %s", e)
                 return {"latency_deleted": 0, "pending_deleted": 0,
-                        "inbox_deleted": 0, "pending_abandoned": 0}
+                        "inbox_deleted": 0, "pending_abandoned": 0,
+                        "control_deleted": 0, "outbox_deleted": 0}
 
     def get_latency_stats(self, stage: Optional[str] = None,
                           limit: int = 1000) -> List[Dict[str, Any]]:

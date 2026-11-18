@@ -19,8 +19,9 @@ import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
-BASE_DIR = "/opt/superbot"
+BASE_DIR = Path(__file__).resolve().parents[1]
 
 # name, argv, every_s, offset_s
 JOBS = (
@@ -46,8 +47,8 @@ def run_job(argv: list, timeout: float = TIMEOUT_SECONDS) -> dict:
     """Run one job and parse its JSON stdout. Never raises."""
     try:
         proc = subprocess.run(
-            [sys.executable, *argv], cwd=BASE_DIR, capture_output=True,
-            timeout=timeout, env={**os.environ, "PYTHONPATH": BASE_DIR})
+            [sys.executable, *argv], cwd=str(BASE_DIR), capture_output=True,
+            timeout=timeout, env={**os.environ, "PYTHONPATH": str(BASE_DIR)})
     except Exception as e:
         return {"alert": True, "error": f"{argv[0]} failed to start: {e}"}
     out = proc.stdout.decode(errors="replace").strip()

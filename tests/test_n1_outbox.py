@@ -247,7 +247,7 @@ def test_outbox_delivers_after_n8n_returns(tmp_path):
         assert len(rows) == 2
 
         # Now n8n is up — deliver
-        with patch.object(n8n_client, "N8nClient") as MockClient:
+        with patch.object(n8n_client, "get_client") as MockClient:
             instance = MockClient.return_value
             instance._execute_webhook_signed.return_value = {"ok": True}
             for row in rows:

@@ -39,6 +39,12 @@ from n8n_webhook_auth import NonceStore, sign_body, verify_request
 def _secret(monkeypatch, value="test-secret"):
     monkeypatch.setattr(config, "SUPERBOT_WEBHOOK_SECRET", value)
     monkeypatch.delenv("SUPERBOT_WEBHOOK_SECRET_FILE", raising=False)
+    # B3: clear the nonce store so tests don't hit replay protection
+    try:
+        import n8n_coordination
+        n8n_coordination._clear_nonce_store_for_test()
+    except Exception:
+        pass
 
 
 def test_sign_and_verify_roundtrip(monkeypatch):

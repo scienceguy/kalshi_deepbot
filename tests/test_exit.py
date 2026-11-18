@@ -291,6 +291,38 @@ def test_replay_exit_books_at_exit_key_not_settlement(monkeypatch, tmp_path):
     assert json.loads(qfile.read_text()) == []  # drained
 
 
+def test_manage_exits_confirms_venue_contracts_before_drop(monkeypatch):
+    """K7: _manage_exits confirms venue contracts are zero before dropping position."""
+    client = MagicMock()
+    # Mock sell_position to return a response with fill_count_fp = contracts
+    client.sell_position.return_value = {"order": {"fill_count_fp": 2.0, "status": "executed"}}
+    # Mock get_positions to return empty for first call (venue confirms zero contracts)
+    client.get_positions.return_value = []
+    trader.state.positions["KXBTC15M-1"] = _pos(30)
+    booked = []
+    monkeypatch.setattr(trader, "_exit_quote", lambda c, t: (18, 81, 5.0))
+    monkeypatch.setattr(trader, "_book_exit", lambda *a: booked.append(a))
+    # K7 only runs in live mode (not DRY_RUN)
+    monkeypatch.setattr(trader.config, "DRY_RUN", False)
+    monkeypatch.setattr(trader.config, "EXIT_ENABLED", True)
+
+    # First call: venue says 0 contracts -> position dropped
+    monkeypatch.setattr(trader, "_venue_contracts", lambda c, t, s: 0.0)
+    trader._manage_exits(client)
+    assert "KXBTC15M-1" not in trader.state.positions
+    assert len(booked) == 1
+
+    # Second call: venue says None (unreachable) -> position kept for retry
+    trader.state.positions["KXBTC15M-2"] = _pos(30)
+    booked.clear()
+    monkeypatch.setattr(trader, "_venue_contracts", lambda c, t, s: None)
+    trader._manage_exits(client)
+    # Position should still exist (not dropped)
+    assert "KXBTC15M-2" in trader.state.positions
+    # No exit booked yet
+    assert len(booked) == 0
+
+
 def test_replay_legacy_exit_none_pnl_resolves_from_payload(monkeypatch, tmp_path):
     """A pre-fix queue row with pnl_dollars=None still books from its own exit
     fields, never from the venue settlement (B1)."""
@@ -322,3 +354,35 @@ def test_replay_legacy_exit_none_pnl_resolves_from_payload(monkeypatch, tmp_path
     assert key.startswith("exit:KXBTC15M-1:exit-oid:2:52")
     assert trader.state.session_pnl == pytest.approx(expected, abs=1e-9)
     assert json.loads(qfile.read_text()) == []  # drained
+
+
+def test_manage_exits_confirms_venue_contracts_before_drop(monkeypatch):
+    """K7: _manage_exits confirms venue contracts are zero before dropping position."""
+    client = MagicMock()
+    # Mock sell_position to return a response with fill_count_fp = contracts
+    client.sell_position.return_value = {"order": {"fill_count_fp": 2.0, "status": "executed"}}
+    # Mock get_positions to return empty for first call (venue confirms zero contracts)
+    client.get_positions.return_value = []
+    trader.state.positions["KXBTC15M-1"] = _pos(30)
+    booked = []
+    monkeypatch.setattr(trader, "_exit_quote", lambda c, t: (18, 81, 5.0))
+    monkeypatch.setattr(trader, "_book_exit", lambda *a: booked.append(a))
+    # K7 only runs in live mode (not DRY_RUN)
+    monkeypatch.setattr(trader.config, "DRY_RUN", False)
+    monkeypatch.setattr(trader.config, "EXIT_ENABLED", True)
+
+    # First call: venue says 0 contracts -> position dropped
+    monkeypatch.setattr(trader, "_venue_contracts", lambda c, t, s: 0.0)
+    trader._manage_exits(client)
+    assert "KXBTC15M-1" not in trader.state.positions
+    assert len(booked) == 1
+
+    # Second call: venue says None (unreachable) -> position kept for retry
+    trader.state.positions["KXBTC15M-2"] = _pos(30)
+    booked.clear()
+    monkeypatch.setattr(trader, "_venue_contracts", lambda c, t, s: None)
+    trader._manage_exits(client)
+    # Position should still exist (not dropped)
+    assert "KXBTC15M-2" in trader.state.positions
+    # No exit booked yet
+    assert len(booked) == 0

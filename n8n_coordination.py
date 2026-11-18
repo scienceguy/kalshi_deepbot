@@ -12,6 +12,9 @@ signature over the body when the payload carries the signature material,
 and refuses to run at all when it does not — a webhook that skips the
 verify node must not be able to append to the shared logstream.
 
+B3: a bounded nonce store is kept in a sidecar file so replays across
+handler invocations are caught even though the process is short-lived.
+
 Expected stdin payload (produced by the Verify Signature node):
     {"body": <the message object or raw string>,
      "headers": {"x-superbot-timestamp": ..., "x-superbot-nonce": ...,
@@ -31,8 +34,14 @@ signature material (local dev only; logs a warning).
 import json
 import os
 import sys
+import fcntl
 import agent_identity
 from datetime import datetime, timezone
+from collections import OrderedDict
+from typing import Optional
+from pathlib import Path
+import time
+from collections import OrderedDict
 
 # Add mempalace to path so we can use its logstream CLI via subprocess
 MEMPALACE_HOME = os.environ.get("MEMPALACE_HOME", os.path.expanduser("~/mempalace"))
@@ -48,14 +57,82 @@ def log(msg):
     print(msg, file=sys.stderr)
 
 
+# B3: bounded nonce store persisted to a sidecar file so replays across
+# handler invocations are caught even though the process is short-lived.
+# Mirrors n8n_webhook_auth.NonceStore with file-backed TTL.
+class _NonceStore:
+    def __init__(self, ttl_ms: int = 120_000, max_entries: int = 4096):
+        self._ttl_ms = ttl_ms
+        self._max = max_entries
+        self._path = Path(os.environ.get(
+            "SUPERBOT_NONCE_STORE_FILE",
+            os.path.expanduser("~/.secrets/coordination_nonces.json")))
+        self._seen: "OrderedDict[str, int]" = OrderedDict()
+        self._load()
+
+    def _load(self):
+        try:
+            if self._path.exists():
+                data = json.loads(self._path.read_text())
+                now = int(time.time() * 1000)
+                cutoff = now - self._ttl_ms
+                for k, v in data.items():
+                    if v >= cutoff:
+                        self._seen[k] = v
+        except Exception:
+            pass
+
+    def _save(self):
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._path, "w") as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                json.dump(self._seen, f)
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+
+    def check_and_mark(self, nonce: str, now_ms: Optional[int] = None) -> bool:
+        """True when the nonce is fresh; False if replayed or malformed."""
+        if not nonce or len(nonce) > 256 or any(c not in "0123456789abcdefABCDEF" for c in nonce):
+            return False
+        now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+        cutoff = now_ms - self._ttl_ms
+        while self._seen:
+            oldest_ts = next(iter(self._seen.values()))
+            if oldest_ts >= cutoff:
+                break
+            self._seen.popitem(last=False)
+        if nonce in self._seen:
+            return False
+        self._seen[nonce] = now_ms
+        while len(self._seen) > self._max:
+            self._seen.popitem(last=False)
+        self._save()
+        return True
+
+
+_NONCE_STORE = _NonceStore()
+
+
+def _clear_nonce_store_for_test():
+    """Clear the nonce store and its sidecar file (test helper)."""
+    _NONCE_STORE._seen.clear()
+    try:
+        _NONCE_STORE._path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _verify_payload(payload):
     """Re-verify the signed payload. Returns (ok: bool, reason: str).
 
     Replay protection is the workflow's job ($getWorkflowStaticData store
     in the Verify Signature node) — this handler is spawned per call, so a
-    process-local nonce store would enforce nothing. It checks freshness
-    and authenticity only, with both body canonicalizations the sender
-    and the JS mirror can produce.
+    process-local nonce store would enforce nothing. B3: a sidecar file
+    persists nonces across invocations so replays are caught.
+    It checks freshness and authenticity only, with both body canonicalizations
+    the sender and the JS mirror can produce.
     """
     headers = payload.get("headers")
     low = {}
@@ -71,6 +148,11 @@ def _verify_payload(payload):
         return False, "no signature material in payload"
     if n8n_webhook_auth is None:
         return False, "n8n_webhook_auth unavailable"
+    # B3: nonce check before signature so a flood of unsigned junk cannot
+    # evict valid nonces from the sidecar store.
+    now_ms = int(time.time() * 1000)
+    if not _NONCE_STORE.check_and_mark(nonce, now_ms):
+        return False, "replayed or malformed nonce"
     body = payload.get("body")
     candidates = []
     if isinstance(body, str):

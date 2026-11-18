@@ -23,5 +23,5 @@ ExecStart=/bin/sh /opt/superbot/scripts/n8n_creds_guard.sh
 TimeoutStartSec=300
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/superbot/local_data
+ReadWritePaths=/opt/superbot/local_data %h/.n8n
 PrivateTmp=true
