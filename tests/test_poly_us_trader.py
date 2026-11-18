@@ -1848,3 +1848,91 @@ def test_status_prints_a1_breaker_and_a5_exposure(temp_trader, capsys):
     assert "HALTED" in out
     assert "A5 Exposure by asset" in out
     assert "BTC" in out
+
+
+def test_a3_maker_no_fill_requires_the_no_bid_to_reach_the_price(temp_trader):
+    """A NO resting buy at 0.08 must not fill while the NO bid is above 0.08.
+
+    NO price = 1 - YES bid, so the old `yes_bid >= price` test was true for
+    every favourite-priced NO order and filled it on the first reconcile.
+    """
+    from datetime import datetime, timezone
+    temp_trader.state["cash"] = 34.0
+    temp_trader.state["window_spent"] = 1.0
+    temp_trader.state["resting_orders"] = [{
+        "order_id": "NO-1", "slug": "no-maker", "question": "Q", "side": "no",
+        "price": 0.08, "qty": 5, "cost": 0.40, "state": "resting",
+        "paper_fill_model": "maker",
+        "placed_at": datetime.now(timezone.utc).isoformat(),
+    }]
+    # NO bid = 1 - 0.90 = 0.10 > 0.08 -> still resting.
+    temp_trader.reconcile_paper_maker_orders(
+        {"no-maker": {"book": {"bbo": {"yes_bid": "0.90", "yes_ask": "0.93"}}}})
+    assert temp_trader.state["positions"] == []
+    assert temp_trader.state["resting_orders"][0]["state"] == "resting"
+    # NO bid = 1 - 0.95 = 0.05 <= 0.08 -> filled at the resting price.
+    temp_trader.reconcile_paper_maker_orders(
+        {"no-maker": {"book": {"bbo": {"yes_bid": "0.95", "yes_ask": "0.97"}}}})
+    pos = [p for p in temp_trader.state["positions"] if p.get("slug") == "no-maker"]
+    assert len(pos) == 1
+    assert pos[0]["price"] == 0.08
+    assert pos[0]["fee"] == 0.0
+
+
+def test_cycle_does_not_rotate_a_live_position(temp_trader):
+    """Live positions are held at the venue; a paper rotation would invent cash."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    temp_trader.live_mode = True
+    temp_trader._venue_recon_left = 99
+    temp_trader.state["positions"] = [{
+        "slug": "live-long-dated", "side": "no", "price": 0.99, "qty": 5,
+        "cost": 4.95, "current_price": 0.99, "order_id": "LIVE-1",
+    }]
+    temp_trader.state["cash"] = 50.0
+    market_map = {"live-long-dated": {
+        "slug": "live-long-dated",
+        "endDate": (now + timedelta(days=30)).isoformat(),
+        "outcomePrices": ["0.01", "0.99"],
+    }}
+    book = {"bbo": {"yes_bid": "0.00", "yes_ask": "0.02"}}
+    with patch.object(temp_trader, "scan_markets", return_value=list(market_map.values())), \
+         patch.object(temp_trader, "reconcile_live_orders"), \
+         patch.object(temp_trader, "reconcile_venue_state"), \
+         patch.object(temp_trader.resting_guard, "evaluate"), \
+         patch("poly_us_trader.polymarket_us_client.get_market_book", return_value=book):
+        temp_trader.cycle()
+    assert [p["slug"] for p in temp_trader.state["positions"]] == ["live-long-dated"]
+    assert temp_trader.state["cash"] == 50.0
+
+
+def test_live_reset_is_refused(tmp_path, monkeypatch):
+    """--reset on a live book would discard positions the venue still holds."""
+    import sys as _sys
+    import poly_us_trader
+    monkeypatch.setattr(poly_us_trader, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(poly_us_trader, "POLY_US_LOG_FILE", tmp_path / "live.log")
+    monkeypatch.setattr(poly_us_trader, "LOCK_FILE", tmp_path / ".lock_poly")
+    monkeypatch.setattr(config, "POLY_CONFIRM_LIVE", True)
+    monkeypatch.setattr(_sys, "argv", ["poly_us_trader.py", "--live", "--reset"])
+    with pytest.raises(SystemExit) as exc:
+        poly_us_trader.main()
+    assert exc.value.code == 2
+
+
+def test_settlement_appends_a_ledger_event(temp_trader):
+    """The JSONL ledger is the audit trail; settlement must write its record."""
+    records = []
+    temp_trader.state["positions"] = [{
+        "slug": "test-ledger-settle", "side": "yes", "price": 0.95, "qty": 5,
+        "cost": 4.75, "order_id": "ORD-9",
+    }]
+    temp_trader.state["cash"] = 95.25
+    with patch.object(temp_trader, "_append_ledger", side_effect=records.append), \
+         patch("poly_us_trader.polymarket_us_client.get_market_settlement",
+               return_value={"slug": "test-ledger-settle", "settlement": 1.0}):
+        temp_trader.check_settlements({"test-ledger-settle": {"closed": True}})
+    settlements = [r for r in records if r.get("event") == "settlement"]
+    assert len(settlements) == 1
+    assert settlements[0]["settle_key"].startswith("poly_settle:test-ledger-settle:ORD-9")
+    assert settlements[0]["payout"] == 5.0

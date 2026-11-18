@@ -1323,8 +1323,8 @@ class PolyUSPaperTrader:
             if side == "yes" and yes_ask is not None and yes_ask <= resting_price:
                 # Book has traded down to our buy price or below.
                 filled = True
-            elif side == "no" and yes_bid is not None and yes_bid >= resting_price:
-                # Book has traded up to our sell price or above.
+            elif side == "no" and yes_bid is not None and (1.0 - yes_bid) <= resting_price:
+                # NO price = 1 - YES bid; fill when the NO bid reaches our NO price.
                 filled = True
             if filled:
                 qty = int(o.get("qty", 0) or 0)
@@ -1620,7 +1620,7 @@ class PolyUSPaperTrader:
             pnl = round(total_payout - cost, 4)
 
             # Idempotency key unique per position settlement.
-            settle_key = f"poly_settle:{slug}:{pos.get('order_id') or slug}:{pos.get('qty')}:{pos.get('entry_price')}"
+            settle_key = f"poly_settle:{slug}:{pos.get('order_id') or pos.get('opened_at') or slug}:{pos.get('qty')}"
 
             # Post-settlement state — only adopted if the ledger write is new.
             post_state = dict(self.state)
@@ -1662,6 +1662,18 @@ class PolyUSPaperTrader:
                     self.cal_monitor.reconcile_settlement(slug, outcome)
                 except Exception as e:
                     log.warning("Settlement calibration reconcile failed for %s: %s", slug, e)
+                self._append_ledger({
+                    "event": "settlement",
+                    "settle_key": settle_key,
+                    "slug": slug,
+                    "side": pos["side"],
+                    "qty": pos["qty"],
+                    "settlement": settlement,
+                    "payout": total_payout,
+                    "pnl": pnl,
+                    "cash_after": self.state["cash"],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
                 log.info(
                     "🏆 SETTLED %s %s: outcome=%.2f payout=$%.2f cost=$%.2f PnL=$%+.2f | Cash=$%.2f",
                     slug, pos["side"].upper(), payout_per_contract, total_payout, cost, pnl, self.state["cash"]
@@ -2447,6 +2459,9 @@ class PolyUSPaperTrader:
                                     risk_halted=bool(self.state.get("ruin_halted")),
                                     positions=self.state.get("positions") or {},
                                     source="poly_us_trader")
+            # Retention is triggered by latency writes, and poly never writes
+            # one — without this call a poly-only host keeps every control row.
+            get_local_db().maybe_prune()
         except Exception as e:
             log.warning("control drain failed: %s", e)
         markets = self.scan_markets()
@@ -2540,7 +2555,9 @@ class PolyUSPaperTrader:
                 h_left = (end_dt - now).total_seconds() / 3600.0
                 if h_left > getattr(self, "max_hours_to_expiry", 24.0):
                     is_stale_long_dated = True
-            if is_stale_long_dated:
+            # paper-only rotation: live positions must be closed at the venue,
+            # never booked as a phantom exit (the venue still holds them).
+            if is_stale_long_dated and not self.live_mode:
                 # Exit at the venue bid with the same fee model — never at the
                 # displayed mark (R5). Selling NO means its bid = 1 - YES ask.
                 yes_bid, yes_ask = _bbo_for_slug(slug)
@@ -3049,6 +3066,11 @@ def main():
     if args.live and not getattr(config, "POLY_CONFIRM_LIVE", False):
         log.error("Polymarket US paper mode --live requires POLY_CONFIRM_LIVE=true; refusing.")
         parser.print_help()
+        sys.exit(2)
+
+    # A live reset discards the book for positions the venue still holds.
+    if args.live and args.reset is not None:
+        log.error("--reset is paper-only; refusing to reset a live book.")
         sys.exit(2)
 
     init_cash = args.reset if args.reset is not None else 35.0

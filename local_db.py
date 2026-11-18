@@ -757,14 +757,20 @@ class LocalDB:
                             idempotency_key, e)
                 return None
 
-    def get_total_realized_pnl(self) -> float:
-        """Sum of all applied realized P&L (net of fees)."""
+    def get_total_realized_pnl(self, venue: str = "") -> float:
+        """Sum of applied realized P&L (net of fees) for one venue.
+
+        Defaults to the Kalshi rows (venue ''/NULL). Both traders share this
+        DB, so an unfiltered sum would blend Poly settlements into Kalshi's
+        session P&L.
+        """
         conn = self._get_conn()
         with self._lock:
             try:
                 row = conn.execute(
                     "SELECT COALESCE(SUM(realized_pnl_dollars), 0.0) "
-                    "FROM pnl_ledger"
+                    "FROM pnl_ledger WHERE COALESCE(venue, '') = ?",
+                    (venue,),
                 ).fetchone()
                 return float(row[0]) if row else 0.0
             except Exception as e:
@@ -1790,13 +1796,13 @@ class LocalDB:
                     "VALUES (?, ?, ?, ?, ?)",
                     (stage, duration_ms, event_id, venue, mode))
                 conn.commit()
-                self._maybe_prune()
+                self.maybe_prune()
                 return True
             except Exception as e:
                 log.warning("record_latency(%s) error: %s", stage, e)
                 return False
 
-    def _maybe_prune(self) -> None:
+    def maybe_prune(self) -> None:
         """Hourly retention prune; never raises into the caller."""
         now = time.time()
         if now - getattr(self, "_last_prune_at", 0.0) < _PRUNE_EVERY_S:

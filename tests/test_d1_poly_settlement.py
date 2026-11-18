@@ -100,3 +100,16 @@ def test_apply_settlement_pnl_stores_venue_mode_origin(tmp_path):
     assert row is not None
     assert row["venue"] == "kalshi"
     assert row["mode"] == "dry"
+
+
+def test_get_total_realized_pnl_filters_by_venue(tmp_path):
+    """Both traders share one DB: Kalshi's total must not include Poly's rows."""
+    db = _db(tmp_path)
+    db.apply_settlement_pnl("kalshi-1", "KXBTC15M-X", 1.25, venue="", mode="dry")
+    db.apply_poly_settlement(
+        "poly_settle:slug-b:order-2:1", "slug-b", 4.00, {"cash": 35.0},
+        venue="polymarket_us", mode="dry",
+    )
+    # Default (Kalshi) view excludes Poly.
+    assert db.get_total_realized_pnl() == 1.25
+    assert db.get_total_realized_pnl(venue="polymarket_us") == 4.00
