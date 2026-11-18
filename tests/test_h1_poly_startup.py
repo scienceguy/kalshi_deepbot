@@ -78,3 +78,67 @@ def test_entry_refuses_after_restart_with_persisted_pause(control_db,
     opp = {"slug": "test-crypto-favorite", "question": "Q",
            "side": "yes", "price": 0.95}
     assert trader.execute_paper_trade(opp) is False
+
+
+def test_main_applies_persisted_pause_during_startup(control_db, tmp_path,
+                                                     monkeypatch):
+    """Regression guard for the H1 call site in main().
+
+    Every other test in this file calls _load_persisted_pause() directly, so
+    deleting the call from main() (the actual regression) broke nothing.
+    This test drives main() itself with everything downstream of the H1 step
+    stubbed, and asserts the pause is already in memory when startup stops.
+    """
+    pytest.importorskip("polymarket_us")
+    import sys
+
+    import binance_feed
+    import local_db
+    import poly_us_trader
+
+    control.STATE.pause_entries = False  # what a fresh process looks like
+    control_db.set_control_state("pause_entries",
+                                 {"paused": True, "paused_by": "operator",
+                                  "reason": "restart drill"})
+    monkeypatch.setattr(local_db, "get_local_db", lambda *a, **k: control_db)
+
+    # Stub every filesystem / process / network touch in main() up to the
+    # H1 step so entering it costs nothing and stays offline:
+    #   DATA_DIR.mkdir + POLY_US_LOG_FILE -> tmp_path (logging.basicConfig is
+    #   already a no-op under pytest, but keep the path harmless anyway),
+    #   acquire_instance_lock -> no real flock/fd,
+    #   PolyUSPaperTrader -> fake (the real ctor reads/writes state files and
+    #   hits the venue gateway health check).
+    monkeypatch.setattr(poly_us_trader, "DATA_DIR", tmp_path / "poly_us_data")
+    monkeypatch.setattr(poly_us_trader, "POLY_US_LOG_FILE",
+                        tmp_path / "poly_us_data" / "poly_us_dry.log")
+    monkeypatch.setattr(poly_us_trader, "LOCK_FILE",
+                        tmp_path / "poly_us_data" / ".lock_poly")
+    monkeypatch.setattr(poly_us_trader, "acquire_instance_lock",
+                        lambda *a, **k: None)
+
+    class _FakeTrader:
+        def __init__(self, *a, **k):
+            self.state = {"start_balance": 35.0}
+
+    monkeypatch.setattr(poly_us_trader, "PolyUSPaperTrader", _FakeTrader)
+    monkeypatch.setattr(sys, "argv", ["poly_us_trader.py"])
+
+    # The first statement after _load_persisted_pause() in main() is the
+    # spot-stream block, wrapped in `except Exception`. A BaseException
+    # sentinel therefore escapes that block untouched and stops main() right
+    # there — before the prewarm, MemPalace bridge/bus and the cycle loop,
+    # none of which may run in this test. (An Exception subclass would be
+    # swallowed by that except and main() would march on into real startup.)
+    class _StartupSentinel(BaseException):
+        pass
+
+    def _boom(*a, **k):
+        raise _StartupSentinel()
+
+    monkeypatch.setattr(binance_feed, "start_ws_streams", _boom)
+
+    with pytest.raises(_StartupSentinel):
+        poly_us_trader.main()
+
+    assert control.STATE.pause_entries is True

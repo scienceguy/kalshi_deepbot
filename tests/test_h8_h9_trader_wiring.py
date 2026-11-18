@@ -99,8 +99,16 @@ def _isolated(monkeypatch, tmp_path, db):
     yield
 
 
-def _placement_cycle(monkeypatch):
-    """Drive one cycle that places (and in dry-run, fills) one YES order."""
+_SUCCESS_RESP = {"order": {"order_id": "sb_test_order",
+                            "status": "resting"}}
+
+
+def _placement_cycle(monkeypatch, place_resp=_SUCCESS_RESP):
+    """Drive one cycle that places (and in dry-run, fills) one YES order.
+
+    place_resp is what state._place_order returns; the default is a resting
+    order. Pass None to drive the unknown-outcome branch.
+    """
     mkt = _market()
     sig = TradeSignal("YES", "yes", 93, 1.0, 1.0, "test", mkt, win_prob=0.99)
     monkeypatch.setattr(trader.se, "evaluate",
@@ -112,11 +120,61 @@ def _placement_cycle(monkeypatch):
                         lambda *a, **k: types.SimpleNamespace(allowed=True))
     monkeypatch.setattr(trader, "find_active_markets", lambda c: [mkt])
     monkeypatch.setattr(trader.state, "_place_order",
-                        lambda client, sig, coid: {
-                            "order": {"order_id": "sb_test_order",
-                                      "status": "resting"},
-                        })
+                        lambda client, sig, coid: place_resp)
     trader.cycle(_client())
+
+
+def test_cycle_unknown_placement_outcome_leaves_intent_pending(monkeypatch, db):
+    """_place_order() -> None means the placement outcome is unknown (a clean
+    venue miss and a timed-out POST both land there). The H9 write-ahead
+    intent must be left 'pending' — NOT cancelled or failed — so a crash now
+    still leaves a row for startup reconcile; prune marks it abandoned after
+    24h."""
+    _placement_cycle(monkeypatch, place_resp=None)
+
+    rows = _rows(db.db_path,
+                 "SELECT ticker, side, status, venue_status, confirmed_at "
+                 "FROM pending_send")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["ticker"] == TICKER
+    assert row["side"] == "yes"
+    assert row["status"] == "pending"  # NOT 'cancelled'/'failed'
+    assert row["venue_status"] == ""   # untouched default
+    assert row["confirmed_at"] == ""   # untouched default
+
+
+def test_prune_marks_stale_pending_intent_abandoned_row_kept(monkeypatch, db):
+    """A 'pending' intent older than 24h is flipped by prune_control_tables()
+    to status='failed' / venue_status='abandoned_stale' and the row STAYS
+    (audit trail, never deleted); a 1-hour-old pending row is untouched."""
+    db.record_order_intent(order_id="coid-stale", ticker=TICKER, side="yes",
+                           price_cents=93, contracts=1.0, dollar_risk=0.93,
+                           venue="kalshi", mode="dry")
+    db.record_order_intent(order_id="coid-fresh", ticker=TICKER, side="no",
+                           price_cents=7, contracts=1.0, dollar_risk=0.07,
+                           venue="kalshi", mode="dry")
+    conn = db._get_conn()
+    with db._lock:
+        conn.execute("UPDATE pending_send SET created_at = "
+                     "datetime('now', '-25 hours') WHERE order_id = 'coid-stale'")
+        conn.execute("UPDATE pending_send SET created_at = "
+                     "datetime('now', '-1 hour') WHERE order_id = 'coid-fresh'")
+        conn.commit()
+
+    out = db.prune_control_tables()
+
+    assert out["pending_abandoned"] == 1
+    assert out["pending_deleted"] == 0  # the abandoned row is NOT deleted
+    rows = _rows(db.db_path,
+                 "SELECT order_id, status, venue_status FROM pending_send "
+                 "WHERE order_id IN ('coid-stale', 'coid-fresh')")
+    by_id = {r["order_id"]: r for r in rows}
+    assert set(by_id) == {"coid-stale", "coid-fresh"}  # row still exists
+    assert by_id["coid-stale"]["status"] == "failed"
+    assert by_id["coid-stale"]["venue_status"] == "abandoned_stale"
+    assert by_id["coid-fresh"]["status"] == "pending"   # 1h old: untouched
+    assert by_id["coid-fresh"]["venue_status"] == ""
 
 
 def test_cycle_placing_order_records_and_confirms_intent(monkeypatch, db):
