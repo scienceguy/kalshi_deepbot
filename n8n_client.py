@@ -783,13 +783,7 @@ def n8n_health_check() -> bool:
         # If we get here without exception, the webhook succeeded
         return True
     except Exception:
-        # Fallback: simple GET to n8n root if webhook fails
-        try:
-            client = get_client()
-            resp = client.session.get(f"{client.base_url}/", timeout=5)
-            return resp.status_code < 500
-        except Exception:
-            return False
+        return False
 
 
 def _execute_command_enabled() -> bool:

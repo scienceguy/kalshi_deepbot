@@ -525,8 +525,8 @@ class RiskManager:
 
             # Liquidity/slippage protection (Pillar B)
             if market:
-                # reviewed: side must be "yes" or "no" — no fallback guess from ticker
-                assert side in ("yes", "no"), f"risk.check called with invalid side={side!r}"
+                if side not in ("yes", "no"):  # reviewed: explicit check replaces assert for production safety
+                    return False, f"risk.check called with invalid side={side!r}"
                 liq_ok, liq_reason = self.check_liquidity(market, side)
                 if not liq_ok:
                     return False, f"liquidity check failed: {liq_reason}"

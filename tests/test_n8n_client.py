@@ -189,22 +189,20 @@ class TestN8nHealthCheck:
     """Tests for n8n_health_check function."""
 
     def test_n8n_health_check_returns_true_on_success(self, monkeypatch):
-        """n8n_health_check returns True when GET succeeds."""
+        """n8n_health_check returns True when webhook succeeds."""
         from n8n_client import n8n_health_check, get_client
 
-        # Get the global client instance and mock its session
+        # Get the global client instance and mock its execute_webhook
         client = get_client()
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        with patch.object(client.session, "get", return_value=mock_resp):
+        with patch.object(client, "execute_webhook", return_value={}):
             assert n8n_health_check() is True
 
     def test_n8n_health_check_returns_false_on_error(self, monkeypatch):
-        """n8n_health_check returns False when GET raises."""
+        """n8n_health_check returns False when webhook raises."""
         from n8n_client import n8n_health_check, get_client
 
         client = get_client()
-        with patch.object(client.session, "get", side_effect=Exception("Connection error")):
+        with patch.object(client, "execute_webhook", side_effect=Exception("Connection error")):
             assert n8n_health_check() is False
 
 def test_load_api_key_parses_kv_file(monkeypatch, tmp_path):

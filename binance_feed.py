@@ -122,6 +122,12 @@ def _ws_set(symbol: str, price: float) -> None:
         base = _base_asset(symbol)
         if base and base != symbol.upper():
             _ws_prices[base] = (price, now)
+        # Periodic cleanup: evict entries stale > 2x threshold to prevent unbounded growth
+        stale_cutoff = now - _WS_STALE_SECONDS * 2
+        # Build filtered dict first, then swap
+        fresh = {k: v for k, v in _ws_prices.items() if v[1] >= stale_cutoff}
+        _ws_prices.clear()
+        _ws_prices.update(fresh)
 
 
 def _binance_ws_loop(symbols: list[str]) -> None:

@@ -3276,6 +3276,9 @@ def main():
     # Load bid history for stability gate (persists across restarts)
     se._load_bid_hist()
 
+    # Validate config at runtime (moved from import-time to avoid circular import with fees.py)
+    config.validate_all()
+
     # Runtime guard: if .env has DRY_RUN=false but the user didn't pass --live,
     # refuse to start. This prevents a silent env flip from enabling live trading.
     if not config.DRY_RUN and not args.live:

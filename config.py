@@ -997,17 +997,5 @@ def validate_all(silent: bool = False):
         log.info("All config validations passed")
 
 
-# Auto-validate on import (NH2) — completely silent to avoid import-time side effects
-# Temporarily suppress logging during import validation
-import logging
-_log_level = log.level
-log.setLevel(logging.ERROR)
-try:
-    validate_all(silent=True)
-except ValueError as e:
-    log.error("Config validation failed at import: %s", e)
-    # Don't raise — allow graceful handling in trader.py
-except Exception as e:
-    log.warning("Config validation error at import: %s", e)
-finally:
-    log.setLevel(_log_level)
+# validate_all() is now called at runtime from trader.main() to avoid
+# circular import risk with fees.py (S16 fix)
