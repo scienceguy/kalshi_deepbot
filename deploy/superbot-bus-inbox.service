@@ -1,0 +1,38 @@
+# H11: durable bus inbox receiver for the coding agent.
+#
+# Install (operator action; NOT installed by deploy.py):
+#   sudo install -m 644 deploy/superbot-bus-inbox.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now superbot-bus-inbox.service
+#
+# python -m agent_bus runs the coding-agent BusReceiver with the H11
+# bus_inbox handler: every verified envelope is persisted to bus_inbox in
+# local_data so messages survive the coding agent being down. The inbox is
+# drained with scripts/bus_inbox.py. Writes only to local_data (bus_inbox).
+
+[Unit]
+Description=SuperBot bus inbox receiver (coding agent, durable H11 inbox)
+After=network-online.target
+Wants=network-online.target
+
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+Group=superbot
+WorkingDirectory=/opt/superbot
+Environment=TMPDIR=/opt/superbot/local_data
+ExecStart=/opt/superbot/.venv/bin/python -m agent_bus
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/superbot/local_data
+PrivateTmp=true
+LimitNOFILE=65536
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

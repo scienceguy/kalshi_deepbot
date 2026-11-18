@@ -8,14 +8,14 @@ Design (spec AGENT_TASKS_v7.md C1):
 - Localhost-only HTTP receiver (``127.0.0.1``) running in a thread inside
   each trader. The n8n coordination webhook appends to the logstream AND
   POSTs the same envelope to the target's receiver.
-- Envelope: ``message_id``, ``correlation_id``, ``from_agent``,
+- Envelope: ``message_id`` (required), ``correlation_id``, ``from_agent``,
   ``to_agent``, ``type``, ``topic``, ``ttl_s``, ``body``, ``ts_ms``,
   ``nonce``, ``signature``. Signed with HMAC-SHA256 via
   ``n8n_webhook_auth`` over the canonical JSON of the envelope minus the
   signature — same key, same 60-second window as the webhook path. No new
   secret, no new crypto.
-- Receiver order: ``to_agent`` check → HMAC verify → TTL drop (goes to
-  ``dead_letters``) → de-dup on ``message_id`` (processed once) → handler
+- Receiver order: ``message_id`` required → ``to_agent`` check → HMAC verify → TTL drop (goes to
+  ``dead_letters``) → de-dup on ``message_id`` (60s TTL, processed once) → handler
   → ``event.ack`` through the bridge when the envelope carries an
   ``event_id``. Every failure path is non-raising: the bus never breaks
   the trading loop.
@@ -34,6 +34,7 @@ import secrets
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import request as _urlrequest
@@ -59,6 +60,9 @@ MAX_SEEN = 4096
 MAX_RECEIVED = 64
 
 SIGNATURE_WINDOW_MS = n8n_webhook_auth.SIGNATURE_WINDOW_MS
+
+# Replay window for message_id de-dup on the loopback bus (ms).
+MESSAGE_ID_TTL_MS = 60_000
 
 
 def canonical_envelope(env: dict) -> str:
@@ -190,15 +194,43 @@ class BusReceiver:
         self.identity = str(identity)
         self.handler = handler          # callable(env) -> None; must be non-raising
         self.bridge = bridge           # optional; ack(event_id) when set
-        self.seen = {}                 # message_id -> True, FIFO-capped at MAX_SEEN
+        self.seen = OrderedDict()        # message_id -> seen ms, TTL + FIFO-capped
+        self._seen_lock = threading.Lock()
         self.dead_letters = []         # expired envelopes, capped
         self.rejected = []             # verify failures, capped
         self.received = []             # last MAX_RECEIVED processed envelopes
         self.now_ms = lambda: int(time.time() * 1000)
 
+    def _record_seen(self, mid, now_ms) -> bool:
+        """Mark ``mid`` as processed. Returns False on replay (already seen).
+
+        Bounded: entries expire after ``MESSAGE_ID_TTL_MS`` and the store
+        caps at ``MAX_SEEN``. Thread-safe: the server serves requests from
+        a thread, so concurrent receives must not corrupt the cache.
+        """
+        cutoff = now_ms - MESSAGE_ID_TTL_MS
+        with self._seen_lock:
+            while self.seen:
+                oldest_ts = next(iter(self.seen.values()))
+                if oldest_ts >= cutoff:
+                    break
+                self.seen.popitem(last=False)
+            if mid in self.seen:
+                return False
+            self.seen[mid] = now_ms
+            while len(self.seen) > MAX_SEEN:
+                self.seen.popitem(last=False)
+            return True
+
     def receive(self, env) -> dict:
         if not isinstance(env, dict):
             return {"ok": False, "reason": "envelope must be a JSON object"}
+
+        mid = env.get("message_id")
+        if not mid or not isinstance(mid, str):
+            return {"ok": False, "reason": "missing or invalid message_id"}
+        if len(mid) > 512:
+            return {"ok": False, "reason": "message_id too long"}
 
         to = env.get("to_agent")
         if to not in (self.identity, "*"):
@@ -209,7 +241,7 @@ class BusReceiver:
             env.get("ts_ms"), env.get("nonce"), canonical_envelope(env),
             env.get("signature"), now_ms=now)
         if not ok:
-            self.rejected.append({"message_id": env.get("message_id"), "reason": reason})
+            self.rejected.append({"message_id": mid, "reason": reason})
             _trim(self.rejected, MAX_REJECTED)
             return {"ok": False, "reason": f"verify: {reason}"}
 
@@ -223,17 +255,14 @@ class BusReceiver:
             _trim(self.dead_letters, MAX_DEAD_LETTERS)
             return {"ok": False, "reason": "expired", "dead_letter": True}
 
-        mid = env.get("message_id")
-        if mid and mid in self.seen:
+        if not self._record_seen(mid, now):
+            log.debug("bus replay: message_id=%s dropped (already processed)", mid)
             return {"ok": True, "duplicate": True, "message_id": mid}
-        if mid:
-            self.seen[mid] = True
-            while len(self.seen) > MAX_SEEN:
-                self.seen.pop(next(iter(self.seen)))
 
+        result = None
         try:
-            self.handler(env)
-        except Exception as e:  # log-only doctrine: never raise into the trader
+            result = self.handler(env)
+        except Exception as e:  # best-effort doctrine: never raise into the trader
             log.warning("bus handler failed (logged, not fatal): %s", e)
 
         event_id = env.get("event_id")
@@ -245,7 +274,12 @@ class BusReceiver:
 
         self.received.append(env)
         _trim(self.received, MAX_RECEIVED)
-        return {"ok": True, "message_id": mid}
+        ack = {"ok": True, "message_id": mid}
+        # H11: surface a persistence failure so the sender can re-push; the
+        # replay guard above has already marked this message_id seen.
+        if isinstance(result, dict) and result.get("persisted") is False:
+            ack["persisted"] = False
+        return ack
 
     def stats(self) -> dict:
         return {
@@ -272,6 +306,8 @@ class _BusHTTPHandler(BaseHTTPRequestHandler):
             env = json.loads(raw)
         except ValueError:
             return self._json(400, {"ok": False, "reason": "invalid JSON"})
+        if not isinstance(env, dict) or not str(env.get("message_id") or "").strip():
+            return self._json(400, {"ok": False, "reason": "missing message_id"})
         return self._json(200, self.server.receiver.receive(env))
 
     def do_GET(self):  # noqa: N802
@@ -359,10 +395,29 @@ def post_envelope(env: dict, *, port=None, timeout: float = 1.0,
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def _log_only_handler(env: dict) -> None:
+def _log_only_handler(env: dict) -> dict:
+    # H11: persist the verified envelope to bus_inbox so it survives the
+    # coding agent being down. Best-effort: never raise (bus contract), but a
+    # persistence failure is reported back to the sender so it can retry —
+    # the message is already counted as seen by the replay guard.
+    persisted = False
+    try:
+        from local_db import get_local_db
+        body = env.get("body", "")
+        if not isinstance(body, str):
+            body = json.dumps(body)
+        get_local_db().enqueue_bus_message(
+            str(env.get("message_id", "")), str(env.get("type", "")),
+            str(env.get("from_agent", "")), str(env.get("correlation_id", "")),
+            body)
+        persisted = True
+    except Exception as e:
+        log.error("bus_inbox enqueue FAILED (message_id=%s) — message accepted "
+                  "but NOT durable: %s", env.get("message_id", ""), e)
     log.info("BUS message id=%s from=%s type=%s topic=%s body=%.200s",
              env.get("message_id", ""), env.get("from_agent", ""),
              env.get("type", ""), env.get("topic", ""), str(env.get("body", "")))
+    return {"persisted": persisted}
 
 
 if __name__ == "__main__":  # coding-agent tooling: python -m agent_bus
