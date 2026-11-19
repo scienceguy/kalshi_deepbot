@@ -170,11 +170,17 @@ PM_REQUEST_BUDGET_PER_CYCLE = _env_int("PM_REQUEST_BUDGET_PER_CYCLE", 40)
 # streak cannot permanently stall the engine.
 # Minimum settled rows before the rolling-Brier check is allowed to trip.
 CAL_BRIER_MIN_SAMPLES = _env_int("CAL_BRIER_MIN_SAMPLES", 20)
+# Brier threshold that trips the halt (only when n >= CAL_BRIER_MIN_SAMPLES).
+CAL_BRIER_HALT_THRESHOLD = _env_float("CAL_BRIER_HALT_THRESHOLD", 0.150)
+# Trailing window size for win-rate check.
+CAL_TRAILING_WIN_N = _env_int("CAL_TRAILING_WIN_N", 20)
 # Minimum settled trades before the trailing win-rate check is allowed to trip.
-CAL_WIN_RATE_MIN_SAMPLES = _env_int("CAL_WIN_RATE_MIN_SAMPLES", 30)
-# Wilson lower-bound confidence floor for the trailing win-rate check (0.95 =
-# 95% confidence that the true win rate is at least this high).
-CAL_WIN_RATE_FLOOR = _env_float("CAL_WIN_RATE_FLOOR", 0.95)
+CAL_WR_MIN_SAMPLES = _env_int("CAL_WR_MIN_SAMPLES", 30)
+# Wilson lower-bound confidence floor for the trailing win-rate check (0.85 =
+# 85% confidence that the true win rate is at least this high).
+CAL_WR_FLOOR = _env_float("CAL_WR_FLOOR", 0.85)
+# Wilson z-score for confidence level (1.645 = 90%, 1.96 = 95%).
+CAL_WILSON_Z = _env_float("CAL_WILSON_Z", 1.645)
 # How long a calibration halt lasts before expiring (minutes). After expiry,
 # entries resume at CAL_PROBE_SIZE_FRACTION size.
 CAL_HALT_MINUTES = _env_int("CAL_HALT_MINUTES", 240)
@@ -182,6 +188,10 @@ CAL_HALT_MINUTES = _env_int("CAL_HALT_MINUTES", 240)
 CAL_PROBE_SIZE_FRACTION = _env_float("CAL_PROBE_SIZE_FRACTION", 0.5)
 # Number of new settled probe outcomes needed to fully clear a halted state.
 CAL_PROBE_OUTCOMES_N = _env_int("CAL_PROBE_OUTCOMES_N", 5)
+
+# Backward-compatibility aliases (old names used by existing code)
+CAL_WIN_RATE_MIN_SAMPLES = CAL_WR_MIN_SAMPLES
+CAL_WIN_RATE_FLOOR = CAL_WR_FLOOR
 
 # Correlated exposure caps (A5): entries are capped by count (max_open_positions)
 # and a 3% per-window budget, but not by underlying asset or direction. BTC/ETH/SOL

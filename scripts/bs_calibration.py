@@ -37,6 +37,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from statistics import NormalDist
 
+import config
+
 log = logging.getLogger(__name__)
 
 _N = NormalDist()
@@ -390,36 +392,32 @@ class RollingCalibrationMonitor(CalibrationVerifier):
     Extends CalibrationVerifier with:
       * running Brier score over the last ROLLING_BRIER_N (50) settled trades
       * price-band (92c-99c) calibration: mean model-implied p vs observed win rate
-      * trailing TRAILING_WIN_N (10) trade win rate
+      * trailing TRAILING_WIN_N trade win rate
       * circuit breaker: halt new entries if rolling Brier > BRIER_HALT_THRESHOLD
-        (0.150) or trailing 10 win rate < WIN_RATE_HALT_THRESHOLD (95%)
+        or trailing win rate Wilson LB < WR_FLOOR
 
-    Persists to the same JSONL ledger as CalibrationVerifier, so calibration
-    survives restarts. Call sites mirror CalibrationVerifier:
-      1. record_entry(...) before placing an order
-      2. reconcile_settlement(slug, outcome) at settlement
-      3. snapshot_rolling() + circuit_breaker() once per cycle
+    All thresholds are configurable via config.py (env vars CAL_*).
+    Persists to the same JSONL ledger as CalibrationVerifier.
     """
 
+    # Fixed constants (not tuned via env)
     ROLLING_BRIER_N = 50
-    TRAILING_WIN_N = 10
-    BRIER_HALT_THRESHOLD = 0.150
-    WIN_RATE_HALT_THRESHOLD = 0.95
     PRICE_BAND_MIN = 0.92
     PRICE_BAND_MAX = 0.99
 
-    # ── A1: time-bounded halt + probe + shadow calibration ──
-    # Halt duration in minutes before entries resume at probe size.
-    CAL_HALT_MINUTES = 240
-    # Fraction of normal position size while probing after a halt expires.
-    CAL_PROBE_SIZE_FRACTION = 0.5
-    # Number of new settled probe outcomes needed to fully clear a halted state.
-    CAL_PROBE_OUTCOMES_N = 5
-    # Wilson z-score for 95% confidence lower bound.
-    WILSON_Z = 1.959963984540054
-
     def __init__(self, ledger_path="local_data/bs_calibration_ledger.jsonl"):
+        import config
         super().__init__(ledger_path)
+        # Configurable thresholds (read once at init)
+        self.TRAILING_WIN_N = getattr(config, "CAL_TRAILING_WIN_N", 20)
+        self.BRIER_HALT_THRESHOLD = getattr(config, "CAL_BRIER_HALT_THRESHOLD", 0.150)
+        self.WR_FLOOR = getattr(config, "CAL_WR_FLOOR", 0.85)
+        self.WR_MIN_SAMPLES = getattr(config, "CAL_WR_MIN_SAMPLES", 30)
+        self.CAL_HALT_MINUTES = getattr(config, "CAL_HALT_MINUTES", 240)
+        self.CAL_PROBE_SIZE_FRACTION = getattr(config, "CAL_PROBE_SIZE_FRACTION", 0.5)
+        self.CAL_PROBE_OUTCOMES_N = getattr(config, "CAL_PROBE_OUTCOMES_N", 5)
+        self.WILSON_Z = getattr(config, "CAL_WILSON_Z", 1.645)
+
         self.brier_history = []  # list of (ts, brier) for drift detection
         # Halt state (persisted via ledger entries of type "halt_event").
         self.halt_started_at = None   # epoch seconds when halt began
@@ -483,7 +481,7 @@ class RollingCalibrationMonitor(CalibrationVerifier):
         n = len(rows)
         brier = brier_score(probs, outcomes)
 
-        # Trailing 10-trade win rate.
+        # Trailing win rate (configurable window size).
         trailing = rows[-self.TRAILING_WIN_N:]
         trailing_wr = (sum(r["win"] for r in trailing) / len(trailing)) if trailing else None
 
@@ -516,34 +514,38 @@ class RollingCalibrationMonitor(CalibrationVerifier):
             if len(self.brier_history) > 200:
                 self.brier_history = self.brier_history[-200:]
 
+        # Use configurable trailing window size in return keys.
+        trailing_key = f"trailing_{self.TRAILING_WIN_N}_n"
+        trailing_wr_key = f"trailing_{self.TRAILING_WIN_N}_win_rate"
+
         return {
             "n": n,
             "rolling_brier": round(brier, 6) if brier is not None else None,
             "brier_drift": round(drift, 6) if drift is not None else None,
             "ece": ece,
-            "trailing_10_n": len(trailing),
-            "trailing_10_win_rate": round(trailing_wr, 4) if trailing_wr is not None else None,
+            trailing_key: len(trailing),
+            trailing_wr_key: round(trailing_wr, 4) if trailing_wr is not None else None,
             "price_band_92_99c": band,
             "overall_win_rate": round(sum(outcomes) / n, 4),
             "mean_predicted": round(sum(probs) / n, 4),
             "open_positions": len(self.entries),
         }
 
-    def circuit_breaker(self, brier_min_samples=20, wr_min_samples=30,
-                        wr_floor=0.95, halt_minutes=240,
-                        probe_size_fraction=0.5, probe_outcomes_n=5):
+    def circuit_breaker(self):
         """
         Automated halt decision for new entries (A1).
 
         Returns (halt: bool, reason: str, probe: bool).
         Halts when:
-          * rolling Brier > BRIER_HALT_THRESHOLD (only with >= brier_min_samples rows), OR
-          * Wilson lower bound of trailing win rate < wr_floor
-            (only with >= wr_min_samples trades).
+          * rolling Brier > BRIER_HALT_THRESHOLD (only with >= CAL_BRIER_MIN_SAMPLES rows), OR
+          * Wilson lower bound of trailing win rate < WR_FLOOR
+            (only with >= WR_MIN_SAMPLES trades).
 
-        A halt is time-bounded: after halt_minutes it expires and entries
-        resume at probe_size_fraction size until probe_outcomes_n new settled
+        A halt is time-bounded: after CAL_HALT_MINUTES it expires and entries
+        resume at CAL_PROBE_SIZE_FRACTION size until CAL_PROBE_OUTCOMES_N new settled
         probe outcomes clear it fully.
+
+        All thresholds come from instance attributes (configurable via config.py).
         """
         snap = self.snapshot_rolling()
         if snap["n"] == 0:
@@ -568,10 +570,10 @@ class RollingCalibrationMonitor(CalibrationVerifier):
                     log.info(
                         "CALIBRATION HALT EXPIRED after %d min: entering probe mode "
                         "(size fraction=%.2f, need %d probe outcomes to clear)",
-                        halt_minutes, probe_size_fraction, probe_outcomes_n,
+                        self.CAL_HALT_MINUTES, self.CAL_PROBE_SIZE_FRACTION, self.CAL_PROBE_OUTCOMES_N,
                     )
                 # Probe mode: allow entries at reduced size; clear after N outcomes.
-                if self.probe_outcomes_count >= probe_outcomes_n:
+                if self.probe_outcomes_count >= self.CAL_PROBE_OUTCOMES_N:
                     self.halt_started_at = None
                     self.halt_reason = None
                     self.in_probe = False
@@ -580,21 +582,23 @@ class RollingCalibrationMonitor(CalibrationVerifier):
                     log.info("CALIBRATION HALT CLEARED: probe outcomes sufficient, resuming normal size")
                     return False, "calibration within limits (halt cleared)", False
                 return True, (
-                    f"halt expired, probing (size fraction={probe_size_fraction:.2f}, "
-                    f"outcomes {self.probe_outcomes_count}/{probe_outcomes_n})"
+                    f"halt expired, probing (size fraction={self.CAL_PROBE_SIZE_FRACTION:.2f}, "
+                    f"outcomes {self.probe_outcomes_count}/{self.CAL_PROBE_OUTCOMES_N})"
                 ), True
 
             # Still within halt window.
-            remaining = int((self.halt_started_at + halt_minutes * 60 - now) / 60)
+            remaining = int((self.halt_started_at + self.CAL_HALT_MINUTES * 60 - now) / 60)
             return True, f"calibration halted ({self.halt_reason}; ~{remaining} min remaining)", False
 
         # Not currently halted: evaluate trip conditions with minimum samples.
-        if brier is not None and n >= brier_min_samples and brier > self.BRIER_HALT_THRESHOLD:
-            reasons.append(f"rolling Brier {brier:.4f} > {self.BRIER_HALT_THRESHOLD} (n={n} >= {brier_min_samples})")
+        if brier is not None and n >= getattr(config, "CAL_BRIER_MIN_SAMPLES", 20) and brier > self.BRIER_HALT_THRESHOLD:
+            reasons.append(f"rolling Brier {brier:.4f} > {self.BRIER_HALT_THRESHOLD} (n={n} >= {getattr(config, 'CAL_BRIER_MIN_SAMPLES', 20)})")
 
-        wr = snap["trailing_10_win_rate"]
-        trailing_n = snap["trailing_10_n"]
-        if wr is not None and n >= wr_min_samples:
+        trailing_key = f"trailing_{self.TRAILING_WIN_N}_n"
+        trailing_wr_key = f"trailing_{self.TRAILING_WIN_N}_win_rate"
+        wr = snap.get(trailing_wr_key)
+        trailing_n = snap.get(trailing_key, 0)
+        if wr is not None and n >= self.WR_MIN_SAMPLES:
             # Wilson lower bound vs floor, instead of raw win rate cut.
             # Use the trailing rows from the rolling snapshot (last TRAILING_WIN_N).
             settled = self.settled[-self.TRAILING_WIN_N:]
@@ -605,10 +609,10 @@ class RollingCalibrationMonitor(CalibrationVerifier):
                 rows2.append(r)
             wins = sum(r["win"] for r in rows2)
             wr_lower = self._wilson_lower_bound(wins, trailing_n, self.WILSON_Z)
-            if wr_lower < wr_floor:
+            if wr_lower < self.WR_FLOOR:
                 reasons.append(
-                    f"trailing {trailing_n} win-rate Wilson LB {wr_lower:.2%} < {wr_floor:.0%} "
-                    f"(raw {wr:.2%}, total n={n} >= {wr_min_samples})"
+                    f"trailing {trailing_n} win-rate Wilson LB {wr_lower:.2%} < {self.WR_FLOOR:.0%} "
+                    f"(raw {wr:.2%}, total n={n} >= {self.WR_MIN_SAMPLES})"
                 )
 
         if reasons:
@@ -619,7 +623,7 @@ class RollingCalibrationMonitor(CalibrationVerifier):
             self._halt_state_persist()
             log.warning(
                 "CALIBRATION HALT STARTED: %s (will expire after %d min, then probe at %.2fx size)",
-                self.halt_reason, halt_minutes, probe_size_fraction,
+                self.halt_reason, self.CAL_HALT_MINUTES, self.CAL_PROBE_SIZE_FRACTION,
             )
             return True, self.halt_reason, False
 

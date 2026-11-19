@@ -2819,14 +2819,7 @@ class PolyUSPaperTrader:
         snap = self.cal_monitor.snapshot_rolling()
         scale, self.adjusted_sigma, self.adjusted_min_z, drift = self.vol_scaler.scale(
             snap.get("rolling_brier"))
-        halted, reason, probing = self.cal_monitor.circuit_breaker(
-            brier_min_samples=config.CAL_BRIER_MIN_SAMPLES,
-            wr_min_samples=config.CAL_WIN_RATE_MIN_SAMPLES,
-            wr_floor=config.CAL_WIN_RATE_FLOOR,
-            halt_minutes=config.CAL_HALT_MINUTES,
-            probe_size_fraction=config.CAL_PROBE_SIZE_FRACTION,
-            probe_outcomes_n=config.CAL_PROBE_OUTCOMES_N,
-        )
+        halted, reason, probing = self.cal_monitor.circuit_breaker()
         self.calibration_halted = halted
         self.calibration_probing = probing
         self.calibration_reason = reason
