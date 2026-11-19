@@ -385,6 +385,52 @@ def compare(kalshi: Ladder, poly: Ladder):
         out.append(Deviation(strike, float(kalshi_mid), poly_mid))
     return out
 
+
+def compute_kl_divergence(kalshi: Ladder, poly: Ladder) -> List[dict]:
+    """Compute symmetric KL divergence between Kalshi and Polymarket at matching strikes.
+    
+    Returns a list of dicts with strike, kalshi_mid, poly_mid, symmetric_kl,
+    kl_arb_flag (KL > GATES_KL_ARB_THRESHOLD), kl_watch_flag (KL > GATES_KL_WATCH_THRESHOLD).
+    """
+    try:
+        import config
+    except ImportError:
+        # Config not available, use defaults
+        ARB_THRESHOLD = 0.15
+        WATCH_THRESHOLD = 0.05
+    else:
+        ARB_THRESHOLD = config.GATES_KL_ARB_THRESHOLD
+        WATCH_THRESHOLD = config.GATES_KL_WATCH_THRESHOLD
+    
+    try:
+        from gates import symmetric_kl_divergence
+    except ImportError:
+        log.warning("gates.symmetric_kl_divergence not available")
+        return []
+    
+    k = to_cdf(kalshi)
+    p = to_cdf(poly)
+    if k is None or p is None:
+        return []
+    
+    poly_strikes = [pt[0] for pt in p]
+    lo, hi = poly_strikes[0], poly_strikes[-1]
+    out = []
+    for strike, kalshi_mid in k:
+        if not (lo <= strike <= hi):
+            continue
+        poly_mid = _interp(strike, [pt[0] for pt in p], [pt[1] for pt in p])
+        sym_kl = symmetric_kl_divergence(kalshi_mid, poly_mid)
+        out.append({
+            "strike": float(strike),
+            "kalshi_mid": float(kalshi_mid),
+            "poly_mid": float(poly_mid),
+            "symmetric_kl": sym_kl,
+            "kl_arb_flag": sym_kl != float("inf") and sym_kl > ARB_THRESHOLD,
+            "kl_watch_flag": sym_kl != float("inf") and sym_kl > WATCH_THRESHOLD,
+        })
+    return out
+
 def discover_kalshi_events(series: Tuple[str, ...] = ("KXBTCD", "KXETHD", "KXBTC", "KXETH", "KXBTC15M", "KXETH15M"),
                            timeout: int = 20) -> List[str]:
     """Open event tickers for the given series, e.g. ['KXBTCD-26NOV0521']."""

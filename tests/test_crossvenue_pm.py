@@ -229,3 +229,77 @@ def test_fetch_pm_ladder_gamma_fallback_path():
     # Just verify the function is callable and returns None for bad slug
     result = fetch_pm_ladder("nonexistent-slug-12345")
     assert result is None
+
+
+def test_compute_kl_divergence_basic():
+    """Test compute_kl_divergence with synthetic ladders.
+    
+    Based on PredictionMarketsPicks worked example:
+    Kalshi P(above 96k) = 0.85, Polymarket P(above 96k) = 0.60
+    Symmetric KL ~ 0.166 (above ARB threshold of 0.15)
+    """
+    from crossvenue import Ladder, Rung, compute_kl_divergence
+    from datetime import datetime, timezone, timedelta
+    
+    expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+    
+    # Kalshi ladder: at strike 96000, P(above) = 0.85
+    # Need 3 rungs for to_cdf to work
+    kalshi = Ladder("kalshi", "BTC", expiry, label="KXBTC15M-TEST")
+    kalshi.rungs = [
+        Rung(strike=94000.0, mid=0.95, bid=0.94, ask=0.96),
+        Rung(strike=96000.0, mid=0.85, bid=0.84, ask=0.86),
+        Rung(strike=98000.0, mid=0.50, bid=0.49, ask=0.51),
+    ]
+    
+    # Polymarket ladder: same strike range, at 96000 P(above) = 0.60
+    poly = Ladder("polymarket", "BTC", expiry, label="btc-above-on-nov-5-2026")
+    poly.rungs = [
+        Rung(strike=94000.0, mid=0.80, bid=0.79, ask=0.81),
+        Rung(strike=96000.0, mid=0.60, bid=0.59, ask=0.61),
+        Rung(strike=98000.0, mid=0.40, bid=0.39, ask=0.41),
+    ]
+    
+    results = compute_kl_divergence(kalshi, poly)
+    assert len(results) == 3
+    
+    # Check the 96000 strike where Kalshi=0.85, Poly=0.60
+    # Symmetric KL should be ~0.166 (above ARB threshold of 0.15)
+    r96 = [r for r in results if r["strike"] == 96000.0][0]
+    assert abs(r96["kalshi_mid"] - 0.85) < 1e-6
+    assert abs(r96["poly_mid"] - 0.60) < 1e-6
+    assert r96["symmetric_kl"] > 0.15  # Above ARB threshold
+    assert r96["kl_arb_flag"] is True
+    assert r96["kl_watch_flag"] is True
+
+
+def test_compute_kl_divergence_low_kl():
+    """Test compute_kl_divergence when KL is below WATCH threshold."""
+    from crossvenue import Ladder, Rung, compute_kl_divergence
+    from datetime import datetime, timezone, timedelta
+    
+    expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+    
+    # Need at least 3 rungs for to_cdf
+    kalshi = Ladder("kalshi", "BTC", expiry)
+    kalshi.rungs = [
+        Rung(strike=94000.0, mid=0.55, bid=0.54, ask=0.56),
+        Rung(strike=95000.0, mid=0.52, bid=0.51, ask=0.53),
+        Rung(strike=96000.0, mid=0.48, bid=0.47, ask=0.49),
+    ]
+    
+    poly = Ladder("polymarket", "BTC", expiry)
+    poly.rungs = [
+        Rung(strike=94000.0, mid=0.54, bid=0.53, ask=0.55),
+        Rung(strike=95000.0, mid=0.51, bid=0.50, ask=0.52),
+        Rung(strike=96000.0, mid=0.49, bid=0.48, ask=0.50),
+    ]
+    
+    results = compute_kl_divergence(kalshi, poly)
+    assert len(results) == 3
+    
+    # Near 50/50, small gap -> low KL
+    for r in results:
+        assert r["symmetric_kl"] < 0.05  # Below WATCH threshold
+        assert r["kl_arb_flag"] is False
+        assert r["kl_watch_flag"] is False

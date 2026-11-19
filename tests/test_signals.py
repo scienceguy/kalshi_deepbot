@@ -190,3 +190,24 @@ def test_signal_engine_class_interface():
     assert isinstance(ranked, list)
 
 
+def test_kl_divergence_fields_in_tradesignal():
+    """TradeSignal dataclass includes KL divergence fields."""
+    from signals import TradeSignal
+    import inspect
+    sig = inspect.signature(TradeSignal)
+    params = list(sig.parameters.keys())
+    assert "kl_symmetric" in params
+    assert "kl_arb_flag" in params
+    assert "kl_watch_flag" in params
+    assert "kl_kalshi_mid" in params
+    assert "kl_poly_mid" in params
+    assert "kl_strike" in params
+    # Default values
+    assert sig.parameters["kl_symmetric"].default is None
+    assert sig.parameters["kl_arb_flag"].default is False
+    assert sig.parameters["kl_watch_flag"].default is False
+    assert sig.parameters["kl_kalshi_mid"].default is None
+    assert sig.parameters["kl_poly_mid"].default is None
+    assert sig.parameters["kl_strike"].default is None
+
+

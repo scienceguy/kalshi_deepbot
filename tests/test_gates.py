@@ -264,6 +264,36 @@ class TestGatesMath:
         be = gates.breakeven_q(0.77, 0.013)
         assert abs(be - 0.783) < 0.001
 
+    def test_kl_divergence_formula(self):
+        """KL divergence: p*ln(p/q) + (1-p)*ln((1-p)/(1-q))."""
+        # From PredictionMarketsPicks worked example: p=0.85, q=0.60
+        kl_pq = gates.kl_divergence(0.85, 0.60)
+        kl_qp = gates.kl_divergence(0.60, 0.85)
+        sym_kl = gates.symmetric_kl_divergence(0.85, 0.60)
+        assert abs(kl_pq - 0.1489) < 0.001
+        assert abs(kl_qp - 0.1833) < 0.001
+        assert abs(sym_kl - 0.1661) < 0.001
+
+    def test_symmetric_kl_near_middle_low(self):
+        """Near 50/50, symmetric KL is small for same price gap."""
+        # 10-cent gap at 55¢ vs 45¢
+        sym_kl = gates.symmetric_kl_divergence(0.55, 0.45)
+        assert sym_kl < 0.05  # Below WATCH threshold
+
+    def test_symmetric_kl_near_edge_higher(self):
+        """Near edge, same 10-cent gap produces higher symmetric KL."""
+        # 10-cent gap at 95¢ vs 85¢ - same raw gap but more information
+        sym_kl = gates.symmetric_kl_divergence(0.95, 0.85)
+        # This should be higher than 0.55 vs 0.45
+        assert sym_kl > gates.symmetric_kl_divergence(0.55, 0.45)
+
+    def test_symmetric_kl_boundary_returns_inf(self):
+        """Boundary probabilities (0 or 1) return infinity."""
+        assert gates.symmetric_kl_divergence(1.0, 0.5) == float("inf")
+        assert gates.symmetric_kl_divergence(0.0, 0.5) == float("inf")
+        assert gates.symmetric_kl_divergence(0.5, 1.0) == float("inf")
+        assert gates.symmetric_kl_divergence(0.5, 0.0) == float("inf")
+
     def test_cushion_z_formula(self):
         """cushion_z should compute |ln(S/K)|/(sigma*sqrt(t)) for YES.
 

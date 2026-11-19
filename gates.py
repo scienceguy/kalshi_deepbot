@@ -285,6 +285,42 @@ def breakeven_q(p: float, fee: float = 0.0) -> float:
     return p + fee
 
 
+def kl_divergence(p: float, q: float) -> float:
+    """Kullback-Leibler divergence KL(P||Q) for binary distributions.
+
+    For binary markets: KL(P||Q) = p*ln(p/q) + (1-p)*ln((1-p)/(1-q))
+    where p and q are probabilities in (0, 1).
+
+    Returns infinity if p or q is at boundary (0 or 1) to avoid log(0).
+    """
+    # reviewed: boundary check to avoid log(0); pure math, no money path
+    if p <= 0.0 or p >= 1.0 or q <= 0.0 or q >= 1.0:
+        return float("inf")
+    return p * math.log(p / q) + (1.0 - p) * math.log((1.0 - p) / (1.0 - q))
+
+
+def symmetric_kl_divergence(p: float, q: float) -> float:
+    """Symmetric KL divergence (Jensen-Shannon like): [KL(P||Q) + KL(Q||P)] / 2.
+
+    This measures the information-theoretic distance between two probability
+    distributions. A symmetric KL > 0.15 indicates meaningful disagreement
+    between the two venues' pricing (per prediction market research).
+
+    Args:
+        p: Probability from first venue (e.g., Kalshi)
+        q: Probability from second venue (e.g., Polymarket)
+
+    Returns:
+        Symmetric KL divergence, or inf if either probability is at boundary.
+    """
+    kl_pq = kl_divergence(p, q)
+    kl_qp = kl_divergence(q, p)
+    # reviewed: propagate boundary inf from kl_divergence
+    if kl_pq == float("inf") or kl_qp == float("inf"):
+        return float("inf")
+    return (kl_pq + kl_qp) / 2.0
+
+
 def entry_fee(p: float, series: str | None = None) -> float:
     """Per-contract entry fee per the Kalshi schedule via fees.py.
 

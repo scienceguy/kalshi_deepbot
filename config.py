@@ -377,6 +377,13 @@ GATES_MOMENTUM_BOOST_Q = _env_float("GATES_MOMENTUM_BOOST_Q", 0.005)  # q boost 
 GATES_MOMENTUM_DENY_MISALIGNED = _env_bool("GATES_MOMENTUM_DENY_MISALIGNED", False)  # deny when opposed
 GATES_MOMENTUM_CACHE_SECONDS = _env_int("GATES_MOMENTUM_CACHE_SECONDS", 30)
 
+# KL divergence for cross-venue arbitrage detection (Kalshi vs Polymarket)
+# Symmetric KL > 0.15 indicates meaningful disagreement between venues
+# per prediction market research (PredictionMarketsPicks, etc.)
+GATES_KL_ENABLED = _env_bool("GATES_KL_ENABLED", True)
+GATES_KL_ARB_THRESHOLD = _env_float("GATES_KL_ARB_THRESHOLD", 0.15)  # ARB flag threshold
+GATES_KL_WATCH_THRESHOLD = _env_float("GATES_KL_WATCH_THRESHOLD", 0.05)  # WATCH flag threshold
+
 # Local DB → Supabase background sync interval. Trading bots need fast crash
 # protection: a 5-minute sync window can lose up to 5 minutes of P&L/state on
 # a crash. 30s keeps the local→online gap small without hammering Supabase.
@@ -998,6 +1005,18 @@ def validate_bands():
     if not 0.0 <= GATES_MOMENTUM_BOOST_Q <= 1.0:
         errors.append(
             f"GATES_MOMENTUM_BOOST_Q ({GATES_MOMENTUM_BOOST_Q}) must be in [0, 1]."
+        )
+    if GATES_KL_ARB_THRESHOLD < 0:
+        errors.append(
+            f"GATES_KL_ARB_THRESHOLD ({GATES_KL_ARB_THRESHOLD}) must be >= 0."
+        )
+    if GATES_KL_WATCH_THRESHOLD < 0:
+        errors.append(
+            f"GATES_KL_WATCH_THRESHOLD ({GATES_KL_WATCH_THRESHOLD}) must be >= 0."
+        )
+    if GATES_KL_WATCH_THRESHOLD >= GATES_KL_ARB_THRESHOLD:
+        errors.append(
+            f"GATES_KL_WATCH_THRESHOLD ({GATES_KL_WATCH_THRESHOLD}) must be < GATES_KL_ARB_THRESHOLD ({GATES_KL_ARB_THRESHOLD})."
         )
     if not 0.0 <= MODEL_PROB_MIN <= 1.0:
         errors.append(

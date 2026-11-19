@@ -25,6 +25,12 @@ import gates
 from market_finder import MarketInfo
 from model import model_probability_from_market, edge_cents
 
+# Cross-venue (Kalshi vs Polymarket) KL divergence
+try:
+    import crossvenue
+except ImportError:
+    crossvenue = None
+
 log = logging.getLogger(__name__)
 Direction = Literal["YES", "NO", "PASS"]
 
@@ -41,6 +47,13 @@ class TradeSignal:
     strength:    float = 0.0
     confidence:  float = 1.0
     win_prob:    float = 0.5  # Model win probability for Kelly sizing (Pillar B)
+    # Cross-venue KL divergence metrics
+    kl_symmetric: float | None = None
+    kl_arb_flag: bool = False
+    kl_watch_flag: bool = False
+    kl_kalshi_mid: float | None = None
+    kl_poly_mid: float | None = None
+    kl_strike: float | None = None
 
     @property
     def is_trade(self) -> bool:
@@ -395,6 +408,78 @@ def _model_volatility(asset: str) -> float:
     return max(config.MODEL_VOL_MIN, min(config.MODEL_VOL_MAX, annual))
 
 
+def _compute_kl_divergence(market: MarketInfo) -> dict | None:
+    """
+    Compute KL divergence between Kalshi and Polymarket for this market.
+    
+    Returns dict with symmetric_kl, kl_arb_flag, kl_watch_flag, or None if unavailable.
+    Uses crossvenue module to fetch Polymarket ladder and compare with Kalshi.
+    """
+    # reviewed: crossvenue module optional; skip if not available
+    if crossvenue is None:
+        return None
+    # reviewed: KL gate opt-in via config; disabled means no cross-venue check
+    if not getattr(config, "GATES_KL_ENABLED", True):
+        return None
+    
+    # Extract asset and expiry from market
+    series = market.ticker.split("-")[0] if "-" in market.ticker else market.ticker
+    asset = series[2:] if series.startswith("KX") else series
+    # reviewed: 15M series suffix strips to base asset (BTC, ETH)
+    if asset.endswith("15M"):
+        asset = asset[:-3]
+    
+    # Get Kalshi event ticker (e.g., KXBTC15M-26NOV190845)
+    event_ticker = "-".join(market.ticker.split("-")[:-1]) if market.ticker.count("-") >= 2 else market.ticker
+    
+    try:
+        # Fetch Kalshi ladder
+        kalshi_ladder = crossvenue.fetch_kalshi_ladder(event_ticker)
+        # reviewed: ladder.ok requires >= 3 usable rungs; no ladder means no comparison
+        if not kalshi_ladder or not kalshi_ladder.ok:
+            return None
+        
+        # Generate candidate Polymarket slugs
+        expiry_et = kalshi_ladder.expiry_et
+        pm_slugs = crossvenue.candidate_pm_slugs(asset, expiry_et)
+        
+        # Try each slug until one works
+        for slug in pm_slugs:
+            # Try US API first, fall back to Gamma
+            poly_ladder = crossvenue.fetch_pm_ladder_us(slug)
+            # reviewed: US API may not have the ladder; try Gamma fallback
+            if not poly_ladder or not poly_ladder.ok:
+                poly_ladder = crossvenue.fetch_pm_ladder(slug)
+            # reviewed: both fetchers failed for this slug; try next slug
+            if not poly_ladder or not poly_ladder.ok:
+                continue
+            
+            # Compute KL divergence
+            kl_results = crossvenue.compute_kl_divergence(kalshi_ladder, poly_ladder)
+            # reviewed: empty KL results means no overlapping strikes; try next slug
+            if not kl_results:
+                continue
+            
+            # Find the result matching our market's strike
+            strike = float(market.strike) if market.strike else None
+            # reviewed: only match when we have a strike; otherwise use max KL
+            if strike:
+                for r in kl_results:
+                    # reviewed: match within $1 of our market's strike
+                    if abs(r["strike"] - strike) < 1.0:
+                        return r
+            
+            # If no exact strike match, return the highest KL divergence
+            # reviewed: max KL is the strongest disagreement signal
+            if kl_results:
+                return max(kl_results, key=lambda r: r["symmetric_kl"])
+        
+        return None
+    except Exception as e:
+        log.debug("KL divergence computation failed for %s: %s", market.ticker, e)
+        return None
+
+
 def _stability_ok(ticker: str, now: float):
     """
     Only quote when the underlying has stayed clearly away from the strike
@@ -745,6 +830,12 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
         )
         # model_prob is P(YES wins); for NO side we need P(NO wins)
         trade_prob = model_prob if direction == "YES" else (1.0 - model_prob)
+        
+        # ── Cross-venue KL divergence (Kalshi vs Polymarket) ───────────────
+        # Compute symmetric KL divergence between venues. High KL indicates
+        # meaningful disagreement, which can signal an edge opportunity.
+        kl_result = _compute_kl_divergence(market)
+        
         # High-EV hurdle: model/ref_prob >= 0.96. Below this threshold EV
         # collapses ($0.1903 at 0.90 vs $0.3537 at 0.96, win 100%->83.3%).
         # reviewed: gate trades below 96% model probability to prevent EV collapse
@@ -781,6 +872,15 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
             "TAKER_FAVOURITE", strength,
             win_prob=trade_prob,
         )
+        # Attach KL divergence metrics to the signal for downstream use
+        # reviewed: only attach when both signal and KL result exist
+        if sig and kl_result:
+            sig.kl_symmetric = kl_result.get("symmetric_kl")
+            sig.kl_arb_flag = kl_result.get("kl_arb_flag")
+            sig.kl_watch_flag = kl_result.get("kl_watch_flag")
+            sig.kl_kalshi_mid = kl_result.get("kalshi_mid")
+            sig.kl_poly_mid = kl_result.get("poly_mid")
+            sig.kl_strike = kl_result.get("strike")
         if sig and sig.is_trade:
             results.append(sig)
         elif sig:
