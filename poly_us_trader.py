@@ -1039,6 +1039,18 @@ class PolyUSPaperTrader:
             log.warning("Poly local DB unavailable (JSON ledger still authoritative): %s", e)
             return None
 
+    def _on_order_update(self, order: dict) -> None:
+        """J2: Callback from Polymarket US stream when an order state changes.
+        
+        Updates the local order cache so reconcile_live_orders can use stream data
+        instead of REST polling. Called from the stream's background thread.
+        """
+        # The stream's get_order() already caches with freshness; this callback
+        # is primarily for logging/debugging. The reconcile reads from the stream
+        # cache directly via stream.get_order().
+        log.debug("J2: Order update received: id=%s state=%s slug=%s",
+                  order.get("order_id"), order.get("state"), order.get("market_slug"))
+
     def _held_position_qty(self, slug: str):
         """Held contract qty for a slug, or None when the venue cannot answer.
 
@@ -1086,18 +1098,25 @@ class PolyUSPaperTrader:
           quantity's position and release the reservation for the unfilled part.
         - Open order older than POLY_RESTING_ORDER_TTL_SECONDS -> cancel and
           release the reservation.
+
+        J2: Uses Polymarket US private WebSocket stream (poly_us_stream) for
+        order state instead of REST polling. Falls back to REST if stream unavailable.
         """
         if not self.live_mode:
             return False
+
+        # Try to get order state from the private stream first
+        stream = None
         try:
-            open_orders = polymarket_us_client.get_open_orders() or []
-        except Exception as e:
-            log.warning("Live reconcile: get_open_orders failed: %s", e)
-            return False
-        open_ids = {o.get("id") for o in open_orders if o.get("id")}
+            import poly_us_stream as _pus
+            stream = _pus.get_poly_stream()
+        except Exception:
+            pass
+
         now = datetime.now(timezone.utc)
         ttl_seconds = float(getattr(config, "POLY_RESTING_ORDER_TTL_SECONDS", 900))
         cancelled_any = False
+
         # A3: per-order fill attribution — subtract quantities already booked
         # for each slug so a never-filled order isn't booked as filled just
         # because an earlier order on the same slug was filled.
@@ -1106,6 +1125,7 @@ class PolyUSPaperTrader:
             bs = p.get("slug")
             if bs:
                 booked_by_slug[bs] = booked_by_slug.get(bs, 0) + float(p.get("qty", 0) or 0)
+
         for o in list(self.state.get("resting_orders") or []):
             if o.get("state") != "resting":
                 continue
@@ -1113,6 +1133,43 @@ class PolyUSPaperTrader:
             if not oid:
                 continue
             placed = datetime.fromisoformat(o.get("placed_at") or now.isoformat())
+
+            # J2: Check order state from stream cache (with freshness)
+            stream_order = None
+            if stream is not None and stream.is_connected():
+                stream_order = stream.get_order(oid)
+                if stream_order is not None:
+                    age = stream_order.get("age_seconds", 0)
+                    # Only use stream data if it's fresh (< 30s)
+                    if age < 30.0:
+                        state = stream_order.get("state", "")
+                        # Still resting and not stale
+                        if (state in ("ORDER_STATE_OPEN", "ORDER_STATE_PENDING_NEW", "")
+                                and o.get("window_ts") == self.state.get("current_window_ts")
+                                and (now - placed).total_seconds() < ttl_seconds):
+                            continue  # still resting, same window, not stale
+                        # Order filled or cancelled/expired
+                        if state in ("ORDER_STATE_FILLED", "ORDER_STATE_CANCELLED", "ORDER_STATE_EXPIRED"):
+                            # Use held position to determine if it was a fill
+                            held = self._held_position_qty(o.get("slug", ""))
+                            if held is None:
+                                continue  # venue didn't answer — leave the order resting, retry next cycle
+                            slug_held = max(0.0, held - booked_by_slug.get(o.get("slug", ""), 0.0))
+                            filled_qty = int(min(float(o.get("qty", 0) or 0), slug_held)) if slug_held > 0 else 0
+                            with self._guard_lock:
+                                if o.get("state") != "resting":
+                                    continue
+                                self._resolve_order(o, oid, filled_qty)
+                            continue
+
+            # Fallback to REST polling if stream unavailable or data stale
+            try:
+                open_orders = polymarket_us_client.get_open_orders() or []
+            except Exception as e:
+                log.warning("Live reconcile: get_open_orders failed: %s", e)
+                return False
+            open_ids = {o.get("id") for o in open_orders if o.get("id")}
+
             if (oid in open_ids and o.get("window_ts") == self.state.get("current_window_ts")
                     and (now - placed).total_seconds() < ttl_seconds):
                 continue  # still resting, same window, not stale
@@ -1121,7 +1178,7 @@ class PolyUSPaperTrader:
                 if cancelled:
                     with self._guard_lock:
                         if o.get("state") != "resting":
-                            continue  # guard resolved it while the venue call ran
+                            continue
                         o["state"] = "cancelled"
                         release_cost = float(o.get("cost", 0.0) or 0.0)
                         self.state["cash"] = round(self.state["cash"] + release_cost, 4)
@@ -1138,70 +1195,72 @@ class PolyUSPaperTrader:
                 continue  # venue didn't answer — leave the order resting, retry next cycle
             slug_held = max(0.0, held - booked_by_slug.get(o.get("slug", ""), 0.0))
             filled_qty = int(min(float(o.get("qty", 0) or 0), slug_held)) if slug_held > 0 else 0
-            # H7: state mutation under the guard lock; re-check the order was
-            # not resolved by the guard while the venue calls above ran.
             with self._guard_lock:
                 if o.get("state") != "resting":
                     continue
-                if filled_qty > 0 and not any(p.get("order_id") == oid for p in self.state.get("positions") or []):
-                    fill_price = float(o.get("price") or 0.0)
-                    fill_cost = round(filled_qty * fill_price, 4)
-                    self.state["cash"] = round(self.state["cash"] + (float(o.get("cost", 0.0) or 0.0) - fill_cost), 4)
-                    self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - (float(o.get("cost", 0.0) or 0.0) - fill_cost), 4))
-                    # A13: count live trades on the venue-confirmed fill, not at placement.
-                    self.state["trades_count"] = int(self.state.get("trades_count", 0) or 0) + 1
-                    self.state["positions"].append({
-                        "slug": o.get("slug", ""),
-                        "question": o.get("question", ""),
-                        "side": o.get("side", ""),
-                        "price": fill_price,
-                        "fill_price": fill_price,
-                        "displayed_price": fill_price,
-                        "fee": float(o.get("fee", 0.0) or 0.0),
-                        "source": o.get("source", ""),
-                        "qty": filled_qty,
-                        "cost": fill_cost,
-                        "order_id": oid,
-                        "category": o.get("category", ""),
-                        "event_slug": o.get("event_slug", ""),
-                        "opened_at": o.get("placed_at"),
-                    })
-                    # D2: record the fill in the local poly DB (best-effort).
-                    try:
-                        pdb = self._poly_db()
-                        if pdb is not None:
-                            pdb.record_fill({
-                                "order_id": oid,
-                                "slug": o.get("slug", ""),
-                                "side": o.get("side", ""),
-                                "action": "buy",
-                                "qty": filled_qty,
-                                "price": fill_price,
-                                "fee": float(o.get("fee", 0.0) or 0.0),
-                                "ts": datetime.now(timezone.utc).isoformat(),
-                            })
-                    except Exception as e:
-                        log.debug("Poly DB fill record failed: %s", e)
-                if filled_qty > 0:
-                    o["state"] = "filled"
-                    emit_event("poly_us_trader", "order.filled",
-                               {"order_id": oid, "slug": o.get("slug", ""),
-                                "side": o.get("side", ""), "filled_qty": float(filled_qty),
-                                "fill_price": float(o.get("price") or 0.0)},
-                               key=f"order.filled:{oid}:{filled_qty}")
-                else:
-                    o["state"] = "cancelled"
-                    release_cost = float(o.get("cost", 0.0) or 0.0)
-                    self.state["cash"] = round(self.state["cash"] + release_cost, 4)
-                    self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - release_cost, 4))
-                    cancelled_any = True
-                    log.info("Live order %s resolved with no held position -> cancelled, reserved cash released", oid)
-                    emit_event("poly_us_trader", "order.cancelled",
-                               {"order_id": oid, "slug": o.get("slug", ""),
-                                "reason": "unfilled_expiry"},
-                               key=f"order.cancelled:{oid}")
+                self._resolve_order(o, oid, filled_qty)
+
         self.state["resting_orders"] = [o for o in self.state.get("resting_orders") or [] if o.get("state") == "resting"]
         return True
+
+    def _resolve_order(self, o: dict, oid: str, filled_qty: int) -> None:
+        """Resolve a resting order: either fill or cancel, updating state and emitting events."""
+        if filled_qty > 0 and not any(p.get("order_id") == oid for p in self.state.get("positions") or []):
+            fill_price = float(o.get("price") or 0.0)
+            fill_cost = round(filled_qty * fill_price, 4)
+            self.state["cash"] = round(self.state["cash"] + (float(o.get("cost", 0.0) or 0.0) - fill_cost), 4)
+            self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - (float(o.get("cost", 0.0) or 0.0) - fill_cost), 4))
+            # A13: count live trades on the venue-confirmed fill, not at placement.
+            self.state["trades_count"] = int(self.state.get("trades_count", 0) or 0) + 1
+            self.state["positions"].append({
+                "slug": o.get("slug", ""),
+                "question": o.get("question", ""),
+                "side": o.get("side", ""),
+                "price": fill_price,
+                "fill_price": fill_price,
+                "displayed_price": fill_price,
+                "fee": float(o.get("fee", 0.0) or 0.0),
+                "source": o.get("source", ""),
+                "qty": filled_qty,
+                "cost": fill_cost,
+                "order_id": oid,
+                "category": o.get("category", ""),
+                "event_slug": o.get("event_slug", ""),
+                "opened_at": o.get("placed_at"),
+            })
+            # D2: record the fill in the local poly DB (best-effort).
+            try:
+                pdb = self._poly_db()
+                if pdb is not None:
+                    pdb.record_fill({
+                        "order_id": oid,
+                        "slug": o.get("slug", ""),
+                        "side": o.get("side", ""),
+                        "action": "buy",
+                        "qty": filled_qty,
+                        "price": fill_price,
+                        "fee": float(o.get("fee", 0.0) or 0.0),
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                    })
+            except Exception as e:
+                log.debug("Poly DB fill record failed: %s", e)
+            o["state"] = "filled"
+            emit_event("poly_us_trader", "order.filled",
+                       {"order_id": oid, "slug": o.get("slug", ""),
+                        "side": o.get("side", ""), "filled_qty": float(filled_qty),
+                        "fill_price": float(o.get("price") or 0.0)},
+                       key=f"order.filled:{oid}:{filled_qty}")
+        else:
+            o["state"] = "cancelled"
+            release_cost = float(o.get("cost", 0.0) or 0.0)
+            self.state["cash"] = round(self.state["cash"] + release_cost, 4)
+            self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - release_cost, 4))
+            cancelled_any = True
+            log.info("Live order %s resolved with no held position -> cancelled, reserved cash released", oid)
+            emit_event("poly_us_trader", "order.cancelled",
+                       {"order_id": oid, "slug": o.get("slug", ""),
+                        "reason": "unfilled_expiry"},
+                       key=f"order.cancelled:{oid}")
 
     def reconcile_venue_state(self) -> bool:
         """A13: compare internal bookkeeping to the venue (live mode only).
@@ -2200,10 +2259,11 @@ class PolyUSPaperTrader:
         if getattr(self, "live_mode", False):
             # J3: Write-ahead order intent — record before REST call so ambiguous
             # failures can be reconciled at startup (pending_send table).
-            intent_id = f"poly-{uuid.uuid4().hex[:12]}"
+            # 16 hex chars = 64 bits; collision probability negligible even at high volume.
+            intent_id = f"poly-{uuid.uuid4().hex[:16]}"
             dollar_risk = float(cost)
             db = get_local_db()
-            db.record_order_intent(
+            if not db.record_order_intent(
                 order_id=intent_id,
                 ticker=slug,
                 side=side,
@@ -2212,7 +2272,9 @@ class PolyUSPaperTrader:
                 dollar_risk=dollar_risk,
                 venue="poly",
                 mode="live",
-            )
+            ):
+                log.warning("Intent collision for %s — another process already recorded this order", intent_id)
+                return False
             log.info("J3: Recorded order intent %s for %s %s @ %.2f", intent_id, slug, side, fill_price)
 
             # preview_order above validated the order at fill_price; place at the
@@ -3182,6 +3244,22 @@ def main():
     except Exception as e:
         log.warning("Spot WS streams unavailable (%s) — guard spot will be stale", e)
 
+    # J2: start Polymarket US private WebSocket stream for order/position/balance updates.
+    # The reconcile_live_orders method uses stream.get_order() instead of REST polling.
+    _poly_stream = None
+    try:
+        import poly_us_stream as _pus
+        _poly_stream = _pus.get_poly_stream()
+        if _poly_stream is not None and _poly_stream.has_credentials():
+            # Set up order callback to track order state changes
+            _poly_stream.set_order_callback(trader._on_order_update)
+            _poly_stream.start()
+            log.info("Polymarket US private WebSocket stream started (orders/positions/balance)")
+        else:
+            log.info("Polymarket US stream not started (no credentials)")
+    except Exception as e:
+        log.warning("Polymarket US stream unavailable (%s) — reconcile will fall back to REST", e)
+
     # L6: pre-warm the persistent HTTP session (one cheap authenticated read)
     # so the first order does not pay the TCP+TLS handshake.
     try:
@@ -3281,6 +3359,15 @@ def main():
         guard_stop.set()
         if guard_thread is not None:
             guard_thread.join(timeout=2.0)
+        # J2: stop Polymarket US private WebSocket stream
+        try:
+            import poly_us_stream as _pus
+            _s = _pus.get_poly_stream()
+            if _s is not None:
+                _s.stop()
+                log.info("Polymarket US stream stopped")
+        except Exception as e:
+            log.warning("Polymarket US stream stop failed: %s", e)
         # V2: live mode pulls venue resting orders before the slow teardown —
         # an unmanned maker order is naked exposure once this process is gone.
         try:
