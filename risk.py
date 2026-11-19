@@ -241,7 +241,7 @@ class RiskManager:
         return False, "ok"
 
     def kelly_size(self, win_prob: float, entry_price_cents: int, 
-                   total_balance: float) -> float:
+                   total_balance: float, aggressive_fill: bool = True) -> float:
         """Calculate fractional Kelly bet size in dollars.
         
         Kelly fraction = (p * b - q) / b where:
@@ -275,11 +275,13 @@ class RiskManager:
         
         # Must have positive edge after fees
         # Net EV per contract = p * profit - q * loss - fee
-        fee_per_contract = fees.FEE_RATE * (entry_price_cents / 100.0) * (profit_cents / 100.0)
+        # For MAKER mode (aggressive_fill=False), fee = 0
+        fee_rate = fees.FEE_RATE if aggressive_fill else 0.0
+        fee_per_contract = fee_rate * (entry_price_cents / 100.0) * (profit_cents / 100.0)
         net_ev = p * (profit_cents / 100.0) - q * (loss_cents / 100.0) - fee_per_contract
         
         if net_ev < config.MIN_EV_EDGE_PCT:
-            log.debug("Kelly rejected: net EV $%.4f < min edge $%.4f", net_ev, config.MIN_EV_EDGE_PCT)
+            log.debug("Kelly rejected: net EV $%.4f < min edge $%.4f (aggressive_fill=%s)", net_ev, config.MIN_EV_EDGE_PCT, aggressive_fill)
             return 0.0
         
         # Kelly bet in dollars (rounded to cents to avoid floating-point edge

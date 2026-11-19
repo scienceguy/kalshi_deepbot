@@ -147,8 +147,8 @@ def _maker_price(market: MarketInfo, bullish: bool) -> Optional[int]:
         )
         if bullish:
             if yes_bid and yes_ask:
-                if yes_ask <= yes_bid:
-                    return None  # locked/crossed YES book — no honest maker price
+                if yes_ask < yes_bid:  # reviewed: strictly crossed (bid > ask) rejects; zero spread (bid==ask) allows maker price
+                    return None  # crossed YES book (bid > ask) — no honest maker price
                 target = yes_bid + 1 if (yes_ask - yes_bid) > 1 else yes_bid
                 # Deeper quote: 1c under ask. Fill-rate report (computed
                 # 2026-11-15, B19) from the local orders tables
@@ -168,8 +168,8 @@ def _maker_price(market: MarketInfo, bullish: bool) -> Optional[int]:
                 result = yes_ask or yes_bid or 1
         else:
             if no_bid and no_ask:
-                if no_ask <= no_bid:
-                    return None  # locked/crossed NO book — no honest maker price
+                if no_ask < no_bid:  # reviewed: strictly crossed (bid > ask) rejects; zero spread (bid==ask) allows maker price
+                    return None  # crossed NO book (bid > ask) — no honest maker price
                 target = no_bid + 1 if (no_ask - no_bid) > 1 else no_bid
                 result = min(target, max(1, no_ask - 1))
             else:

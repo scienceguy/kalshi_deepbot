@@ -17,16 +17,7 @@ def _market(yes_bid, yes_ask, no_bid, no_ask):
     return m
 
 
-# ── Item 1: locked/crossed books rejected on BOTH sides ─────────────────────
-
-def test_maker_price_locked_yes_book_returns_none():
-    # yes_ask == yes_bid → locked book, comment said "reject" but returned yes_bid
-    m = _market(50, 50, 45, 55)
-    config.AGGRESSIVE_FILL = False
-    assert _maker_price(m, True) is None
-    # bearish evaluates the NO book on its own quotes, which here is normal
-    assert _maker_price(m, False) == 46
-
+# ── Item 1: crossed books rejected on BOTH sides; zero-spread books now price ─────
 
 def test_maker_price_crossed_yes_book_returns_none():
     m = _market(60, 40, 50, 50)  # yes_ask < yes_bid → crossed
@@ -40,10 +31,20 @@ def test_maker_price_crossed_no_book_returns_none():
     assert _maker_price(m, False) is None
 
 
-def test_maker_price_locked_no_book_returns_none():
-    m = _market(50, 55, 45, 45)  # no_ask == no_bid → locked NO book
+def test_maker_price_zero_spread_yes_book_prices():
+    # yes_ask == yes_bid → zero spread (not crossed), should price at bid+1/ask-1
+    m = _market(50, 50, 45, 55)
     config.AGGRESSIVE_FILL = False
-    assert _maker_price(m, False) is None
+    assert _maker_price(m, True) == 49  # min(bid+1, ask-1) = min(51, 49) = 49
+    # NO book is normal
+    assert _maker_price(m, False) == 46
+
+
+def test_maker_price_zero_spread_no_book_prices():
+    # no_ask == no_bid → zero spread (not crossed), should price at min(bid+1, ask-1)
+    m = _market(50, 55, 45, 45)
+    config.AGGRESSIVE_FILL = False
+    assert _maker_price(m, False) == 44  # min(bid+1, ask-1) = min(46, 44) = 44
 
 
 def test_maker_price_normal_book_still_prices():
