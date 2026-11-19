@@ -221,10 +221,34 @@ def market_end_dt(market: dict):
     return None
 
 
+def _amount_float(amount: dict | None) -> Optional[float]:
+    """Parse Polymarket US amount object: {'value': '0.0100', 'currency': 'USD'} -> float."""
+    if not amount or "value" not in amount:
+        return None
+    try:
+        return float(amount["value"])
+    except (TypeError, ValueError):
+        return None
+
+
 def _book_yes_prices(book: dict):
-    """(yes_bid, yes_ask) from a Polymarket US BBO response; (None, None) if unreadable."""
+    """(yes_bid, yes_ask) from a Polymarket US BBO response; (None, None) if unreadable.
+
+    Handles both legacy format (bbo.yes_bid/yes_ask) and current API format:
+    {'marketData': {'bestBid': {'value': '...', 'currency': 'USD'}, 'bestAsk': {...}}}
+    """
     if not isinstance(book, dict):
         return None, None
+    
+    # Current API format: marketData.bestBid / bestAsk
+    market_data = book.get("marketData")
+    if isinstance(market_data, dict):
+        bid = _amount_float(market_data.get("bestBid"))
+        ask = _amount_float(market_data.get("bestAsk"))
+        if bid is not None or ask is not None:
+            return bid, ask
+    
+    # Legacy format: bbo.yes_bid / yes_ask
     bbo = book.get("bbo") if isinstance(book.get("bbo"), dict) else book
     try:
         bid = float(bbo["yes_bid"])
@@ -2151,15 +2175,15 @@ class PolyUSPaperTrader:
             yes_bid, yes_ask = _bbo_for_slug(slug)
         except Exception:
             yes_bid, yes_ask = None, None
-        book = (
-            {"bbo": {"yes_bid": yes_bid, "yes_ask": yes_ask}}
-            if yes_bid is not None and yes_ask is not None
-            else {}
-        )
+        # For YES side we need ask; for NO side we need bid (which gives NO ask = 1 - bid)
         if side == "yes":
             ask = yes_ask
+            # Book is readable if we have the ask for YES side
+            book = {"bbo": {"yes_bid": yes_bid, "yes_ask": yes_ask}} if yes_ask is not None else {}
         else:
+            # NO side: need yes_bid to compute NO ask = 1 - yes_bid
             ask = round(1.0 - yes_bid, 4) if yes_bid is not None else None
+            book = {"bbo": {"yes_bid": yes_bid, "yes_ask": yes_ask}} if yes_bid is not None else {}
 
         fill_price = None
         entry_fee = 0.0
