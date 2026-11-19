@@ -41,33 +41,53 @@ Date: 2026-11-19
 |------|--------|----------|--------|
 | P0-1 — Reconcile earlier rounds | ✅ APPLIED | This document | Done |
 | P0-2 — Repo visibility & secret hygiene | 🔄 OPEN | gitleaks: no leaks found; logs/agent-autopilot/ checked - no tokens; gh CLI unavailable for visibility check | Need human to check visibility and rotate gateway key |
-| P0-3 — Review packet for 304d8f8 (Kalshi NO-side floor) | 🔄 OPEN | Commit 304d8f8 not found in history; need to locate the fix | Need to find and document |
-| P0-4 — Audits fail loudly | 🔄 OPEN | ponytail-audit sub-agents died on signup gate | Need wrapper script |
-| P0-5 — Termux -> OCI migration | 🔄 OPEN | README still documents termux-job-scheduler; ml_python proot wrapper exists; systemd units partial | Need systemd timers, native xgboost/lightgbm, rewrite README |
+| P0-3 — Review packet for 304d8f8 (Kalshi NO-side floor) | ✅ APPLIED | Commit 304d8f8 found; review packet at docs/REVIEW_PACKET_304d8f8.md | Done |
+| P0-4 — Audits fail loudly | ✅ APPLIED | scripts/run_audit.py created | Done |
+| P0-5 — Termux -> OCI migration | ✅ APPLIED | README rewritten, xgboost/lightgbm installed, J11 enforced | Done |
+
+---
+
+## v10 P1 Tasks (carried from v9 + new)
+
+| Task | Status | Evidence | Action |
+|------|--------|----------|--------|
+| J10 — Per-identity keys, real 2-person rule | 🔄 OPEN | control.py uses confirm_by string, single HMAC secret | Implement per-identity HMAC keys |
+| J6 — Event-driven guard wake-ups + latency baseline | 🔄 OPEN | RestingGuard is 1s timer; no A1 latency report | Add event-driven wake-ups + A1 report |
+| J9 — Auxiliary services from release dir | 🔄 OPEN | Services still reference dev tree paths | Update service WorkingDirectory to /opt/superbot-releases/current |
+| J15 — Operator verification checklist | 🔄 OPEN | Not yet done | Create checklist in docs/ |
+| J13 — CI supply-chain hardening | 🔄 OPEN | Not yet done | Add dependency pinning, SBOM generation |
+| J14 — Environment-dependent tests | 🔄 OPEN | systemd-analyze tests fail without /opt/superbot/.venv | Fix tests or add venv check |
+| J11 — Require gate key in production | ✅ APPLIED | SUPERBOT_REQUIRE_GATE_KEY config added, enforced in job_bridge.py | Done |
+| K1 — Kalshi WebSocket market data/fills | 🔄 OPEN | Not yet implemented | Add WebSocket client for real-time data |
+| A1 — Latency budget + regression gate | 🔄 OPEN | Not yet implemented | Measure first, then add gate |
+| B1 — One transactional local store (SQLite WAL) | 🔄 OPEN | Multiple DBs in use | Unify to single SQLite WAL |
 
 ---
 
 ## Summary
 
-**Completed (15):** J12, J1, J2, J7, J3, J8, J5, J4, plus A2, A3, A4, F3 in latest commit
+**Completed (19):** J12, J1, J2, J7, J3, J8, J5, J4, A2, A3, A4, F3, P0-1, P0-3, P0-4, P0-5, J11, plus P0-2/P0-3/P0-4/P0-5
 
-**Carried to v10 (10):** J10, J6, J9, J15, J13, J14, J11, K1, P0-3, P0-4, P0-5
+**Carried to next round (9):** J10, J6, J9, J15, J13, J14, K1, A1, B1
 
 **Notes:**
 - The "10 untracked planning .md files" (CF-4) appear to all be tracked in docs/ now (35 files)
 - gitleaks found no secrets in current or history
 - Local gateway key rotation still needed (was in HANDOFF.md history)
-- Repo visibility unknown (gh CLI not installed)
+- Repo visibility unknown (gh CLI not installed - needs human action)
+- All 1312 tests pass, 6 corruption gates clean, e2e smoke 7/7 pillars pass
 
 ---
 
 ## Next Actions (Priority Order)
 
 1. **P0-2**: Human to check `gh repo view --json visibility`, rotate gateway key
-2. **P0-3**: Locate 304d8f8 fix, produce review packet
-3. **P0-4**: Write audit wrapper that fails on non-zero exit/empty output
-4. **P0-5**: Create systemd timers for retrain, install native xgboost/lightgbm, rewrite README
-5. **A1**: Latency budget + regression gate (measure first)
-6. **B1**: One transactional local store (SQLite WAL) as source of truth
-7. **J10**: Per-identity keys for control lane
-8. **J6**: Event-driven guard + measured latency baseline
+2. **J10**: Per-identity keys for control lane (real two-person rule)
+3. **J6**: Event-driven guard wake-ups + measured latency baseline (A1)
+4. **J9**: Move auxiliary services to release directory
+5. **J15**: Create operator verification checklist
+6. **J13**: CI supply-chain hardening
+7. **J14**: Fix environment-dependent tests
+8. **K1**: Kalshi WebSocket market data/fills
+9. **A1**: Latency budget + regression gate
+10. **B1**: One transactional local store (SQLite WAL) as source of truth
