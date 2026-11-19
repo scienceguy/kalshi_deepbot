@@ -73,10 +73,12 @@ class _LazyModule:
     """
 
     def __init__(self, name):
+        """Record the module name; the import itself is deferred to first attribute access."""
         self._name = name
         self._mod = None
 
     def __getattr__(self, attr):
+        """Import `self._name` on first attribute access and cache it."""
         if self._mod is None:
             import importlib
             self._mod = importlib.import_module(self._name)
@@ -211,12 +213,14 @@ def _save_paper_positions(positions: dict) -> None:
         log.warning("Could not write %s: %s", PAPER_POSITIONS_FILE, e)
 
 def _load_settled_since() -> dict:
+    """Return the settled-since checkpoint map, or {} when missing/unreadable."""
     try:
         return json.loads(SETTLED_SINCE_FILE.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
-def _save_settled_since(data: dict):
+def _save_settled_since(data: dict) -> None:
+    """Persist the settled-since checkpoint atomically via tmp + os.replace."""
     tmp = SETTLED_SINCE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data))
     os.replace(tmp, SETTLED_SINCE_FILE)
@@ -237,6 +241,7 @@ class BotState:
     """Encapsulates all mutable bot state."""
 
     def __init__(self):
+        """Initialise empty state, loading persisted paper positions/settled-since checkpoint."""
         self.positions: dict = _load_paper_positions()  # ticker -> order_id or "dry"
         self.resting_value: dict = {}      # order_id -> {"dollars": float, "ticker": str}
         self.resting_tickers: set = set()  # tickers with resting orders this cycle
@@ -390,11 +395,17 @@ class BotState:
             log.warning("Duplicate-order lookup failed for %s: %s", coid, e)
         return None
 
-    def _place_order(self, client, sig, coid):
-        # B5: at most one retry per intent, always with the SAME deterministic
-        # client_order_id, and only after matching resting/filled orders by it
-        # — a POST that timed out or 5xx'd after the venue accepted it must
-        # never become a second resting order.
+    def _place_order(self, client, sig, coid) -> dict | None:
+        """Place a limit order idempotently.
+
+        B5: at most one retry per intent, always with the SAME deterministic
+        client_order_id, and only after matching resting/filled orders by it —
+        a POST that timed out or 5xx'd after the venue accepted it must
+        never become a second resting order.
+
+        Returns the venue order dict (possibly the adopted duplicate) or None.
+        Auth failures are re-raised so the main loop stops on a dead key.
+        """
         for attempt in (0, 1):
             try:
                 return client.place_order(
@@ -428,7 +439,14 @@ class BotState:
         return None
 
     def _record_filled_order(self, client, sig, oid, fill_count, status,
-                             fees_dollars, cycles, entry_taker: bool = False):
+                             fees_dollars, cycles, entry_taker: bool = False) -> None:
+        """Book a confirmed fill into positions, window budget and the local DB.
+
+        Records the ACTUAL filled contracts (int floor), not the intended size:
+        a partial fill would otherwise mis-book settlement P&L and over-reserve
+        capital. Idempotent downstream: settlement P&L is booked against the
+        position record created here, keyed on ticker.
+        """
         ticker = sig.market.ticker
         # Record the ACTUAL filled contracts (int), not the intended size — a
         # partial fill would otherwise mis-book PnL at settlement and over-reserve
@@ -503,7 +521,8 @@ def get_state() -> BotState:
     return state
 
 def __getattr__(name):
-    # PEP 562: let `trader.state` resolve to the singleton even before
+    """PEP 562 hook: resolve `trader.state` to the singleton without creating it at import time."""
+    # Let `trader.state` resolve to the singleton even before
     # get_state() has run, without creating state at import time.
     if name == "state":
         return get_state()
@@ -582,6 +601,7 @@ def _place_poly_order(sig) -> None:
     )
 
 def _window_id(now: datetime) -> int:
+    """Return the index of the 15-minute settlement window containing `now`."""
     return int(now.timestamp() // (15 * 60))
 
 def _touch_window(now: datetime, cash: float, exposure: float = 0.0):
@@ -1901,7 +1921,14 @@ def _report_cycle_state(cash, positions, risk_state):
     except Exception as e:
         log.warning("_report_cycle_state failed (non-fatal): %s", e)
 
-def cycle(client: KalshiClient):
+def cycle(client: KalshiClient) -> None:
+    """Run one trading cycle: control drain → risk reset → maintenance → discovery → signals → orders → exits.
+
+    Each phase is individually guarded so one failure never kills the loop.
+    Mutates the module-global `state` (positions, window budget, risk,
+    cycles counter); returns nothing. Settlement P&L reconciliation lives in
+    `_replay_settlement_queue` (run at startup) and `_manage_exits` (in-cycle).
+    """
     state.cycles += 1
     _cycle_t0 = time.time()
     log.info("── Cycle %d ──────────────────────", state.cycles)
@@ -3196,7 +3223,13 @@ def _report_kalshi_request_budget(client) -> None:
         log.warning("cycle kalshi request budget exceeded: %d > %d (KALSHI_REQUEST_BUDGET_PER_CYCLE)",
                     requests, budget)
 
-def main():
+def main() -> None:
+    """CLI entry point: parse args, configure logging/lock, then run the trading loop.
+
+    Handles the --status/--sync-status operator probes (print metrics and exit),
+    refuses to trade when the env says DRY_RUN=false but --live was not passed,
+    and holds the instance lock for the process lifetime.
+    """
     args = parse_args()
     if args.status:
         # --status: operator visibility into the durable outbox, no trading.
@@ -3242,7 +3275,13 @@ def main():
         except (OSError, FileNotFoundError):
             pass
 
-def _run_loop(args):
+def _run_loop(args) -> None:
+    """Run the main trading loop until SIGTERM/SIGINT or the cycle limit is hit.
+
+    Starts MemPalace/report hooks, validates the startup path, then loops:
+    cycle() every args.interval seconds with resilience backoff on repeated
+    failures. In --once mode it runs a single cycle and returns.
+    """
     global _bridge
     mode = "DRY RUN 🔵" if config.DRY_RUN else "LIVE ⚡"
     log.info("=" * 58)
@@ -3638,6 +3677,7 @@ def _run_loop(args):
         return
 
     def _shutdown_handler(signum, frame):
+        """Flip state.running to False and best-effort drain outbox/bid history before exit."""
         sig_name = "SIGTERM" if signum == sig_mod.SIGTERM else "SIGINT"
         log.info("%s received — shutting down gracefully", sig_name)
         state.running = False

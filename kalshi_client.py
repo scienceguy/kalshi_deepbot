@@ -29,9 +29,11 @@ log = logging.getLogger(__name__)
 # Kalshi rate limit: ~10 req/s sustained; we stay well under it.
 # Read from config at call time so runtime config changes take effect.
 def _min_request_gap() -> float:
+    """Min seconds between general Kalshi requests (read from config at call time)."""
     return float(config.REQUEST_MIN_GAP_SECONDS)
 
 def _min_balance_gap() -> float:
+    """Min seconds between balance calls — Kalshi allows 1 req/s; we enforce >=1.1s."""
     # Kalshi limits /portfolio/balance to 1 req/sec; enforce >=1.1s between balance calls
     return max(1.1, float(config.REQUEST_MIN_GAP_SECONDS) * 2.0)
 
@@ -82,6 +84,11 @@ class KalshiClient:
     """
 
     def __init__(self):
+        """Build the client from config: load the RSA key, prime rate-limit state and session.
+
+        Verification is lazy — the key is checked on first API call via
+        _ensure_verified(), not here, so importing/constructing stays side-effect free.
+        """
         self.base_url   = config.KALSHI_BASE_URL
         self._api_path  = urlparse(self.base_url).path
         self.key_id     = config.KALSHI_KEY_ID
@@ -700,12 +707,13 @@ class KalshiClient:
         Price is a dollar string e.g. "0.6100".
         """
         if price_cents < 1 or price_cents > 99:
-            log.error("place_order: price_cents=%s out of valid range (1-99), rejecting", price_cents)
+            log.error("place_order: %s price_cents=%s out of valid range (1-99), rejecting",
+                      ticker, price_cents)
             return None
 
         if contracts < MIN_CONTRACTS:
-            log.error("place_order: contracts=%s below Kalshi minimum %.2f, rejecting",
-                      contracts, MIN_CONTRACTS)
+            log.error("place_order: %s contracts=%s below Kalshi minimum %.2f, rejecting",
+                      ticker, contracts, MIN_CONTRACTS)
             return None
 
         if side == "yes":
@@ -758,17 +766,17 @@ class KalshiClient:
         on the YES leg would invert the order, so the complement is applied here.
         """
         if not 1 <= price_cents <= 99:
-            raise ValueError(f"sell_position: price_cents={price_cents} out of range (1-99)")
+            raise ValueError(f"sell_position: {ticker} price_cents={price_cents} out of range (1-99)")
         if contracts < MIN_CONTRACTS:
             raise ValueError(
-                f"sell_position: contracts={contracts} below Kalshi minimum {MIN_CONTRACTS}")
+                f"sell_position: {ticker} contracts={contracts} below Kalshi minimum {MIN_CONTRACTS}")
 
         if side == "yes":
             api_side, yes_leg_cents = "ask", price_cents
         elif side == "no":
             api_side, yes_leg_cents = "bid", 100 - price_cents
         else:
-            raise ValueError(f"sell_position: side must be 'yes' or 'no', got {side!r}")
+            raise ValueError(f"sell_position: {ticker} side must be 'yes' or 'no', got {side!r}")
 
         payload = {
             "ticker":                      ticker,

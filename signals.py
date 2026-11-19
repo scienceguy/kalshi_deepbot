@@ -44,6 +44,7 @@ class TradeSignal:
 
     @property
     def is_trade(self) -> bool:
+        """True when the signal is a real trade (not PASS, valid side/price/size)."""
         return (
             self.direction != "PASS"
             and self.side in ("yes", "no")
@@ -185,6 +186,7 @@ class BidHistory:
     for backward compatibility.
     """
     def __init__(self):
+        """Start with empty history; the file is loaded lazily on first use."""
         self._bid_hist: dict[str, list[tuple[float, int]]] = {}
         self._bid_hist_loaded_at: float = 0.0
         self._cleanup_counter: int = 0
@@ -193,7 +195,8 @@ class BidHistory:
         """Get bid history file path, evaluated at call time."""
         return Path(config.SUPERBOT_DATA_DIR) / f"bid_hist_{'dry' if config.DRY_RUN else 'live'}.json"
 
-    def _load(self, force: bool = False):
+    def _load(self, force: bool = False) -> None:
+        """Load bid history from disk, honouring the 60s TTL unless `force` is set."""
         now = time.time()
         # reviewed: TTL check avoids unnecessary reloads within the cache window
         if not force and self._bid_hist_loaded_at and (now - self._bid_hist_loaded_at) < _BID_HIST_TTL_SECONDS:
@@ -222,12 +225,14 @@ class BidHistory:
             self._bid_hist = {}
             self._bid_hist_loaded_at = now
 
-    def _ensure_loaded(self):
-        # reviewed: zero timestamp means never loaded
+    def _ensure_loaded(self) -> None:
+        """Force a load on first call; no-op once history has been read."""
+        # zero timestamp means never loaded
         if self._bid_hist_loaded_at == 0.0:
             self._load(force=True)
 
-    def _save(self):
+    def _save(self) -> None:
+        """Write bid history to disk atomically (tmp file + os.replace, flock'd)."""
         try:
             hist_file = self._bid_hist_file()
             tmp_file = hist_file.with_name(f"{hist_file.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
@@ -240,7 +245,8 @@ class BidHistory:
             log.error("Failed to save bid history: %s — HISTORY NOT PERSISTED", e)
             raise
 
-    def track_bid(self, ticker: str, yes_bid_cents: int, now: float):
+    def track_bid(self, ticker: str, yes_bid_cents: int, now: float) -> list[tuple[float, int]]:
+        """Append a bid observation for `ticker`, evicting stale/oversized entries. Returns the per-ticker history."""
         self._ensure_loaded()
         h = self._bid_hist.setdefault(ticker, [])
         h.append((now, max(0, min(100, int(yes_bid_cents or 0)))))
@@ -255,7 +261,8 @@ class BidHistory:
                 self._bid_hist.pop(k, None)
         return h
 
-    def maybe_save(self, now: float):
+    def maybe_save(self, now: float) -> None:
+        """Periodically save history and TTL-clean old entries (every 50th call or >50k entries)."""
         # TTL-based cleanup: remove entries older than lookback + 1 hour
         self._cleanup_counter += 1
         self._ensure_loaded()
@@ -285,17 +292,20 @@ class BidHistory:
                 log.warning("Failed to save bid history: %s — retrying next cycle", e)
             self._bid_hist_loaded_at = now
 
-    def force_save(self):
+    def force_save(self) -> None:
+        """Best-effort save, logging instead of raising (used on shutdown)."""
         try:
             self._save()
         except Exception as e:
             log.warning("Failed to force-save bid history on shutdown: %s", e)
 
-    def get_history(self, ticker: str):
+    def get_history(self, ticker: str) -> list[tuple[float, int]]:
+        """Return the [(ts, bid_cents), ...] history for `ticker` ([] when unseen)."""
         self._ensure_loaded()
         return self._bid_hist.get(ticker, [])
 
     def compute_momentum(self, ticker: str, now: float, lookback_min: float = 2.0) -> float:
+        """Slope of the YES bid in cents/minute over the lookback window (0.0 when insufficient data)."""
         h = self.get_history(ticker)
         # reviewed: need at least 2 points for a slope
         if len(h) < 2:
@@ -323,27 +333,33 @@ def _bid_hist_file() -> Path:
     return _default_bid_hist._bid_hist_file()
 
 
-def _load_bid_hist(force: bool = False):
+def _load_bid_hist(force: bool = False) -> None:
+    """Load the shared default history, honouring the TTL unless `force` (module-level shim)."""
     _default_bid_hist._load(force)
 
 
-def _ensure_bid_hist_loaded():
+def _ensure_bid_hist_loaded() -> None:
+    """Force-load the shared default history once (module-level shim)."""
     _default_bid_hist._ensure_loaded()
 
 
-def _save_bid_hist():
+def _save_bid_hist() -> None:
+    """Persist the shared default history (module-level shim)."""
     _default_bid_hist._save()
 
 
-def _track_bid(ticker: str, yes_bid_cents: int, now: float):
+def _track_bid(ticker: str, yes_bid_cents: int, now: float) -> list[tuple[float, int]]:
+    """Record a bid observation on the shared default instance (module-level shim)."""
     return _default_bid_hist.track_bid(ticker, yes_bid_cents, now)
 
 
-def _maybe_save_bid_hist(now: float):
+def _maybe_save_bid_hist(now: float) -> None:
+    """Periodic save/TTL cleanup on the shared default instance (module-level shim)."""
     _default_bid_hist.maybe_save(now)
 
 
-def _force_save_bid_hist():
+def _force_save_bid_hist() -> None:
+    """Shutdown-time save of the shared default history (module-level shim)."""
     _default_bid_hist.force_save()
 
 
@@ -847,14 +863,17 @@ class SignalEngine:
     """Wrapper exposing the signal engine as an object for callers expecting SignalEngine."""
 
     def __init__(self, default_cash: float = 10.0):
+        """Create an engine with its own BidHistory instance (S10: no shared module state)."""
         self.default_cash = default_cash
         self.bid_hist = BidHistory()  # S10: own bid history instance
 
     def evaluate(self, market: MarketInfo, cash: Optional[float] = None,
                  max_trade_override: Optional[float] = None) -> List[TradeSignal]:
+        """Evaluate `market`; returns 0 or 1 TradeSignal per market (PASS signals included)."""
         c = cash if cash is not None else self.default_cash
         return evaluate(market, cash=c, max_trade_override=max_trade_override,
                         bid_hist=self.bid_hist)
 
     def rank_signals(self, signals: list) -> list:
+        """Rank tradeable signals by strength × confidence (HEDGE_NO boosted ×1.2), ticker as tiebreak."""
         return rank_signals(signals)

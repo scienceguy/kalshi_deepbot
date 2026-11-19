@@ -82,6 +82,7 @@ class _CircuitBreaker:
     """
 
     def __init__(self, threshold: int = 20, cooldown_s: float = 60.0):
+        """Configure the breaker: open after `threshold` consecutive failures, stay open `cooldown_s`."""
         self.threshold = int(threshold)
         self.cooldown_s = float(cooldown_s)
         self._consecutive_failures = 0
@@ -89,6 +90,7 @@ class _CircuitBreaker:
         self._lock = threading.Lock()
 
     def allow(self) -> bool:
+        """False while the breaker is open (within cooldown); True otherwise."""
         with self._lock:
             if self._opened_at and (time.time() - self._opened_at) < self.cooldown_s:
                 return False
@@ -96,9 +98,11 @@ class _CircuitBreaker:
 
     @property
     def is_open(self) -> bool:
+        """True when the breaker is open (delivery paused)."""
         return not self.allow()
 
     def record_success(self) -> None:
+        """Reset the failure counter; emit breaker.clear if the breaker was open."""
         with self._lock:
             was_open = bool(self._opened_at)
             self._consecutive_failures = 0
@@ -107,6 +111,7 @@ class _CircuitBreaker:
             self._emit_breaker_event("breaker.clear")
 
     def record_failure(self) -> None:
+        """Increment the failure counter; trip the breaker (and emit breaker.trip) at the threshold."""
         with self._lock:
             self._consecutive_failures += 1
             if self._consecutive_failures >= self.threshold:
@@ -126,6 +131,7 @@ class _CircuitBreaker:
             self._emit_breaker_event("breaker.trip")
 
     def _emit_breaker_event(self, event_type: str) -> None:
+        """Best-effort emit of breaker.trip/breaker.clear via the durable outbox; never raises."""
         # Critical lane: routed via the durable outbox, so this never fails
         # the sender thread that triggered it.
         try:
@@ -151,11 +157,13 @@ _outbox_sender_started = False
 _outbox_sender_lock = threading.Lock()
 
 def _telemetry_dropped_inc() -> None:
+    """Increment the dropped-telemetry counter (thread-safe)."""
     global _telemetry_dropped
     with _telemetry_dropped_lock:
         _telemetry_dropped += 1
 
 def _telemetry_dropped_get() -> int:
+    """Return the cumulative count of telemetry items dropped due to overflow."""
     with _telemetry_dropped_lock:
         return _telemetry_dropped
 
@@ -218,6 +226,7 @@ def _outbox_sender(db=None, lane: str = "normal"):
             time.sleep(2.0)
 
 def _lane_timeout(delivery_class: str) -> Tuple[float, float]:
+    """Return the bounded (connect, read) timeout for a delivery lane; unknown lanes get the normal timeout."""
     return _LANE_TIMEOUTS.get(delivery_class or "normal", NORMAL_WEBHOOK_TIMEOUT)
 
 def _deliver_outbox_row(db, row: Dict[str, Any]) -> None:
@@ -422,6 +431,11 @@ class N8nClient:
     """Client for n8n REST API and signed webhook delivery."""
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, api_key: Optional[str] = None):
+        """Build the client: assert transport safety, load the API key, create API + webhook sessions.
+
+        Webhook deliveries never carry the API key — they use HMAC-SHA256 signing
+        on a separate session. Raises ValueError on non-loopback plaintext http.
+        """
         _assert_transport_safe(base_url)
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key or load_api_key()
@@ -487,21 +501,27 @@ class N8nClient:
         raise last_err
 
     def list_workflows(self, limit: int = 50, skip: int = 0) -> Dict[str, Any]:
+        """List workflows (paginated) from the n8n REST API."""
         return self._request("GET", "workflows", params={"limit": limit, "skip": skip})
 
     def get_workflow(self, workflow_id: str) -> Dict[str, Any]:
+        """Fetch one workflow by id."""
         return self._request("GET", f"workflows/{workflow_id}")
 
     def create_workflow(self, workflow_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a workflow from a full workflow definition."""
         return self._request("POST", "workflows", data=workflow_data)
 
     def update_workflow(self, workflow_id: str, workflow_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace a workflow definition (full graph — omitted nodes are deleted)."""
         return self._request("PUT", f"workflows/{workflow_id}", data=workflow_data)
 
     def delete_workflow(self, workflow_id: str) -> Dict[str, Any]:
+        """Delete a workflow by id."""
         return self._request("DELETE", f"workflows/{workflow_id}")
 
     def activate_workflow(self, workflow_id: str) -> Dict[str, Any]:
+        """Activate a workflow so its webhooks register."""
         return self._request("POST", f"workflows/{workflow_id}/activate")
 
     # ── Webhooks ──────────────────────────────────────────────────────
@@ -710,18 +730,23 @@ class N8nClient:
     # ── SuperBot convenience methods ──────────────────────────────────
 
     def run_backtest(self, data: Optional[Dict] = None) -> Dict[str, Any]:
+        """POST to the superbot-backtest webhook (fire-and-forget by default)."""
         return self.execute_webhook("superbot-backtest", data or {})
 
     def run_data_collect(self, data: Optional[Dict] = None) -> Dict[str, Any]:
+        """POST to the superbot-collect webhook (fire-and-forget by default)."""
         return self.execute_webhook("superbot-collect", data or {})
 
     def run_trade(self, data: Optional[Dict] = None) -> Dict[str, Any]:
+        """POST to the superbot-trade webhook (fire-and-forget by default)."""
         return self.execute_webhook("superbot-trade", data or {})
 
     def run_monitor(self, data: Optional[Dict] = None) -> Dict[str, Any]:
+        """POST to the superbot-monitor webhook (fire-and-forget by default)."""
         return self.execute_webhook("superbot-monitor", data or {})
 
     def get_workflow_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Return the first workflow whose `name` matches, else None."""
         workflows = self.list_workflows(limit=100)
         for w in workflows.get("data", []):
             if w.get("name") == name:
@@ -729,6 +754,7 @@ class N8nClient:
         return None
 
     def ensure_workflow_active(self, workflow_id: str) -> Dict[str, Any]:
+        """Return the workflow, activating it first if it is not active."""
         wf = self.get_workflow(workflow_id)
         if not wf.get("active"):
             return self.activate_workflow(workflow_id)

@@ -216,7 +216,10 @@ if not (url and key):
 
 
 class SupabaseClient:
+    """REST client for the Supabase Postgres tables, with circuit-breaker degradation."""
+
     def __init__(self):
+        """Load credentials; disable the client (no-op writes) when they are missing."""
         url, key = _load_credentials()
         self.url = url.rstrip("/") if url else ""
         self.key = key or ""
@@ -233,6 +236,7 @@ class SupabaseClient:
             log.warning("Supabase credentials not found — Supabase writes disabled")
 
     def _headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """Return the PostgREST headers, merged with any `extra` overrides."""
         headers = {
             "apikey": self.key,
             "Authorization": f"Bearer {self.key}",
@@ -246,6 +250,15 @@ class SupabaseClient:
     def _request(self, method: str, path: str, data: Optional[Any] = None,
                  params: Optional[Dict] = None, extra_headers: Optional[Dict[str, str]] = None,
                  max_retries: int = 3) -> Optional[Dict]:
+        """Perform a PostgREST request with retry, circuit breaking and 4xx handling.
+
+        Retries (429/5xx/network) use linear backoff and count toward the module-level
+        circuit breaker; after a threshold of consecutive failures writes are skipped for
+        a cooldown. 4xx client errors (except 429/404 PGRST205/409) log and return None
+        without disabling the client. 404+PGRST205 (missing table) logs once then stays
+        quiet. 401/403 disable the client for the process lifetime. Returns parsed JSON,
+        {} on empty body, or None when disabled/skipped/failed.
+        """
         if not self.enabled:
             return None
         if _supabase_circuit_open():

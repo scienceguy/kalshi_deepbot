@@ -376,6 +376,7 @@ def _measured_q_floor():
 
 
 def _hurdle_for(asset: str | None) -> float:
+    """Return the atr-hurdle for `asset` (uppercased series suffix), falling back to the global default."""
     return float(getattr(config, f"GATES_ATR_HURDLE_{asset or ''}",
                          config.GATES_ATR_HURDLE))
 
@@ -643,6 +644,7 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
 
 
 def _fmt(v) -> str:
+    """Format a gate metric for the log line: '-' for None, 4dp for floats, str() otherwise."""
     if v is None:
         return "-"
     if isinstance(v, float):
