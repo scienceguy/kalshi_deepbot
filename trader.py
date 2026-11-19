@@ -1263,10 +1263,11 @@ def _replay_settlement_queue(client=None):
                 # Never credit PnL when the ledger write failed (None).
                 if applied is True:
                     pnl_to_add = pnl
-                    new_session_pnl = state.session_pnl + pnl_to_add
+                    st = get_state()
+                    new_session_pnl = st.session_pnl + pnl_to_add
 
                     # Update daily P&L for circuit breaker (Pillar B)
-                    state.risk.update_daily_pnl(pnl_to_add)
+                    st.risk.update_daily_pnl(pnl_to_add)
 
                     # Credit paper ledger for dry-run compounding (matches the
                     # settlement path at trader.py:1279-1281). Keeps paper_state.json
@@ -1280,7 +1281,7 @@ def _replay_settlement_queue(client=None):
                     try:
                         # reviewed: D1 local bot_state write replaces the inline Supabase call
                         if get_local_db().set_bot_state_batch({"session_pnl": new_session_pnl}):
-                            state.session_pnl = new_session_pnl
+                            st.session_pnl = new_session_pnl
                             log.debug("Replayed settlement PnL $%.2f persisted to local bot_state", new_session_pnl)
                         else:
                             # DB write returned False - do not credit PnL

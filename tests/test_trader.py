@@ -399,7 +399,7 @@ def test_replay_resolves_pending_and_credits(monkeypatch, tmp_path):
     monkeypatch.setattr(trader, "get_local_db", lambda: MagicMock(apply_settlement_pnl=MagicMock(return_value=True)))
     # Mock Supabase to succeed
 
-    trader._replay_settlement_queue(client)
+    trader._replay_settlement_queue(client)  # tests _replay_settlement_queue fix
 
     assert trader.state.session_pnl > 0
     assert json.loads(qfile.read_text()) == []  # drained
