@@ -1987,6 +1987,9 @@ def cycle(client: KalshiClient):
     except Exception as e:
         log.warning("control drain failed: %s", e)
 
+    # S4 fix: roll daily window at cycle boundary (not on every pre-trade check)
+    state.risk.check_halt_and_reset()
+
     # Maintenance
     try:
         se._maybe_save_bid_hist(time.time())

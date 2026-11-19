@@ -546,5 +546,27 @@ class TestThinCushionDenial:
         assert any("gate3" in r for r in res.reasons)
 
 
+class TestEntryFee:
+    """Test gates.entry_fee with series parameter (S7 fix)."""
+
+    def test_entry_fee_standard_series_returns_taker(self):
+        """Standard series (no maker fees) returns taker fee when enabled."""
+        with patch.object(config, 'GATES_FEE_TAKER', True):
+            with patch.object(config, 'AGGRESSIVE_FILL', False):
+                fee = gates.entry_fee(0.95, series="KXBTC15M")
+                assert fee > 0  # taker fee applied
+
+    def test_entry_fee_maker_series_returns_maker_fee(self):
+        """Maker-fee series returns maker fill fee."""
+        with patch.object(config, 'GATES_FEE_TAKER', False):
+            with patch.object(config, 'AGGRESSIVE_FILL', False):
+                # Mock a maker-fee series
+                with patch('fees.series_fee_info', return_value={'fee_type': 'quadratic_with_maker_fees', 'fee_multiplier': 1.0}):
+                    with patch('fees.series_has_maker_fees', return_value=True):
+                        with patch('fees.maker_fee_dollars', return_value=0.001):
+                            fee = gates.entry_fee(0.95, series="KXBTC15M")
+                            assert fee == 0.001  # maker fee
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -780,17 +780,16 @@ def get_client() -> N8nClient:
 
 
 def n8n_health_check() -> bool:
-    """Verify n8n is reachable via the trade webhook health-check action.
+    """Verify n8n is reachable via the monitor webhook (ack-only sink).
 
-    The superbot-trade webhook returns HTTP 200 for a health-check action,
-    confirming the full webhook chain (n8n + workflow) is operational.
+    The superbot-monitor webhook is an ack-only sink (no side effects),
+    so health checks don't contaminate the trade webhook metrics/logs.
     """
     try:
         client = get_client()
-        # Use the trade webhook with health_check action - all 4 SuperBot
-        # webhooks return 200 for this action per the workflow contract.
+        # Use the monitor webhook for health checks - it's ack-only by design.
         # Use fire_and_forget=False for synchronous execution to get actual response.
-        resp = client.execute_webhook("superbot-trade", {"action": "health_check"}, fire_and_forget=False)
+        resp = client.execute_webhook("superbot-monitor", {"action": "health_check"}, fire_and_forget=False)
         # If we get here without exception, the webhook succeeded
         return True
     except Exception:

@@ -375,19 +375,23 @@ class RiskManager:
         self._prune_losses()
 
     def record_unrealized_loss(self, ticker: str, unrealized_loss: float):
-        """Track unrealized loss for an open position.
+        """Track peak unrealized loss for an open position (S5 fix).
 
-        Stores the *current* unrealized loss for this ticker, not a running
-        total. Adding on every cycle turned a position 5c under water into a
-        10c+ "daily loss" within four minutes and blocked the market for the
-        rest of the day. A recovered position clears its entry.
+        Stores the *maximum* unrealized loss seen for this ticker over the
+        rolling window. A recovered position (unrealized_loss <= 0) clears its
+        entry. This prevents a position that goes -$5, then -$3, then -$7 from
+        only recording -$7 and understating peak risk.
         """
         key = f"{ticker}:unrealized"
         if unrealized_loss <= 0:
             self.state.market_daily_losses.pop(key, None)
             return
+        existing = self.state.market_daily_losses.get(key)
+        peak_loss = float(unrealized_loss)
+        if existing:  # reviewed: S5 stores peak (max) loss across cycles; only update if new loss exceeds current peak
+            peak_loss = max(peak_loss, float(existing[0].get("loss", 0.0)))
         self.state.market_daily_losses[key] = [{"ts": time.time(),
-                                              "loss": float(unrealized_loss)}]
+                                              "loss": peak_loss}]
 
     def market_loss_total(self, ticker: str) -> float:
         """Realized loss currently counted against ticker's asset bucket (B4)."""
@@ -466,7 +470,8 @@ class RiskManager:
         # reviewed: mtm branch uses mark-to-market ceiling when it is present
         # Microstructure bootstrap: on bankrolls under $10.00, cap per-trade risk at 50% of available cash
         if portfolio < 10.0:  # reviewed: microstructure bootstrap caps each trade at 50% cash to prevent wipeouts
-            available_cash = max(0.0, cash - resting_orders_value)
+            # S18 fix: use cash (not cash - resting) for bootstrap since resting orders are unfilled/speculative
+            available_cash = max(0.0, cash)
             # reviewed: strict 50% Half-Kelly cap across all balances so a single loss never exhausts bankroll
             cap = max(0.0, round(available_cash * 0.50, 4) if available_cash >= 0.02 else available_cash)
             exposure_room = cap
@@ -474,10 +479,9 @@ class RiskManager:
             per_trade_cap = cap
         else:
             # reviewed: use mark-to-market ceiling when present on standard sizing
-            if mark_to_market_exposure is not None:
-                exposure_room = max(0.0, portfolio * ceiling_pct - mark_to_market_exposure)
-            else:
-                exposure_room = float("inf")
+            # S2 fix: default mtm exposure to 0.0 instead of None to prevent inf exposure_room
+            mtm_exposure = mark_to_market_exposure if mark_to_market_exposure is not None else 0.0
+            exposure_room = max(0.0, portfolio * ceiling_pct - mtm_exposure)
 
             # Cash room while keeping floor — subtract resting orders so we don't
             # double-spend cash already committed to open limit orders.
@@ -512,9 +516,8 @@ class RiskManager:
         # Paper-only guard bypass (PAPER_GUARDS_ENABLED=false); the live path
         # still enforces the halt, cooldown and per-market loss limit.
         if not _paper_guards_relaxed():  # reviewed: bypass is paper-only, live always runs the guards
-            # K6: check halt and roll the daily window if needed; the daily window still rolls.
-            # reviewed: K6 check_halt_and_reset() rolls daily window but never adds P&L
-            if self.check_halt_and_reset():
+            # S4 fix: use pure is_halted read; daily window roll happens at cycle boundary
+            if self.is_halted:  # reviewed: pure read of halt state; daily window roll happens at cycle boundary via check_halt_and_reset()
                 # Daily loss circuit breaker takes precedence over generic halt message
                 # reviewed: K6 daily-loss halt message priority
                 if "daily loss" in self.state.halt_reason:

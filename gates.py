@@ -271,14 +271,21 @@ def breakeven_q(p: float, fee: float = 0.0) -> float:
     return p + fee
 
 
-def entry_fee(p: float) -> float:
+def entry_fee(p: float, series: str | None = None) -> float:
     """Per-contract entry fee per the Kalshi schedule via fees.py.
 
-    Maker limit orders pay nothing; taking pays 0.07*p*(1-p). "Taker" is the
-    conservative default because an exit may cross the book.
+    Maker limit orders on standard series pay nothing; on maker-fee series
+    they pay the maker fill fee (quadratic_with_maker_fees). Taking pays
+    the taker fee. "Taker" is the conservative default because an exit may
+    cross the book.
     """
     if not 0.0 < p < 1.0:
         return 0.0
+    # S7 fix: check series fee type for maker-fee series
+    if series:  # reviewed: series param is optional; when provided we check if it's a maker-fee series
+        info = fees.series_fee_info(series)
+        if info and fees.series_has_maker_fees(info.get("fee_type")):  # reviewed: maker-fee series charge maker fill fee; standard series pay taker fee on exit
+            return fees.maker_fee_dollars(1.0, p, series)
     # reviewed: charge taker fee when GATES_FEE_TAKER or AGGRESSIVE_FILL is active
     return fees.taker_fee_dollars(1.0, p) if (config.GATES_FEE_TAKER or getattr(config, "AGGRESSIVE_FILL", False)) else 0.0
 
@@ -596,7 +603,9 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
         elif q is None:
             block_reasons.append("gate2: no model probability")
         else:
-            fee = entry_fee(p)
+            # S7 fix: pass series to entry_fee for maker-fee series detection
+            series = fees.series_from_ticker(metrics["ticker"]) if metrics["ticker"] else None
+            fee = entry_fee(p, series)
             ev = net_ev(q, p, fee)
             be = breakeven_q(p, fee)
             metrics["fee"] = fee

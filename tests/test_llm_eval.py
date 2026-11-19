@@ -123,11 +123,14 @@ class TestLLMEvalParseResponse:
         result = llm_eval._parse_llm_response(content)
         assert result is None
 
-    def test_parse_extra_keys_raises_error(self):
-        """Should reject responses with extra keys."""
+    def test_parse_extra_keys_ignored_with_warning(self):
+        """Should accept responses with extra keys (ignored with warning) - S12 fix."""
         content = '{"probability_of_net_profit": 0.7, "confidence_hold_to_expiry": 0.8, "extra_key": "not_allowed"}'
         result = llm_eval._parse_llm_response(content)
-        assert result is None
+        assert result is not None
+        assert result["probability_of_net_profit"] == 0.7
+        assert result["confidence_hold_to_expiry"] == 0.8
+        assert result["reasoning"] == ""
 
     def test_parse_clamped_values(self):
         """Should clamp probability and confidence to [0, 1]."""

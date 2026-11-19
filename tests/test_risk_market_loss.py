@@ -42,10 +42,12 @@ def test_losses_expire_after_window(monkeypatch, rm):
 
 
 def test_unrealized_snapshot_replaces_not_accumulates(rm):
+    """S5 fix: record_unrealized_loss stores peak (max) loss, not current snapshot."""
     rm.record_unrealized_loss("KXBTC15M-A", 3.0)
-    rm.record_unrealized_loss("KXBTC15M-A", 1.0)  # same ticker: refresh
+    rm.record_unrealized_loss("KXBTC15M-A", 1.0)  # same ticker: refresh with smaller loss
     entries = rm.state.market_daily_losses["KXBTC15M-A:unrealized"]
-    assert sum(e["loss"] for e in entries) == 1.0
+    # Peak loss is stored (3.0), not the latest snapshot (1.0)
+    assert sum(e["loss"] for e in entries) == 3.0
     # unrealized loss counts toward the asset bucket's limit
     assert rm.market_loss_exceeded("KXBTC15M-Z", 0.5)
 

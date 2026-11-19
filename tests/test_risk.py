@@ -473,7 +473,7 @@ def test_is_halted_pure_read(monkeypatch):
 
 
 def test_check_calls_check_halt_and_reset(monkeypatch):
-    """K6: check() calls check_halt_and_reset() which rolls the daily window."""
+    """K6/S4: check() uses is_halted (pure read); check_halt_and_reset() rolls the daily window at cycle boundary."""
     import risk
     clock = {"t": 1000.0}
     monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
@@ -489,14 +489,15 @@ def test_check_calls_check_halt_and_reset(monkeypatch):
     r.state.halted = True
     r.state.halt_reason = "daily loss limit: $-10.00 <= -$5.00"
 
-    # check() should call check_halt_and_reset() which rolls the window at midnight
-    # Before midnight: blocked
+    # Before midnight: check() uses is_halted (pure read) - still halted
     ok, reason = r.check(100.0, 0.0, 10.0, "KXBTC15M-1", total_value=100.0, paper=True, side="yes")
     assert ok is False
     assert "daily loss circuit breaker" in reason
 
-    # After midnight: window rolls, not blocked
+    # Simulate cycle boundary: call check_halt_and_reset() which rolls the daily window
+    # After midnight: window rolls, daily loss cleared, halt removed
     clock["t"] = 90000.0
+    r.check_halt_and_reset()  # This rolls the daily window at midnight
     ok, reason = r.check(100.0, 0.0, 10.0, "KXBTC15M-1", total_value=100.0, paper=True, side="yes")
     assert ok is True
     assert reason == "ok"

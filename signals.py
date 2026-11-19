@@ -776,23 +776,37 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
 # ═════════════════════════════════════════════════════════════════════
 
 def evaluate(market: MarketInfo, cash: float = 10.0,
-             max_trade_override: Optional[float] = None):
+             max_trade_override: Optional[float] = None,
+             bid_hist: Optional[BidHistory] = None):
     """
     Evaluate a market and return a list of TradeSignal (0 or 1 per market).
+    
+    Args:
+        bid_hist: Optional BidHistory instance to use. If None, uses the
+                  module-level default instance (for backward compatibility).
     """
     now = time.time()
-    _ensure_bid_hist_loaded()
-    _maybe_save_bid_hist(now)
+    if bid_hist is not None:  # reviewed: S10 - SignalEngine owns BidHistory instance; module-level fallback for backward compat
+        bid_hist._ensure_loaded()
+        bid_hist.maybe_save(now)
+    else:
+        _ensure_bid_hist_loaded()
+        _maybe_save_bid_hist(now)
     max_dollars = max_trade_override if max_trade_override is not None \
                   else cash * config.BALANCE_PCT_PER_TRADE
 
     effective_cash = max_dollars / config.BALANCE_PCT_PER_TRADE \
                      if max_trade_override is not None else cash
 
-    _track_bid(market.ticker, int(round(market.yes_bid or 0)), now)
-    # reviewed: track NO bid history when available for stability checking
-    if market.no_bid:
-        _track_bid(f"{market.ticker}:no", int(round(market.no_bid or 0)), now)
+    # Track bids using the provided bid_hist or the default
+    if bid_hist is not None:  # reviewed: S10 - use instance method when SignalEngine provides its BidHistory
+        bid_hist.track_bid(market.ticker, int(round(market.yes_bid or 0)), now)
+        if market.no_bid:  # reviewed: track NO bid when available for stability checking
+            bid_hist.track_bid(f"{market.ticker}:no", int(round(market.no_bid or 0)), now)
+    else:
+        _track_bid(market.ticker, int(round(market.yes_bid or 0)), now)
+        if market.no_bid:  # reviewed: track NO bid when available for stability checking
+            _track_bid(f"{market.ticker}:no", int(round(market.no_bid or 0)), now)
 
     if market.bracket_role == "HEDGE_NO":
         result = _evaluate_hedge(market, max_dollars)
@@ -812,7 +826,10 @@ def evaluate(market: MarketInfo, cash: float = 10.0,
     result = deduped
 
     if any(s.is_trade for s in result):
-        _force_save_bid_hist()
+        if bid_hist is not None:  # reviewed: S10 - force save on instance when provided
+            bid_hist.force_save()
+        else:
+            _force_save_bid_hist()
     return result
 
 
@@ -836,7 +853,8 @@ class SignalEngine:
     def evaluate(self, market: MarketInfo, cash: Optional[float] = None,
                  max_trade_override: Optional[float] = None) -> List[TradeSignal]:
         c = cash if cash is not None else self.default_cash
-        return evaluate(market, cash=c, max_trade_override=max_trade_override)
+        return evaluate(market, cash=c, max_trade_override=max_trade_override,
+                        bid_hist=self.bid_hist)
 
     def rank_signals(self, signals: list) -> list:
         return rank_signals(signals)

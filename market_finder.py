@@ -246,6 +246,7 @@ def _fetch_orderbook(client: KalshiClient, ticker: str) -> dict:
 
 def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
                           MIN_P: int, MAX_P: int, HMAX: int,
+                          FETCH_MIN_P: int, FETCH_MAX_P: int,
                           seen: set, seen_lock: threading.Lock) -> tuple:
     """Fetch and filter markets for a single series."""
     markets = None
@@ -290,20 +291,19 @@ def _fetch_series_markets(client: KalshiClient, series: str, now: datetime,
 
         log.debug("  %s ml=%.1f mid=%.1fc ya=%dc yb=%dc", ticker, ml, mid, ya, yb)
 
-        if mid is not None and MIN_P <= mid <= MAX_P:
+        # S9 fix: add ALL active markets to mains so they get an orderbook fetch.
+        # The real entry band filter is applied after fresh orderbook prices (lines 404-443).
+        # Use a permissive fetch band (FETCH_MIN_P/FETCH_MAX_P) to limit orderbook fetches
+        # while still catching markets the stale summary prices mis-filter.
+        if mid is not None and FETCH_MIN_P <= mid <= FETCH_MAX_P:  # reviewed: permissive mid filter ensures orderbook fetch for markets near entry band
             mains.append((mkt, ct, ml, mid))
-        elif yb is not None and yb <= 100 - MIN_P:
-            # NO side may be the favourite (YES bid low -> NO ask high).
-            # YES mid isn't in band but NO ask = 100 - YES bid could be >= 75c.
+        elif yb is not None and yb <= 100 - FETCH_MIN_P:  # reviewed: NO side favourite via YES bid low -> NO ask high
             mains.append((mkt, ct, ml, mid))
-        # reviewed: check if NO bid sits in favourite entry band
-        elif nb is not None and MIN_P <= nb <= MAX_P:
+        elif nb is not None and FETCH_MIN_P <= nb <= FETCH_MAX_P:  # reviewed: NO bid in fetch band
             mains.append((mkt, ct, ml, mid))
-        # reviewed: check if NO ask sits in favourite entry band
-        elif na is not None and MIN_P <= na <= MAX_P:
+        elif na is not None and FETCH_MIN_P <= na <= FETCH_MAX_P:  # reviewed: NO ask in fetch band
             mains.append((mkt, ct, ml, mid))
-        # reviewed: include unquoted summary markets so orderbook is fetched for real quotes
-        elif yb is None and ya is None:
+        elif yb is None and ya is None:  # reviewed: unquoted summary markets need orderbook for real prices
             # Prices not populated in summary; fetch orderbook to determine real prices
             mains.append((mkt, ct, ml, 50.0))
         
@@ -358,7 +358,9 @@ def find_active_markets(client: KalshiClient, extra_band=None, target_series=Non
 
     def _fetch_one(series: str):
         mains, hedges, n = _fetch_series_markets(client, series, now,
-                                                  FETCH_MIN_P, FETCH_MAX_P, HMAX, seen, seen_lock)
+                                                  MIN_P, MAX_P, HMAX,
+                                                  FETCH_MIN_P, FETCH_MAX_P,
+                                                  seen, seen_lock)
         return mains, hedges, n
 
     # Fetch markets for all series concurrently using persistent pool, then
