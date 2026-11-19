@@ -312,9 +312,10 @@ class SupabaseClient:
                     )
                     _supabase_record_failure()
                     return None
-                # Other 4xx — log but don't disable (could be transient)
-                log.warning("Supabase %s %s: HTTP %s — non-retryable error, not recording failure",
+                # Other 4xx — log and record failure for circuit breaker (M7 fix)
+                log.warning("Supabase %s %s: HTTP %s — non-retryable 4xx, recording failure",
                             method, path, resp.status_code)
+                _supabase_record_failure()
                 return None
             except requests.RequestException as e:
                 last_err = e

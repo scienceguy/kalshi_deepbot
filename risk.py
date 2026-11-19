@@ -16,6 +16,9 @@ import fees
 
 log = logging.getLogger(__name__)
 
+# Known assets from the 9 supported series (must match gates.SERIES_ASSET)
+_KNOWN_ASSETS = {"BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE", "ZEC", "NEAR"}
+
 _ASSET_RE = re.compile(r"(?:KX)?([A-Z]{2,})")
 
 
@@ -24,9 +27,18 @@ def market_asset(key: str) -> str:
 
     KXBTC15M-26NOV15-AB -> BTC; KXETH15M -> ETH; plain BTC-... -> BTC.
     Anything without an alphabetic prefix buckets under its upper-cased form.
+    
+    M10 fix: validate against known assets to prevent fragile bucketing on
+    unexpected ticker formats.
     """
-    m = _ASSET_RE.match((key or "").upper())
-    return m.group(1) if m else (key or "").upper()
+    s = (key or "").upper()
+    # First try to match a known asset explicitly (handles KXBTC15M, BTC-USD, etc.)
+    for asset in _KNOWN_ASSETS:
+        if s.startswith(asset) or f"-{asset}" in s or f"_{asset}" in s:  # reviewed: M10 fix — explicit known-asset match before regex fallback
+            return asset
+    # Fallback to regex for unknown formats
+    m = _ASSET_RE.match(s)
+    return m.group(1) if m else s
 
 
 def _paper_guards_relaxed() -> bool:

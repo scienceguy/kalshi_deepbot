@@ -130,6 +130,13 @@ def _ws_set(symbol: str, price: float) -> None:
         _ws_prices.update(fresh)
 
 
+# M8: Max WS reconnection attempts before giving up (None = infinite).
+# Set via BINANCE_WS_MAX_RETRIES env var. Default 100 (effectively infinite for
+# transient issues, but prevents infinite loop on permanent failure like DNS).
+_BINANCE_WS_MAX_RETRIES = int(os.environ.get("BINANCE_WS_MAX_RETRIES", "100"))
+_COINBASE_WS_MAX_RETRIES = int(os.environ.get("COINBASE_WS_MAX_RETRIES", "100"))
+_REDSTONE_WS_MAX_RETRIES = int(os.environ.get("REDSTONE_WS_MAX_RETRIES", "100"))
+
 def _binance_ws_loop(symbols: list[str]) -> None:
     """Background thread: Binance.US combined @ticker stream (all symbols, subsecond cadence)."""
     loop = asyncio.new_event_loop()
@@ -143,13 +150,21 @@ def _binance_ws_loop(symbols: list[str]) -> None:
     streams = "/".join(f"{s}@ticker" for s in sym_streams)
     url = f"{BINANCE_WS}?streams={streams}"
     backoff = 2.0
+    retries = 0
+    max_retries = _BINANCE_WS_MAX_RETRIES
     while True:
         try:
             loop.run_until_complete(_binance_ws_async(url))
             backoff = 2.0
+            retries = 0
         except Exception as e:
+            retries += 1
+            if max_retries is not None and retries >= max_retries:
+                log.error("binance WS max retries (%d) exceeded — giving up", max_retries)
+                return
             sleep_sec = min(backoff * (0.8 + 0.4 * (time.time() % 1.0)), 60.0)
-            log.warning("binance WS disconnected: %s — reconnecting in %.1fs", e, sleep_sec)
+            log.warning("binance WS disconnected: %s — reconnecting in %.1fs (retry %d/%s)", 
+                        e, sleep_sec, retries, max_retries if max_retries else "inf")
             time.sleep(sleep_sec)
             backoff = min(backoff * 2.0, 60.0)
 
@@ -182,13 +197,21 @@ def _coinbase_ws_loop(symbols: list[str]) -> None:
         "product_ids": products,
     }
     backoff = 2.0
+    retries = 0
+    max_retries = _COINBASE_WS_MAX_RETRIES
     while True:
         try:
             loop.run_until_complete(_coinbase_ws_async(url, subscribe))
             backoff = 2.0
+            retries = 0
         except Exception as e:
+            retries += 1
+            if max_retries is not None and retries >= max_retries:
+                log.error("coinbase WS max retries (%d) exceeded — giving up", max_retries)
+                return
             sleep_sec = min(backoff * (0.8 + 0.4 * (time.time() % 1.0)), 60.0)
-            log.warning("coinbase WS disconnected: %s — reconnecting in %.1fs", e, sleep_sec)
+            log.warning("coinbase WS disconnected: %s — reconnecting in %.1fs (retry %d/%s)", 
+                        e, sleep_sec, retries, max_retries if max_retries else "inf")
             time.sleep(sleep_sec)
             backoff = min(backoff * 2.0, 60.0)
 
@@ -229,11 +252,15 @@ def _redstone_ws_loop(symbols: list[str]) -> None:
              for s in symbols[:50]]
     subscribe = {"op": "subscribe", "items": items}
     tried_once = False
+    retries = 0
+    max_retries = _REDSTONE_WS_MAX_RETRIES
     while True:
         try:
             asyncio.run(_redstone_ws_async(url, headers, subscribe))
             tried_once = True
+            retries = 0
         except Exception as e:
+            retries += 1
             # Persistent DNS/connection failure means the gateway is wrong for
             # this host — stop retrying and fall back to REST (non-fatal).
             if tried_once and ("404" in str(e) or "Name or service not known"
@@ -242,7 +269,11 @@ def _redstone_ws_loop(symbols: list[str]) -> None:
                     "redstone WS gateway unreachable (%s) — falling back to "
                     "REST composite_price for spot input", e)
                 return
-            log.warning("redstone WS disconnected: %s — reconnecting in 2s", e)
+            if max_retries is not None and retries >= max_retries:
+                log.error("redstone WS max retries (%d) exceeded — giving up", max_retries)
+                return
+            log.warning("redstone WS disconnected: %s — reconnecting in 2s (retry %d/%s)", 
+                        e, retries, max_retries if max_retries else "inf")
             time.sleep(2)
             tried_once = True
 
@@ -658,6 +689,9 @@ def prob_above(spot: float, strike: float, sigma_min: float, minutes_left: float
     return 0.5 * (1.0 + math.erf(d2 / math.sqrt(2.0)))
 
 
+# M8: Max retries for stream_trades
+_STREAM_TRADES_MAX_RETRIES = int(os.environ.get("STREAM_TRADES_MAX_RETRIES", "100"))
+
 async def stream_trades(symbol: str = "btcusdt") -> AsyncIterator[float]:
     """Live trade prices from the Binance market-data stream.
 
@@ -666,16 +700,20 @@ async def stream_trades(symbol: str = "btcusdt") -> AsyncIterator[float]:
     surface for a number that changes nothing within a 60-second cycle.
 
     This function reconnects automatically on disconnect with exponential backoff.
+    M8 fix: max retries limit prevents infinite loop on permanent failure.
     """
     import websockets
 
     url = f"{BINANCE_WS}/{symbol.lower()}@trade"
     backoff = 1
     max_backoff = 60
+    retries = 0
+    max_retries = _STREAM_TRADES_MAX_RETRIES
     while True:
         try:
             async with websockets.connect(url, open_timeout=10, close_timeout=10, ping_interval=20) as ws:
                 backoff = 1  # Reset on successful connection
+                retries = 0
                 async for raw in ws:
                     try:
                         yield float(json.loads(raw)["p"])
@@ -684,7 +722,12 @@ async def stream_trades(symbol: str = "btcusdt") -> AsyncIterator[float]:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            log.warning("stream_trades disconnected: %s — reconnecting in %ds", e, backoff)
+            retries += 1
+            if max_retries is not None and retries >= max_retries:
+                log.error("stream_trades max retries (%d) exceeded — giving up", max_retries)
+                return
+            log.warning("stream_trades disconnected: %s — reconnecting in %ds (retry %d/%s)", 
+                        e, backoff, retries, max_retries if max_retries else "inf")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
 

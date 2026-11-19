@@ -182,13 +182,17 @@ def cash(open_risk: float, mark_to_market_exposure: float = None) -> float:
 
     If `mark_to_market_exposure` is provided, it's used instead of `open_risk`
     (cost-basis) for more accurate cash calculation during drawdown periods.
-    Never negative: a fee/rounding slip below zero would otherwise let a dry
-    run trade on phantom cash, inflating the compounding curve.
+
+    M5 FIX: Return the actual value (including negative) so ruin is visible.
+    The old clamp to 0.0 hid the fact that the paper balance was negative,
+    which would otherwise let a dry run trade on phantom cash and inflate
+    the compounding curve. Callers (risk gates) must handle negative cash.
     """
     data = _load()
     effective_risk = mark_to_market_exposure if mark_to_market_exposure is not None else open_risk
     value = data["start_balance"] + data["pnl"] - effective_risk
-    return value if value > 0 else 0.0
+    # reviewed: M5 fix — return actual cash including negative so ruin is visible
+    return value
 
 
 def reset() -> float:

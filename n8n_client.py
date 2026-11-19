@@ -48,6 +48,7 @@ from requests.adapters import HTTPAdapter
 
 import config
 import n8n_webhook_auth
+import rate_limit
 from events import delivery_class
 
 log = logging.getLogger("n8n_client")
@@ -541,6 +542,8 @@ class N8nClient:
                               method: str = "POST", timeout: int = DEFAULT_WEBHOOK_TIMEOUT,
                               max_retries: int = 3) -> Dict[str, Any]:
         """Execute a webhook synchronously (no signing, API key session)."""
+        # M3: acquire rate limit token for n8n webhook endpoints
+        rate_limit.default_limiter().acquire("n8n_webhook")
         url = f"{self.base_url}/webhook/{webhook_path}"
         last_err = None
         for attempt in range(max_retries):
@@ -583,6 +586,9 @@ class N8nClient:
                             "Webhook %s %s: HTTP %s — exhausted %d retries",
                             method, webhook_path, status, max_retries,
                         )
+                    elif status == 429:
+                        # M3: record rejection for backoff
+                        rate_limit.default_limiter().record_rejection("n8n_webhook")
                 log.error("Webhook %s %s failed: %s", method, webhook_path, e)
                 raise
         raise last_err
@@ -613,6 +619,8 @@ class N8nClient:
         if extra_headers:
             headers.update(extra_headers)
 
+        # M3: acquire rate limit token for n8n webhook endpoints
+        rate_limit.default_limiter().acquire("n8n_webhook")
         url = f"{self.base_url}/webhook/{webhook_path}"
         last_err = None
         for attempt in range(max_retries):
@@ -658,6 +666,9 @@ class N8nClient:
                             "Signed webhook %s %s: HTTP %s — exhausted %d retries",
                             method, webhook_path, status, max_retries,
                         )
+                    elif status == 429:
+                        # M3: record rejection for backoff
+                        rate_limit.default_limiter().record_rejection("n8n_webhook")
                 log.error("Signed webhook %s %s failed: %s", method, webhook_path, e)
                 raise
         raise last_err

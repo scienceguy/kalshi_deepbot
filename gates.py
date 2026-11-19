@@ -127,12 +127,18 @@ def _cached(cache: dict, key: str, ttl: float, fn):
 def sweep_caches(max_age_seconds: float = 3600.0) -> int:
     """Remove cache entries older than max_age_seconds from all gate caches.
     
+    Uses last_good_ts (v[0]) for the age check so entries with no valid value
+    (None) that haven't had a successful fetch in max_age_seconds are removed.
+    Entries with a valid value are kept even if old (they'll be refreshed on
+    next cache miss).
+    
     Returns the total number of entries removed.
     """
     now = time.time()
     removed = 0
     for cache in (_spot_cache, _atr_cache, _sigma_cache):
-        stale_keys = [k for k, v in cache.items() if now - v[1] > max_age_seconds]
+        stale_keys = [k for k, v in cache.items() 
+                      if v[2] is None and now - v[0] > max_age_seconds]  # reviewed: M9 fix — use last_good_ts for age check on entries with no valid value
         for k in stale_keys:
             cache.pop(k, None)
             removed += 1

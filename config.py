@@ -388,6 +388,15 @@ LOCAL_DB_SYNC_BREAKER_COOLDOWN_SECONDS = _env_float("LOCAL_DB_SYNC_BREAKER_COOLD
 # future sync cycles) to prevent permanently failed rows from blocking sync.
 LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS = _env_int("LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS", 10)
 
+# M2: Maximum backoff for sync thread on persistent failures (seconds).
+# Exponential backoff starts at SYNC_INTERVAL and doubles on each consecutive
+# failure, capped at this value. Default 300s (5 minutes).
+LOCAL_DB_SYNC_MAX_BACKOFF_SECONDS = _env_float("LOCAL_DB_SYNC_MAX_BACKOFF_SECONDS", 300.0)
+
+# M3: n8n webhook rate limit (requests per second). All superbot-* webhooks
+# share the same n8n instance; a conservative rate prevents self-inflicted 429s.
+N8N_WEBHOOK_REQ_PER_SEC = _env_float("N8N_WEBHOOK_REQ_PER_SEC", 10.0)
+
 # Per-host bot_state namespace. Two dry-run traders (a VPS one and a local
 # boot-started one) write the SAME Supabase bot_state keys, so `balance` and
 # `session_pnl` flip-flopped between them (last-writer-wins) and the audit trail

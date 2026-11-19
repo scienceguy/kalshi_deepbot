@@ -134,6 +134,10 @@ class LocalDB:
             "breaker_opens": 0,
             "breaker_state": "closed",
         }
+        # M2: sync thread backoff on persistent failures
+        self._sync_consecutive_failures = 0
+        self._sync_backoff_seconds = 0.0
+        self._sync_max_backoff_seconds = float(config.LOCAL_DB_SYNC_MAX_BACKOFF_SECONDS)
         
         try:
             self._init_db()
@@ -2047,14 +2051,29 @@ class LocalDB:
         return out
 
     def _sync_loop(self):
-        """Background sync loop."""
+        """Background sync loop with exponential backoff on persistent failures (M2)."""
         while not self._stop_sync.is_set():
-            self._stop_sync.wait(SYNC_INTERVAL)
+            # Use backoff if we have consecutive failures, otherwise normal interval
+            wait_time = self._sync_backoff_seconds if self._sync_backoff_seconds > 0 else SYNC_INTERVAL
+            self._stop_sync.wait(wait_time)
             if not self._stop_sync.is_set():
                 try:
                     self.sync_to_supabase()
+                    # Success: reset backoff
+                    if self._sync_consecutive_failures > 0:
+                        log.info("Supabase sync recovered after %d failures", self._sync_consecutive_failures)
+                    self._sync_consecutive_failures = 0
+                    self._sync_backoff_seconds = 0.0
                 except Exception as e:
-                    log.warning("Background sync error: %s", e)
+                    self._sync_consecutive_failures += 1
+                    # Exponential backoff: double each failure, capped at max
+                    self._sync_backoff_seconds = min(
+                        SYNC_INTERVAL * (2 ** (self._sync_consecutive_failures - 1)),
+                        self._sync_max_backoff_seconds
+                    )
+                    log.warning("Background sync error (failure %d/%d, next retry in %.0fs): %s",
+                                self._sync_consecutive_failures, int(self._sync_max_backoff_seconds / SYNC_INTERVAL) + 1,
+                                self._sync_backoff_seconds, e)
 
     def _start_sync_thread(self):
         """Start background sync thread."""

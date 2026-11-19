@@ -1188,16 +1188,21 @@ def _replay_settlement_queue(client=None):
         tickers = [p.get("ticker", "") for _, p in pending_entries if p.get("ticker")]
         if tickers:
             from concurrent.futures import ThreadPoolExecutor, as_completed
+            from functools import lru_cache
+            _REPLAY_EXECUTOR = lru_cache(maxsize=1)(lambda: ThreadPoolExecutor(max_workers=5, thread_name_prefix="replay"))()
             def fetch_market(t):
                 try:
                     return t, client.get_market(t)
                 except Exception:
                     return t, None
-            with ThreadPoolExecutor(max_workers=min(5, len(tickers))) as pool:
-                for future in as_completed([pool.submit(fetch_market, t) for t in tickers]):
+            try:
+                for future in as_completed([_REPLAY_EXECUTOR.submit(fetch_market, t) for t in tickers]):
                     t, market = future.result()
                     if market:
                         pending_results[t] = market
+            except Exception:
+                # Executor shutdown handled at process exit; never block replay on executor issues
+                pass
     
     # Resolve pending entries using batched market data
     resolved_pending = []
@@ -1294,14 +1299,23 @@ def _replay_settlement_queue(client=None):
 
                     # Step 2: persist the credit locally; the sync thread
                     # mirrors bot_state to Supabase (D1: no inline remote writes)
+                    # M4 FIX: only credit PnL to state.session_pnl AFTER local DB write succeeds
                     try:
                         # reviewed: D1 local bot_state write replaces the inline Supabase call
                         if get_local_db().set_bot_state_batch({"session_pnl": new_session_pnl}):
                             state.session_pnl = new_session_pnl
                             log.debug("Replayed settlement PnL $%.2f persisted to local bot_state", new_session_pnl)
+                        else:
+                            # DB write returned False - do not credit PnL
+                            log.warning("Local bot_state session_pnl write returned False for %s — PnL NOT credited", ticker)
+                            pnl_to_add = 0.0
+                            remaining.append(entry)
+                            continue
                     except Exception:
-                        log.warning("Local bot_state session_pnl write failed for %s", ticker)
-                        state.session_pnl = new_session_pnl
+                        log.warning("Local bot_state session_pnl write failed for %s — PnL NOT credited", ticker)
+                        pnl_to_add = 0.0
+                        remaining.append(entry)
+                        continue
                 elif applied is False:
                     log.info("Settlement P&L already recorded for %s — skipping duplicate", order_id)
                     pnl_to_add = 0.0

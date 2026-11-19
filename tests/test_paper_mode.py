@@ -52,11 +52,18 @@ class TestPaperModeLedger:
         # start=100, pnl=5, open_risk=2 -> cash=103
         assert paper_mode.cash(2.0) == 103.0
 
-    def test_cash_never_negative(self):
-        """cash clamps at zero rather than going negative."""
+    def test_cash_can_be_negative(self):
+        """cash returns actual value (including negative) so ruin is visible.
+        
+        M5 FIX: The old clamp to 0.0 hid the fact that the paper balance was
+        negative. Now we return the actual value so risk gates can properly
+        block trades when paper cash is depleted.
+        """
         paper_mode.add_pnl(-50.0)  # pnl=-50, start=100
-        assert paper_mode.cash(80.0) == 0.0
-        assert paper_mode.cash(0.0) > 0.0
+        # start=100, pnl=-50, open_risk=80 -> cash=-30 (ruin)
+        assert paper_mode.cash(80.0) == -30.0
+        # start=100, pnl=-50, open_risk=0 -> cash=50
+        assert paper_mode.cash(0.0) == 50.0
 
     def test_persists_to_file(self):
         """State should persist to paper_state.json."""

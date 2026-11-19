@@ -333,6 +333,7 @@ def configure_defaults(limiter: Optional[RateLimiter] = None,
     kalshi_balance    /portfolio/balance             -> 1 rps (Kalshi limits balance to 1 req/s)
     polymarket_us     api.polymarket.us (US trade)   -> POLYMARKET_REQ_PER_SEC (default 5 rps)
     polymarket_gamma  gamma-api.polymarket.com       -> POLYMARKET_GAMMA_REQ_PER_SEC (default 200 rps)
+    n8n_webhook       superbot-* webhooks            -> N8N_WEBHOOK_REQ_PER_SEC (default 10 rps)
 
     Bursts allow a small cold-start burst; sustained pacing is the rate.
     """
@@ -356,6 +357,11 @@ def configure_defaults(limiter: Optional[RateLimiter] = None,
     rate("kalshi_balance", "KALSHI_BALANCE_REQ_PER_SEC", 1.0, burst=1.0)
     rate("polymarket_us", "POLYMARKET_REQ_PER_SEC", 5.0, burst=2.0)
     rate("polymarket_gamma", "POLYMARKET_GAMMA_REQ_PER_SEC", 200.0, burst=50.0)
+    # M3: n8n webhook endpoints — all superbot-* share one bucket
+    if config_module is not None and hasattr(config_module, "N8N_WEBHOOK_REQ_PER_SEC"):
+        rate("n8n_webhook", "N8N_WEBHOOK_REQ_PER_SEC", config_module.N8N_WEBHOOK_REQ_PER_SEC, burst=2.0)
+    else:
+        rate("n8n_webhook", "N8N_WEBHOOK_REQ_PER_SEC", 10.0, burst=2.0)
     return limiter
 
 
