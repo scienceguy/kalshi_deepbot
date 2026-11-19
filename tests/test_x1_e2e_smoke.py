@@ -66,7 +66,7 @@ def test_smoke_subprocess_ignores_hostile_env(tmp_path):
                           capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, (
         f"smoke exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
-    assert "SUMMARY: 5/5 pillars passed" in proc.stdout
+    assert "SUMMARY: 7/7 pillars passed" in proc.stdout
     assert list(decoy_dir.glob("*.db")) == []
     assert not decoy_db.exists()
 

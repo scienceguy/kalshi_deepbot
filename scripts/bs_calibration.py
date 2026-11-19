@@ -280,7 +280,10 @@ class CalibrationVerifier:
                         continue
                     rec = json.loads(line)
                     if rec.get("outcome") is None:
-                        self.entries[rec["slug"]] = rec
+                        slug = rec.get("slug")
+                        if slug is None:
+                            continue  # e.g. halt_event records carry no market
+                        self.entries[slug] = rec
                     else:
                         self.settled.append(rec)
         except (json.JSONDecodeError, OSError):
