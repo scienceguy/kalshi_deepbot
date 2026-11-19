@@ -1115,7 +1115,6 @@ class PolyUSPaperTrader:
 
         now = datetime.now(timezone.utc)
         ttl_seconds = float(getattr(config, "POLY_RESTING_ORDER_TTL_SECONDS", 900))
-        cancelled_any = False
 
         # A3: per-order fill attribution — subtract quantities already booked
         # for each slug so a never-filled order isn't booked as filled just
@@ -1255,7 +1254,6 @@ class PolyUSPaperTrader:
             release_cost = float(o.get("cost", 0.0) or 0.0)
             self.state["cash"] = round(self.state["cash"] + release_cost, 4)
             self.state["window_spent"] = max(0.0, round(float(self.state.get("window_spent", 0.0) or 0.0) - release_cost, 4))
-            cancelled_any = True
             log.info("Live order %s resolved with no held position -> cancelled, reserved cash released", oid)
             emit_event("poly_us_trader", "order.cancelled",
                        {"order_id": oid, "slug": o.get("slug", ""),

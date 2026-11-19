@@ -397,6 +397,16 @@ LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS = _env_int("LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS", 10)
 # failure, capped at this value. Default 300s (5 minutes).
 LOCAL_DB_SYNC_MAX_BACKOFF_SECONDS = _env_float("LOCAL_DB_SYNC_MAX_BACKOFF_SECONDS", 300.0)
 
+# H9-H11: retention (days) for unbounded control tables. maybe_prune() applies
+# these hourly with a throttle; scripts/scheduled_jobs.py also runs a full
+# prune nightly. alert_history defaults to 28 days (J8 dedup window).
+RETENTION_EVENT_OUTBOX_DAYS = _env_int("RETENTION_EVENT_OUTBOX_DAYS", 7)
+RETENTION_ALERT_HISTORY_DAYS = _env_int("RETENTION_ALERT_HISTORY_DAYS", 28)
+RETENTION_BUS_INBOX_DAYS = _env_int("RETENTION_BUS_INBOX_DAYS", 7)
+RETENTION_PENDING_SEND_DAYS = _env_int("RETENTION_PENDING_SEND_DAYS", 7)
+RETENTION_LATENCY_MEASUREMENTS_DAYS = _env_int("RETENTION_LATENCY_MEASUREMENTS_DAYS", 7)
+RETENTION_SYNC_QUARANTINE_DAYS = _env_int("RETENTION_SYNC_QUARANTINE_DAYS", 30)
+
 # M3: n8n webhook rate limit (requests per second). All superbot-* webhooks
 # share the same n8n instance; a conservative rate prevents self-inflicted 429s.
 N8N_WEBHOOK_REQ_PER_SEC = _env_float("N8N_WEBHOOK_REQ_PER_SEC", 10.0)

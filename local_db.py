@@ -53,6 +53,61 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
+
+class ControlStateError(RuntimeError):
+    """control_state read/write failed loudly.
+
+    The error is already logged at ERROR with full context before this is
+    raised; catching it means the caller must fail closed (e.g. pause
+    entries) — never continue on a possibly stale pause state.
+    """
+
+
+class ControlStateBreakerOpen(ControlStateError):
+    """control_state circuit breaker is open; DB access was refused."""
+
+
+class _ControlStateBreaker:
+    """Consecutive-failure breaker for control_state table access.
+
+    A control_state DB that keeps erroring must not be hit on every cycle:
+    after `threshold` consecutive failures the breaker opens for
+    `cooldown_s` and control_state calls raise ControlStateBreakerOpen
+    without touching the DB. One success closes it again.
+    """
+
+    def __init__(self, threshold: int = 5, cooldown_s: float = 30.0):
+        self.threshold = int(threshold)
+        self.cooldown_s = float(cooldown_s)
+        self._consecutive_failures = 0
+        self._opened_at = 0.0
+        self._lock = threading.Lock()
+
+    def allow(self) -> bool:
+        with self._lock:
+            if self._opened_at and (time.time() - self._opened_at) < self.cooldown_s:
+                return False
+            return True
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
+            self._opened_at = 0.0
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.threshold:
+                if not self._opened_at:
+                    log.error(
+                        "control_state circuit breaker OPEN after %d consecutive "
+                        "failures — refusing DB access for %.0fs",
+                        self._consecutive_failures, self.cooldown_s)
+                self._opened_at = time.time()
+
+
+_control_state_breaker = _ControlStateBreaker()
+
 # Local database path — falls back to SUPERBOT_DATA_DIR (V1), then repo-local
 # local_data/ to preserve current behavior when neither is set.
 DB_DIR = Path(os.environ.get("SUPERBOT_LOCAL_DB_DIR")
@@ -454,7 +509,7 @@ class LocalDB:
                 ("event_outbox", "claimed_at TEXT NOT NULL DEFAULT ''"),
             ):
                 for _col in _cols.split(", "):
-                    _col_name = _col.split(" ")[0]
+                    _col_name = _col.split(" ")[0]  # extracted but unused (kept for symmetry)
                     try:
                         conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col}")
                     except Exception:
@@ -1523,7 +1578,6 @@ class LocalDB:
         if not rows:
             return 0
 
-        now = time.time()
         synced_count = 0
         table_failures = 0
         for row in rows:
@@ -1831,33 +1885,70 @@ class LocalDB:
 
     # H1: persistent control state (pause_entries, caps, who set them, when)
     def get_control_state(self, key: str) -> Optional[dict]:
-        """Get a control state value by key. Returns None if not found."""
-        conn = self._get_conn()
-        with self._lock:
-            try:
+        """Get a control state value by key. Returns None if not found.
+
+        Raises ControlStateError (or ControlStateBreakerOpen) on failure —
+        a pause state we cannot read is never served silently.
+        """
+        if not _control_state_breaker.allow():
+            log.error(
+                "get_control_state(%r) REFUSED: control_state circuit breaker OPEN "
+                "(%d consecutive failures); db_path=%s — failing closed",
+                key, _control_state_breaker._consecutive_failures,
+                getattr(self, "db_path", "?"),
+            )
+            raise ControlStateBreakerOpen(
+                f"get_control_state({key!r}) refused: control_state breaker open")
+        try:
+            conn = self._get_conn()
+            with self._lock:
                 row = conn.execute(
                     "SELECT value_json FROM control_state WHERE key = ?", (key,)).fetchone()
-                if row:
-                    return json.loads(row[0])
-                return None
-            except Exception as e:
-                log.warning("get_control_state(%s) error: %s", key, e)
-                return None
+            value = json.loads(row[0]) if row else None
+        except Exception as e:
+            _control_state_breaker.record_failure()
+            log.error(
+                "get_control_state(%r) FAILED: %s (db_path=%s)",
+                key, e, getattr(self, "db_path", "?"), exc_info=True)
+            raise ControlStateError(
+                f"get_control_state({key!r}) failed: {e}") from e
+        _control_state_breaker.record_success()
+        return value
 
     def set_control_state(self, key: str, value: dict) -> bool:
-        """Set a control state value. Upserts by key."""
-        conn = self._get_conn()
-        with self._lock:
-            try:
+        """Set a control state value. Upserts by key.
+
+        Raises ControlStateError (or ControlStateBreakerOpen) on failure —
+        a pause state that did not persist is never reported as saved.
+        """
+        if not _control_state_breaker.allow():
+            log.error(
+                "set_control_state(%r) REFUSED: control_state circuit breaker OPEN "
+                "(%d consecutive failures); db_path=%s — failing closed",
+                key, _control_state_breaker._consecutive_failures,
+                getattr(self, "db_path", "?"),
+            )
+            raise ControlStateBreakerOpen(
+                f"set_control_state({key!r}) refused: control_state breaker open")
+        try:
+            conn = self._get_conn()
+            with self._lock:
                 conn.execute(
                     "INSERT OR REPLACE INTO control_state (key, value_json, updated_at) "
                     "VALUES (?, ?, datetime('now'))",
                     (key, json.dumps(value, separators=(",", ":"), ensure_ascii=False)))
                 conn.commit()
-                return True
-            except Exception as e:
-                log.warning("set_control_state(%s) error: %s", key, e)
-                return False
+        except Exception as e:
+            _control_state_breaker.record_failure()
+            log.error(
+                "set_control_state(%r) FAILED: %s (db_path=%s, value_keys=%s)",
+                key, e, getattr(self, "db_path", "?"),
+                sorted(value) if isinstance(value, dict) else type(value).__name__,
+                exc_info=True)
+            raise ControlStateError(
+                f"set_control_state({key!r}) failed: {e}") from e
+        _control_state_breaker.record_success()
+        return True
 
     # H9: write-ahead order intent
     def record_order_intent(self, order_id: str, ticker: str, side: str,
@@ -2005,16 +2096,24 @@ class LocalDB:
             return
         self._last_prune_at = now
         try:
-            self.prune_control_tables(outbox_keep_days=7, alert_keep_days=28)
+            self.prune_control_tables(
+                latency_keep_days=config.RETENTION_LATENCY_MEASUREMENTS_DAYS,
+                pending_keep_days=config.RETENTION_PENDING_SEND_DAYS,
+                inbox_keep_days=config.RETENTION_BUS_INBOX_DAYS,
+                outbox_keep_days=config.RETENTION_EVENT_OUTBOX_DAYS,
+                alert_keep_days=config.RETENTION_ALERT_HISTORY_DAYS,
+            )  # reviewed: explicit config defaults (was hardcoded 7/28)
         except Exception as e:
             log.warning("prune_control_tables error: %s", e)
 
-    def prune_control_tables(self, latency_keep_days: int = 7,
-                             pending_keep_days: int = 7,
-                             inbox_keep_days: int = 7,
+    def prune_control_tables(self,
+                             latency_keep_days: int = config.RETENTION_LATENCY_MEASUREMENTS_DAYS,
+                             pending_keep_days: int = config.RETENTION_PENDING_SEND_DAYS,
+                             inbox_keep_days: int = config.RETENTION_BUS_INBOX_DAYS,
                              stale_pending_hours: int = 24,
-                             outbox_keep_days: int = 7,
-                             alert_keep_days: int = 28) -> dict:
+                             outbox_keep_days: int = config.RETENTION_EVENT_OUTBOX_DAYS,
+                             alert_keep_days: int = config.RETENTION_ALERT_HISTORY_DAYS,
+                             quarantine_keep_days: int = config.RETENTION_SYNC_QUARANTINE_DAYS) -> dict:
         """Retention for unbounded control tables.
 
         Deletes latency_measurements rows older than latency_keep_days (by
@@ -2028,7 +2127,9 @@ class LocalDB:
         live intents.
 
         J8: alert_history rows older than alert_keep_days (default 28 days)
-        are also deleted.
+        are also deleted. sync_quarantine rows (poison rows) older than
+        quarantine_keep_days (default 30 days) are deleted — they are audit
+        trail, not live state.
         """
         conn = self._get_conn()
         with self._lock:
@@ -2059,7 +2160,7 @@ class LocalDB:
                 control_deleted = cur.rowcount
                 cur = conn.execute(
                     "DELETE FROM event_outbox WHERE status IN ('sent', 'dead') "
-                    "AND created_at < datetime('now', ?)",
+                    "AND COALESCE(NULLIF(delivered_at, ''), created_at) < datetime('now', ?)",
                     (f"-{int(outbox_keep_days)} days",))
                 outbox_deleted = cur.rowcount
                 # J8: prune old alert history (default 28 days)
@@ -2068,6 +2169,11 @@ class LocalDB:
                     "WHERE sent_at < datetime('now', ?)",
                     (f"-{int(alert_keep_days)} days",))
                 alert_deleted = cur.rowcount
+                cur = conn.execute(
+                    "DELETE FROM sync_quarantine "
+                    "WHERE quarantined_at < datetime('now', ?)",
+                    (f"-{int(quarantine_keep_days)} days",))
+                quarantine_deleted = cur.rowcount
                 cur = conn.execute(
                     "UPDATE pending_send SET status = 'failed', "
                     "venue_status = 'abandoned_stale', "
@@ -2082,13 +2188,14 @@ class LocalDB:
                         "pending_abandoned": pending_abandoned,
                         "control_deleted": control_deleted,
                         "outbox_deleted": outbox_deleted,
-                        "alert_deleted": alert_deleted}
+                        "alert_deleted": alert_deleted,
+                        "quarantine_deleted": quarantine_deleted}
             except Exception as e:
                 log.warning("prune_control_tables error: %s", e)
                 return {"latency_deleted": 0, "pending_deleted": 0,
                         "inbox_deleted": 0, "pending_abandoned": 0,
                         "control_deleted": 0, "outbox_deleted": 0,
-                        "alert_deleted": 0}
+                        "alert_deleted": 0, "quarantine_deleted": 0}
 
     def get_latency_stats(self, stage: Optional[str] = None,
                           limit: int = 1000) -> List[Dict[str, Any]]:
@@ -2357,7 +2464,7 @@ class PolyLocalDB(LocalDB):
             for _table in self.SYNC_TABLES:
                 for _col in ("sync_attempts INTEGER DEFAULT 0",
                              "last_error TEXT", "next_attempt_at TEXT"):
-                    _col_name = _col.split(" ")[0]
+                    _col_name = _col.split(" ")[0]  # extracted but unused (kept for symmetry)
                     try:
                         conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col}")
                     except Exception:
@@ -2689,7 +2796,7 @@ class PolyLocalDB(LocalDB):
                             (lid, ts, raw, mode))
                 conn.commit()
                 return {t: self.table_count(t) for t in self.SYNC_TABLES}
-            except Exception as e:
+            except Exception:
                 conn.rollback()
                 raise
 

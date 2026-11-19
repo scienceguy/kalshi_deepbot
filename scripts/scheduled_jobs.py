@@ -39,6 +39,7 @@ JOBS = (
                         "--max-age-s", "1200"], 300, 240, 120),
     ("position-watchdog", ["scripts/position_watchdog.py", "--max-age-s", "7200"],
      3600, 840, 180),
+    ("db-prune", ["scripts/prune_control_tables.py"], 86400, 300, 120),
 )
 
 GLOBAL_TIMEOUT_SECONDS = float(os.environ.get("SUPERBOT_JOB_TIMEOUT_SECONDS", "300"))
@@ -108,6 +109,8 @@ def _alert_type_from_job(name: str, result: dict) -> str:
         return "sync_lag"
     if name == "position-watchdog":
         return "position"
+    if name == "db-prune":
+        return "prune"
     return "unknown"
 
 
