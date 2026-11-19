@@ -82,6 +82,7 @@ EVENT_TYPES = frozenset({
     "control.status",      # response to request_status (N4)
     "control.report",      # response to request_report (N4)
     "outbox.failed",       # I4: critical outbox delivery failed, sidecar written
+    "operational.alert",   # scheduled job alerts (heartbeat, sync, position)
 })
 
 # Delivery class per event type (N2: three lanes).
@@ -93,6 +94,7 @@ CRITICAL_TYPES = frozenset({
 NORMAL_TYPES = frozenset({
     "order.placed", "order.filled", "order.cancelled", "order.state",
     "fill", "settlement", "position.settled",
+    "operational.alert",
 })
 TELEMETRY_TYPES = frozenset({
     "heartbeat", "latency.alert", "sync.lag", "calibration.alert",
