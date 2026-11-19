@@ -14,6 +14,7 @@ scipy>=1.11                 # scripts/hf_fairvalue.py
 # trading loop runs without them (the ML gate is opt-in via --ml-model).
 # torch
 # xgboost
+# lightgbm
 
 # Optional — binance_feed.stream_trades (live WS streaming). The trading loop
 # uses the REST path and does not need this.

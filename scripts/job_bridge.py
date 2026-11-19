@@ -158,10 +158,14 @@ class _Handler(BaseHTTPRequestHandler):
         if needs_gate_key:
             gate_key = self.headers.get("X-Superbot-Gate-Key", "")
             expected_gate_key = getattr(config, "SUPERBOT_GATE_KEY", "")
+            require_gate_key = getattr(config, "SUPERBOT_REQUIRE_GATE_KEY", False)
             if not expected_gate_key:
-                return self._json(403, {"ok": False, "reason": "gate key not configured on server"})
-            if not hmac.compare_digest(gate_key, expected_gate_key):
-                return self._json(403, {"ok": False, "reason": "invalid gate key"})
+                if require_gate_key:
+                    return self._json(403, {"ok": False, "reason": "gate key required but not configured on server"})
+                # Gate key not required - allow request through
+            else:
+                if not hmac.compare_digest(gate_key, expected_gate_key):
+                    return self._json(403, {"ok": False, "reason": "invalid gate key"})
         try:
             return self._json(200, run_route(route, body))
         except subprocess.TimeoutExpired:

@@ -774,6 +774,9 @@ SUPERBOT_WEBHOOK_SECRET = os.environ.get("SUPERBOT_WEBHOOK_SECRET", "")
 # X-Superbot-Gate-Key header to trigger backtest/collect jobs. Prevents
 # unauthorized triggering of compute-intensive jobs. Empty = disabled.
 SUPERBOT_GATE_KEY = os.environ.get("SUPERBOT_GATE_KEY", "")
+# J11: Require gate key in production. When true and SUPERBOT_GATE_KEY is
+# empty, job bridge rejects /backtest and /collect routes with 403.
+SUPERBOT_REQUIRE_GATE_KEY = _env_bool("SUPERBOT_REQUIRE_GATE_KEY", False)
 # Max in-memory telemetry queue size before drop-oldest applies.
 N8N_OUTBOX_MAX_TELEMETRY = _env_int("N8N_OUTBOX_MAX_TELEMETRY", 500)
 # Max delivery attempts before an outbox row is moved to dead.
