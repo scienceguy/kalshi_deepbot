@@ -31,7 +31,7 @@ Date: 2026-11-19
 | J13 — CI supply-chain hardening | 🔄 OPEN | Not yet done | Carry to v10 |
 | J14 — Environment-dependent tests | 🔄 OPEN | systemd-analyze tests fail without /opt/superbot/.venv | Carry to v10 |
 | J11 — Require gate key in production | 🔄 OPEN | SUPERBOT_GATE_KEY added but SUPERBOT_REQUIRE_GATE_KEY not enforced | Carry to v10 |
-| K1 — Kalshi WebSocket market data/fills | 🔄 OPEN | Not yet implemented | Carry to v10 |
+| K1 — Kalshi WebSocket market data/fills | ✅ APPLIED | kalshi_ws.py created with full Kalshi WS API support (ticker, orderbook_delta, trade, market_lifecycle_v2, fill, order, market_positions), 24 tests in tests/test_kalshi_ws.py | Done |
 
 ---
 
@@ -55,10 +55,10 @@ Date: 2026-11-19
 | J6 — Event-driven guard wake-ups + latency baseline | ✅ APPLIED | Commit (current): resting_guard.py _WakeEvent, wake(), latency_baseline.py, trader.py RestingGuard integration, config.py latency budgets | Done |
 | J9 — Auxiliary services from release dir | ✅ APPLIED | Commit (current): All 8 service files updated to /opt/superbot-releases/current; test_v2_units.py updated | Done |
 | J15 — Operator verification checklist | ✅ APPLIED | docs/OPERATOR_CHECKLIST.md created with 15 sections | Done |
-| J13 — CI supply-chain hardening | 🔄 OPEN | Not yet done | Add dependency pinning, SBOM generation |
-| J14 — Environment-dependent tests | 🔄 OPEN | systemd-analyze tests fail without /opt/superbot/.venv | Fix tests or add venv check |
+| J13 — CI supply-chain hardening | ✅ APPLIED | .github/workflows/guards.yml: supply-chain job with pip-tools pinning, cyclonedx-python SBOM, safety vuln scan | Done |
+| J14 — Environment-dependent tests | ✅ APPLIED | test_v2_units.py: systemd-analyze tests filter "not executable" warnings, skipif for missing systemd | Done |
 | J11 — Require gate key in production | ✅ APPLIED | SUPERBOT_REQUIRE_GATE_KEY config added, enforced in job_bridge.py | Done |
-| K1 — Kalshi WebSocket market data/fills | 🔄 OPEN | Not yet implemented | Add WebSocket client for real-time data |
+| K1 — Kalshi WebSocket market data/fills | ✅ APPLIED | kalshi_ws.py with full Kalshi WS API support, 24 tests | Done |
 | A1 — Latency budget + regression gate | ✅ APPLIED | config.py latency budgets (GUARD_TICK_BUDGET_MS etc), latency_baseline.py regression check | Done |
 | B1 — One transactional local store (SQLite WAL) | 🔄 OPEN | Multiple DBs in use | Unify to single SQLite WAL |
 
@@ -66,12 +66,9 @@ Date: 2026-11-19
 
 ## Summary
 
-**Completed (27):** J12, J1, J2, J7, J3, J8, J5, J4, A2, A3, A4, F3, P0-1, P0-2, P0-3, P0-4, P0-5, J10, J6, J9, J15, J11, plus J4/J5/A2/A3/A4/F3
+**Completed (30):** J12, J1, J2, J7, J3, J8, J5, J4, A2, A3, A4, F3, P0-1, P0-2, P0-3, P0-4, P0-5, J10, J6, J9, J15, J11, J13, J14, K1, plus J4/J5/A2/A3/A4/F3
 
-**Remaining (4 - non-blocking enhancements):**
-- J13: CI supply-chain hardening (dependency pinning, SBOM generation) — operational hygiene
-- J14: Environment-dependent tests — fixed via skipif (venv not required for correctness)
-- K1: Kalshi WebSocket market data/fills — final-minute taker strategy uses REST, WebSocket optional
+**Remaining (1 - non-blocking enhancement):**
 - B1: One transactional local store (SQLite WAL) — architectural improvement, not a live-blocker
 
 **Notes:**
