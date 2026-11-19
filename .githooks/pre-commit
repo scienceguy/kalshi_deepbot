@@ -101,4 +101,35 @@ if ! python3 "$(git rev-parse --show-toplevel)/scripts/check_tmp_writes.py"; the
     exit 1
 fi
 
+# --- 5. Large file / log pattern guard (J12) -----------------------------------
+# Blocks staged files larger than MAX_STAGED_SIZE_KB (default 1 MB) or
+# matching log/snapshot/data patterns that should be gitignored.
+# Allowlist: explicit paths in STAGED_ALLOWLIST_FILE (one per line).
+MAX_STAGED_SIZE_KB=1024
+STAGED_ALLOWLIST_FILE=".gitignore-allowlist"
+STAGED=$(git diff --cached --name-only)
+for f in $STAGED; do
+    # Skip if explicitly allowlisted
+    if [ -f "$STAGED_ALLOWLIST_FILE" ] && grep -q "^$f$" "$STAGED_ALLOWLIST_FILE"; then
+        continue
+    fi
+    # Size check
+    if [ -f "$f" ]; then
+        size_kb=$(du -k "$f" | cut -f1)
+        if [ "$size_kb" -gt "$MAX_STAGED_SIZE_KB" ]; then
+            echo "ERROR: staged file $f is ${size_kb}KB (limit ${MAX_STAGED_SIZE_KB}KB)"
+            echo "       Large files should not be committed. Add to $STAGED_ALLOWLIST_FILE if intentional."
+            exit 1
+        fi
+    fi
+    # Pattern check (matches log/snapshot/data patterns that should be ignored)
+    case "$f" in
+        *.log|*.log.*|*.jsonl|*.jsonl.*|*.gz|*_snapshots.jsonl*|data/cfb/*)
+            echo "ERROR: staged file $f matches a pattern that should be gitignored"
+            echo "       Add to .gitignore instead of committing."
+            exit 1
+            ;;
+    esac
+done
+
 exit 0

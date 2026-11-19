@@ -422,11 +422,11 @@ def test_preview_order_no_side_sends_complement(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_get_market_settlement_retries_on_error(monkeypatch):
-    """get_market_settlement() retries on non-429 errors (e.g. 404 not-settled-yet)
-    before returning None, instead of giving up on the first failure."""
+    """get_market_settlement() now does a single attempt (A3) and returns None on error.
+    Retries are owned by a background settlement poller thread."""
     import time as _time
 
-    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda: None)
+    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda *a, **k: None)
     monkeypatch.setattr(_time, "sleep", lambda s: None)
 
     class _SettlementError(Exception):
@@ -439,13 +439,13 @@ def test_get_market_settlement_retries_on_error(monkeypatch):
     res = polymarket_us_client.get_market_settlement("test-slug")
 
     assert res is None
-    # 3 attempts total (initial + 2 retries)
-    assert mock_client.markets.settlement.call_count == 3
+    # A3: single attempt only; background poller handles retries
+    assert mock_client.markets.settlement.call_count == 1
 
 
 def test_get_market_settlement_returns_value_on_success(monkeypatch):
     """get_market_settlement() returns the settlement dict on first success."""
-    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda: None)
+    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda *a, **k: None)
 
     mock_client = MagicMock()
     mock_client.markets.settlement.return_value = {"settlement": 1.0}
@@ -459,7 +459,7 @@ def test_get_market_settlement_returns_value_on_success(monkeypatch):
 def test_get_open_orders_raises_on_failure(monkeypatch):
     """A venue failure must raise, not return [] — reconcile would otherwise
     read it as 'all orders cancelled' and release committed cash."""
-    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda: None)
+    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda *a, **k: None)
     mock_client = MagicMock()
     mock_client.orders.list.side_effect = RuntimeError("timeout")
     monkeypatch.setattr(polymarket_us_client, "_get_authenticated_client", lambda: mock_client)
@@ -469,7 +469,7 @@ def test_get_open_orders_raises_on_failure(monkeypatch):
 
 
 def test_get_open_orders_returns_empty_only_when_venue_is_empty(monkeypatch):
-    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda: None)
+    monkeypatch.setattr(polymarket_us_client, "_enforce_rate_limit", lambda *a, **k: None)
     mock_client = MagicMock()
     mock_client.orders.list.return_value = {"orders": []}
     monkeypatch.setattr(polymarket_us_client, "_get_authenticated_client", lambda: mock_client)

@@ -7,6 +7,7 @@ signed pause persisted in local_db. These tests cover the startup reload and
 prove the entry path refuses after it.
 """
 
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -309,6 +310,9 @@ def _stub_main(monkeypatch, tmp_path, control_db, drain_behavior):
             self.state = {"start_balance": 35.0, "ruin_halted": False,
                           "positions": []}
             self.cycle_calls = 0
+            # J5: pause cache refresher attributes
+            self._pause_cache_stop = threading.Event()
+            self._pause_cache_thread = None
 
         def cycle(self):
             self.cycle_calls += 1

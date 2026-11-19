@@ -40,6 +40,11 @@ ROUTE_COOLDOWN_SECONDS = float(os.environ.get("SUPERBOT_JOB_BRIDGE_COOLDOWN", "6
 
 # J7: Require HMAC on ALL routes except /healthz
 REQUIRE_HMAC = {"command", "coordinate", "backtest", "collect"}
+# J7: Routes that also require the gate key (X-Superbot-Gate-Key header)
+REQUIRE_GATE_KEY = {"backtest", "collect"}
+
+# Import config to get SUPERBOT_GATE_KEY
+import config
 
 
 def _verify_hmac(request: BaseHTTPRequestHandler, body: bytes) -> bool:
@@ -138,6 +143,8 @@ class _Handler(BaseHTTPRequestHandler):
         
         # J7: Require HMAC on all routes except healthz
         needs_hmac = route in REQUIRE_HMAC
+        # J7: Require gate key on backtest/collect routes
+        needs_gate_key = route in REQUIRE_GATE_KEY
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -147,6 +154,14 @@ class _Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         if needs_hmac and not _verify_hmac(self, body):
             return self._json(401, {"ok": False, "reason": "invalid HMAC"})
+        # J7: Verify gate key if required
+        if needs_gate_key:
+            gate_key = self.headers.get("X-Superbot-Gate-Key", "")
+            expected_gate_key = getattr(config, "SUPERBOT_GATE_KEY", "")
+            if not expected_gate_key:
+                return self._json(403, {"ok": False, "reason": "gate key not configured on server"})
+            if not hmac.compare_digest(gate_key, expected_gate_key):
+                return self._json(403, {"ok": False, "reason": "invalid gate key"})
         try:
             return self._json(200, run_route(route, body))
         except subprocess.TimeoutExpired:

@@ -230,6 +230,9 @@ POLY_GUARD_INTERVAL_S = _env_float("POLY_GUARD_INTERVAL_S", 1.0)
 POLY_GUARD_SPOT_MOVE_FRACTION = _env_float("POLY_GUARD_SPOT_MOVE_FRACTION", 0.5)
 POLY_GUARD_BBO_TICKS = _env_int("POLY_GUARD_BBO_TICKS", 5)
 POLY_GUARD_FEED_STALE_SECONDS = _env_float("POLY_GUARD_FEED_STALE_SECONDS", 30.0)
+# J5: pause_entries cache refresh interval (seconds) — background thread
+# reads from DB and updates in-memory cache so guard tick never hits DB.
+POLY_PAUSE_CACHE_REFRESH_S = _env_float("POLY_PAUSE_CACHE_REFRESH_S", 0.25)
 PM_TICK_DOLLARS = _env_float("PM_TICK_DOLLARS", 0.01)
 # A13: venue reconciliation (live mode only). Every N cycles, compare internal
 # cash/positions to the venue balance and positions endpoint. A mismatch beyond
@@ -766,6 +769,11 @@ N8N_BASE_URL = os.environ.get("N8N_BASE_URL", "http://127.0.0.1:5678")
 # HMAC secret for signing outbound webhooks (read from ~/.secrets/ or env).
 # Keep this out of the repo; the operator sets it in .env or a secrets file.
 SUPERBOT_WEBHOOK_SECRET = os.environ.get("SUPERBOT_WEBHOOK_SECRET", "")
+# J7: Gate key for /backtest and /collect routes on job bridge.
+# A second secret (separate from webhook HMAC) that must be provided as
+# X-Superbot-Gate-Key header to trigger backtest/collect jobs. Prevents
+# unauthorized triggering of compute-intensive jobs. Empty = disabled.
+SUPERBOT_GATE_KEY = os.environ.get("SUPERBOT_GATE_KEY", "")
 # Max in-memory telemetry queue size before drop-oldest applies.
 N8N_OUTBOX_MAX_TELEMETRY = _env_int("N8N_OUTBOX_MAX_TELEMETRY", 500)
 # Max delivery attempts before an outbox row is moved to dead.

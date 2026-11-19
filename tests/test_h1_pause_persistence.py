@@ -95,25 +95,30 @@ def test_resume_entries_clears_persisted_control_state(control_db):
 
 
 # ── 3. PolyUSPaperTrader._guard_halt_active honours persisted pause ────
-
+ 
 def test_poly_guard_halt_active_reads_persisted_pause(control_db, monkeypatch):
     pytest.importorskip("polymarket_us")
     import local_db
     import poly_us_trader
-
+    import threading
+ 
     # in-memory state says NOT paused; only the persisted DB row says paused
     control.STATE.pause_entries = False
     control_db.set_control_state("pause_entries",
                                  {"paused": True, "paused_by": "operator"})
     monkeypatch.setattr(local_db, "get_local_db", lambda *a, **k: control_db)
-
+ 
     class _Stub:
         state = {}  # no ruin / venue-recon / daily-loss halts
-
+        _pause_cache = {"paused": True}  # simulate cache populated from DB
+        _pause_cache_lock = threading.Lock()
+ 
     assert poly_us_trader.PolyUSPaperTrader._guard_halt_active(_Stub()) is True
-
+ 
     # and once the persisted flag is cleared, the guard falls back to memory
     control_db.set_control_state("pause_entries", {"paused": False})
+    # Also clear cache for second assertion
+    _Stub._pause_cache = {"paused": False}
     assert poly_us_trader.PolyUSPaperTrader._guard_halt_active(_Stub()) is False
 
 

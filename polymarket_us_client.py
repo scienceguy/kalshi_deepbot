@@ -24,24 +24,38 @@ import rate_limit
 
 log = logging.getLogger(__name__)
 
-POLYMARKET_MIN_GAP_SECONDS: float = 0.20  # Max 5 req/s to prevent Cloudflare 429 throttling
+POLYMARKET_MIN_GAP_SECONDS: float = 0.20  # Max 5 req/s to prevent Cloudflare 429 throttling (reads)
+POLYMARKET_ORDER_MIN_GAP_SECONDS: float = 0.20  # Max 5 req/s for orders (may be different)
+POLYMARKET_BULK_MIN_GAP_SECONDS: float = 0.50  # Max 2 req/s for bulk (settlement, search)
 
-# B7: pace requests through the shared token bucket from rate_limit
-# (1/POLYMARKET_MIN_GAP_SECONDS with burst=1 — identical pacing to the old
-# hand-rolled minimum-gap sleep).
-_RATE_BUCKET = rate_limit.TokenBucket(1.0 / POLYMARKET_MIN_GAP_SECONDS,
-                                      burst=1,
-                                      name="polymarket_us")
+# A2: Separate pacing lanes for reads, orders, and bulk.
+# Orders never wait behind bulk/reads.
+_RATE_BUCKET_READS = rate_limit.TokenBucket(1.0 / POLYMARKET_MIN_GAP_SECONDS,
+                                             burst=1,
+                                             name="polymarket_us_reads")
+_RATE_BUCKET_ORDERS = rate_limit.TokenBucket(1.0 / POLYMARKET_ORDER_MIN_GAP_SECONDS,
+                                              burst=1,
+                                              name="polymarket_us_orders")
+_RATE_BUCKET_BULK = rate_limit.TokenBucket(1.0 / POLYMARKET_BULK_MIN_GAP_SECONDS,
+                                            burst=1,
+                                            name="polymarket_us_bulk")
 
-def _enforce_rate_limit(min_gap: float = POLYMARKET_MIN_GAP_SECONDS) -> None:
-    """Pace Polymarket US requests via the shared token bucket (B7).
+def _enforce_rate_limit(min_gap: float = POLYMARKET_MIN_GAP_SECONDS, lane: str = "reads") -> None:
+    """Pace Polymarket US requests via lane-specific token bucket (A2).
 
-    An explicit non-default min_gap sleeps directly (unusual override path).
+    Args:
+        min_gap: Override min gap for this call (rare).
+        lane: "reads" | "orders" | "bulk" — orders lane never waits behind bulk.
     """
     if min_gap != POLYMARKET_MIN_GAP_SECONDS:
         time.sleep(min_gap)
         return
-    _RATE_BUCKET.acquire(block=True)
+    if lane == "orders":
+        _RATE_BUCKET_ORDERS.acquire(block=True)
+    elif lane == "bulk":
+        _RATE_BUCKET_BULK.acquire(block=True)
+    else:
+        _RATE_BUCKET_READS.acquire(block=True)
 
 class PolymarketAPIError(Exception):
     """Raised when a Polymarket US API call fails."""
@@ -93,6 +107,17 @@ def _load_secret_key() -> str:
 
 _cached_client = None
 _cached_creds = ("", "")
+_cached_unauth_client = None  # A4: cached unauthenticated client for public endpoints
+
+def _get_unauth_client():
+    """Return a cached unauthenticated PolymarketUS client for public endpoints.
+
+    Reuses HTTP connection pool instead of creating a new client per call.
+    """
+    global _cached_unauth_client
+    if _cached_unauth_client is None:
+        _cached_unauth_client = PolymarketUS(key_id="", secret_key="")
+    return _cached_unauth_client
 
 def _get_client():
     """Return a configured PolymarketUS client, caching to reuse HTTP connection pools.
@@ -109,6 +134,16 @@ def _get_client():
         _cached_creds = (key_id, secret_key)
     return _cached_client
 
+def reload_credentials() -> None:
+    """A4: Explicitly reload credentials and recreate clients.
+
+    Call this after updating environment variables or BW mirror files.
+    """
+    global _cached_client, _cached_creds, _cached_unauth_client
+    _cached_client = None
+    _cached_creds = ("", "")
+    _cached_unauth_client = None
+
 # ── Public API (market data: no auth required) ────────────────────────────
 
 def get_market_by_slug(slug: str) -> dict:
@@ -116,23 +151,26 @@ def get_market_by_slug(slug: str) -> dict:
 
     Calls GET /v1/market/slug/{slug} — data is public on Polymarket US.
     """
-    _enforce_rate_limit()
-    temp_client = _get_client()
-    if temp_client is None:
-        temp_client = PolymarketUS(key_id="", secret_key="")
-    return temp_client.get(f"/v1/market/slug/{slug}", authenticated=False)
+    _enforce_rate_limit(lane="reads")
+    client = _get_unauth_client()
+    return client.get(f"/v1/market/slug/{slug}", authenticated=False)
 
 def get_market_book(slug: str) -> dict:
-    """Fetch order book / BBO for a market slug."""
-    _enforce_rate_limit()
-    temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
+    """Fetch order book / BBO for a market slug.
+
+    A4: Uses cached unauthenticated client; fallback to .book() uses separate
+    rate limit so a flaky .bbo() cannot double the latency.
+    """
+    _enforce_rate_limit(lane="reads")
+    client = _get_unauth_client()
     try:
-        res = temp_client.markets.bbo(slug)
+        res = client.markets.bbo(slug)
         return res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else {})
     except Exception:
+        # A4: Fallback gets its own rate limit budget (reads lane)
+        _enforce_rate_limit(lane="reads")
         try:
-            _enforce_rate_limit()
-            res = temp_client.markets.book(slug)
+            res = client.markets.book(slug)
             return res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else {})
         except Exception as e:
             log.warning("Poly get_market_book %s failed: %s", slug, e)
@@ -144,45 +182,31 @@ def get_market_settlement(slug: str) -> dict | None:
     Returns dict with {"slug": slug, "settlement": float(1.0 or 0.0)} if settled,
     or None if market is not yet settled or not found.
 
-    Retries on any error (including 404 "not settled yet") with exponential
-    backoff so a market that closes mid-cycle gets credited on a subsequent
-    cycle instead of stranding the position forever.
+    A3: Single attempt, returns NotSettledYet on 404. A background poller
+    (separate thread) should own retries with backoff and jitter.
     """
-    temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
-    last_error: str | None = None
-    for attempt in range(3):
-        try:
-            _enforce_rate_limit()
-            res = temp_client.markets.settlement(slug)
-            if isinstance(res, dict) and "settlement" in res:
-                return {"slug": slug, "settlement": float(res["settlement"])}
-            elif hasattr(res, "settlement"):
-                return {"slug": slug, "settlement": float(res.settlement)}
+    client = _get_client() or _get_unauth_client()
+    try:
+        _enforce_rate_limit(lane="bulk")
+        res = client.markets.settlement(slug)
+        if isinstance(res, dict) and "settlement" in res:
+            return {"slug": slug, "settlement": float(res["settlement"])}
+        elif hasattr(res, "settlement"):
+            return {"slug": slug, "settlement": float(res.settlement)}
+        return None
+    except Exception as e:
+        err_str = str(e).lower()
+        if "404" in err_str or "not found" in err_str or "not settled" in err_str:
             return None
-        except Exception as e:
-            last_error = str(e)
-            err_str = last_error.lower()
-            if "429" in err_str or "too many" in err_str:
-                wait_time = 1.0 * (2 ** attempt)
-                log.warning("Polymarket 429 throttled on %s — backing off %.1fs (attempt %d/3)", slug, wait_time, attempt + 1)
-                time.sleep(wait_time)
-                continue
-            # 404 / not-found / transient: retry once more before giving up
-            wait_time = 0.5 * (2 ** attempt)
-            log.debug("Settlement lookup failed for %s (attempt %d/3): %s — retrying in %.1fs",
-                      slug, attempt + 1, last_error, wait_time)
-            time.sleep(wait_time)
-            continue
-    if last_error:
-        log.warning("Settlement lookup exhausted for %s: %s", slug, last_error)
-    return None
+        log.warning("Settlement lookup failed for %s: %s", slug, e)
+        return None
 
 def get_events(limit: int = 100) -> list:
     """List events from Polymarket US (public gateway)."""
-    _enforce_rate_limit()
-    temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
+    _enforce_rate_limit(lane="reads")
+    client = _get_unauth_client()
     try:
-        res = temp_client.events.list({"limit": limit})
+        res = client.events.list({"limit": limit})
         if isinstance(res, dict):
             return res.get("events", []) or []
         return getattr(res, "events", []) or []
@@ -192,10 +216,10 @@ def get_events(limit: int = 100) -> list:
 
 def get_event_by_slug(slug: str) -> dict:
     """Retrieve full event detail including all child markets by slug."""
-    _enforce_rate_limit()
-    temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
+    _enforce_rate_limit(lane="reads")
+    client = _get_unauth_client()
     try:
-        res = temp_client.events.retrieve_by_slug(slug)
+        res = client.events.retrieve_by_slug(slug)
         return res if isinstance(res, dict) else (res.model_dump() if hasattr(res, "model_dump") else {})
     except Exception as e:
         log.warning("Poly get_event_by_slug %s failed: %s", slug, e)
@@ -203,10 +227,10 @@ def get_event_by_slug(slug: str) -> dict:
 
 def search_events(query: str) -> list:
     """Search Polymarket US events by keyword (e.g. BTC, ETH, SOL)."""
-    _enforce_rate_limit()
-    temp_client = _get_client() or PolymarketUS(key_id="", secret_key="")
+    _enforce_rate_limit(lane="bulk")
+    client = _get_unauth_client()
     try:
-        res = temp_client.search.query({"query": query})
+        res = client.search.query({"query": query})
         if isinstance(res, dict):
             return res.get("events", []) or []
         return getattr(res, "events", []) or []
@@ -230,7 +254,7 @@ def _get_authenticated_client():
 
 def get_portfolio_positions() -> dict:
     """Fetch portfolio positions (authenticated endpoint)."""
-    _enforce_rate_limit()
+    _enforce_rate_limit(lane="reads")
     client = _get_authenticated_client()
     return client.get("/v1/portfolio/positions", authenticated=True)
 
@@ -254,7 +278,7 @@ def prewarm() -> bool:
 
 def get_account_balances() -> dict:
     """Fetch account balances (authenticated endpoint)."""
-    _enforce_rate_limit()
+    _enforce_rate_limit(lane="reads")
     client = _get_authenticated_client()
     return client.get("/v1/account/balances", authenticated=True)
 
@@ -287,13 +311,23 @@ get_client = _get_client
 get_authenticated_client = _get_authenticated_client
 
 def close() -> None:
-    """Close the SDK client connection.
+    """Close the SDK client connections.
 
-    Note: since we don't cache a long-lived client, this is a no-op for the
-    typical pattern. Provided for API completeness.
+    Closes both authenticated and unauthenticated cached clients.
     """
-    # No persistent client to close; each call creates its own.
-    pass
+    global _cached_client, _cached_unauth_client
+    if _cached_client is not None:
+        try:
+            _cached_client.close()
+        except Exception:
+            pass
+        _cached_client = None
+    if _cached_unauth_client is not None:
+        try:
+            _cached_unauth_client.close()
+        except Exception:
+            pass
+        _cached_unauth_client = None
 
 # ── Authenticated API (order placement) ──────────────────────────────────
 
@@ -312,22 +346,12 @@ def _poly_price(side: str, price_dollars: float) -> float:
         return price_dollars
     return round(1.0 - price_dollars, 4)
 
-def preview_order(slug: str, side: str, price_dollars: float,
-                  contracts: int, good_till_time: str | None = None) -> dict | None:
-    """Validate an order against Polymarket US production order preview API.
+def _build_order_params(slug: str, side: str, price_dollars: float,
+                        contracts: int, good_till_time: str | None = None) -> dict:
+    """F3: Build order params dict shared by preview_order and place_maker_order.
 
-    Args:
-        slug: Market slug.
-        side: "yes" or "no".
-        price_dollars: Limit price in dollars (0-1).
-        contracts: Number of contracts.
-        good_till_time: Optional ISO-8601 UTC timestamp (e.g., "2026-11-19T15:30:00+00:00")
-                        for TIME_IN_FORCE_GOOD_TILL_DATE. If None, uses GTC.
-
-    Returns the preview response dict on success, or None on failure.
+    Single source of truth for order construction to prevent drift on money path.
     """
-    _enforce_rate_limit()
-    client = _get_authenticated_client()
     intent = ("ORDER_INTENT_BUY_LONG" if side == "yes"
               else "ORDER_INTENT_BUY_SHORT")
     tif = "TIME_IN_FORCE_GOOD_TILL_DATE" if good_till_time else "TIME_IN_FORCE_GOOD_TILL_CANCEL"
@@ -343,8 +367,40 @@ def preview_order(slug: str, side: str, price_dollars: float,
     }
     if good_till_time:
         params["goodTillTime"] = good_till_time
+    return params
+
+def preview_order(slug: str, side: str, price_dollars: float,
+                  contracts: int, good_till_time: str | None = None) -> dict | None:
+    """Validate an order against Polymarket US production order preview API.
+
+    Args:
+        slug: Market slug.
+        side: "yes" or "no".
+        price_dollars: Limit price in dollars (0-1).
+        contracts: Number of contracts.
+        good_till_time: Optional ISO-8601 UTC timestamp (e.g., "2026-11-19T15:30:00+00:00")
+                        for TIME_IN_FORCE_GOOD_TILL_DATE. If None, uses GTC.
+
+    Returns the preview response dict on success, or None on failure.
+    """
+    _enforce_rate_limit(lane="orders")
+    client = _get_authenticated_client()
+    params = _build_order_params(slug, side, price_dollars, contracts, good_till_time)
     try:
-        return client.orders.preview({"request": params})
+        resp = client.orders.preview({"request": params})
+        # J4: Capture venue commission fields from preview response for fee model validation
+        # The Order type in polymarket_us.types.orders has:
+        #   - commissionsBasisPoints: str (total commission in bps)
+        #   - makerCommissionsBasisPoints: str (maker commission in bps)
+        if resp and "order" in resp:
+            order = resp["order"]
+            total_bps = order.get("commissionsBasisPoints")
+            maker_bps = order.get("makerCommissionsBasisPoints")
+            if total_bps is not None or maker_bps is not None:
+                log.info("J4: Poly preview commission data for %s %s @ %.4f: "
+                         "total_bps=%s, maker_bps=%s",
+                         slug, side, price_dollars, total_bps, maker_bps)
+        return resp
     except Exception as e:
         log.warning("Poly preview failed for %s %s @ %.4f: %s",
                     slug, side, price_dollars, e)
@@ -394,23 +450,9 @@ def place_maker_order(slug: str, side: str, price_dollars: float,
                 pass
             return None
 
-    _enforce_rate_limit()
+    _enforce_rate_limit(lane="orders")
     client = _get_authenticated_client()
-    intent = ("ORDER_INTENT_BUY_LONG" if side == "yes"
-              else "ORDER_INTENT_BUY_SHORT")
-    tif = "TIME_IN_FORCE_GOOD_TILL_DATE" if good_till_time else "TIME_IN_FORCE_GOOD_TILL_CANCEL"
-    params = {
-        "marketSlug": slug,
-        "intent": intent,
-        "type": "ORDER_TYPE_LIMIT",
-        "price": _poly_amount(_poly_price(side, price_dollars)),
-        "quantity": contracts,
-        "tif": tif,
-        "participateDontInitiate": True,   # fee-free maker
-        "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
-    }
-    if good_till_time:
-        params["goodTillTime"] = good_till_time
+    params = _build_order_params(slug, side, price_dollars, contracts, good_till_time)
     # Create: place the order.
     try:
         resp = client.orders.create(params)
@@ -428,7 +470,7 @@ def get_open_orders() -> list:
     cancelled, so a swallowed error here would release reserved cash for an
     order that may still be live.
     """
-    _enforce_rate_limit()
+    _enforce_rate_limit(lane="orders")
     client = _get_authenticated_client()
     resp = client.orders.list()
     return resp.get("orders", []) or []
@@ -439,7 +481,7 @@ def cancel_order(order_id: str, market_slug: str = "") -> bool:
     If market_slug is not provided, looks up the order's marketSlug from
     get_open_orders() so callers don't fail with BadRequestError.
     """
-    _enforce_rate_limit()
+    _enforce_rate_limit(lane="orders")
     client = _get_authenticated_client()
     if not market_slug:
         try:
@@ -461,7 +503,11 @@ def cancel_order(order_id: str, market_slug: str = "") -> bool:
         return False
 
 def close_position(slug: str) -> bool:
-    """Close the position on a Polymarket US market."""
+    """Close the position on a Polymarket US market.
+
+    A4: Enforces rate limit like other order calls (orders lane).
+    """
+    _enforce_rate_limit(lane="orders")
     client = _get_authenticated_client()
     try:
         client.orders.close_position({"marketSlug": slug})

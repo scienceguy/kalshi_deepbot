@@ -518,6 +518,13 @@ class PolyUSPaperTrader:
             recorder=latency.default_recorder,
         )
 
+        # J5: Cached control state for pause_entries — refreshed by background
+        # thread to keep database reads off the guard tick hot path.
+        self._pause_cache = {"paused": False, "version": 0}
+        self._pause_cache_lock = threading.Lock()
+        self._pause_cache_thread: Optional[threading.Thread] = None
+        self._pause_cache_stop = threading.Event()
+
     def reset_state(self, initial_cash: float = 35.0) -> dict:
         """Manual reset to a fresh bankroll (--reset only; the bot never auto-resets).
 
@@ -2490,23 +2497,24 @@ class PolyUSPaperTrader:
 
     def _guard_halt_active(self) -> bool:
         """Entries are halted: ruin, venue-recon, daily-loss or a signed
-        pause_entries command (memory or persisted). Read-only — no day-rollover side effects."""
+        pause_entries command (memory or persisted). Read-only — no day-rollover side effects.
+        
+        J5: Uses in-memory cached pause_entries (refreshed every 250ms by
+        background thread) instead of hitting the database on every tick."""
         if self.state.get("ruin_halted") or self.state.get("venue_recon_halted"):
             return True
         if self.state.get("daily_loss_halted"):
             return True
-        # H1: check persisted pause state in local_db (survives restarts)
+        # J5: Read from in-memory cache (refreshed by background thread)
+        # Gracefully handle missing cache (e.g., in tests or early init)
         try:
-            from local_db import get_local_db
-            pause_state = get_local_db().get_control_state("pause_entries")
-            if pause_state and pause_state.get("paused"):
-                return True
-        except Exception as e:
-            # not fail-closed here: a transient DB lock must not cancel resting
-            # orders every tick; the startup reload (which IS fail-closed) covers
-            # the restart case, and this read is only the mid-run peer-pause path
-            log.error("H1: persisted pause read failed, falling back to memory: %s", e)
-        # Also check in-memory control state
+            if hasattr(self, "_pause_cache_lock") and hasattr(self, "_pause_cache"):
+                with self._pause_cache_lock:
+                    if self._pause_cache.get("paused"):
+                        return True
+        except Exception:
+            pass
+        # Also check in-memory control state (peer pause via control inbox)
         try:
             import control
             return bool(control.STATE.pause_entries)
@@ -3392,6 +3400,33 @@ def main():
             guard_thread.start()
             log.info("Resting-order guard fast loop started (interval %.1fs)", guard_interval)
 
+        # J5: Start cached control state refresher thread (250ms interval)
+        # Keeps pause_entries in memory so guard tick doesn't hit the database.
+        def _pause_cache_refresh():
+            interval = float(getattr(config, "POLY_PAUSE_CACHE_REFRESH_S", 0.25))
+            while not trader._pause_cache_stop.wait(interval):
+                try:
+                    from local_db import get_local_db
+                    db = get_local_db()
+                    # Use PRAGMA data_version for cheap change detection
+                    conn = db._get_conn()
+                    with db._lock:
+                        data_version = conn.execute("PRAGMA data_version").fetchone()[0]
+                    pause_state = db.get_control_state("pause_entries")
+                    with trader._pause_cache_lock:
+                        trader._pause_cache = {"paused": bool(pause_state and pause_state.get("paused")),
+                                               "version": data_version}
+                except Exception as e:
+                    # Log but don't crash the refresher
+                    log.warning("J5: pause cache refresh failed: %s", e)
+
+        trader._pause_cache_thread = threading.Thread(target=_pause_cache_refresh,
+                                                      name="pause-cache-refresh",
+                                                      daemon=True)
+        trader._pause_cache_thread.start()
+        log.info("J5: pause_entries cache refresher started (interval %.3fs)",
+                 float(getattr(config, "POLY_PAUSE_CACHE_REFRESH_S", 0.25)))
+
         cycle_failures = 0
         # Type=notify unit: init (state, lock, signals) is done; systemd may
         # now consider the service started and enforce WatchdogSec.
@@ -3425,6 +3460,12 @@ def main():
         guard_stop.set()
         if guard_thread is not None:
             guard_thread.join(timeout=2.0)
+        # J5: stop the pause cache refresher
+        if hasattr(trader, "_pause_cache_stop"):
+            trader._pause_cache_stop.set()
+        if hasattr(trader, "_pause_cache_thread") and trader._pause_cache_thread is not None:
+            trader._pause_cache_thread.join(timeout=2.0)
+            log.info("J5: pause_entries cache refresher stopped")
         # J2: stop Polymarket US private WebSocket stream
         try:
             import poly_us_stream as _pus
