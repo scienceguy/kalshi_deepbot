@@ -95,6 +95,7 @@ import signals as se  # noqa: E402
 from resilience import CycleSupervisor, systemd_notify  # noqa: E402
 from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, calibration_beats_chance as _llm_calibration_beats_chance  # noqa: E402
 from emit import emit_event, emit_sync_lag  # noqa: E402
+from pnl_reconcile import maybe_reconcile_session_pnl  # noqa: E402
 import control  # noqa: E402  — N4 signed control inbox (pause/resume/caps)
 import agent_identity  # noqa: E402  — M3: canonical agent identities
 import paper_mode  # noqa: E402
@@ -3750,6 +3751,13 @@ def _run_loop(args) -> None:
             else:
                 state.consecutive_no_trade_cycles += 1
             cycle_count += 1
+            # Issue #15: reconcile session_pnl across the local ledger, the
+            # n8n-reported orders P&L and the Supabase mirror. Self-throttles
+            # to PNL_RECONCILE_INTERVAL_S and never raises.
+            try:
+                maybe_reconcile_session_pnl(state)
+            except Exception as e:
+                log.debug("session_pnl reconcile skipped: %s", e)
             # Checkpoint to MemPalace every N cycles for continuity.
             # M1: bridge.checkpoint() queues the event (non-blocking); the
             # writer thread delivers it on the hot path's behalf.

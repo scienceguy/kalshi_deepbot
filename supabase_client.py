@@ -518,6 +518,42 @@ class SupabaseClient:
             log.warning("get_bot_state(%s) error: %s", key, e)
             return None
 
+    def get_pnl_ledger_total(self) -> Optional[float]:
+        """Sum realized_pnl_dollars across the remote pnl_ledger (best-effort).
+
+        Used only by the session_pnl reconciler (issue #15) to detect drift
+        between the local ledger/mirror and Supabase. Returns None when the
+        read fails so callers treat it as "unknown", never as 0.0. Rows are
+        capped at 10000 (settlement volume is far below this).
+        """
+        try:
+            result = self._request(
+                "GET", "pnl_ledger?select=realized_pnl_dollars&limit=10000")
+            if not isinstance(result, list):
+                return None
+            return round(sum(float(r.get("realized_pnl_dollars") or 0) for r in result), 4)
+        except Exception as e:
+            log.warning("get_pnl_ledger_total error: %s", e)
+            return None
+
+    def get_orders_pnl_total(self) -> Optional[float]:
+        """Sum pnl_dollars across settled remote orders (best-effort).
+
+        This is the n8n-reported P&L: the superbot-trade settlement webhook
+        PATCHes orders.pnl_dollars in Supabase. Comparing it against the
+        local ledger detects settlement webhooks lost or misrouted between
+        the trader and n8n. Returns None when the read fails.
+        """
+        try:
+            result = self._request(
+                "GET", "orders?select=pnl_dollars&pnl_dollars=not.is.null&limit=10000")
+            if not isinstance(result, list):
+                return None
+            return round(sum(float(r.get("pnl_dollars") or 0) for r in result), 4)
+        except Exception as e:
+            log.warning("get_orders_pnl_total error: %s", e)
+            return None
+
     # ─── backtest runs ─────────────────────────────────────────────────────────
     def insert_backtest_run(self, params: Dict[str, Any], metrics: Dict[str, Any]) -> bool:
         """Record a backtest run result."""

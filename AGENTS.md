@@ -334,7 +334,7 @@ Coordination (logstream):
 | 12 | `market_finder.py:189-192` | Only ONE main market returned per cycle | FIXED — returns ALL mains passing entry band filter (lines 260-264) |
 | 13 | `market_finder.py:159-160` | MAIN selected on raw mid, dropped after orderbook fetch | FIXED — bid history and market finder refactored |
 | 14 | `risk.py:43-55` | Drawdown halt uses cost-basis, not mark-to-market | FIXED — `mark_to_market_exposure` parameter (risk.py:44-79) |
-| 15 | `trader.py:508-523, 839-845` | `session_pnl` drift between n8n and Supabase | PARTIAL — batched bot-state writes added |
+| 15 | `trader.py` / `pnl_reconcile.py` / `supabase_client.py` | `session_pnl` drift between n8n and Supabase | FIXED — `pnl_reconcile.reconcile_session_pnl()` compares in-memory state vs the authoritative local reference (paper bankroll dry-run / `pnl_ledger` sum live) vs Supabase (`bot_state.session_pnl`, `pnl_ledger` sum) vs n8n-reported P&L (`orders.pnl_dollars` sum, new `get_orders_pnl_total()`); drift > 1c repairs local state, re-pushes via batched `set_bot_state_batch`, and emits `reconcile.mismatch`; runs self-throttled from the main loop (`PNL_RECONCILE_INTERVAL_S`, default 600s); remote read failures treated as unknown, never as $0; 12 unit tests (tests/test_pnl_reconcile.py) |
 | 16 | `n8n_client.py:289-293` | Health check writes through trade webhook | FIXED — uses `superbot-trade` health-check action (returns 200) |
 | 17 | `kalshi_client.py:191-208` | `_last_req` set before 429 retry loop → burst after rate limit | FIXED — gap enforced inside rate-limit block |
 | 18 | `config.py:189-199` | `DRY_RUN=false` in `.env` silently enables live | FIXED — `.env.example` defaults `KALSHI_CONFIRM_LIVE=false`; `--live` requires explicit confirm |
@@ -361,7 +361,7 @@ Coordination (logstream):
 | 39 | `kalshieye_downloader.py:213` | Only `files[0]` downloaded per date | FIXED — iterates all files (lines 213-229) |
 | 40 | `data_collector.py:13-12` | Docstring says dry-run, collects closed historical | FIXED — docstring corrected |
 | 41 | `config.py:63` | `_env_bool` silently returns default for unparseable values | FIXED — raises `ValueError` on unparseable values (config.py:86-89) |
-| 42 | `tests/` — `test_kalshi_price_data_client.py`, `test_n8n_client.py` shallow | Weak coverage | PARTIAL — added `tests/test_trader.py` (8 tests) |
+| 42 | `tests/` — `test_kalshi_price_data_client.py`, `test_n8n_client.py` shallow | Weak coverage | FIXED — client init/SDK-import paths, health_check branches, fetch arg-passing + error paths, N8nClient circuit breaker, transport-safety, session isolation, signed-webhook HMAC verify, API-key file perms, workflow helpers (155 passed incl. related n8n tests) |
 | 43 | `tests/` — no tests for `market_finder.find_active_markets` / `rank_signals` | FIXED — `tests/test_market_finder.py` exists |
 | 44 | `trader.py` — no per-market/day loss limit beyond drawdown | FIXED — `record_market_loss` / `market_loss_exceeded` (risk.py:91-112) |
 | 45 | `backtest_engine.py:258-255` | Sweep tests ignored params (`MIN_SKEW`, etc.) | FIXED — `StratParams` aligns with grid |

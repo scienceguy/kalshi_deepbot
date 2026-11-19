@@ -372,6 +372,14 @@ LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS = _env_int("LOCAL_DB_SYNC_MAX_ROW_ATTEMPTS", 10)
 # failure, capped at this value. Default 300s (5 minutes).
 LOCAL_DB_SYNC_MAX_BACKOFF_SECONDS = _env_float("LOCAL_DB_SYNC_MAX_BACKOFF_SECONDS", 300.0)
 
+# Issue #15: session_pnl reconciliation across local state, the n8n settlement
+# lane (n8n PATCHes orders.pnl_dollars in Supabase) and the Supabase mirror.
+# Reconciliation runs at most every PNL_RECONCILE_INTERVAL_S seconds from the
+# main loop; drift beyond PNL_DRIFT_TOLERANCE (1 cent) triggers a local repair
+# plus a batched bot_state re-write and a reconcile.mismatch alert.
+PNL_RECONCILE_INTERVAL_S = _env_float("PNL_RECONCILE_INTERVAL_S", 600.0)
+PNL_DRIFT_TOLERANCE = _env_float("PNL_DRIFT_TOLERANCE", 0.01)
+
 # H9-H11: retention (days) for unbounded control tables. maybe_prune() applies
 # these hourly with a throttle; scripts/scheduled_jobs.py also runs a full
 # prune nightly. alert_history defaults to 28 days (J8 dedup window).
@@ -495,6 +503,11 @@ ENTRY_ASK_MAX_CENTS = _env_int("ENTRY_ASK_MAX_CENTS", 65)
 # ═════════════════════════════════════════════════════════════════════
 # HEDGE SETTINGS
 # ═════════════════════════════════════════════════════════════════════
+# HEDGE_YES_ASK_MAX: max YES ask (cents) to consider hedge entry
+# MAX_HEDGE_PER_SERIES: max concurrent hedges per series (0 = disabled by default)
+#   Hedges are off by default because they add complexity and the favourite-maker
+#   strategy is the primary edge. Enable with MAX_HEDGE_PER_SERIES > 0 and
+#   configure HEDGE_MIN/MAX_NO_ENTRY_CENTS for the NO-side entry band.
 HEDGE_YES_ASK_MAX = _env_int("HEDGE_YES_ASK_MAX", 12)
 MAX_HEDGE_PER_SERIES = _env_int("MAX_HEDGE_PER_SERIES", 0)
 
@@ -540,6 +553,8 @@ TOTAL_CASH_TRADABLE_PCT = _env_float("TOTAL_CASH_TRADABLE_PCT", 0.70)
 # ═════════════════════════════════════════════════════════════════════
 # RISK LIMITS
 # ═════════════════════════════════════════════════════════════════════
+# CASH_FLOOR_PCT + EXPOSURE_CEILING_PCT must sum to <= 1.0 (validated at import).
+# Defaults sum to 1.0 exactly; 1e-9 epsilon in validator handles float rounding.
 CASH_FLOOR_PCT = _env_float("CASH_FLOOR_PCT", 0.70)
 EXPOSURE_CEILING_PCT = _env_float("EXPOSURE_CEILING_PCT", 0.30)
 PER_TRADE_PCT = _env_float("PER_TRADE_PCT", 0.05)  # quarter-Kelly-ish, up to 5%
@@ -613,8 +628,13 @@ MIN_DEPTH_CONTRACTS = _env_float("MIN_DEPTH_CONTRACTS", 10.0)
 
 # ═════════════════════════════════════════════════════════════════════
 # STABILITY CHECK (from kalshi_live_bot — doubles EV per backtests)
-# STABILITY CHECK (from kalshi_live_bot — doubles EV per backtests)
 # ═════════════════════════════════════════════════════════════════════
+# STABILITY_LOOKBACK_MIN: lookback window in minutes to check price stability
+# STABILITY_MIN_COVERAGE_MIN: minimum minutes of history required within lookback
+#   On fresh start, bot has no history. With STABILITY_FAIL_OPEN=True (default),
+#   trades are allowed while history builds up (~3 min). Set to False to block
+#   until STABILITY_MIN_COVERAGE_MIN is met.
+# STABILITY_MAX_YES_BID_CENTS: max distance from strike (in cents) allowed in window
 STABILITY_ENABLED = _env_bool("STABILITY_ENABLED", True)
 STABILITY_LOOKBACK_MIN = _env_int("STABILITY_LOOKBACK_MIN", 3)
 STABILITY_MIN_COVERAGE_MIN = _env_float("STABILITY_MIN_COVERAGE_MIN", 2.5)
