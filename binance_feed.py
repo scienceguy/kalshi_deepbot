@@ -504,6 +504,183 @@ def composite_sigma(symbol: str = "BTCUSDT", lookback: int = 60,
     return None
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# MOMENTUM — Coinbase lead/lag exploitation
+# ════════════════════════════════════════════════════════════════════════════
+
+_momentum_cache: dict[str, tuple[float, float, dict | None]] = {}
+
+def _coinbase_klines(base: str, granularity: int, limit: int, timeout: int = 10) -> Optional[List[List]]:
+    """Fetch klines from Coinbase Advanced Trade.
+    
+    Coinbase candles: [timestamp, low, high, open, close, volume]
+    granularity in seconds: 60 (1m), 300 (5m), 900 (15m), 3600 (1h), 86400 (1d)
+    Returns oldest-first like Binance format.
+    """
+    try:
+        resp = _session.get(
+            f"https://api.exchange.coinbase.com/products/{base}-USD/candles",
+            params={"granularity": granularity, "limit": limit},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            return None
+        # Coinbase returns newest-first; reverse to oldest-first
+        data.reverse()
+        # Convert to Binance-like format: [open_time_ms, o, h, l, c, v, ...]
+        converted = []
+        for row in data:
+            ts, low, high, open_, close, vol = row
+            converted.append([
+                int(ts) * 1000,  # ms
+                float(open_), float(high), float(low), float(close), float(vol),
+                0, 0, 0, 0, 0, 0  # pad to match Binance format
+            ])
+        return converted
+    except Exception as e:
+        log.warning("coinbase klines failed for %s: %s", base, e)
+        return None
+
+
+def _binance_klines(base: str, interval: str, limit: int, timeout: int = 10) -> Optional[List[List]]:
+    """Fetch klines from Binance data API."""
+    symbol = f"{base}USDT"
+    try:
+        resp = _session.get(
+            f"{BINANCE_REST}/klines",
+            params={"symbol": symbol, "interval": interval, "limit": limit},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        log.warning("binance klines failed for %s: %s", base, e)
+        return None
+
+
+def _okx_klines(base: str, bar: str, limit: int, timeout: int = 10) -> Optional[List[List]]:
+    """Fetch klines from OKX."""
+    try:
+        resp = _session.get(
+            "https://www.okx.com/api/v5/market/history-candles",
+            params={"instId": f"{base}-USDT", "bar": bar, "limit": limit},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        if not data:
+            return None
+        # OKX returns newest-first [ts, o, h, l, c, ...]; reverse and convert
+        data.reverse()
+        converted = []
+        for row in data:
+            converted.append([
+                int(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[4]), float(row[5]),
+                0, 0, 0, 0, 0, 0
+            ])
+        return converted
+    except Exception as e:
+        log.warning("okx klines failed for %s: %s", base, e)
+        return None
+
+
+def _fetch_klines_multi(base: str, interval: str, limit: int, timeout: int = 10) -> Optional[List[List]]:
+    """Try Coinbase, then Binance, then OKX for klines."""
+    # Map interval to Coinbase granularity
+    gran_map = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}
+    gran = gran_map.get(interval)
+    
+    # Try Coinbase first (lead exchange per research)
+    if gran:
+        klines = _coinbase_klines(base, gran, limit, timeout)
+        if klines:
+            return klines
+    
+    # Fallback: Binance
+    klines = _binance_klines(base, interval, limit, timeout)
+    if klines:
+        return klines
+    
+    # Fallback: OKX
+    bar_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H"}
+    bar = bar_map.get(interval, "1m")
+    return _okx_klines(base, bar, limit, timeout)
+
+
+def momentum_signal(base: str, lookback_5m: int = 5, lookback_1m: int = 10,
+                    timeout: int = 10) -> Optional[dict]:
+    """
+    Compute momentum signal from spot klines.
+    
+    Returns dict with:
+    - change_5m: 5-minute price change (fraction, e.g., 0.002 = +0.2%)
+    - velocity_1m: 1-minute velocity (rate of change per minute)
+    - aligned: bool, True if change_5m and velocity_1m have same sign
+    - direction: "UP" if aligned positive, "DOWN" if aligned negative, "NEUTRAL" otherwise
+    - timestamp: time of latest close
+    
+    Coinbase spot momentum leads Kalshi KXBTC15M pricing — when change_5m
+    and velocity_1m are aligned, Kalshi lags the move, creating an entry edge.
+    """
+    # Fetch 5m klines for change_5m (need lookback_5m + 1 candles)
+    klines_5m = _fetch_klines_multi(base, "5m", lookback_5m + 1, timeout)
+    if not klines_5m or len(klines_5m) < lookback_5m + 1:
+        return None
+    
+    # Fetch 1m klines for velocity_1m (need lookback_1m + 1 candles)
+    klines_1m = _fetch_klines_multi(base, "1m", lookback_1m + 1, timeout)
+    if not klines_1m or len(klines_1m) < lookback_1m + 1:
+        return None
+    
+    # Extract closes (index 4 in Binance format)
+    closes_5m = [float(k[4]) for k in klines_5m]
+    closes_1m = [float(k[4]) for k in klines_1m]
+    
+    # change_5m: (latest - 5m_ago) / 5m_ago
+    change_5m = (closes_5m[-1] - closes_5m[0]) / closes_5m[0] if closes_5m[0] > 0 else 0.0
+    
+    # velocity_1m: slope of last lookback_1m 1-minute closes (per minute)
+    # Simple linear regression slope
+    n = len(closes_1m)
+    if n >= 2:
+        x = list(range(n))
+        x_mean = (n - 1) / 2
+        y_mean = sum(closes_1m) / n
+        num = sum((x[i] - x_mean) * (closes_1m[i] - y_mean) for i in range(n))
+        den = sum((x[i] - x_mean) ** 2 for i in range(n))
+        velocity_1m = num / den if den > 0 else 0.0
+        # Normalize by price to get fractional velocity per minute
+        velocity_1m = velocity_1m / closes_1m[-1] if closes_1m[-1] > 0 else 0.0
+    else:
+        velocity_1m = 0.0
+    
+    # Check alignment
+    aligned = (change_5m > 0 and velocity_1m > 0) or (change_5m < 0 and velocity_1m < 0)
+    direction = "UP" if (change_5m > 0 and velocity_1m > 0) else ("DOWN" if (change_5m < 0 and velocity_1m < 0) else "NEUTRAL")
+    
+    return {
+        "change_5m": change_5m,
+        "velocity_1m": velocity_1m,
+        "aligned": aligned,
+        "direction": direction,
+        "timestamp": klines_1m[-1][0] / 1000.0,  # latest close time in seconds
+    }
+
+
+def momentum_cached(base: str, ttl: float = 30.0) -> Optional[dict]:
+    """Cached momentum signal, refreshed once per TTL."""
+    now = time.time()
+    hit = _momentum_cache.get(base)
+    if hit and now - hit[1] < ttl:
+        return hit[2]
+    
+    value = momentum_signal(base)
+    _momentum_cache[base] = (now, now, value) if value is not None else (hit[0] if hit else 0.0, now, None)
+    return value
+
+
 def get_klines(symbol: str = "BTCUSDT", interval: str = "1m",
                limit: int = 60, timeout: int = 15) -> Optional[List[List]]:
     """Raw Binance klines, oldest first. Each row: [open_time, o, h, l, c, v, ...]."""

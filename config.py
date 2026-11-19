@@ -365,6 +365,18 @@ GATES_SIGMA_FROM_ATR_V2 = _env_bool("GATES_SIGMA_FROM_ATR_V2", False)
 # closed. 300s = 5 min of stale-ok: a transient Binance blip does not knock the
 # bot out of the market, but a long outage still blocks entries visibly.
 GATES_STALE_OK_SECONDS = _env_int("GATES_STALE_OK_SECONDS", 300)
+
+# Momentum gate (Coinbase lead/lag exploitation)
+# Coinbase spot momentum (change_5m + velocity_1m aligned) leads Kalshi
+# KXBTC15M pricing — when aligned, Kalshi lags the move, creating an edge.
+GATES_MOMENTUM_ENABLED = _env_bool("GATES_MOMENTUM_ENABLED", True)
+GATES_MOMENTUM_MIN_CHANGE_5M = _env_float("GATES_MOMENTUM_MIN_CHANGE_5M", 0.0005)  # 0.05% min 5m change
+GATES_MOMENTUM_MIN_VELOCITY_1M = _env_float("GATES_MOMENTUM_MIN_VELOCITY_1M", 0.0002)  # 0.02%/min min velocity
+GATES_MOMENTUM_REQUIRE_ALIGNED = _env_bool("GATES_MOMENTUM_REQUIRE_ALIGNED", True)  # require same sign
+GATES_MOMENTUM_BOOST_Q = _env_float("GATES_MOMENTUM_BOOST_Q", 0.005)  # q boost when aligned (0.5%)
+GATES_MOMENTUM_DENY_MISALIGNED = _env_bool("GATES_MOMENTUM_DENY_MISALIGNED", False)  # deny when opposed
+GATES_MOMENTUM_CACHE_SECONDS = _env_int("GATES_MOMENTUM_CACHE_SECONDS", 30)
+
 # Local DB → Supabase background sync interval. Trading bots need fast crash
 # protection: a 5-minute sync window can lose up to 5 minutes of P&L/state on
 # a crash. 30s keeps the local→online gap small without hammering Supabase.
@@ -974,6 +986,18 @@ def validate_bands():
     if GATES_HIGH_GAMMA_MINUTES < 0:
         errors.append(
             f"GATES_HIGH_GAMMA_MINUTES ({GATES_HIGH_GAMMA_MINUTES}) must be >= 0."
+        )
+    if GATES_MOMENTUM_MIN_CHANGE_5M < 0:
+        errors.append(
+            f"GATES_MOMENTUM_MIN_CHANGE_5M ({GATES_MOMENTUM_MIN_CHANGE_5M}) must be >= 0."
+        )
+    if GATES_MOMENTUM_MIN_VELOCITY_1M < 0:
+        errors.append(
+            f"GATES_MOMENTUM_MIN_VELOCITY_1M ({GATES_MOMENTUM_MIN_VELOCITY_1M}) must be >= 0."
+        )
+    if not 0.0 <= GATES_MOMENTUM_BOOST_Q <= 1.0:
+        errors.append(
+            f"GATES_MOMENTUM_BOOST_Q ({GATES_MOMENTUM_BOOST_Q}) must be in [0, 1]."
         )
     if not 0.0 <= MODEL_PROB_MIN <= 1.0:
         errors.append(

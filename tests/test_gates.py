@@ -565,6 +565,103 @@ class TestEntryFee:
                             fee = gates.entry_fee(0.95, series="KXBTC15M")
                             assert fee == 0.001  # maker fee
 
+    def test_momentum_signal_returns_aligned_up(self):
+        """momentum_signal returns UP direction when change_5m and velocity_1m are positive."""
+        # Clear gates momentum cache to ensure mock is used
+        gates._momentum_cache.clear()
+        with patch('binance_feed.momentum_cached') as mock_momentum:
+            mock_momentum.return_value = {
+                "change_5m": 0.002,
+                "velocity_1m": 0.0005,
+                "aligned": True,
+                "direction": "UP",
+                "timestamp": 1795078200.0,
+            }
+            result = gates.momentum_signal("BTC")
+            assert result is not None
+            assert result["direction"] == "UP"
+            assert result["aligned"] is True
+
+    def test_momentum_gate_boosts_q_when_aligned_yes_up(self):
+        """Gate 4 boosts q when YES trade and momentum UP (aligned)."""
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        gates._momentum_cache.clear()
+        with patch.object(config, 'GATES_MOMENTUM_ENABLED', True):
+            with patch.object(config, 'GATES_TIME_DECAY_ENABLED', True):
+                with patch.object(config, 'GATES_ATR_ENABLED', False):
+                    with patch.object(config, 'GATES_EV_ENABLED', False):
+                        with patch('gates.momentum_signal') as mock_momentum:
+                            mock_momentum.return_value = {
+                                "change_5m": 0.002,
+                                "velocity_1m": 0.0005,
+                                "aligned": True,
+                                "direction": "UP",
+                                "timestamp": 1795078200.0,
+                            }
+                            with patch('gates.spot_for', return_value=95500.0):
+                                with patch('gates.atr_1m', return_value=100.0):
+                                    with patch('gates.sigma_per_min', return_value=0.002):
+                                        result = gates.evaluate_entry(
+                                            market, side="yes", entry_price_cents=95
+                                        )
+                                        # q should be boosted by GATES_MOMENTUM_BOOST_Q (default 0.005)
+                                        assert result.metrics.get("q_momentum_boost") == 0.005
+                                        assert result.metrics.get("momentum_aligned") is True
+                                        assert result.metrics.get("momentum_direction") == "UP"
+
+    def test_momentum_gate_boosts_q_when_aligned_no_down(self):
+        """Gate 4 boosts q when NO trade and momentum DOWN (aligned)."""
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        gates._momentum_cache.clear()
+        with patch.object(config, 'GATES_MOMENTUM_ENABLED', True):
+            with patch.object(config, 'GATES_TIME_DECAY_ENABLED', True):
+                with patch.object(config, 'GATES_ATR_ENABLED', False):
+                    with patch.object(config, 'GATES_EV_ENABLED', False):
+                        with patch('gates.momentum_signal') as mock_momentum:
+                            mock_momentum.return_value = {
+                                "change_5m": -0.002,
+                                "velocity_1m": -0.0005,
+                                "aligned": True,
+                                "direction": "DOWN",
+                                "timestamp": 1795078200.0,
+                            }
+                            with patch('gates.spot_for', return_value=94500.0):
+                                with patch('gates.atr_1m', return_value=100.0):
+                                    with patch('gates.sigma_per_min', return_value=0.002):
+                                        result = gates.evaluate_entry(
+                                            market, side="no", entry_price_cents=95
+                                        )
+                                        # q should be boosted by GATES_MOMENTUM_BOOST_Q (default 0.005)
+                                        assert result.metrics.get("q_momentum_boost") == 0.005
+                                        assert result.metrics.get("momentum_aligned") is True
+                                        assert result.metrics.get("momentum_direction") == "DOWN"
+
+    def test_momentum_gate_denies_misaligned_when_enabled(self):
+        """Gate 4 denies when momentum opposes trade and GATES_MOMENTUM_DENY_MISALIGNED=True."""
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        gates._momentum_cache.clear()
+        with patch.object(config, 'GATES_MOMENTUM_ENABLED', True):
+            with patch.object(config, 'GATES_TIME_DECAY_ENABLED', True):
+                with patch.object(config, 'GATES_MOMENTUM_DENY_MISALIGNED', True):
+                    with patch.object(config, 'GATES_ATR_ENABLED', False):
+                        with patch.object(config, 'GATES_EV_ENABLED', False):
+                            with patch('gates.momentum_signal') as mock_momentum:
+                                mock_momentum.return_value = {
+                                    "change_5m": -0.002,
+                                    "velocity_1m": -0.0005,
+                                    "aligned": True,
+                                    "direction": "DOWN",
+                                    "timestamp": 1795078200.0,
+                                }
+                                with patch('gates.spot_for', return_value=95500.0):
+                                    with patch('gates.atr_1m', return_value=100.0):
+                                        with patch('gates.sigma_per_min', return_value=0.002):
+                                            result = gates.evaluate_entry(
+                                                market, side="yes", entry_price_cents=95
+                                            )
+                                            assert result.allowed is False
+                                            assert any("gate4: momentum DOWN opposes yes trade" in r for r in result.reasons)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

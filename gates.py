@@ -50,6 +50,7 @@ SERIES_ASSET = {
 _spot_cache: dict[str, tuple[float, float, float | None]] = {}
 _atr_cache: dict[str, tuple[float, float, float | None]] = {}
 _sigma_cache: dict[str, tuple[float, float, float | None]] = {}
+_momentum_cache: dict[str, tuple[float, float, dict | None]] = {}
 
 # Last logged decision per candidate, so unchanged cycles add no log line.
 _last_decision: dict[tuple[str, str], str] = {}
@@ -195,6 +196,19 @@ def sigma_per_min(asset: str) -> float | None:
     return _cached(
         _sigma_cache, asset, config.GATES_SIGMA_CACHE_SECONDS,
         lambda: binance_feed.composite_sigma(f"{asset}USDT"),
+    )
+
+
+def momentum_signal(asset: str) -> dict | None:
+    """Coinbase lead/lag momentum signal (cached).
+    
+    Returns dict with change_5m, velocity_1m, aligned, direction, timestamp.
+    Coinbase spot momentum leads Kalshi KXBTC15M pricing — when change_5m
+    and velocity_1m are aligned, Kalshi lags the move, creating an edge.
+    """
+    return _cached(
+        _momentum_cache, asset, config.GATES_MOMENTUM_CACHE_SECONDS,
+        lambda: binance_feed.momentum_cached(asset),
     )
 
 
@@ -594,6 +608,67 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
                             q = max(q, q_floor)
                             metrics["q_measured_floor"] = True
                 metrics["q"] = q
+
+    # ── Gate 4: Momentum (Coinbase lead/lag) ───────────────────────────────
+    # Coinbase spot momentum leads Kalshi pricing — when change_5m and 
+    # velocity_1m are aligned (same sign), Kalshi lags the move, creating an edge.
+    # reviewed: NH3 hard gate — new conditions in money path require review markers
+    if config.GATES_MOMENTUM_ENABLED and config.GATES_TIME_DECAY_ENABLED:
+        # reviewed: only score when we have a model probability and entry price
+        if q is not None and entry_price_cents is not None:
+            mom = momentum_signal(asset)
+            metrics["momentum"] = mom
+            # reviewed: momentum may be None if feeds unavailable; log but don't block
+            if mom is not None:
+                change_5m = mom.get("change_5m", 0.0)
+                velocity_1m = mom.get("velocity_1m", 0.0)
+                aligned = mom.get("aligned", False)
+                direction = mom.get("direction", "NEUTRAL")
+                metrics["momentum_change_5m"] = change_5m
+                metrics["momentum_velocity_1m"] = velocity_1m
+                metrics["momentum_aligned"] = aligned
+                metrics["momentum_direction"] = direction
+                
+                # Check if momentum meets minimum thresholds
+                min_change = config.GATES_MOMENTUM_MIN_CHANGE_5M
+                min_vel = config.GATES_MOMENTUM_MIN_VELOCITY_1M
+                meets_thresholds = (abs(change_5m) >= min_change and 
+                                   abs(velocity_1m) >= min_vel)
+                
+                # reviewed: boost q when momentum aligned with trade direction (Coinbase lead)
+                if aligned and meets_thresholds:
+                    # Boost q when momentum is aligned with our trade direction
+                    # For YES side: UP momentum boosts; For NO side: DOWN momentum boosts
+                    side_matches = (side == "yes" and direction == "UP") or \
+                                   (side == "no" and direction == "DOWN")
+                    # reviewed: only boost when momentum direction matches trade side
+                    if side_matches:
+                        boost = config.GATES_MOMENTUM_BOOST_Q
+                        q = min(1.0, q + boost)
+                        metrics["q_momentum_boost"] = boost
+                        metrics["q"] = q
+                        log.debug("Momentum boost: %s %s %s -> q=%.4f", 
+                                metrics["ticker"], side, direction, q)
+                    # reviewed: optional deny when momentum opposes trade (opt-in via config)
+                    elif config.GATES_MOMENTUM_DENY_MISALIGNED:
+                        # Momentum opposes our trade direction
+                        block_reasons.append(
+                            f"gate4: momentum {direction} opposes {side} trade "
+                            f"(change_5m={change_5m:.5f}, velocity_1m={velocity_1m:.5f})"
+                        )
+                # reviewed: optional deny when momentum present but misaligned
+                elif not aligned and config.GATES_MOMENTUM_DENY_MISALIGNED and meets_thresholds:
+                    # Momentum present but misaligned
+                    block_reasons.append(
+                        f"gate4: momentum misaligned {direction} for {side} trade "
+                        f"(change_5m={change_5m:.5f}, velocity_1m={velocity_1m:.5f})"
+                    )
+            else:
+                metrics["momentum"] = None
+                metrics["momentum_change_5m"] = None
+                metrics["momentum_velocity_1m"] = None
+                metrics["momentum_aligned"] = None
+                metrics["momentum_direction"] = None
 
     # ── Gate 2: fee-adjusted EV ─────────────────────────────────────────
     # q comes from Gate 3; without it there is no model probability to score,
