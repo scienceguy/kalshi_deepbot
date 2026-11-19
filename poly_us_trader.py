@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -2197,6 +2198,23 @@ class PolyUSPaperTrader:
 
         order_id = None
         if getattr(self, "live_mode", False):
+            # J3: Write-ahead order intent — record before REST call so ambiguous
+            # failures can be reconciled at startup (pending_send table).
+            intent_id = f"poly-{uuid.uuid4().hex[:12]}"
+            dollar_risk = float(cost)
+            db = get_local_db()
+            db.record_order_intent(
+                order_id=intent_id,
+                ticker=slug,
+                side=side,
+                price_cents=int(round(fill_price * 100)),
+                contracts=float(qty),
+                dollar_risk=dollar_risk,
+                venue="poly",
+                mode="live",
+            )
+            log.info("J3: Recorded order intent %s for %s %s @ %.2f", intent_id, slug, side, fill_price)
+
             # preview_order above validated the order at fill_price; place at the
             # same price so the booked resting record matches the venue quote.
             _sent_t0 = time.monotonic()
@@ -2204,12 +2222,18 @@ class PolyUSPaperTrader:
                                                           preview=False, good_till_time=good_till_time)
             self._record_order_sent(_sent_t0)
             if not resp or not resp.get("id"):
-                log.warning("Live order placement failed for %s %s @ %.2f", slug, side, fill_price)
+                # Definitive failure — mark intent as failed and release cash
+                db.cancel_order_intent(intent_id, venue_status="failed_placement")
+                log.warning("Live order placement failed for %s %s @ %.2f (intent %s marked failed)",
+                            slug, side, fill_price, intent_id)
                 return False
             order_id = resp.get("id")
-            log.info("Live maker order placed: %s (id=%s)", slug, order_id)
+            # Confirm the intent with the venue order ID
+            db.confirm_order_intent_by_ticker(slug, side, venue_order_id=order_id,
+                                               venue_status="resting")
+            log.info("Live maker order placed: %s (id=%s, intent=%s)", slug, order_id, intent_id)
             emit_event("poly_us_trader", "order.placed",
-                       {"slug": slug, "order_id": order_id, "side": side,
+                       {"slug": slug, "order_id": order_id, "intent_id": intent_id, "side": side,
                         "price": float(fill_price), "qty": int(qty),
                         "cost": round(float(cost), 4), "good_till_time": good_till_time},
                        key=f"order.placed:{order_id}")
@@ -3120,6 +3144,26 @@ def main():
         LOCK_FILE, attempts=1 if args.reset is not None else _LOCK_ATTEMPTS)
     trader = PolyUSPaperTrader(initial_cash=init_cash,
                                reset=args.reset is not None, live_mode=args.live)
+
+    # J3: Reconcile pending order intents at startup (mirrors Kalshi H9).
+    # Pending intents that survived a restart are marked cancelled/unverified
+    # so they cannot double-count exposure. Real fills are recovered when
+    # live positions are seeded from the venue later in startup.
+    try:
+        db = get_local_db()
+        pending = db.get_pending_sends()
+        if pending:
+            log.warning("J3: Found %d pending order intents at startup — reconciling", len(pending))
+            for p in pending:
+                if p.get("venue") != "poly":
+                    continue
+                try:
+                    db.cancel_order_intent(p["order_id"], venue_status="reconciled_startup")
+                    log.info("J3: pending_send %s marked cancelled/unverified at startup (fills recovered from venue)", p["order_id"])
+                except Exception as e:
+                    log.warning("J3: Failed to reconcile %s: %s", p.get("order_id"), e)
+    except Exception as e:
+        log.warning("J3: reconcile pending_send failed: %s", e)
 
     # H1: resume a signed pause_entries persisted before the restart, so the
     # entry path (which reads control.STATE.pause_entries in memory) refuses
