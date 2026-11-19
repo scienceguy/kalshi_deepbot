@@ -1865,6 +1865,7 @@ class LocalDB:
                             venue: str, mode: str) -> bool:
         """Record intent to place an order BEFORE the REST call.
         Returns False on conflict (duplicate order_id)."""
+        import sqlite3
         conn = self._get_conn()
         with self._lock:
             try:
@@ -1875,6 +1876,10 @@ class LocalDB:
                     (order_id, ticker, side, price_cents, contracts, dollar_risk, venue, mode))
                 conn.commit()
                 return True
+            except sqlite3.IntegrityError:
+                # UNIQUE constraint on order_id — another process/thread already recorded this intent
+                log.warning("record_order_intent(%s): duplicate intent_id (collision)", order_id)
+                return False
             except Exception as e:
                 log.warning("record_order_intent(%s) error: %s", order_id, e)
                 return False
@@ -1961,6 +1966,7 @@ class LocalDB:
                           alert_type: str, payload: Dict[str, Any]) -> bool:
         """Record that an alert was sent. Returns False if already sent (dedup)."""
         import json as _json
+        import sqlite3
         conn = self._get_conn()
         with self._lock:
             try:
@@ -1970,10 +1976,10 @@ class LocalDB:
                     (job_name, alert_key, alert_type, _json.dumps(payload)))
                 conn.commit()
                 return True
-            except Exception as e:
+            except sqlite3.IntegrityError:
                 # UNIQUE constraint violation = already sent
-                if "UNIQUE constraint failed" in str(e):
-                    return False
+                return False
+            except Exception as e:
                 log.warning("record_alert_sent(%s) error: %s", job_name, e)
                 return False
 
@@ -1999,7 +2005,7 @@ class LocalDB:
             return
         self._last_prune_at = now
         try:
-            self.prune_control_tables(outbox_keep_days=7)
+            self.prune_control_tables(outbox_keep_days=7, alert_keep_days=28)
         except Exception as e:
             log.warning("prune_control_tables error: %s", e)
 
@@ -2007,7 +2013,8 @@ class LocalDB:
                              pending_keep_days: int = 7,
                              inbox_keep_days: int = 7,
                              stale_pending_hours: int = 24,
-                             outbox_keep_days: int = 7) -> dict:
+                             outbox_keep_days: int = 7,
+                             alert_keep_days: int = 28) -> dict:
         """Retention for unbounded control tables.
 
         Deletes latency_measurements rows older than latency_keep_days (by
@@ -2020,7 +2027,7 @@ class LocalDB:
         but the audit trail stays. 'pending' rows are never deleted — they are
         live intents.
 
-        J8: alert_history rows older than 4*outbox_keep_days (default 28 days)
+        J8: alert_history rows older than alert_keep_days (default 28 days)
         are also deleted.
         """
         conn = self._get_conn()
@@ -2055,11 +2062,11 @@ class LocalDB:
                     "AND created_at < datetime('now', ?)",
                     (f"-{int(outbox_keep_days)} days",))
                 outbox_deleted = cur.rowcount
-                # J8: prune old alert history (default 30 days)
+                # J8: prune old alert history (default 28 days)
                 cur = conn.execute(
                     "DELETE FROM alert_history "
                     "WHERE sent_at < datetime('now', ?)",
-                    (f"-{int(outbox_keep_days * 4)} days",))  # 28 days default
+                    (f"-{int(alert_keep_days)} days",))
                 alert_deleted = cur.rowcount
                 cur = conn.execute(
                     "UPDATE pending_send SET status = 'failed', "
