@@ -68,10 +68,13 @@ Thumbs.db
 # Logs
 logs/
 *.log
+*.log.*
 
 # Generated data dumps: never commit, and the miner skips gitignored files so
 # they stop drowning real notes in MemPalace search.
 *_snapshots.jsonl
+*_snapshots.jsonl.*
+*.gz
 *_results.json
 *_paper_ledger.jsonl
 maker_fill_test.jsonl
@@ -102,6 +105,7 @@ local_data/
 
 # cross-venue measurement output
 data/crossvenue/
+data/cfb/
 
 # Trained ML models (don't commit binaries)
 *.pt
