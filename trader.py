@@ -49,6 +49,8 @@ def parse_args(argv=None):
                         help="path to saved torch fair-value model (ml_model.py). "
                              "When given, ML fair value overrides venue-implied fair "
                              "as an additional entry filter.")
+    parser.add_argument("--force-seed-skip", action="store_true",
+                        help="Skip position seeding on startup failure (default: halt on failure)")
     args = parser.parse_args(argv)
 
     # Set DRY_RUN directly on the config module — avoids mutating os.environ,
@@ -2954,6 +2956,8 @@ def cycle(client: KalshiClient) -> None:
         # H9: write-ahead order intent — record BEFORE the REST call
         # so a crash after the call but before fill recording leaves a
         # pending_send row that reconcile_on_startup can resolve.
+        # M1 FIX: if intent recording fails, DO NOT place the order —
+        # an order without crash protection is an orphaned live order.
         _order_t0 = time.time()
         try:
             get_local_db().record_order_intent(
@@ -2967,8 +2971,9 @@ def cycle(client: KalshiClient) -> None:
                 mode="live" if not config.DRY_RUN else "dry",
             )
         except Exception as e:
-            log.error("record_order_intent FAILED for %s — this order has no "
-                      "crash protection: %s", coid, e)
+            log.error("record_order_intent FAILED for %s — BLOCKING order placement "
+                      "(no crash protection): %s", coid, e)
+            continue  # skip this signal; do not place order without intent record
 
         resp = state._place_order(client, sig, coid)
         if resp is None:
@@ -3524,7 +3529,12 @@ def _run_loop(args) -> None:
                      len(state.resting_value),
                      sum(v["dollars"] for v in state.resting_value.values()))
     except Exception as e:
-        log.warning("Could not seed resting orders from Kalshi: %s", e)
+        log.error("Could not seed resting orders from Kalshi: %s", e)
+        # reviewed: M8 - halt on seeding failure to avoid trading with unknown positions; --force-seed-skip overrides
+        if not args.force_seed_skip:
+            log.error("M8: position seeding failed — halting (use --force-seed-skip to override)")
+            return
+        log.warning("M8: --force-seed-skip set — continuing without resting orders")
 
     # reviewed: only seed live exchange positions on live mode, never dry-run
     if not config.DRY_RUN:
@@ -3568,7 +3578,12 @@ def _run_loop(args) -> None:
                 log.info("Seeded %d existing positions from exchange",
                          len(state.positions))
         except Exception as e:
-            log.warning("Could not seed positions from Kalshi: %s", e)
+            log.error("Could not seed positions from Kalshi: %s", e)
+            # reviewed: M8 - halt on seeding failure to avoid trading with unknown positions; --force-seed-skip overrides
+            if not args.force_seed_skip:
+                log.error("M8: position seeding failed — halting (use --force-seed-skip to override)")
+                return
+            log.warning("M8: --force-seed-skip set — continuing without positions")
 
     # Reconcile session_pnl on startup — paper mode uses paper_mode.pnl(), live uses pnl_ledger.
     try:

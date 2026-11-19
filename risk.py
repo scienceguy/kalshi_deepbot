@@ -100,13 +100,15 @@ class RiskManager:
                        mark_to_market_exposure: float = None):
         """Update balance tracking. Drawdown uses total portfolio value (cash + exposure).
 
-        `exposure` is cost-basis exposure (position size × avg entry price). If
-        `mark_to_market_exposure` is provided, it is used instead for drawdown
-        calculation (current market value of positions), which is more accurate
-        for drawdown detection.
+        `exposure` is cost-basis exposure (position size × avg entry price). 
+        `mark_to_market_exposure` (required) is current market value of positions,
+        which is more accurate for drawdown detection.
         """
-        # Use mark-to-market exposure if provided, otherwise cost-basis exposure
-        effective_exposure = mark_to_market_exposure if mark_to_market_exposure is not None else exposure
+        # reviewed: M6 - mark_to_market_exposure is required for accurate drawdown detection; fail fast if missing
+        if mark_to_market_exposure is None:
+            raise ValueError("mark_to_market_exposure is required for drawdown calculation")
+        # Use mark-to-market exposure (required)
+        effective_exposure = mark_to_market_exposure
         total_value = cash + effective_exposure
         if total_value <= 0:
             log.warning("⚠️  total_value=$%.2f <= 0 — skipping session_high/drawdown update", total_value)

@@ -528,8 +528,16 @@ class LocalDB:
 
     # ── signals ──────────────────────────────────────────────────────────────────
 
+    # Valid columns for the signals table (schema defined in _create_tables)
+    _SIGNAL_COLUMNS = {
+        "ts", "type", "ticker", "side", "price_cents", "edge", "model_prob",
+        "contracts", "reason", "executed", "blocked_reason", "outcome_won",
+        "outcome_pnl", "settled_at", "synced", "venue", "mode", "origin_host",
+        "schema_version"
+    }
+
     def insert_signal(self, signal_data: Dict[str, Any]) -> bool:
-        """Insert a new trade signal locally."""
+        """Insert a new trade signal locally. Only whitelisted columns are inserted."""
         data = dict(signal_data)
         if not data.get("type"):
             data["type"] = "taker"
@@ -539,10 +547,15 @@ class LocalDB:
             log.warning("insert_signal: missing required fields %s", ", ".join(missing))
             return False
         
+        # Whitelist: only insert known columns to prevent schema drift / NULL injection
+        columns = [c for c in data.keys() if c in self._SIGNAL_COLUMNS]
+        if not columns:
+            log.warning("insert_signal: no valid columns after whitelist")
+            return False
+        
         conn = self._get_conn()
         with self._lock:
             try:
-                columns = list(data.keys())
                 placeholders = ", ".join(["?" for _ in columns])
                 values = [data.get(c) for c in columns]
                 # Add synced=0
@@ -559,7 +572,7 @@ class LocalDB:
                 return False
 
     def insert_signals_batch(self, signals: List[Dict[str, Any]]) -> bool:
-        """Insert multiple signals in a single transaction."""
+        """Insert multiple signals in a single transaction. Only whitelisted columns are inserted."""
         if not signals:
             return True
         
@@ -572,6 +585,11 @@ class LocalDB:
             missing = [f for f in required if f not in item]
             if missing:
                 log.warning("insert_signals_batch: skipping signal missing %s", ", ".join(missing))
+                continue
+            # Whitelist: only keep known columns
+            item = {k: v for k, v in item.items() if k in self._SIGNAL_COLUMNS}
+            if not item:
+                log.warning("insert_signals_batch: skipping signal with no valid columns after whitelist")
                 continue
             clean.append(item)
         

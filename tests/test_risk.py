@@ -146,10 +146,10 @@ def test_drawdown_halt_does_not_auto_resume_by_default(monkeypatch):
     monkeypatch.setattr(config, "HALT_AUTO_RESUME", False)
     r = RiskManager()
     r.initialize(100.0)
-    r.update_balance(cash=60.0, exposure=0.0)  # -40% drawdown trips the halt
+    r.update_balance(cash=60.0, exposure=0.0, mark_to_market_exposure=0.0)  # -40% drawdown trips the halt
     assert r.state.halted is True
     clock["t"] += (config.HALT_MIN_MINUTES + 1) * 60.0
-    r.update_balance(cash=60.0, exposure=0.0)
+    r.update_balance(cash=60.0, exposure=0.0, mark_to_market_exposure=0.0)
     assert r.state.halted is True
 
 
@@ -162,10 +162,10 @@ def test_drawdown_halt_auto_resumes_with_flag_after_min_minutes(monkeypatch):
     monkeypatch.setattr(config, "HALT_AUTO_RESUME", True)
     r = RiskManager()
     r.initialize(100.0)
-    r.update_balance(cash=60.0, exposure=0.0)
+    r.update_balance(cash=60.0, exposure=0.0, mark_to_market_exposure=0.0)
     assert r.state.halted is True
     clock["t"] += (config.HALT_MIN_MINUTES + 1) * 60.0
-    r.update_balance(cash=60.0, exposure=0.0)
+    r.update_balance(cash=60.0, exposure=0.0, mark_to_market_exposure=0.0)
     assert r.state.halted is False
     assert r.state.halted_at == 0.0
 
@@ -180,7 +180,7 @@ def test_risk_state_persists_across_restart(monkeypatch):
     r.initialize(100.0)
     for _ in range(3):
         r.record_trade_outcome(False, -1.0)
-    r.update_balance(cash=60.0, exposure=0.0)
+    r.update_balance(cash=60.0, exposure=0.0, mark_to_market_exposure=0.0)
     saved = r.state_dict()
     r2 = RiskManager()
     r2.load_state_dict(saved)

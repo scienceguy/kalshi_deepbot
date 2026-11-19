@@ -81,6 +81,8 @@ def floor_contracts(n: float) -> float:
 
 def _size(entry_cents: int, max_dollars: float, max_contracts: int = 0) -> float:
     """Convert a dollar budget into contracts (fractional, 2dp)."""
+    # M7: defense in depth - if we're actually sizing (max_dollars > 0)
+    # and entry_cents is in the valid range (1-99), proceed; otherwise return 0
     if entry_cents <= 0 or entry_cents >= 100 or max_dollars <= 0:
         return 0.0
     cost = entry_cents / 100.0
@@ -458,7 +460,7 @@ def _evaluate_common(
     """
     eval_side = "yes" if bullish else "no"
     ep_val = _maker_price(market, bullish)
-    ep = max(1, min(99, int(ep_val))) if ep_val else 0
+    ep = max(1, min(99, int(ep_val))) if ep_val is not None else 0
     n = _size(ep, max_dollars, max_contracts) if ep > 0 else 0
 
     def _pass(r, p=ep, count=n, s=eval_side):
@@ -482,13 +484,12 @@ def _evaluate_common(
     if not yes_liq and not no_liq:
         return _pass("No liquidity")
 
-    # ── Entry price ─────────────────────────────────────────────────────
-    # Locked/crossed book: _maker_price returned None above (ep_val) — reject
-    # this direction rather than trade into a broken book.
-    ep = ep_val
-    if ep is None:
+    # ── Entry price validation (M7) ─────────────────────────────────────
+    # _maker_price returned None = locked/crossed book, no honest maker price
+    # reviewed: M7 - reject locked/crossed book rather than trade into broken book
+    if ep_val is None:
         return _pass("Locked/crossed book — no maker price")
-    ep = max(1, min(99, int(ep)))
+    ep = ep_val  # guaranteed 1-99 here
 
     # Entry band check (allow 1c inside spread for maker orders resting below ask)
     min_allowed = (entry_min - 1) if not config.AGGRESSIVE_FILL else entry_min

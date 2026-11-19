@@ -32,6 +32,7 @@ import config  # noqa: F401  — import loads .env into os.environ
 log = logging.getLogger(__name__)
 
 _schema_warned = False  # log the missing-schema hint once, not on every write
+_schema_alerted = False  # emit sync.lag alert once, not on every write
 
 # ── Circuit breaker for Supabase outages ──
 # Trips after N consecutive failures, skips writes for a cooldown period.
@@ -310,6 +311,21 @@ class SupabaseClient:
                             "Supabase dashboard SQL Editor. Audit writes will be dropped "
                             "until then."
                         )
+                        # M5: emit sync.lag alert so operators are paged, not just logged
+                        global _schema_alerted
+                        if not _schema_alerted:
+                            try:
+                                from emit import emit_event
+                                emit_event(
+                                    "supabase_client", "sync.lag",
+                                    {"error": "PGRST205 table missing",
+                                     "method": method, "path": path},
+                                    key="supabase:schema_missing",
+                                    severity="critical",
+                                )
+                                _schema_alerted = True
+                            except Exception:
+                                pass  # never let alert emission break the request path
                     else:
                         log.debug("Supabase %s %s: table not created yet", method, path)
                     return None
