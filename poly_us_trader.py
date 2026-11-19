@@ -25,7 +25,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -1458,7 +1458,8 @@ class PolyUSPaperTrader:
 
         return list(markets_by_slug.values())
 
-    def preview_order(self, slug: str, side: str, price_dollars: float, qty: int) -> bool:
+    def preview_order(self, slug: str, side: str, price_dollars: float, qty: int,
+                      good_till_time: str | None = None) -> bool:
         """Validate order against Polymarket US production order preview API.
 
         Calls the live orders.preview endpoint (even in paper mode) so that
@@ -1467,12 +1468,15 @@ class PolyUSPaperTrader:
         (slug, side) once validated this process — except in shadow mode
         (GATES_SHADOW_MODE), where every order keeps its preview.
         Returns True only on a successful preview.
+
+        Args:
+            good_till_time: Optional ISO-8601 UTC timestamp for TIME_IN_FORCE_GOOD_TILL_DATE.
         """
         key = (slug, side)
         if not getattr(config, "GATES_SHADOW_MODE", False) and key in self._preview_validated:
             return True
         try:
-            res = polymarket_us_client.preview_order(slug, side, price_dollars, qty)
+            res = polymarket_us_client.preview_order(slug, side, price_dollars, qty, good_till_time)
             ok = res is not None
         except Exception as e:
             log.warning("Order preview failed for %s %s @ $%.2f: %s",
@@ -2176,8 +2180,18 @@ class PolyUSPaperTrader:
                           float(getattr(config, "PM_MAX_EXPOSURE_PCT_SAME_DIRECTION", 0.0)) * 100, slug)
                 return False
 
+        # J1: calculate good_till_time = min(now + TTL, market end)
+        ttl_seconds = float(getattr(config, "POLY_RESTING_ORDER_TTL_SECONDS", 900))
+        hours_left = opp.get("hours_left")
+        now_dt = datetime.now(timezone.utc)
+        good_till_time = None
+        if hours_left is not None:
+            market_end_dt = now_dt + timedelta(seconds=hours_left * 3600.0)
+            good_till_dt = min(now_dt + timedelta(seconds=ttl_seconds), market_end_dt)
+            good_till_time = good_till_dt.isoformat().replace("+00:00", "Z")
+
         # Validate order syntax with Polymarket US production API (at the fill price)
-        valid = self.preview_order(slug, side, fill_price, qty)
+        valid = self.preview_order(slug, side, fill_price, qty, good_till_time=good_till_time)
         if not valid:
             return False
 
@@ -2187,7 +2201,7 @@ class PolyUSPaperTrader:
             # same price so the booked resting record matches the venue quote.
             _sent_t0 = time.monotonic()
             resp = polymarket_us_client.place_maker_order(slug, side, fill_price, qty,
-                                                          preview=False)
+                                                          preview=False, good_till_time=good_till_time)
             self._record_order_sent(_sent_t0)
             if not resp or not resp.get("id"):
                 log.warning("Live order placement failed for %s %s @ %.2f", slug, side, fill_price)
@@ -2197,7 +2211,7 @@ class PolyUSPaperTrader:
             emit_event("poly_us_trader", "order.placed",
                        {"slug": slug, "order_id": order_id, "side": side,
                         "price": float(fill_price), "qty": int(qty),
-                        "cost": round(float(cost), 4)},
+                        "cost": round(float(cost), 4), "good_till_time": good_till_time},
                        key=f"order.placed:{order_id}")
 
         if getattr(self, "live_mode", False):
@@ -2228,6 +2242,7 @@ class PolyUSPaperTrader:
                     "state": "resting",
                     "placed_at": datetime.now(timezone.utc).isoformat(),
                     "window_ts": self.state.get("current_window_ts"),
+                    "good_till_time": good_till_time,
                 })
             # D2: record the resting order in the local poly DB (best-effort).
             try:
@@ -2276,6 +2291,7 @@ class PolyUSPaperTrader:
                     "placed_at": datetime.now(timezone.utc).isoformat(),
                     "window_ts": self.state.get("current_window_ts"),
                     "paper_fill_model": "maker",
+                    "good_till_time": good_till_time,
                 })
             self._record_order_sent(_sent_t0)
             # D2: record the resting order in the local poly DB (best-effort).

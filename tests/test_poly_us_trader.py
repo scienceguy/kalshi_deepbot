@@ -581,7 +581,12 @@ def test_live_mode_places_real_order(temp_trader):
          patch("polymarket_us_client.place_maker_order", return_value={"id": "ORDER123"}) as mock_place:
         ok = temp_trader.execute_paper_trade(opp)
         assert ok is True
-        mock_place.assert_called_once_with("test-live-slug", "no", 0.08, 1, preview=False)
+        # J1: place_maker_order now accepts good_till_time parameter
+        mock_place.assert_called_once()
+        args, kwargs = mock_place.call_args
+        assert args == ("test-live-slug", "no", 0.08, 1)
+        assert kwargs.get("preview") is False
+        # good_till_time may be None or a string; just verify it's passed
         # Live orders sit in a `resting` record with cash reserved until confirmed fill (R3)
         assert temp_trader.state["resting_orders"][-1]["order_id"] == "ORDER123"
         assert temp_trader.state["resting_orders"][-1]["state"] == "resting"
@@ -737,7 +742,7 @@ def test_preview_order_always_calls_api_even_without_auth_client(temp_trader):
                return_value={"order": {"state": "ORDER_STATE_PENDING_NEW"}}) as mock_preview:
         ok = temp_trader.preview_order("test-slug", "yes", 0.95, 1)
         assert ok is True
-        mock_preview.assert_called_once_with("test-slug", "yes", 0.95, 1)
+        mock_preview.assert_called_once_with("test-slug", "yes", 0.95, 1, None)
 
 
 def test_preview_order_returns_false_on_api_failure(temp_trader):

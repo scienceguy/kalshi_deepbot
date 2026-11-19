@@ -232,6 +232,10 @@ POLY_DAILY_LOSS_LIMIT_DOLLARS = _env_float("POLY_DAILY_LOSS_LIMIT_DOLLARS", 5.0)
 POLY_CONFIRM_LIVE = _env_bool("POLY_CONFIRM_LIVE", False)
 # Resting order TTL (seconds) before auto-cancel (R3).
 POLY_RESTING_ORDER_TTL_SECONDS = _env_int("POLY_RESTING_ORDER_TTL_SECONDS", 900)
+# J1: if venue rejects GTD (good-till-date), fall back to GTC only when this is true.
+# Default false: a rejection means the market doesn't support GTD, so we don't
+# place the order and emit a critical event.
+POLY_ALLOW_GTC_FALLBACK = _env_bool("POLY_ALLOW_GTC_FALLBACK", False)
 # L5: resting-order guard. A fast loop cancels resting maker orders when
 # spot eats half the entry cushion, the book moves 5 ticks away, the feed
 # goes stale (dead-man switch while a stream is expected), or entries are

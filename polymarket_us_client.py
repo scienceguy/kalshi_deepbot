@@ -18,6 +18,7 @@ from pathlib import Path
 
 from polymarket_us import PolymarketUS
 from config import POLYMARKET_KEY_ID, POLYMARKET_SECRET_KEY
+import config
 
 import rate_limit
 
@@ -344,8 +345,16 @@ def _poly_price(side: str, price_dollars: float) -> float:
 
 
 def preview_order(slug: str, side: str, price_dollars: float,
-                  contracts: int) -> dict | None:
+                  contracts: int, good_till_time: str | None = None) -> dict | None:
     """Validate an order against Polymarket US production order preview API.
+
+    Args:
+        slug: Market slug.
+        side: "yes" or "no".
+        price_dollars: Limit price in dollars (0-1).
+        contracts: Number of contracts.
+        good_till_time: Optional ISO-8601 UTC timestamp (e.g., "2026-11-19T15:30:00+00:00")
+                        for TIME_IN_FORCE_GOOD_TILL_DATE. If None, uses GTC.
 
     Returns the preview response dict on success, or None on failure.
     """
@@ -353,16 +362,19 @@ def preview_order(slug: str, side: str, price_dollars: float,
     client = _get_authenticated_client()
     intent = ("ORDER_INTENT_BUY_LONG" if side == "yes"
               else "ORDER_INTENT_BUY_SHORT")
+    tif = "TIME_IN_FORCE_GOOD_TILL_DATE" if good_till_time else "TIME_IN_FORCE_GOOD_TILL_CANCEL"
     params = {
         "marketSlug": slug,
         "intent": intent,
         "type": "ORDER_TYPE_LIMIT",
         "price": _poly_amount(_poly_price(side, price_dollars)),
         "quantity": contracts,
-        "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
+        "tif": tif,
         "participateDontInitiate": True,   # fee-free maker
         "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
     }
+    if good_till_time:
+        params["goodTillTime"] = good_till_time
     try:
         return client.orders.preview({"request": params})
     except Exception as e:
@@ -372,7 +384,8 @@ def preview_order(slug: str, side: str, price_dollars: float,
 
 
 def place_maker_order(slug: str, side: str, price_dollars: float,
-                      contracts: int, preview: bool = True) -> dict | None:
+                      contracts: int, preview: bool = True,
+                      good_till_time: str | None = None) -> dict | None:
     """Place a fee-free maker limit order on Polymarket US.
 
     Uses ``participateDontInitiate=True`` so the order provides liquidity and
@@ -383,29 +396,54 @@ def place_maker_order(slug: str, side: str, price_dollars: float,
         side: ``"yes"`` (buy the Up/Yes token) or ``"no"`` (sell Yes / buy Down).
         price_dollars: Limit price in dollars (0–1).
         contracts: Number of contracts (integer).
+        preview: If True, validate with preview API first.
+        good_till_time: Optional ISO-8601 UTC timestamp for TIME_IN_FORCE_GOOD_TILL_DATE.
+                        If None, uses GTC. If GTD is rejected and POLY_ALLOW_GTC_FALLBACK
+                        is false, returns None and emits a critical event.
 
     Returns:
-        The create response dict, or None on failure. In DRY_RUN the caller
-        should decide whether to actually create; this function always attempts
-        the create after a successful preview.
+        The create response dict, or None on failure.
     """
-    if preview and preview_order(slug, side, price_dollars, contracts) is None:
-        return None
+    # Preview with GTD if requested
+    if preview:
+        preview_resp = preview_order(slug, side, price_dollars, contracts, good_till_time)
+        if preview_resp is None:
+            return None
+        # Check if preview succeeded with GTD
+        if good_till_time and preview_resp.get("tif") == "TIME_IN_FORCE_GOOD_TILL_DATE":
+            pass  # GTD accepted
+        elif good_till_time and not config.POLY_ALLOW_GTC_FALLBACK:
+            # GTD not supported by venue and fallback disabled
+            log.error("Poly GTD rejected for %s %s @ %.4f (fallback disabled)", slug, side, price_dollars)
+            # Emit critical event for alerting
+            try:
+                import emit
+                emit.emit_event("polymarket_us_client", "order.gtd_rejected",
+                                {"slug": slug, "side": side, "price": price_dollars,
+                                 "contracts": contracts, "good_till_time": good_till_time},
+                                key=f"gtd_rejected:{slug}:{side}",
+                                severity="critical")
+            except Exception:
+                pass
+            return None
 
     _enforce_rate_limit()
     client = _get_authenticated_client()
     intent = ("ORDER_INTENT_BUY_LONG" if side == "yes"
               else "ORDER_INTENT_BUY_SHORT")
+    tif = "TIME_IN_FORCE_GOOD_TILL_DATE" if good_till_time else "TIME_IN_FORCE_GOOD_TILL_CANCEL"
     params = {
         "marketSlug": slug,
         "intent": intent,
         "type": "ORDER_TYPE_LIMIT",
         "price": _poly_amount(_poly_price(side, price_dollars)),
         "quantity": contracts,
-        "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
+        "tif": tif,
         "participateDontInitiate": True,   # fee-free maker
         "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
     }
+    if good_till_time:
+        params["goodTillTime"] = good_till_time
     # Create: place the order.
     try:
         resp = client.orders.create(params)
