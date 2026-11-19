@@ -140,10 +140,14 @@ def run_due(now_s: float = 0.0, runner=run_job) -> list:
         if not result.get("alert"):
             continue
 
-        # De-duplication check
+        # De-duplication check - record FIRST to claim ownership, then emit
         alert_key = _alert_key(result)
         alert_type = _alert_type_from_job(name, result)
-        if db.was_alert_sent(name, alert_key, max_age_s=ALERT_DEDUP_WINDOW_S):
+        
+        # Try to record - if already sent (returns False), skip
+        # Use a small summary payload, not the full result
+        summary_payload = _alert_summary(name, result, alert_type)
+        if not db.record_alert_sent(name, alert_key, alert_type, summary_payload):
             # Already sent recently — skip
             continue
 
@@ -156,8 +160,8 @@ def run_due(now_s: float = 0.0, runner=run_job) -> list:
         else:
             state = "ALERT" if result.get("alert") else "ok"
             subject = f"[SuperBot] {state}: {result.get('trader') or result.get('reason') or name}"
-            text = json.dumps(result)[:800]
-            event_type = "calibration.alert"  # critical lane, goes to superbot-critical-alert
+            text = json.dumps(summary_payload)[:800]
+            event_type = "operational.alert"  # normal lane, goes to superbot-trade
             severity = "warning"
 
         payload = {
@@ -165,7 +169,7 @@ def run_due(now_s: float = 0.0, runner=run_job) -> list:
             "text": text,
             "job_name": name,
             "alert_type": alert_type,
-            **result,
+            **summary_payload,
         }
 
         # Emit through durable outbox (N2/N3)
@@ -179,10 +183,32 @@ def run_due(now_s: float = 0.0, runner=run_job) -> list:
             mode=mode,
         )
 
-        # Record in alert history for de-duplication
-        db.record_alert_sent(name, alert_key, alert_type, result)
-
     return ran
+
+
+def _alert_summary(name: str, result: dict, alert_type: str) -> dict:
+    """Extract small summary for alert_history and event payload."""
+    summary = {"alert_type": alert_type}
+    if name == "daily-digest":
+        summary["since_utc"] = result.get("since_utc", "")
+        summary["markets"] = result.get("markets", 0)
+        summary["fills"] = result.get("fills", 0)
+        summary["pnl"] = result.get("pnl", 0.0)
+    elif name.startswith("heartbeat"):
+        summary["trader"] = result.get("trader", "")
+        summary["reason"] = result.get("reason", "")
+        summary["age_s"] = result.get("age_s", 0.0)
+    elif name == "sync-lag":
+        summary["trader"] = result.get("trader", "")
+        summary["reason"] = result.get("reason", "")
+        summary["unsynced_count"] = result.get("unsynced_count", 0)
+        summary["lag_s"] = result.get("lag_s", 0.0)
+    elif name == "position-watchdog":
+        summary["trader"] = result.get("trader", "")
+        summary["reason"] = result.get("reason", "")
+        summary["unsettled_count"] = result.get("unsettled_count", 0)
+        summary["age_s"] = result.get("age_s", 0.0)
+    return summary
 
 
 def main(argv=None) -> int:
