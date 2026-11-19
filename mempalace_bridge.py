@@ -47,16 +47,44 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-# H4: Allow override via MEMPALACE_DIR env var
-PALACE_DIR = os.environ.get("MEMPALACE_DIR") or str(Path.home() / ".mempalace")
+# H4: one shared palace directory. MEMPALACE_DIR is this repo's override;
+# MEMPALACE_PALACE_PATH is what the mempalace CLI/library itself reads.
+def _palace_dir_from_env(environ=None) -> str:
+    env = os.environ if environ is None else environ
+    return (
+        env.get("MEMPALACE_DIR")
+        or env.get("MEMPALACE_PALACE_PATH")
+        or str(Path.home() / ".mempalace")
+    )
+
+
+PALACE_DIR = _palace_dir_from_env()
 _LOGSTREAM_DB = os.path.join(PALACE_DIR, LOGSTREAM_DB_FILENAME)
 _KG_DB = os.path.join(PALACE_DIR, "knowledge_graph.sqlite3")
+# H4: optional declaration of the palace the coding agent's tooling uses.
+EXPECTED_PALACE_DIR = os.environ.get("MEMPALACE_EXPECTED_DIR") or ""
 
 # Log the resolved palace directory at startup
 if _MEMPALACE_AVAILABLE:
     log.info("MemPalace bridge using directory: %s", PALACE_DIR)
 else:
     log.warning("MemPalace library not available — running with no-op bridge. Palace dir would be: %s", PALACE_DIR)
+
+
+def degraded_reason(palace_dir: Optional[str] = None,
+                    expected_dir: Optional[str] = None) -> str:
+    """Why the palace is degraded, or "" when healthy (H3/H4)."""
+    if not _MEMPALACE_AVAILABLE:
+        return "mempalace library not installed"
+    resolved = PALACE_DIR if palace_dir is None else palace_dir
+    expected = EXPECTED_PALACE_DIR if expected_dir is None else expected_dir
+    if expected and os.path.realpath(expected) != os.path.realpath(resolved):
+        return f"palace dir mismatch: resolved={resolved} expected={expected}"
+    return ""
+
+
+if degraded_reason():
+    log.warning("MemPalace degraded: %s", degraded_reason())
 
 # Back-compat alias: the coding agent identity is the historical default.
 DEFAULT_AGENT_IDENTITY = agent_identity.CODING_AGENT

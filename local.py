@@ -72,7 +72,13 @@ def _mp(*args):
     quoted = [shlex.quote(a) for a in args]
     # Use the approved temp dir for mempalace CLI invocations.
     cmd = "cd " + _MP_TMP + " && " + _MP + " " + " ".join(quoted)
-    return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=30)
+    # H4: the CLI reads MEMPALACE_PALACE_PATH; accept MEMPALACE_DIR too so one
+    # variable points every identity at the same palace.
+    env = os.environ.copy()
+    if env.get("MEMPALACE_DIR"):
+        env.setdefault("MEMPALACE_PALACE_PATH", env["MEMPALACE_DIR"])
+    return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True,
+                          timeout=30, env=env)
 
 def _serialize(val):
     return json.dumps(val)

@@ -1887,6 +1887,11 @@ def _report_cycle_state(cash, positions, risk_state):
         if _state_reporter is None:
             _state_reporter = report_state.StateReporter("kalshi", bot_state_key="reported_state:kalshi")
         degraded = [name for name, val in (("cash", cash), ("positions", positions)) if val is None]
+        # H4: a palace dir/library mismatch means peers write elsewhere — report degraded.
+        _palace_degraded = mempalace_bridge.degraded_reason()
+        if _palace_degraded:  # reviewed: palace mismatch must surface as degraded, never silently trade on stale peers
+            log.warning("MemPalace degraded: %s", _palace_degraded)
+            degraded.append("palace")
         try:
             cooldown = state.risk._loss_cooldown_active()
         except Exception:

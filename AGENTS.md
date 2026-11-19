@@ -289,6 +289,25 @@ Run SQL with `psql "$SUPABASE_DB_URL" -c "..."` or `-f file.sql`. Put schema cha
 
 Host:harness:project = `ubuntu:opencode:kalshi_deepbot`.
 
+**One palace directory for every identity (H4).** Every process reads
+`MEMPALACE_DIR` (falling back to `MEMPALACE_PALACE_PATH`, then
+`~/.mempalace`). Set it in every unit to the shared path and add it to
+`ReadWritePaths`:
+
+```
+sudo groupadd -f superbot
+sudo usermod -aG superbot ubuntu
+sudo usermod -aG superbot polybot
+sudo install -d -o root -g superbot -m 2775 /var/lib/superbot/mempalace
+```
+
+Units also need `Environment=MEMPALACE_DIR=/var/lib/superbot/mempalace` and
+`UMask=0002` (setgid + umask keep SQLite `-wal`/`-shm` writable by both).
+`MEMPALACE_DIR` is forwarded to the `mempalace` CLI as
+`MEMPALACE_PALACE_PATH`. Set `MEMPALACE_EXPECTED_DIR` to the coding agent's
+palace and a mismatch is reported as `degraded`; a missing `mempalace`
+package degrades to a no-op bridge instead of failing startup (H3).
+
 MemPalace/event identities come from `agent_identity.py` (M3):
 `ubuntu:opencode:kalshi_deepbot` (coding agent), `ubuntu:service:kalshi_trader`
 (Kalshi trader service), `ubuntu:service:poly_us_trader` (Polymarket trader

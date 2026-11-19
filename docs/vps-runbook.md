@@ -54,12 +54,23 @@ Notes:
   **not yet installed**; `/etc/systemd/system/superbot-dry.service` is still
   the older unhardened copy. Install with the commands in "Unit / watchdog".
 - The MemPalace bridge is **in-process** (M1), not a sidecar: each trader
-  owns its bridge thread and writes its user's palace dir (listed above).
-  The two palace DBs on this host are expected to differ (CLI
-  `~/.config/mempalace/palace` vs bridge `~/.mempalace`) — see the P8 report.
-- `polybot`'s palace `/opt/superbot/.mempalace` is dash-prefixed: the unit
-  starts without it, but create it once for heartbeat parity —
-  `sudo install -d -o polybot -g polybot /opt/superbot/.mempalace`.
+  owns its bridge thread. H4: every identity must resolve the **same** palace
+  directory — set `Environment=MEMPALACE_DIR=/var/lib/superbot/mempalace`
+  (and `UMask=0002`) in every trader unit and add that path to each unit's
+  `ReadWritePaths`. One-time setup:
+  ```
+  sudo groupadd -f superbot
+  sudo usermod -aG superbot ubuntu
+  sudo usermod -aG superbot polybot
+  sudo install -d -o root -g superbot -m 2775 /var/lib/superbot/mempalace
+  ```
+  The setgid bit (2775) plus `UMask=0002` keeps SQLite's `-wal`/`-shm` files
+  writable by both identities. Each process logs the resolved directory at
+  startup; set `MEMPALACE_EXPECTED_DIR` to the coding agent's palace to have a
+  mismatch reported as `degraded` (state report + `degraded_sources: palace`).
+- `MEMPALACE_DIR` is also forwarded to the `mempalace` CLI as
+  `MEMPALACE_PALACE_PATH` (`local.py::_mp`), so the CLI-based helpers read the
+  same palace as the bridge.
 - `MemoryMax=1G` on both traders is measured, not guessed: dry kalshi trader
   RSS ≈ 306 MiB, collectors ≈ 36 MiB, n8n ≈ 324 MiB (2026-11-17).
   `LimitNOFILE=65536` after the bridge hit `Errno 24` at the 1024 default.
