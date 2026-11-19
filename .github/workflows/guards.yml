@@ -50,13 +50,16 @@ jobs:
       - name: 0/6 secret scan (gitleaks)
         run: gitleaks detect --source . --config .gitleaks.toml --verbose --no-banner
 
-      - name: 1/6 non-ASCII letters and number+name splices
+      - name: 1/6 large file guard (J12)
+        run: python scripts/verify_large_files.py --staged
+
+      - name: 2/6 non-ASCII letters and number+name splices
         run: python scripts/verify_source.py --all
 
-      - name: 2/5 files that do not parse
+      - name: 3/6 files that do not parse
         run: python scripts/verify_compiles.py --all
 
-      - name: 3/5 undefined names
+      - name: 4/6 undefined names
         run: python scripts/verify_undefined.py --all
 
       # The two diff gates need unified diff TEXT, not the event JSON. Work out
@@ -75,7 +78,7 @@ jobs:
             fi
           fi
 
-      - name: 4/5 operator and not drift
+      - name: 5/6 operator and not drift
         run: |
           BASE="${{ steps.base.outputs.ref }}"
           echo "base=$BASE"
@@ -84,7 +87,7 @@ jobs:
           wc -l "$RUNNER_TEMP/guards.diff"
           python scripts/verify_operators.py --diff-file "$RUNNER_TEMP/guards.diff"
 
-      - name: 5/5 unreviewed money-path conditions
+      - name: 6/6 unreviewed money-path conditions
         run: |
           BASE="${{ steps.base.outputs.ref }}"
           git diff -U3 "$BASE" HEAD -- "*.py" > "$RUNNER_TEMP/review.diff"

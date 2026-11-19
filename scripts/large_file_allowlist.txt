@@ -1,0 +1,17 @@
+# J12 Large file allowlist
+# Files that legitimately exceed 1 MB or match ignored patterns
+# Add one path per line, relative to repo root
+# Lines starting with # are comments
+
+# Audit reports (reviewed, kept for history)
+docs/AUDIT_REPORT_PONYTAIL.md
+docs/AUDIT_REPORT_100.md
+
+# Strategy research docs
+docs/STRATEGY_RESEARCH.md
+docs/KALSHI_API_RESEARCH.md
+docs/POSITION_RECONCILIATION_RESEARCH.md
+docs/TROUBLESHOOTING_RESEARCH.md
+
+# Ponytail review reports
+docs/ponytail-review-nemotron-ultra-2026-11-14.md
