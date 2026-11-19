@@ -21,20 +21,25 @@ import subprocess
 import sys
 import hmac
 import hashlib
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parents[1]
+# J7: Anchor to this file's directory (release dir when installed), not hardcoded /opt/superbot
+BASE_DIR = Path(__file__).resolve().parent.parent
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("SUPERBOT_JOB_BRIDGE_PORT", "18711"))
 TIMEOUT_SECONDS = float(os.environ.get("SUPERBOT_JOB_TIMEOUT_SECONDS", "600"))
+MAX_BODY_SIZE = int(os.environ.get("SUPERBOT_JOB_BRIDGE_MAX_BODY", str(1 << 20)))  # 1 MiB default
+READ_TIMEOUT = float(os.environ.get("SUPERBOT_JOB_BRIDGE_READ_TIMEOUT", "10.0"))  # seconds
+# J7: Per-route cooldown (seconds) to prevent repeated triggers
+ROUTE_COOLDOWN_SECONDS = float(os.environ.get("SUPERBOT_JOB_BRIDGE_COOLDOWN", "60.0"))
 
-# B1: require HMAC on backtest/collect so n8n callers can't trigger them
-# without the shared secret. command/coordinate already verify inside their
-# scripts (send_command.py --stdin, n8n_coordination.py).
-REQUIRE_HMAC = {"backtest", "collect"}
+# J7: Require HMAC on ALL routes except /healthz
+REQUIRE_HMAC = {"command", "coordinate", "backtest", "collect"}
 
 
 def _verify_hmac(request: BaseHTTPRequestHandler, body: bytes) -> bool:
@@ -63,48 +68,83 @@ def _verify_hmac(request: BaseHTTPRequestHandler, body: bytes) -> bool:
     return hmac.compare_digest(expected, sig)
 
 
-# route -> (argv, wants_stdin, requires_hmac)
+# route -> (argv, wants_stdin)
 ROUTES = {
-    "command": (["scripts/send_command.py", "--stdin"], True, False),
-    "coordinate": (["scripts/n8n_coordination.py"], True, False),
+    "command": (["scripts/send_command.py", "--stdin"], True),
+    "coordinate": (["scripts/n8n_coordination.py"], True),
     "backtest": (["backtest.py", "--quick", "--limit", "50", "--top", "10",
-                  "--jobs", "2"], False, True),
+                  "--jobs", "2"], False),
     "collect": (["legacy/data_collector.py", "--series", "KXBTC15M", "KXETH15M",
-                 "KXSOL15M", "KXXRP15M", "KXDOGE15M", "--limit", "100"], False, True),
+                 "KXSOL15M", "KXXRP15M", "KXDOGE15M", "--limit", "100"], False),
 }
+
+# J7: Per-route semaphores and last-run timestamps for concurrency control + cooldown
+_route_semaphores = {r: threading.Semaphore(1) for r in ROUTES}
+_route_last_run = {r: 0.0 for r in ROUTES}
+_route_locks = {r: threading.Lock() for r in ROUTES}
 
 
 def run_route(route: str, body: bytes, timeout: float = TIMEOUT_SECONDS) -> dict:
     """Run one allowlisted route's script. Raises KeyError for unknown routes."""
-    argv, wants_stdin, _ = ROUTES[route]
-    proc = subprocess.run(
-        [sys.executable, *argv], cwd=BASE_DIR,
-        input=body if wants_stdin else None,
-        capture_output=True, timeout=timeout,
-        env={**os.environ, "PYTHONPATH": str(BASE_DIR)})
-    out = proc.stdout.decode(errors="replace").strip()
+    argv, wants_stdin = ROUTES[route]
+    
+    # J7: Acquire per-route semaphore (non-blocking) to limit to 1 concurrent run
+    sem = _route_semaphores[route]
+    acquired = sem.acquire(blocking=False)
+    if not acquired:
+        return {"ok": False, "exit": 429, "reason": "route busy", "result": {}}
+    
+    # J7: Check cooldown
+    with _route_locks[route]:
+        now = time.time()
+        if now - _route_last_run[route] < ROUTE_COOLDOWN_SECONDS:
+            sem.release()
+            return {"ok": False, "exit": 429, "reason": "cooldown", "result": {}}
+        _route_last_run[route] = now
+    
     try:
-        result = json.loads(out) if out else {}
-    except ValueError:
-        result = {"stdout": out[-2000:]}
-    return {"ok": proc.returncode == 0, "exit": proc.returncode,
-            "result": result,
-            "stderr": proc.stderr.decode(errors="replace")[-1000:]}
+        proc = subprocess.run(
+            [sys.executable, *argv], cwd=BASE_DIR,
+            input=body if wants_stdin else None,
+            capture_output=True, timeout=timeout,
+            env={**os.environ, "PYTHONPATH": str(BASE_DIR)})
+        out = proc.stdout.decode(errors="replace").strip()
+        try:
+            result = json.loads(out) if out else {}
+        except ValueError:
+            result = {"stdout": out[-2000:]}
+        return {"ok": proc.returncode == 0, "exit": proc.returncode,
+                "result": result,
+                "stderr": proc.stderr.decode(errors="replace")[-1000:]}
+    finally:
+        sem.release()
 
 
 class _Handler(BaseHTTPRequestHandler):
     server_version = "SuperBotJobBridge/1.0"
+    timeout = READ_TIMEOUT  # J7: read timeout for request body
 
     def do_POST(self):  # noqa: N802 (http.server API)
+        # J7: Validate Host header is exactly loopback address and port
+        host_header = self.headers.get("Host", "")
+        expected_host = f"{HOST}:{PORT}"
+        if host_header != expected_host:
+            log.warning("Job bridge: rejected request with invalid Host header: %s", host_header)
+            return self._json(403, {"ok": False, "reason": "invalid host"})
+
         route = self.path.split("?")[0].strip("/")
         if route not in ROUTES:
             return self._json(404, {"ok": False, "reason": "unknown route"})
-        _, _, needs_hmac = ROUTES[route]
+        
+        # J7: Require HMAC on all routes except healthz
+        needs_hmac = route in REQUIRE_HMAC
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
-        body = self.rfile.read(min(length, 1 << 20))  # 1 MiB cap
+        # J7: Cap request body size using configurable limit
+        length = min(length, MAX_BODY_SIZE)
+        body = self.rfile.read(length)
         if needs_hmac and not _verify_hmac(self, body):
             return self._json(401, {"ok": False, "reason": "invalid HMAC"})
         try:
