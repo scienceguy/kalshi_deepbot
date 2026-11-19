@@ -3,7 +3,8 @@ poly_us_stream.py — Polymarket US WebSocket streaming client.
 
 Wraps the polymarket_us SDK WebSocket classes (MarketsWebSocket,
 PrivateWebSocket) with a background asyncio thread, auto-reconnect, and
-thread-safe caches for BBO (best bid/ask), orders, positions, and balances.
+thread-safe caches for BBO (best bid/ask), full orderbook depth, orders,
+positions, and balances.
 
 Follows the same background-thread pattern as binance_feed.py.
 
@@ -15,6 +16,7 @@ Usage:
     stream.start()                     # background daemon thread
     stream.track("cpc-btc-updown-15m-...")
     bbo = stream.get_bbo("cpc-btc-updown-15m-...")
+    orderbook = stream.get_orderbook("cpc-btc-updown-15m-...")
     stream.stop()
 """
 
@@ -22,7 +24,7 @@ import asyncio
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from polymarket_us.websocket import MarketsWebSocket, PrivateWebSocket
@@ -45,6 +47,25 @@ class BBO:
     yes_ask: Optional[float] = None
     updated_at: float = 0.0
 
+
+@dataclass
+class OrderBookLevel:
+    """Single price level in the orderbook."""
+    price: float
+    size: float
+
+
+@dataclass
+class OrderBook:
+    """Full orderbook depth for a market (both YES and NO sides)."""
+    slug: str
+    yes_bids: list[OrderBookLevel] = field(default_factory=list)   # bids on YES (descending price)
+    yes_asks: list[OrderBookLevel] = field(default_factory=list)   # asks on YES (ascending price)
+    no_bids: list[OrderBookLevel] = field(default_factory=list)    # bids on NO (descending price)
+    no_asks: list[OrderBookLevel] = field(default_factory=list)    # asks on NO (ascending price)
+    updated_at: float = 0.0
+
+
 class PolyStream:
     """WebSocket streaming client for Polymarket US market + private data.
 
@@ -53,7 +74,7 @@ class PolyStream:
     WebSocket connections alive and pushes updates into the caches.
 
     Graceful degradation: without credentials the stream never connects and
-    get_bbo() always returns None, so callers fall back to REST polling.
+    get_bbo()/get_orderbook() always return None, so callers fall back to REST polling.
     """
 
     def __init__(self, key_id: str = "", secret_key: str = "", auto_start: bool = False):
@@ -64,6 +85,8 @@ class PolyStream:
         # Thread-safe caches
         self._bbo: dict[str, BBO] = {}
         self._bbo_lock = threading.RLock()
+        self._orderbook: dict[str, OrderBook] = {}
+        self._orderbook_lock = threading.RLock()
         self._order_cache: dict[str, dict] = {}
         self._position_cache: dict[str, dict] = {}
         self._balance_cache: dict[str, dict] = {}
@@ -153,6 +176,7 @@ class PolyStream:
 
         # Message handlers
         markets_ws.on("market_data_lite", self._on_market_data_lite)
+        markets_ws.on("market_data", self._on_market_data)  # Full orderbook depth
         markets_ws.on("trade", self._on_trade)
         markets_ws.on("error", self._on_ws_error)
         markets_ws.on("close", self._on_ws_close)
@@ -179,7 +203,9 @@ class PolyStream:
         for i in range(0, len(slugs), WS_SUBSCRIBE_BATCH):
             batch = slugs[i : i + WS_SUBSCRIBE_BATCH]
             req_id = f"stream-{int(time.time() * 1000)}-{i}"
+            # Subscribe to both lite (BBO) and full orderbook
             await markets_ws.subscribe_market_data_lite(req_id, batch)
+            await markets_ws.subscribe_market_data(f"{req_id}-full", batch)
             await private_ws.subscribe_orders(req_id, batch)
             await private_ws.subscribe_positions(req_id, batch)
         await private_ws.subscribe_account_balance(f"stream-balance-{int(time.time() * 1000)}")
@@ -199,6 +225,7 @@ class PolyStream:
             return
         req_id = f"stream-single-{int(time.time() * 1000)}"
         await self._markets_ws.subscribe_market_data_lite(req_id, [slug])
+        await self._markets_ws.subscribe_market_data(f"{req_id}-full", [slug])
         await self._private_ws.subscribe_orders(req_id, [slug])
         await self._private_ws.subscribe_positions(req_id, [slug])
 
@@ -224,12 +251,78 @@ class PolyStream:
                 slug=slug, yes_bid=yes_bid, yes_ask=yes_ask, updated_at=time.time()
             )
 
+    def _on_market_data(self, message: dict) -> None:
+        """Handle full orderbook (market_data) messages for depth probing."""
+        self._mark_message()
+        book = message.get("marketData") or {}
+        slug = book.get("marketSlug")
+        if not slug:
+            return
+        
+        # Parse bids (YES side) and offers (NO side)
+        # The SDK uses "bids" for YES bids and "offers" for YES asks
+        # For NO side, we need to derive from complement or use separate fields if available
+        yes_bids = []
+        yes_asks = []
+        no_bids = []
+        no_asks = []
+        
+        for level in book.get("bids", []):
+            price = self._amount_float(level.get("px"))
+            size = self._safe_float(level.get("qty"))
+            if price is not None and size is not None:
+                yes_bids.append(OrderBookLevel(price=price, size=size))
+        
+        for level in book.get("offers", []):
+            price = self._amount_float(level.get("px"))
+            size = self._safe_float(level.get("qty"))
+            if price is not None and size is not None:
+                yes_asks.append(OrderBookLevel(price=price, size=size))
+        
+        # Sort: bids descending (highest first), asks ascending (lowest first)
+        yes_bids.sort(key=lambda x: x.price, reverse=True)
+        yes_asks.sort(key=lambda x: x.price)
+        
+        with self._orderbook_lock:
+            self._orderbook[slug] = OrderBook(
+                slug=slug,
+                yes_bids=yes_bids,
+                yes_asks=yes_asks,
+                no_bids=no_bids,  # NO side not directly provided; can be derived if needed
+                no_asks=no_asks,
+                updated_at=time.time()
+            )
+        
+        # Also update BBO from full orderbook for consistency
+        if yes_bids:
+            best_bid = yes_bids[0].price
+        else:
+            best_bid = None
+        if yes_asks:
+            best_ask = yes_asks[0].price
+        else:
+            best_ask = None
+        
+        with self._bbo_lock:
+            self._bbo[slug] = BBO(
+                slug=slug, yes_bid=best_bid, yes_ask=best_ask, updated_at=time.time()
+            )
+
     @staticmethod
     def _amount_float(amount: dict | None) -> Optional[float]:
         if not amount or "value" not in amount:
             return None
         try:
             return float(amount["value"])
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _safe_float(val: any) -> Optional[float]:
+        if val is None:
+            return None
+        try:
+            return float(val)
         except (TypeError, ValueError):
             return None
 
@@ -333,7 +426,7 @@ class PolyStream:
             except Exception:
                 pass
 
-    # ── thread-safe reads ─────────────────────────────────────────────
+    # ── thread-safe reads ────────────────────────────────────────────
 
     def get_bbo(self, slug: str) -> Optional[BBO]:
         """Return the latest cached BBO for a slug, or None."""
@@ -351,6 +444,54 @@ class PolyStream:
                 s: BBO(slug=b.slug, yes_bid=b.yes_bid, yes_ask=b.yes_ask, updated_at=b.updated_at)
                 for s, b in self._bbo.items()
             }
+
+    def get_orderbook(self, slug: str) -> Optional[OrderBook]:
+        """Return the latest cached full orderbook for a slug, or None."""
+        with self._orderbook_lock:
+            ob = self._orderbook.get(slug)
+            if ob is None:
+                return None
+            # Return a copy to avoid external mutation
+            return OrderBook(
+                slug=ob.slug,
+                yes_bids=list(ob.yes_bids),
+                yes_asks=list(ob.yes_asks),
+                no_bids=list(ob.no_bids),
+                no_asks=list(ob.no_asks),
+                updated_at=ob.updated_at
+            )
+
+    def get_orderbook_depth(self, slug: str, levels: int = 10) -> Optional[dict]:
+        """Return orderbook depth summary for a slug.
+        
+        Returns dict with:
+        - yes_bids: list of [price, size] for top N levels
+        - yes_asks: list of [price, size] for top N levels
+        - spread: yes_ask - yes_bid (if both exist)
+        - mid: (yes_bid + yes_ask) / 2 (if both exist)
+        - updated_at: timestamp
+        """
+        ob = self.get_orderbook(slug)
+        if not ob:
+            return None
+        
+        yes_bids = [(lvl.price, lvl.size) for lvl in ob.yes_bids[:levels]]
+        yes_asks = [(lvl.price, lvl.size) for lvl in ob.yes_asks[:levels]]
+        
+        spread = None
+        mid = None
+        if ob.yes_bids and ob.yes_asks:
+            spread = ob.yes_asks[0].price - ob.yes_bids[0].price
+            mid = (ob.yes_bids[0].price + ob.yes_asks[0].price) / 2
+        
+        return {
+            "slug": slug,
+            "yes_bids": yes_bids,
+            "yes_asks": yes_asks,
+            "spread": spread,
+            "mid": mid,
+            "updated_at": ob.updated_at,
+        }
 
     def is_connected(self) -> bool:
         return self._connected.is_set()
@@ -394,6 +535,7 @@ class PolyStream:
 
 # Module-level singleton (created lazily by get_poly_stream)
 _poly_stream: Optional[PolyStream] = None
+
 
 def get_poly_stream() -> Optional[PolyStream]:
     """Return the module-level PolyStream, creating it if needed.
