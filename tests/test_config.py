@@ -114,6 +114,23 @@ def test_llm_fail_open_allowlist_returns_default_on_garbage(monkeypatch, caplog)
     assert cfg.LLM_EVAL_FAIL_OPEN is True
 
 
+def test_pnl_reconcile_validation(monkeypatch):
+    """PNL_RECONCILE_INTERVAL_S must be > 0 and PNL_DRIFT_TOLERANCE >= 0."""
+    import pytest
+
+    cfg = _reload_with(monkeypatch, PNL_RECONCILE_INTERVAL_S="0")
+    with pytest.raises(ValueError, match="PNL_RECONCILE_INTERVAL_S"):
+        cfg.validate_pnl_reconcile()
+
+    cfg = _reload_with(monkeypatch, PNL_DRIFT_TOLERANCE="-0.01")
+    with pytest.raises(ValueError, match="PNL_DRIFT_TOLERANCE"):
+        cfg.validate_pnl_reconcile()
+
+    cfg = _reload_with(monkeypatch, PNL_RECONCILE_INTERVAL_S="600",
+                       PNL_DRIFT_TOLERANCE="0")
+    cfg.validate_pnl_reconcile()  # valid: zero tolerance is allowed
+
+
 # ── B12: exit thresholds unreachable at a high entry band (config validation) ─
 
 def test_exit_take_profit_unreachable_warns(monkeypatch, caplog):

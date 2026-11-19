@@ -978,6 +978,26 @@ def validate_bands():
     if errors:
         raise ValueError("Configuration invalid:\n" + "\n".join(errors))
 
+def validate_pnl_reconcile() -> None:
+    """Validate session_pnl reconciliation settings (issue #15).
+
+    PNL_RECONCILE_INTERVAL_S must be > 0 (a non-positive interval would run
+    the reconciler every cycle) and PNL_DRIFT_TOLERANCE must be >= 0 (a
+    negative tolerance alerts on every read). Raises ValueError otherwise.
+    """
+    errors = []
+    if PNL_RECONCILE_INTERVAL_S <= 0:
+        errors.append(
+            f"PNL_RECONCILE_INTERVAL_S ({PNL_RECONCILE_INTERVAL_S}) must be > 0."
+        )
+    if PNL_DRIFT_TOLERANCE < 0:
+        errors.append(
+            f"PNL_DRIFT_TOLERANCE ({PNL_DRIFT_TOLERANCE}) must be >= 0."
+        )
+    if errors:
+        raise ValueError("Configuration invalid:\n" + "\n".join(errors))
+
+
 def validate_kalshi_base_url() -> None:
     """Validate KALSHI_BASE_URL contains the required API path.
     
@@ -1001,6 +1021,7 @@ def validate_all(silent: bool = False):
     """Run all validation checks. Called at module import for early failure detection."""
     validate_credentials()
     validate_bands()
+    validate_pnl_reconcile()  # Issue #15
     validate_kalshi_base_url()  # S16
     # validate_dry_run not called here — requires live_explicit context
     import fees
