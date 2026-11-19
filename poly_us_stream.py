@@ -248,19 +248,47 @@ class PolyStream:
             )
 
     def _on_order_update(self, message: dict) -> None:
+        """Handle order update messages from PrivateWebSocket.
+
+        SDK Execution type has:
+        - id: execution id
+        - order: {id, marketSlug, state, cumQuantity, leavesQuantity, avgPx}
+        - lastShares, lastPx, type
+        """
         self._mark_message()
         update = message.get("orderSubscriptionUpdate") or {}
         execution = update.get("execution") or {}
-        order_id = execution.get("orderId") or execution.get("id")
+        # Execution id (not order id)
+        exec_id = execution.get("id")
+        # Nested order object has the order details
+        order = execution.get("order") or {}
+        order_id = order.get("id")
+        market_slug = order.get("marketSlug") or ""
+        state = order.get("state") or ""  # ORDER_STATE_PENDING_NEW, ORDER_STATE_FILLED, etc.
+        cum_qty = order.get("cumQuantity") or 0
+        leaves_qty = order.get("leavesQuantity") or 0
+        avg_px = order.get("avgPx")
+        last_shares = execution.get("lastShares")
+        last_px = execution.get("lastPx")
+        exec_type = execution.get("type")
+
         if order_id:
             with self._private_lock:
                 self._order_cache[str(order_id)] = {
                     "order_id": order_id,
-                    "market_slug": execution.get("marketSlug") or "",
-                    "status": execution.get("status") or "",
-                    "filled_quantity": execution.get("filledQuantity") or 0,
+                    "execution_id": exec_id,
+                    "market_slug": market_slug,
+                    "state": state,
+                    "cum_quantity": cum_qty,
+                    "leaves_quantity": leaves_qty,
+                    "avg_price": avg_px,
+                    "last_shares": last_shares,
+                    "last_price": last_px,
+                    "execution_type": exec_type,
                     "updated_at": time.time(),
                 }
+            # Call order state change callback outside the lock
+            self._call_order_callback(self._order_cache[str(order_id)])
 
     def _on_position_update(self, message: dict) -> None:
         self._mark_message()
@@ -272,7 +300,10 @@ class PolyStream:
             security_id = before.get("securityId") or ""
         if security_id:
             with self._private_lock:
-                self._position_cache[str(security_id)] = after
+                # Add updated_at for freshness tracking
+                pos_data = dict(after)
+                pos_data["updated_at"] = time.time()
+                self._position_cache[str(security_id)] = pos_data
 
     def _on_balance_update(self, message: dict) -> None:
         self._mark_message()
@@ -281,7 +312,10 @@ class PolyStream:
         after = change.get("afterBalance") or {}
         if after and after.get("currency"):
             with self._private_lock:
-                self._balance_cache[after["currency"]] = after
+                # Add updated_at for freshness tracking
+                bal_data = dict(after)
+                bal_data["updated_at"] = time.time()
+                self._balance_cache[after["currency"]] = bal_data
 
     def _on_ws_error(self, *args) -> None:
         log.warning("PolyStream websocket error: %s", args)
@@ -325,6 +359,50 @@ class PolyStream:
 
     def has_credentials(self) -> bool:
         return self._has_creds
+
+    # J2: New methods to expose private stream data with freshness
+    def get_order(self, order_id: str) -> Optional[dict]:
+        """Return cached order by id with freshness age (seconds), or None."""
+        with self._private_lock:
+            cached = self._order_cache.get(order_id)
+            if cached is None:
+                return None
+            result = dict(cached)
+            result["age_seconds"] = time.time() - cached["updated_at"]
+            return result
+
+    def get_position(self, market_slug: str) -> Optional[dict]:
+        """Return cached position by market slug with freshness age, or None."""
+        with self._private_lock:
+            cached = self._position_cache.get(market_slug)
+            if cached is None:
+                return None
+            result = dict(cached)
+            result["age_seconds"] = time.time() - cached.get("updated_at", 0) or 0
+            return result
+
+    def get_balance(self, currency: str = "USD") -> Optional[dict]:
+        """Return cached balance by currency with freshness age, or None."""
+        with self._private_lock:
+            cached = self._balance_cache.get(currency)
+            if cached is None:
+                return None
+            result = dict(cached)
+            result["age_seconds"] = time.time() - cached.get("updated_at", 0) or 0
+            return result
+
+    def set_order_callback(self, callback) -> None:
+        """Set a callback for order state changes: callback(order_dict).
+        Called when an order update is processed. Non-raising."""
+        self._order_callback = callback
+
+    def _call_order_callback(self, order: dict) -> None:
+        cb = getattr(self, "_order_callback", None)
+        if cb:
+            try:
+                cb(order)
+            except Exception as e:
+                log.warning("PolyStream order callback failed: %s", e)
 
 
 # Module-level singleton (created lazily by get_poly_stream)

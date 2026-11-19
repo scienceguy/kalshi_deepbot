@@ -107,15 +107,24 @@ def test_track_adds_slug():
 
 
 def test_on_order_update_caches_execution():
-    """_on_order_update stores order execution in the cache."""
+    """_on_order_update stores order execution in the cache using SDK shapes."""
     s = _FakePolyStream(key_id="kid", secret_key="secret")
+    # New SDK format: execution has id (execution id) and nested order object
     msg = {
         "orderSubscriptionUpdate": {
             "execution": {
-                "orderId": "ord-123",
-                "marketSlug": "slug-x",
-                "status": "FILLED",
-                "filledQuantity": 5,
+                "id": "exec-123",
+                "order": {
+                    "id": "ord-123",
+                    "marketSlug": "slug-x",
+                    "state": "FILLED",
+                    "cumQuantity": 5,
+                    "leavesQuantity": 0,
+                    "avgPx": "0.95",
+                },
+                "lastShares": 5,
+                "lastPx": "0.95",
+                "type": "FILL",
             }
         }
     }
@@ -123,9 +132,15 @@ def test_on_order_update_caches_execution():
     with s._private_lock:
         cached = s._order_cache["ord-123"]
     assert cached["order_id"] == "ord-123"
+    assert cached["execution_id"] == "exec-123"
     assert cached["market_slug"] == "slug-x"
-    assert cached["status"] == "FILLED"
-    assert cached["filled_quantity"] == 5
+    assert cached["state"] == "FILLED"
+    assert cached["cum_quantity"] == 5
+    assert cached["leaves_quantity"] == 0
+    assert cached["avg_price"] == "0.95"
+    assert cached["last_shares"] == 5
+    assert cached["last_price"] == "0.95"
+    assert cached["execution_type"] == "FILL"
 
 
 def test_on_position_update_caches_after_position():
