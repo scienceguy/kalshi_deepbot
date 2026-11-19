@@ -3,7 +3,6 @@ inspect.signature validation for the find_active_markets fallback."""
 import inspect
 from unittest.mock import MagicMock
 
-import pytest
 
 import config
 from signals import _maker_price

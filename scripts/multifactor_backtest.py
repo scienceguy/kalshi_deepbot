@@ -3,11 +3,9 @@
 Multifactor Backtest & Compounding Simulator
 Evaluates parameter sensitivity across entry windows, price bands, edge margins, and fractional sizing allocations from $0.23.
 """
-import glob
 import json
 import math
 import os
-import time
 import polars as pl
 
 ROOT = os.environ.get("HF_DATA_DIR", "/opt/superbot/hf_data")

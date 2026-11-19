@@ -15,10 +15,7 @@ import re
 import time
 from pathlib import Path
 
-import pytest
 
-import config
-import emit
 import events
 from events import EVENT_TYPES, delivery_class, make_event
 from emit import LANE_WEBHOOK_PATH, emit_event, emit_sync_lag

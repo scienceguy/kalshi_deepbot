@@ -44,4 +44,4 @@ def test_pyflakes_zero_findings_on_core_files():
         collector = _Collector()
         pyflakes.api.check(src, str(path), collector)
         findings.extend(collector.findings)
-    assert findings == [], f"pyflakes findings:\n" + "\n".join(findings)
+    assert findings == [], "pyflakes findings:\n" + "\n".join(findings)

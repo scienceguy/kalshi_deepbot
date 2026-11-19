@@ -8,8 +8,7 @@ Pattern: follow test_trader.py - set sys.argv before calling main().
 
 import builtins
 import sys
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # The script under test
 import polymarket_portfolio
@@ -262,8 +261,7 @@ def test_import_without_module():
     original_argv = sys.argv
     try:
         # This import should not fail even though polymarket_us_client is missing
-        import importlib
-        import polymarket_portfolio  # noqa: F401
+        import polymarket_portfolio  # noqa: F401 (intentional side-effect import)
         assert True
     finally:
         if popped is not None:

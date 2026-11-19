@@ -53,7 +53,6 @@ REQUEST_GAP = 0.12  # stay well inside Kalshi's public rate limit
 
 _last = 0.0
 
-
 def _get(path: str, params: dict, timeout: int = 25) -> Optional[dict]:
     global _last
     gap = time.time() - _last
@@ -68,7 +67,6 @@ def _get(path: str, params: dict, timeout: int = 25) -> Optional[dict]:
         return None
     finally:
         _last = time.time()
-
 
 def settled_events(series: str, limit: int = 200) -> List[dict]:
     """Settled events for a series, newest first, with their settlement value."""
@@ -131,12 +129,10 @@ def settled_events(series: str, limit: int = 200) -> List[dict]:
     sorted_events = sorted(events.values(), key=lambda e: e["close_time"], reverse=True)
     return sorted_events[:limit]
 
-
 def candles(ticker: str, series: str, start: int, end: int) -> List[dict]:
     payload = _get(f"/historical/markets/{ticker}/candlesticks",
                    {"start_ts": start, "end_ts": end, "period_interval": 1})
     return (payload or {}).get("candlesticks", []) if payload else []
-
 
 def _ohlc(d) -> Optional[float]:
     """Read close from a nested BidAskDistribution dict."""
@@ -148,10 +144,8 @@ def _ohlc(d) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
-
 def _f(d) -> Optional[float]:
     return _ohlc(d)
-
 
 def spot_closes(symbol: str, start: int, end: int) -> Dict[int, float]:
     rows = binance_feed.composite_klines_range(symbol, start * 1000, end * 1000, "1m")
@@ -161,7 +155,6 @@ def spot_closes(symbol: str, start: int, end: int) -> Dict[int, float]:
         ts = close_ms // 1000
         out[ts - ts % 60] = float(r[4])
     return out
-
 
 def sigma_curve(symbol: str, start_ts: int, end_ts: int,
                 window: int = 60) -> Dict[int, Optional[float]]:
@@ -195,25 +188,6 @@ def sigma_curve(symbol: str, start_ts: int, end_ts: int,
             sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
         ) ** 0.5
     return out
-
-
-def sigma_at(minute_ts: int, symbol: str, window: int = 60) -> Optional[float]:
-    # minute_ts is the end of the minute (e.g., 14:30:00).
-    # We want klines from (minute_ts - window*60) to minute_ts inclusive.
-    # Binance klines use open_time, so we need end_ms = (minute_ts + 60) * 1000
-    # to include the kline that closes at minute_ts.
-    rows = binance_feed.composite_klines_range(symbol, (minute_ts - window * 60) * 1000,
-                                             (minute_ts + 60) * 1000, "1m")
-    if not rows or len(rows) < 10:
-        return None
-    # Align to close time: open_time + 60s
-    closes = [float(r[4]) for r in rows]
-    rets = [math.log(b / a) for a, b in zip(closes, closes[1:]) if a > 0 and b > 0]
-    if len(rets) < 5:
-        return None
-    mean = sum(rets) / len(rets)
-    return (sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)) ** 0.5
-
 
 def event_basis(event: dict, series: str, asset: str, minutes: int = 60) -> List[dict]:
     """Invert the ladder at each minute and compare to the exchange composite."""
@@ -282,7 +256,6 @@ def event_basis(event: dict, series: str, asset: str, minutes: int = 60) -> List
         })
     return out
 
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", default="KXBTCD")
@@ -334,7 +307,6 @@ def main() -> int:
                 fh.write(json.dumps(r) + "\n")
         print(f"wrote {len(rows)} rows to {args.out}")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

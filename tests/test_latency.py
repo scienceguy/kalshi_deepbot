@@ -1,13 +1,8 @@
 """Tests for latency.py — L1 latency instrumentation."""
 
 import json
-import os
-import tempfile
 import time
-from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 
 import latency
 from latency import LatencyRecorder, LatencySpan, STAGES

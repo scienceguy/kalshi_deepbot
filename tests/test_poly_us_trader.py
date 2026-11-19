@@ -107,7 +107,7 @@ def test_execute_paper_trade_updates_bankroll(temp_trader):
 
 
 def test_compute_tier_size():
-    from poly_us_trader import PolyUSPaperTrader, _taker_fee
+    from poly_us_trader import PolyUSPaperTrader
     assert PolyUSPaperTrader.compute_tier_size(20.0) == 0.60
     assert PolyUSPaperTrader.compute_tier_size(100.0) == 3.0
     assert PolyUSPaperTrader.compute_tier_size(500.0) == 15.0
@@ -651,7 +651,6 @@ def test_live_partial_fill_books_filled_qty_only(temp_trader):
         assert temp_trader.reconcile_live_orders() is True
     pos = [p for p in temp_trader.state["positions"] if p["order_id"] == "OID-PART-1"]
     assert pos and pos[0]["qty"] == 1
-    fill_price = pos[0]["price"]
     assert temp_trader.state["cash"] == pytest.approx(100.0 - pos[0]["cost"])
     assert temp_trader.state["resting_orders"] == []
     # Unfilled part of the reservation was released back into available cash.
@@ -1303,7 +1302,6 @@ def test_a3_earlier_position_does_not_book_never_filled_order(temp_trader):
 
     # Order 2 never filled — it's still resting but the venue shows 5 held
     # (all from order 1). Order 2's qty (3) must not be booked as filled.
-    book = {"bbo": {"yes_bid": "0.90", "yes_ask": "0.93"}}
     temp_trader.state["resting_orders"] = [{
         "order_id": "ORDER-2", "slug": "dup-slug", "question": "Q", "side": "yes",
         "price": 0.91, "qty": 3, "cost": 2.73, "fee": 0.0,

@@ -6,8 +6,6 @@ Covers scripts/bs_calibration.py:
   * AdaptiveVolatilityScaler: sigma/min_z scaling from Brier drift, clamping.
 """
 
-import json
-import math
 import os
 import tempfile
 from datetime import datetime, timezone

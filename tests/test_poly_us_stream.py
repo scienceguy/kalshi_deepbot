@@ -8,7 +8,6 @@ connect to the venue.
 
 from unittest.mock import patch
 
-import pytest
 
 import poly_us_stream
 

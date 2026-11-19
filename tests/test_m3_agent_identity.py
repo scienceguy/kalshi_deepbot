@@ -10,13 +10,10 @@
 - repo-wide grep: the stale pre-VPS identity string appears nowhere
   under the repo except docs/ (historical records)
 """
-import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STALE = "termux" + ":" + "opencode"  # keep this file out of its own grep net

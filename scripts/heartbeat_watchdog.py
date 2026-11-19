@@ -11,7 +11,7 @@ and alerts when it is stale. The local DB being unreadable is NOT an alert
 import argparse
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # when run by n8n from elsewhere

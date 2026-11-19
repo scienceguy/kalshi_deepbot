@@ -38,7 +38,7 @@ import stat
 import threading
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
@@ -71,7 +71,6 @@ TELEMETRY_WEBHOOK_TIMEOUT = (1.0, 3.0)
 _LANE_TIMEOUTS = {"critical": CRITICAL_WEBHOOK_TIMEOUT,
                   "normal": NORMAL_WEBHOOK_TIMEOUT,
                   "telemetry": TELEMETRY_WEBHOOK_TIMEOUT}
-
 
 class _CircuitBreaker:
     """Consecutive-failure breaker so an n8n outage does not spin the senders.
@@ -139,7 +138,6 @@ class _CircuitBreaker:
         except Exception as e:
             log.debug("breaker event emit failed (non-fatal): %s", e)
 
-
 _outbox_breaker = _CircuitBreaker()
 
 # Telemetry is process-local and coalesced: latest state per
@@ -152,17 +150,14 @@ _telemetry_dropped_lock = threading.Lock()
 _outbox_sender_started = False
 _outbox_sender_lock = threading.Lock()
 
-
 def _telemetry_dropped_inc() -> None:
     global _telemetry_dropped
     with _telemetry_dropped_lock:
         _telemetry_dropped += 1
 
-
 def _telemetry_dropped_get() -> int:
     with _telemetry_dropped_lock:
         return _telemetry_dropped
-
 
 def _enqueue_telemetry(key: str, item: Tuple["N8nClient", str, Dict[str, Any], str]) -> None:
     """Coalesce telemetry by key (latest wins); bounded; drop-oldest on overflow."""
@@ -175,7 +170,6 @@ def _enqueue_telemetry(key: str, item: Tuple["N8nClient", str, Dict[str, Any], s
             _telemetry_pending.pop(oldest)
             _telemetry_dropped_inc()
         _telemetry_pending[key] = item
-
 
 def _drain_telemetry() -> int:
     """Fire every pending telemetry item once with the short lane timeout."""
@@ -190,7 +184,6 @@ def _drain_telemetry() -> int:
         except Exception as e:
             log.debug("Telemetry %s failed (dropped): %s", webhook_path, e)
     return len(items)
-
 
 def _outbox_sender(db=None, lane: str = "normal"):
     """Background sender that reads pending outbox rows for one N2 lane.
@@ -224,10 +217,8 @@ def _outbox_sender(db=None, lane: str = "normal"):
             log.error("Outbox sender error: %s", e)
             time.sleep(2.0)
 
-
 def _lane_timeout(delivery_class: str) -> Tuple[float, float]:
     return _LANE_TIMEOUTS.get(delivery_class or "normal", NORMAL_WEBHOOK_TIMEOUT)
-
 
 def _deliver_outbox_row(db, row: Dict[str, Any]) -> None:
     """Deliver a single outbox row to n8n with HMAC signing."""
@@ -249,7 +240,6 @@ def _deliver_outbox_row(db, row: Dict[str, Any]) -> None:
         log.warning("Outbox event %s failed (%s): %s", event_id, row["type"], e)
         db.mark_outbox_dead(event_id, str(e)[:200], max_attempts=MAX_OUTBOX_ATTEMPTS)
         _outbox_breaker.record_failure()
-
 
 def _write_outbox_sidecar(event_id: str, event_type: str,
                           payload: Dict[str, Any], webhook_path: str,
@@ -281,7 +271,6 @@ def _write_outbox_sidecar(event_id: str, event_type: str,
     except Exception:
         pass
 
-
 def _sign_body(timestamp: str, body: str, nonce: str = "") -> str:
     """HMAC-SHA256 over ``{timestamp}.{nonce}.{body}`` (N1: nonce replay cover).
 
@@ -289,7 +278,6 @@ def _sign_body(timestamp: str, body: str, nonce: str = "") -> str:
     (timestamp, body): an empty nonce signs ``{timestamp}..{body}``.
     """
     return n8n_webhook_auth.sign_body(timestamp, nonce, body)
-
 
 def _start_outbox_sender():
     """Start the two background outbox senders (critical + normal/telemetry)."""
@@ -307,7 +295,6 @@ def _start_outbox_sender():
                 kwargs={"lane": "normal"},
             ).start()
             _outbox_sender_started = True
-
 
 def drain_outbox(timeout_seconds: float = 10.0) -> int:
     """Drain pending outbox events synchronously (for graceful shutdown).
@@ -337,7 +324,6 @@ def drain_outbox(timeout_seconds: float = 10.0) -> int:
                 _drain_telemetry()
     return delivered
 
-
 def outbox_metrics() -> Dict[str, Any]:
     """N2 export: outbox_depth, oldest_undelivered_age_s, dropped_total.
 
@@ -355,10 +341,8 @@ def outbox_metrics() -> Dict[str, Any]:
         log.debug("outbox_metrics: local db unavailable: %s", e)
     return metrics
 
-
 _N8N_TOKEN_KEY_NAMES = {"n8n_local_access_token", "n8n_api_key", "n8n_access_token",
                          "n8n_api_token", "api_key", "token", "n8n_key"}
-
 
 def _read_api_key_file(key_file: Path) -> Optional[str]:
     """Read an n8n API key from a protected file."""
@@ -390,7 +374,6 @@ def _read_api_key_file(key_file: Path) -> Optional[str]:
     except Exception:
         return None
 
-
 def load_api_key() -> Optional[str]:
     """Load n8n API key from env var or n8n_api_key.txt file."""
     api_key = os.environ.get("N8N_API_KEY", "").strip()
@@ -415,7 +398,6 @@ def load_api_key() -> Optional[str]:
     )
     return _read_api_key_file(key_file)
 
-
 def _assert_transport_safe(base_url: str) -> None:
     """H2: refuse plaintext to a non-loopback host.
 
@@ -435,7 +417,6 @@ def _assert_transport_safe(base_url: str) -> None:
     if parsed.scheme == "https" and not loopback:
         log.warning("n8n base URL %s is not loopback — gate key and HMAC "
                     "signatures cross the network (TLS only)", host)
-
 
 class N8nClient:
     """Client for n8n REST API and signed webhook delivery."""
@@ -522,19 +503,6 @@ class N8nClient:
 
     def activate_workflow(self, workflow_id: str) -> Dict[str, Any]:
         return self._request("POST", f"workflows/{workflow_id}/activate")
-
-    def deactivate_workflow(self, workflow_id: str) -> Dict[str, Any]:
-        return self._request("POST", f"workflows/{workflow_id}/deactivate")
-
-    def list_executions(self, workflow_id: Optional[str] = None,
-                        limit: int = 20, skip: int = 0) -> Dict[str, Any]:
-        params: Dict[str, Any] = {"limit": limit, "skip": skip}
-        if workflow_id:
-            params["workflowId"] = workflow_id
-        return self._request("GET", "executions", params=params)
-
-    def get_execution(self, execution_id: str) -> Dict[str, Any]:
-        return self._request("GET", f"executions/{execution_id}")
 
     # ── Webhooks ──────────────────────────────────────────────────────
 
@@ -766,10 +734,8 @@ class N8nClient:
             return self.activate_workflow(workflow_id)
         return wf
 
-
 # Global client instance (lazy)
 _client: Optional[N8nClient] = None
-
 
 def get_client() -> N8nClient:
     """Get or create the global N8nClient instance."""
@@ -777,7 +743,6 @@ def get_client() -> N8nClient:
     if _client is None:
         _client = N8nClient()
     return _client
-
 
 def n8n_health_check() -> bool:
     """Verify n8n is reachable via the monitor webhook (ack-only sink).
@@ -789,12 +754,11 @@ def n8n_health_check() -> bool:
         client = get_client()
         # Use the monitor webhook for health checks - it's ack-only by design.
         # Use fire_and_forget=False for synchronous execution to get actual response.
-        resp = client.execute_webhook("superbot-monitor", {"action": "health_check"}, fire_and_forget=False)
+        _ = client.execute_webhook("superbot-monitor", {"action": "health_check"}, fire_and_forget=False)
         # If we get here without exception, the webhook succeeded
         return True
     except Exception:
         return False
-
 
 def _execute_command_enabled() -> bool:
     """H5: True when n8n's environment re-enables the Execute Command node.
@@ -815,7 +779,6 @@ def _execute_command_enabled() -> bool:
     if not isinstance(excluded, list):
         return False
     return "n8n-nodes-base.executeCommand" not in excluded
-
 
 def n8n_startup_check() -> bool:
     """N1 startup gate: warn on non-loopback bind or unsigned acceptance.

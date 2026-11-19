@@ -2,15 +2,13 @@
 
 import pytest
 import math
-import time
 from contextlib import contextmanager
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import config
 import gates
-from market_finder import MarketInfo
 
 
 @dataclass

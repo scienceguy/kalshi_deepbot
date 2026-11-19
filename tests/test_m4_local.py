@@ -63,7 +63,7 @@ def test_lapse_garbage_and_future_clamp_to_zero():
 def test_checkpoint_update_flows_into_latest_checkpoint(monkeypatch):
     fake, calls = _fake_mp_factory()
     monkeypatch.setattr(local, "_mp", fake)
-    state = local.checkpoint({"cycles_completed": 3, "session_pnl": 1.5,
+    local.checkpoint({"cycles_completed": 3, "session_pnl": 1.5,
                               "session_total": 2, "resume_key": "abc",
                               "last_activity": "2026-11-17T10:00:00+00:00"})
     latest = local.get_latest_checkpoint()

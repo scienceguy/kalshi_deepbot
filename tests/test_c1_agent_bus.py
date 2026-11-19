@@ -5,13 +5,10 @@ pattern as test_n1_webhook_auth). One real 127.0.0.1 round-trip exercises
 the socket path; the rest are socket-free or inject fakes.
 """
 import json
-import os
 import time
 import urllib.request
 from datetime import datetime, timezone
-from pathlib import Path
 
-import pytest
 
 import agent_bus
 import agent_identity

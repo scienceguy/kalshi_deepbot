@@ -21,7 +21,6 @@ def get(path):
 def main():
     # Pull open markets across the crypto series we know, plus probe common
     # suffix patterns to see which cadences the venue actually lists.
-    patterns = ["5M", "15M", "1H", "1D", "HOURLY", "DAILY", "1M"]
     series_seen = {}
     # 1) enumerate via series endpoint (public)
     try:

@@ -30,7 +30,6 @@ from typing import Optional
 
 import config  # noqa: E402
 
-
 def parse_args(argv=None):
     """Parse CLI args. B16: called from main(), never at import time."""
     parser = argparse.ArgumentParser()
@@ -63,9 +62,7 @@ def parse_args(argv=None):
         config.LOG_LEVEL = "DEBUG"
     return args
 
-
 import fees  # noqa: E402
-
 
 class _LazyModule:
     """Import a heavy optional module on first attribute access.
@@ -84,7 +81,6 @@ class _LazyModule:
             import importlib
             self._mod = importlib.import_module(self._name)
         return getattr(self._mod, attr)
-
 
 ml_model = _LazyModule("ml_model")  # noqa: E402
 from local_db import get_local_db  # noqa: E402
@@ -126,7 +122,6 @@ _bridge = None  # MemPalace bridge (M1) — started at startup, stopped at shutd
 # Lazy-loaded ML fair-value model (only when --ml-model is passed).
 _ml_model = None
 
-
 def _load_ml_model(path: str):
     """Lazy-load a saved torch fair-value model. Returns None on failure."""
     global _ml_model
@@ -138,7 +133,6 @@ def _load_ml_model(path: str):
     except Exception as e:
         log.warning("Failed to load ML model from %s: %s — continuing without ML", path, e)
     return _ml_model
-
 
 def _configure_logging():
     """Attach console + rotating file handlers.
@@ -161,12 +155,10 @@ def _configure_logging():
                       backupCount=config.LOG_BACKUP_COUNT)],
     )
 
-
 log = logging.getLogger("trader")
 
 # Raw Supabase client for direct reads (e.g., reconciliation)
 _raw_supabase = None
-
 
 def get_raw_supabase_client():
     """Get the raw Supabase client for direct Supabase reads (e.g., reconciliation)."""
@@ -186,7 +178,6 @@ SETTLEMENT_QUEUE_FILE = config.SUPERBOT_DATA_DIR / "settlement_queue.json"
 SETTLED_SINCE_FILE = config.SUPERBOT_DATA_DIR / "settled_since.json"
 PAPER_POSITIONS_FILE = Path(os.environ.get("PAPER_POSITIONS_FILE")
                             or config.SUPERBOT_DATA_DIR / "paper_positions.json")
-
 
 def _load_paper_positions() -> dict:
     """Paper positions survive a restart.
@@ -208,7 +199,6 @@ def _load_paper_positions() -> dict:
         return {}
     return data if isinstance(data, dict) else {}
 
-
 def _save_paper_positions(positions: dict) -> None:
     """Persist paper positions atomically (no-op outside dry runs)."""
     if not config.DRY_RUN:  # reviewed: live reads real positions from the exchange; only paper persists to disk
@@ -220,19 +210,16 @@ def _save_paper_positions(positions: dict) -> None:
     except Exception as e:
         log.warning("Could not write %s: %s", PAPER_POSITIONS_FILE, e)
 
-
 def _load_settled_since() -> dict:
     try:
         return json.loads(SETTLED_SINCE_FILE.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
-
 def _save_settled_since(data: dict):
     tmp = SETTLED_SINCE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data))
     os.replace(tmp, SETTLED_SINCE_FILE)
-
 
 def tradable_balance_limit(cash: float, exposure: float) -> float:
     """Compute maximum tradable capital ceiling with smooth transition across bankrolls.
@@ -245,7 +232,6 @@ def tradable_balance_limit(cash: float, exposure: float) -> float:
     if portfolio_equity < 10.0:  # reviewed: smooth 60% equity cap for micro accounts under $10
         return portfolio_equity * 0.60
     return cash * config.TOTAL_CASH_TRADABLE_PCT
-
 
 class BotState:
     """Encapsulates all mutable bot state."""
@@ -503,12 +489,10 @@ class BotState:
         except Exception as e:
             log.warning("confirm_order_intent failed for %s: %s", ticker, e)
 
-
 # Global bot state — created lazily by get_state() (B16: import must stay
 # side-effect free). main() and the test fixture in tests/conftest.py call
 # get_state() before the first cycle; internal code reads this module global
 # at runtime, so wholesale monkeypatch.setattr(trader, "state", ...) still works.
-
 
 def get_state() -> BotState:
     """Create the bot state on first use and return the singleton."""
@@ -518,14 +502,12 @@ def get_state() -> BotState:
         state.settled_since = _load_settled_since()
     return state
 
-
 def __getattr__(name):
     # PEP 562: let `trader.state` resolve to the singleton even before
     # get_state() has run, without creating state at import time.
     if name == "state":
         return get_state()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 
 # ═════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -542,7 +524,6 @@ def _coid(ticker: str, side: str, window_id: int | None = None, attempt: int = 0
         window_id = _window_id(datetime.now(timezone.utc))
     raw = f"{ticker}|{side}|{window_id}|{attempt}".encode()
     return "sb_" + hashlib.sha256(raw).hexdigest()[:24]
-
 
 def _place_poly_order(sig) -> None:
     """Place a concurrent fee-free maker order on Polymarket US.
@@ -600,10 +581,8 @@ def _place_poly_order(sig) -> None:
         ticker, asset,
     )
 
-
 def _window_id(now: datetime) -> int:
     return int(now.timestamp() // (15 * 60))
-
 
 def _touch_window(now: datetime, cash: float, exposure: float = 0.0):
     """Reset per-window budget if a new 15m window begins.
@@ -670,27 +649,6 @@ def _touch_window(now: datetime, cash: float, exposure: float = 0.0):
         cash, state.window["budget"], state.window["reserved_cash"], state.consecutive_no_tradeable_cycles,
     )
 
-
-def _load_dry_state():
-    try:
-        ds = config.SUPERBOT_DATA_DIR / "dry_state.json"
-        if ds.exists():
-            with open(ds) as f:
-                return float(json.load(f).get("cash", 0.0))
-    except Exception as e:
-        log.warning("Failed to load dry state: %s — starting fresh", e)
-    return None
-
-
-def _save_dry_state(cash: float):
-    try:
-        ds = config.SUPERBOT_DATA_DIR / "dry_state.json"
-        with open(ds, "w") as f:
-            json.dump({"cash": round(cash, 4)}, f)
-    except Exception as e:
-        log.warning("Failed to save dry state: %s", e)
-
-
 # ═════════════════════════════════════════════════════════════════════
 # Kalshi API compatibility helpers
 #
@@ -714,7 +672,6 @@ def _pos_yes(p):
             return 0.0
     return float(p.get("yes_position", 0) or 0)
 
-
 def _pos_no(p):
     """NO contract count from a position record (new + legacy shape)."""
     v = p.get("position_fp")
@@ -724,7 +681,6 @@ def _pos_no(p):
         except (TypeError, ValueError):
             return 0.0
     return float(p.get("no_position", 0) or 0)
-
 
 def _pos_cost_basis(p):
     """Cost-basis exposure in dollars from a position record.
@@ -744,7 +700,6 @@ def _pos_cost_basis(p):
     np_ = _dollars_to_cents(p.get("no_avg_price_dollars", 0) or 0) / 100.0
     return yes * yp + no * np_
 
-
 def _order_initial_count(o):
     """Initial (original) contract count from an order record (new + legacy)."""
     for k in ("initial_count_fp", "count", "quantity"):
@@ -757,7 +712,6 @@ def _order_initial_count(o):
             continue
     return 0
 
-
 def _order_remaining_count(o):
     """Unfilled contract count: remaining_count_fp when present, else initial - fill."""
     v = o.get("remaining_count_fp")
@@ -767,7 +721,6 @@ def _order_remaining_count(o):
         except (TypeError, ValueError):
             pass
     return max(0.0, _order_initial_count(o) - _order_fill_count(o))
-
 
 def _order_price_dollars(o):
     """Price per contract in dollars for a resting order (new + legacy)."""
@@ -801,7 +754,6 @@ def _order_price_dollars(o):
     except (TypeError, ValueError):
         return 0.0
 
-
 def _order_fill_count(resp):
     """Filled contract count from an order response (new + legacy)."""
     # reviewed: validate response is a dict before reading nested order object
@@ -817,7 +769,6 @@ def _order_fill_count(resp):
         return float(v or 0)
     except (TypeError, ValueError):
         return 0.0
-
 
 def _ticker_close_time(ticker: str) -> Optional[datetime]:
     """Parse close time directly from 15M ticker string (e.g. KXBTC15M-26NOV140000-00).
@@ -848,7 +799,6 @@ def _ticker_close_time(ticker: str) -> Optional[datetime]:
     except Exception:
         pass
     return None
-
 
 def _mark_to_market_exposure(positions, markets, client=None):
     """Mark-to-market exposure in dollars across all 15M positions.
@@ -891,7 +841,6 @@ def _mark_to_market_exposure(positions, markets, client=None):
             if not is_closed:
                 exposure += _pos_cost_basis(p)
     return exposure
-
 
 # ═════════════════════════════════════════════════════════════════════
 # Settlement queue lock file for read-modify-write atomicity
@@ -943,7 +892,6 @@ def _load_settlement_queue() -> list:
         log.error("Failed to acquire settlement queue lock: %s — starting fresh", e)
         return []
 
-
 def _save_settlement_queue(queue: list):
     """Persist pending settlements to the local queue file.
 
@@ -967,7 +915,6 @@ def _save_settlement_queue(queue: list):
     except Exception as e:
         log.error("Failed to save settlement queue: %s — QUEUE NOT PERSISTED", e)
         raise
-
 
 def _enqueue_settlement(payload: dict):
     """Add or update a settlement queue entry, deduplicating on (ticker, order_id).
@@ -1027,7 +974,6 @@ def _enqueue_settlement(payload: dict):
 
     _save_settlement_queue(queue)
 
-
 def _dry_run_fill_count(market, side: str, entry_price_cents: int,
                         contracts: float) -> float:
     """How many contracts a resting dry-run order would actually get.
@@ -1057,7 +1003,6 @@ def _dry_run_fill_count(market, side: str, entry_price_cents: int,
         return 0.0
     return floor_contracts(min(contracts, float(depth)))
 
-
 def _entry_fee_dollars(contracts: float, entry_price_cents: float,
                        entry_taker: bool, series: str | None = None) -> float:
     """Fee paid to enter, in dollars.
@@ -1078,7 +1023,6 @@ def _entry_fee_dollars(contracts: float, entry_price_cents: float,
     price = entry_price_cents / 100.0
     mult = fees.taker_multiplier(series) if series else 1.0
     return fees.buy_cash_out(contracts, price, multiplier=mult, taker=True) - contracts * price
-
 
 def _settle_pnl(contracts: float, entry_price_cents: float,
                 exit_price_dollars: float, entry_taker: bool,
@@ -1104,7 +1048,6 @@ def _settle_pnl(contracts: float, entry_price_cents: float,
     entry_fee = _entry_fee_dollars(contracts, entry_price_cents, entry_taker,
                                    series=series)
     return sell_revenue - buy_cost, entry_fee
-
 
 def _resolve_pending_settlement(client, payload):
     """Compute realized PnL for a queued 'pending' settlement from the exchange.
@@ -1138,7 +1081,6 @@ def _resolve_pending_settlement(client, payload):
         "outcome_won": pnl_dollars > 0,
         "pnl_dollars": pnl_dollars,
     }
-
 
 def _replay_settlement_queue(client=None):
     """Replay pending settlements from the queue file via n8n webhook.
@@ -1361,7 +1303,6 @@ def _replay_settlement_queue(client=None):
             remaining.append(entry)
     _save_settlement_queue(remaining)
 
-
 # CYCLE
 # ═════════════════════════════════════════════════════════════════════
 
@@ -1382,12 +1323,10 @@ def _exit_quote(client, ticker: str):
     minutes_left = (close - datetime.now(timezone.utc)).total_seconds() / 60.0
     return yes_bid, no_bid, minutes_left
 
-
 def _exit_key(ticker: str, exit_order_id: str, order_id: str,
               filled: float, exit_cents: int) -> str:
     """Idempotency key for an early exit — shared by _book_exit and replay."""
     return f"exit:{ticker}:{exit_order_id or order_id}:{filled}:{exit_cents}"
-
 
 def _exit_pnl_math(filled: float, entry_cents: float, exit_cents: int,
                    entry_taker: bool, is_paper: bool,
@@ -1418,7 +1357,6 @@ def _exit_pnl_math(filled: float, entry_cents: float, exit_cents: int,
     realized_pnl = sell_revenue - buy_cost
     return realized_pnl, entry_fee + exit_fee, realized_pnl > 0
 
-
 def _resolve_exit_payload(payload: dict) -> dict | None:
     """Fill pnl_dollars/outcome_won for a queued exit from its own fields.
 
@@ -1442,7 +1380,6 @@ def _resolve_exit_payload(payload: dict) -> dict | None:
         "pnl_dollars": pnl,
         "fee_dollars": fee_dollars,
     }
-
 
 def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, reason: str, exit_order_id: str = ""):
     """Book realized P&L for an early exit.
@@ -1548,7 +1485,6 @@ def _book_exit(client, ticker: str, pos: dict, exit_cents: int, filled: float, r
     except Exception:
         log.warning("Failed to record exit for %s via n8n webhook (not queued — exits are not settlements)", ticker)
 
-
 def _already_ordered(ticker: str) -> bool:
     """True when an entry order on this ticker is already resting.
 
@@ -1568,7 +1504,6 @@ def _already_ordered(ticker: str) -> bool:
         if o.get("ticker") == ticker:
             return True
     return False
-
 
 def clear_resting_orders(client, ticker: str):
     """Cancel every resting order on `ticker` (Kalshi blocks a close while any exist)."""
@@ -1595,7 +1530,6 @@ def clear_resting_orders(client, ticker: str):
         state.resting_value.pop(k, None)
     state.resting_tickers.discard(ticker)
 
-
 def _venue_contracts(client, ticker: str, side: str, positions=None):
     """Contracts still open on the venue for ticker/side, or None if unknown.
 
@@ -1615,7 +1549,6 @@ def _venue_contracts(client, ticker: str, side: str, positions=None):
         log.warning("Could not confirm venue contracts for %s: %s", ticker, e)
         return None
     return 0.0
-
 
 def _manage_exits(client):
     """Sell open positions that hit the profit target or the stop.
@@ -1808,7 +1741,6 @@ def _manage_exits(client):
             })
         client.invalidate_markets(series_ticker=ticker.split("-")[0])
 
-
 def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
     """Filter signals through ML fair-value model.
 
@@ -1867,7 +1799,6 @@ def _ml_filter_signals(signals: list, markets: list, ml_model) -> list:
         ml_filtered.append(sig)
     return ml_filtered
 
-
 def _sizing_cash(client) -> float:
     """Cash to SIZE an order against, which is not the account total.
 
@@ -1890,7 +1821,6 @@ def _sizing_cash(client) -> float:
         return paper_mode.cash(0.0, None)
     return client.get_shard_balance(CRYPTO_EXCHANGE_INDEX)
 
-
 def _find_active_markets_with_fallback(client, series):
     """find_active_markets(client, target_series=series) when the callable's
     signature accepts target_series (or **kwargs); else the 1-arg call.
@@ -1908,9 +1838,7 @@ def _find_active_markets_with_fallback(client, series):
         return find_active_markets(client, target_series=series)
     return find_active_markets(client)
 
-
 _state_reporter: report_state.StateReporter | None = None
-
 
 def _report_cycle_state(cash, positions, risk_state):
     """B19: classify this cycle and emit the operator state report.
@@ -1972,7 +1900,6 @@ def _report_cycle_state(cash, positions, risk_state):
                                dropped_total=_metrics.get("dropped_total"))
     except Exception as e:
         log.warning("_report_cycle_state failed (non-fatal): %s", e)
-
 
 def cycle(client: KalshiClient):
     state.cycles += 1
@@ -2149,7 +2076,6 @@ def cycle(client: KalshiClient):
         emit_event("kalshi_trader", "reconcile.mismatch",
                    {"context": "resting_orders_fetch", "error": str(e)[:200]},
                    key=f"reconcile.mismatch:{int(time.time() // 3600)}")
-
 
     # Record any position that appeared on the exchange but is not in local
     # state — e.g. a resting limit order that filled since the last cycle.
@@ -3211,7 +3137,6 @@ def cycle(client: KalshiClient):
         state.consecutive_no_trade_cycles += 1
     systemd_notify("WATCHDOG=1")
 
-
 # ═════════════════════════════════════════════════════════════════════
 # MAIN
 # ═════════════════════════════════════════════════════════════════════
@@ -3230,9 +3155,7 @@ def handle_task(task: dict) -> None:
         (task.get("body") or "")[:200],
     )
 
-
 _handle_task = handle_task
-
 
 def _refresh_series_fee_models(client, live: bool) -> None:
     """Fetch per-series fee models and cache them in fees (B6).
@@ -3264,7 +3187,6 @@ def _refresh_series_fee_models(client, live: bool) -> None:
              ", ".join(f"{k}:{v['fee_type'] or 'standard'} x{v['fee_multiplier']}"
                         for k, v in sorted(models.items())[:5]))
 
-
 def _report_kalshi_request_budget(client) -> None:
     """Log the per-cycle Kalshi HTTP request count; warn over budget (B7)."""
     requests = int(getattr(client, "request_count", 0) or 0)
@@ -3273,7 +3195,6 @@ def _report_kalshi_request_budget(client) -> None:
     if budget and requests > budget:  # reviewed: 0 disables the budget; over it, only a WARNING — a slow discovery pass must not halt trading
         log.warning("cycle kalshi request budget exceeded: %d > %d (KALSHI_REQUEST_BUDGET_PER_CYCLE)",
                     requests, budget)
-
 
 def main():
     args = parse_args()
@@ -3320,7 +3241,6 @@ def main():
             # newcomer creates and locks a fresh one — two bots, two locks.
         except (OSError, FileNotFoundError):
             pass
-
 
 def _run_loop(args):
     global _bridge
@@ -3911,7 +3831,6 @@ def _run_loop(args):
     log.info("Done. P&L=$%.2f | Cycles=%d | Trades=%d",
              state.session_pnl, state.cycles, state.trades_placed)
 
-
 def acquire_instance_lock(lock_path: Path) -> int:
     """Take the single-instance lock. Returns an fd that must stay open.
 
@@ -3956,7 +3875,6 @@ def acquire_instance_lock(lock_path: Path) -> int:
                 continue
             log.error("Could not acquire lock after 5 attempts — another instance running")
             raise SystemExit(1)
-
 
 if __name__ == "__main__":
     main()

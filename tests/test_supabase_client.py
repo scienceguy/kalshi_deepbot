@@ -5,11 +5,8 @@ Tests mock the HTTP requests to avoid making real network calls.
 import json
 import time
 
-import pytest
 from unittest.mock import MagicMock, patch
-from supabase_client import SupabaseClient, get_supabase
 import supabase_client
-import config
 
 
 class TestSupabaseClientInit:

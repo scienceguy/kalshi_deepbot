@@ -31,7 +31,6 @@ log = logging.getLogger(__name__)
 def _min_request_gap() -> float:
     return float(config.REQUEST_MIN_GAP_SECONDS)
 
-
 def _min_balance_gap() -> float:
     # Kalshi limits /portfolio/balance to 1 req/sec; enforce >=1.1s between balance calls
     return max(1.1, float(config.REQUEST_MIN_GAP_SECONDS) * 2.0)
@@ -45,7 +44,6 @@ CRYPTO_15M_SERIES = {
 
 CRYPTO_EXCHANGE_INDEX = 2
 
-
 def _is_crypto_15m(ticker_or_series: str) -> bool:
     """Check if a ticker or series belongs to the crypto 15M shard (engine 2)."""
     # Match series prefix: KXBTC15M, KXETH15M, etc.
@@ -54,23 +52,19 @@ def _is_crypto_15m(ticker_or_series: str) -> bool:
             return True
     return False
 
-
 def _add_exchange_index(params_or_payload: dict, ticker_or_series: str) -> dict:
     """Add exchange_index=2 for crypto 15M series."""
     if _is_crypto_15m(ticker_or_series):
         params_or_payload["exchange_index"] = CRYPTO_EXCHANGE_INDEX
     return params_or_payload
 
-
 class KalshiAPIError(Exception):
     """Raised when the Kalshi API returns an error status code."""
     pass
 
-
 class KalshiDuplicateOrderError(KalshiAPIError):
     """409 from the venue: this client_order_id already exists (idempotent retry)."""
     pass
-
 
 class KalshiAuthError(KalshiAPIError):
     """401/403 from the venue: the key cannot authenticate (B8).
@@ -80,7 +74,6 @@ class KalshiAuthError(KalshiAPIError):
     used to look like a 401 and stop the loop on a healthy key).
     """
     pass
-
 
 class KalshiClient:
     """
@@ -333,11 +326,7 @@ class KalshiClient:
 
         raise KalshiAPIError(f"429 rate limit exceeded after 5 retries on {method} {path}")
 
-
     # ── Account ───────────────────────────────────────────────────────────────
-
-    # Alias used by some modules
-    def _req(self, method, path, **kw): return self._request(method, path, **kw)
 
     def get_balance(self) -> float:
         """Return available balance in dollars.

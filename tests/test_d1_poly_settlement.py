@@ -73,7 +73,7 @@ def test_apply_poly_settlement_stores_venue_mode_origin(tmp_path):
 
 def test_d1_columns_migration_is_idempotent(tmp_path):
     """ALTER TABLE migration doesn't fail when columns already exist."""
-    db = _db(tmp_path)
+    _ = _db(tmp_path)
     # Run initialization twice — second must not raise.
     db2 = local_db.LocalDB(db_path=str(tmp_path / "t.db"), auto_sync=False)
     # Both instances should work and expose the new columns.

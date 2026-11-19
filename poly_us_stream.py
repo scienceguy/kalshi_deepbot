@@ -36,7 +36,6 @@ WS_RECONNECT_MAX = 30.0
 WS_SUBSCRIBE_BATCH = 50
 WS_IDLE_POLL_SECONDS = 0.5
 
-
 @dataclass
 class BBO:
     """Best bid/ask for a market (long-side / YES prices)."""
@@ -45,7 +44,6 @@ class BBO:
     yes_bid: Optional[float] = None
     yes_ask: Optional[float] = None
     updated_at: float = 0.0
-
 
 class PolyStream:
     """WebSocket streaming client for Polymarket US market + private data.
@@ -371,16 +369,6 @@ class PolyStream:
             result["age_seconds"] = time.time() - cached["updated_at"]
             return result
 
-    def get_position(self, market_slug: str) -> Optional[dict]:
-        """Return cached position by market slug with freshness age, or None."""
-        with self._private_lock:
-            cached = self._position_cache.get(market_slug)
-            if cached is None:
-                return None
-            result = dict(cached)
-            result["age_seconds"] = time.time() - cached.get("updated_at", 0) or 0
-            return result
-
     def get_balance(self, currency: str = "USD") -> Optional[dict]:
         """Return cached balance by currency with freshness age, or None."""
         with self._private_lock:
@@ -404,10 +392,8 @@ class PolyStream:
             except Exception as e:
                 log.warning("PolyStream order callback failed: %s", e)
 
-
 # Module-level singleton (created lazily by get_poly_stream)
 _poly_stream: Optional[PolyStream] = None
-
 
 def get_poly_stream() -> Optional[PolyStream]:
     """Return the module-level PolyStream, creating it if needed.

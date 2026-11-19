@@ -34,7 +34,7 @@ def check(db=None) -> dict:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--json", dest="as_json", action="store_true", help=argparse.SUPPRESS)
-    a = ap.parse_args(argv)
+    _ = ap.parse_args(argv)
     print(json.dumps(check(), ensure_ascii=False))
     return 0
 

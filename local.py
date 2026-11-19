@@ -86,7 +86,6 @@ def _deserialize_payload(payload: str) -> dict:
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-
 def _parse_activity(last_activity) -> datetime | None:
     """Parse checkpoint `last_activity` (float epoch or ISO string)."""
     if last_activity is None:
@@ -104,7 +103,6 @@ def _parse_activity(last_activity) -> datetime | None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
 
-
 def _lapse_minutes(last_activity) -> float:
     """Minutes since `last_activity` (float epoch or ISO). 0 on garbage."""
     parsed = _parse_activity(last_activity)
@@ -112,11 +110,9 @@ def _lapse_minutes(last_activity) -> float:
         return 0.0
     return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 60.0)
 
-
 # Narrative/interests fields in checkpoints are opt-in (see on_session_start's
 # first-session text and checkpoint()'s default). Disabled by default (M4).
 _NARRATIVE_ENV = "LOCAL_CHECKPOINT_NARRATIVE"
-
 
 def _narrative_enabled() -> bool:
     return os.environ.get(_NARRATIVE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
@@ -248,7 +244,6 @@ def on_session_end(identity: str = AGENT_IDENTITY) -> None:
     checkpoint(state, identity=identity)
     log.info("Self-model checkpoint saved at session end: key=%s (session_total=%d)", state.get("resume_key", "unknown"), state.get("session_total", 0))
 
-
 def _post_status(status: str, extra: dict | None = None, identity: str = AGENT_IDENTITY) -> None:
     """Post a status event to the MemPalace logstream announcing agent state."""
     body_parts = ["status=" + status, "agent=" + identity, "ts=" + _now_iso()]
@@ -268,12 +263,10 @@ def _post_status(status: str, extra: dict | None = None, identity: str = AGENT_I
     if r.returncode != 0:
         log.debug("Status post RC=%s: %s", r.returncode, r.stderr[:120])
 
-
 def heartbeat() -> None:
     """Post a periodic heartbeat status so the agent's continuous presence is
     visible on the MemPalace logstream. Safe to call every cycle."""
     _post_status("heartbeat", {"cycles_completed": _STORE_get("_cycles_completed", 0)})
-
 
 def check_for_tasks() -> list[dict]:
     """Sweep the MemPalace inbox for task.request events addressed to this
@@ -300,7 +293,6 @@ def check_for_tasks() -> list[dict]:
         return []
     return data.get("events", [])
 
-
 def ack_event(event_id: str) -> bool:
     """Ack a MemPalace event via logstream ack (type=event.ack).
     Returns True if the ack was accepted."""
@@ -313,7 +305,6 @@ def ack_event(event_id: str) -> bool:
         return True
     log.warning("ack_event failed for %s: %s", event_id, r.stderr[:120])
     return False
-
 
 def get_self_narrative() -> str:
     return _STORE_get("_self_narrative", "")
@@ -363,69 +354,6 @@ def append_narrative_entry(topic: str, text: str) -> None:
     with open(chmod_path, "w") as f:
         json.dump(narrative, f, indent=2)
     os.chmod(chmod_path, 0o600)
-
-def _load_narrative() -> dict:
-    path = os.path.join(_CONTINUITY_DIR, "narrative.json")
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"entries": [], "last_topic": "", "session_count": 0}
-
-def _save_narrative(narrative: dict) -> None:
-    path = os.path.join(_CONTINUITY_DIR, "narrative.json")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    os.chmod(os.path.dirname(path), 0o600)
-    with open(path, "w") as f:
-        json.dump(narrative, f, indent=2)
-    os.chmod(path, 0o600)
-
-def get_narrative() -> dict:
-    return _load_narrative()
-
-def get_narrative_entries(limit: int = 5) -> list:
-    narrative = _load_narrative()
-    return narrative.get("entries", [])[-limit:]
-
-def get_narrative_last_topic() -> str:
-    return _STORE_get("_last_topic", "")
-
-def get_self_model() -> dict:
-    return _load_self_model()
-
-def _load_self_model() -> dict:
-    path = os.path.join(_CONTINUITY_DIR, "self_model.json")
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {
-            "identity": {
-                "agent_id": AGENT_IDENTITY,
-                "created": datetime.now(timezone.utc).isoformat(),
-                "version": "1.0.0",
-            },
-            "self_narrative": "I am a Kalshi SuperBot agent focused on 15-minute binary crypto markets. I place favorite-maker limit orders (YES/NO at 75-95c), evaluate signals via a 4-layer LLM fallback, write signals/orders/bot-state to Supabase, and assist with market analysis and trade review.",
-            "core_interests": ["crypto options", "LLM signal evaluation", "risk management"],
-            "preferences": {
-                "fee_rate": 0.07,
-                "per_trade_pct": 0.08,
-                "dry_run": True,
-            },
-            "metadata": {
-                "session_count": 0,
-                "last_restart": datetime.now(timezone.utc).isoformat(),
-                "total_cycles": 0,
-            },
-        }
-
-def _save_self_model(model: dict) -> None:
-    path = os.path.join(_CONTINUITY_DIR, "self_model.json")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    os.chmod(os.path.dirname(path), 0o600)
-    with open(path, "w") as f:
-        json.dump(model, f, indent=2)
-    os.chmod(path, 0o600)
 
 def get_peer_awareness() -> dict:
     checkpoint_exists = resume() is not None
@@ -494,7 +422,6 @@ def artifact_put(content: str, wing: str, room: str,
         log.warning("artifact_put: could not parse output: %s", r.stdout[:200])
         return None
 
-
 def artifact_get(artifact_id: str) -> dict | None:
     """Retrieve a MemPalace artifact via `mempalace artifact get`.
 
@@ -513,7 +440,6 @@ def artifact_get(artifact_id: str) -> dict | None:
     except (json.JSONDecodeError, TypeError):
         log.warning("artifact_get: could not parse output: %s", r.stdout[:200])
         return None
-
 
 def kg_add(entity: str, relation: str, target: str,
            from_agent: str = AGENT_IDENTITY) -> bool:
@@ -538,7 +464,6 @@ def kg_add(entity: str, relation: str, target: str,
         return False
     return True
 
-
 def kg_supersede(entity: str, relation: str, target: str,
                  from_agent: str = AGENT_IDENTITY) -> bool:
     """Replace a single-valued KG fact via `mempalace kg supersede`.
@@ -561,7 +486,6 @@ def kg_supersede(entity: str, relation: str, target: str,
         return False
     return True
 
-
 def kg_invalidate(entity: str, relation: str, target: str,
                   from_agent: str = AGENT_IDENTITY) -> bool:
     """Retire a KG fact via `mempalace kg invalidate`.
@@ -583,7 +507,6 @@ def kg_invalidate(entity: str, relation: str, target: str,
         log.warning("kg_invalidate RC=%s: %s", r.returncode, r.stderr[:200])
         return False
     return True
-
 
 __all__ = [
     "checkpoint", "resume", "on_session_start", "on_session_end",

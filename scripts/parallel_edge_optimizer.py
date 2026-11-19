@@ -4,7 +4,6 @@ High-Performance Edge Optimizer — Fast Native Polars Engine on Historical Kals
 Identifies the exact parameter set that maximizes EV/trade, Win Rate, and Total Net Profit.
 Uses Polars' native multi-threaded Rust execution (all CPU cores) without Python fork deadlocks.
 """
-import glob
 import json
 import math
 import os

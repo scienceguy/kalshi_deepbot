@@ -24,13 +24,12 @@ import json
 import logging
 import os
 import queue
-import sys
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import agent_identity
 
@@ -72,7 +71,6 @@ def get_default_bridge(identity: str = DEFAULT_AGENT_IDENTITY) -> "MemPalaceBrid
     service): separate bridges so inbound `to_agent` filtering and the
     `from_agent` on every outgoing event are unambiguous.
     """
-    global _DEFAULT_BRIDGES
     bridge = _DEFAULT_BRIDGES.get(identity)
     if bridge is None:
         bridge = MemPalaceBridge(identity)

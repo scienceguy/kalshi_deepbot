@@ -8,7 +8,6 @@ import importlib
 import logging
 
 import config
-import pytest
 
 
 def _reload_with(monkeypatch, **env):

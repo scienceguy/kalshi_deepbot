@@ -1,5 +1,4 @@
 """Tests for backtest_engine.py — core backtest logic."""
-import pytest
 from datetime import datetime, timedelta, timezone
 from backtest_engine import (
     StratParams,

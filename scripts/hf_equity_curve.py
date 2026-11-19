@@ -9,7 +9,6 @@ under the floor, $5 hard cap, >=1 contract) so the compounding is visible.
 Input: /opt/superbot/hf_data/{fair_value_log,quote_history}/*.parquet
 """
 import glob
-import json
 import math
 
 import polars as pl

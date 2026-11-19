@@ -12,7 +12,6 @@ Tests with mocked mempalace library calls:
 import time
 from unittest.mock import patch
 
-import pytest
 
 import mempalace_bridge
 from mempalace_bridge import MemPalaceBridge

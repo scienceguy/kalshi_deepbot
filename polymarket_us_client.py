@@ -26,14 +26,12 @@ log = logging.getLogger(__name__)
 
 POLYMARKET_MIN_GAP_SECONDS: float = 0.20  # Max 5 req/s to prevent Cloudflare 429 throttling
 
-
 # B7: pace requests through the shared token bucket from rate_limit
 # (1/POLYMARKET_MIN_GAP_SECONDS with burst=1 — identical pacing to the old
 # hand-rolled minimum-gap sleep).
 _RATE_BUCKET = rate_limit.TokenBucket(1.0 / POLYMARKET_MIN_GAP_SECONDS,
                                       burst=1,
                                       name="polymarket_us")
-
 
 def _enforce_rate_limit(min_gap: float = POLYMARKET_MIN_GAP_SECONDS) -> None:
     """Pace Polymarket US requests via the shared token bucket (B7).
@@ -45,11 +43,9 @@ def _enforce_rate_limit(min_gap: float = POLYMARKET_MIN_GAP_SECONDS) -> None:
         return
     _RATE_BUCKET.acquire(block=True)
 
-
 class PolymarketAPIError(Exception):
     """Raised when a Polymarket US API call fails."""
     pass
-
 
 # ── Credential loading (reads from config, then env, then BW mirror) ───────────
 
@@ -74,7 +70,6 @@ def _load_key_id() -> str:
             return ""
     return ""
 
-
 def _load_secret_key() -> str:
     """Load POLYMARKET_SECRET_KEY from config, then env, then BW mirror. Returns empty string if none."""
     # 1. Try config (which reads from env via _env_str)
@@ -96,10 +91,8 @@ def _load_secret_key() -> str:
             return ""
     return ""
 
-
 _cached_client = None
 _cached_creds = ("", "")
-
 
 def _get_client():
     """Return a configured PolymarketUS client, caching to reuse HTTP connection pools.
@@ -116,7 +109,6 @@ def _get_client():
         _cached_creds = (key_id, secret_key)
     return _cached_client
 
-
 # ── Public API (market data: no auth required) ────────────────────────────
 
 def get_market_by_slug(slug: str) -> dict:
@@ -129,7 +121,6 @@ def get_market_by_slug(slug: str) -> dict:
     if temp_client is None:
         temp_client = PolymarketUS(key_id="", secret_key="")
     return temp_client.get(f"/v1/market/slug/{slug}", authenticated=False)
-
 
 def get_market_book(slug: str) -> dict:
     """Fetch order book / BBO for a market slug."""
@@ -146,7 +137,6 @@ def get_market_book(slug: str) -> dict:
         except Exception as e:
             log.warning("Poly get_market_book %s failed: %s", slug, e)
             return {}
-
 
 def get_market_settlement(slug: str) -> dict | None:
     """Fetch settlement outcome for a market slug.
@@ -187,7 +177,6 @@ def get_market_settlement(slug: str) -> dict | None:
         log.warning("Settlement lookup exhausted for %s: %s", slug, last_error)
     return None
 
-
 def get_events(limit: int = 100) -> list:
     """List events from Polymarket US (public gateway)."""
     _enforce_rate_limit()
@@ -201,7 +190,6 @@ def get_events(limit: int = 100) -> list:
         log.warning("Poly get_events failed: %s", e)
         return []
 
-
 def get_event_by_slug(slug: str) -> dict:
     """Retrieve full event detail including all child markets by slug."""
     _enforce_rate_limit()
@@ -212,7 +200,6 @@ def get_event_by_slug(slug: str) -> dict:
     except Exception as e:
         log.warning("Poly get_event_by_slug %s failed: %s", slug, e)
         return {}
-
 
 def search_events(query: str) -> list:
     """Search Polymarket US events by keyword (e.g. BTC, ETH, SOL)."""
@@ -226,15 +213,6 @@ def search_events(query: str) -> list:
     except Exception as e:
         log.warning("Poly search_events %s failed: %s", query, e)
         return []
-
-
-def _get_market_data(path: str, *, authenticated: bool = False) -> dict:
-    """Internal helper: call SDK get() for market data with the appropriate auth flag."""
-    temp_client = PolymarketUS(key_id="", secret_key="") if not authenticated else _get_client()
-    if temp_client is None and not authenticated:
-        temp_client = PolymarketUS(key_id="", secret_key="")
-    return temp_client.get(path, authenticated=authenticated)
-
 
 # ── Authenticated API (portfolio & balances) ─────────────────────────────
 
@@ -250,13 +228,11 @@ def _get_authenticated_client():
         )
     return client
 
-
 def get_portfolio_positions() -> dict:
     """Fetch portfolio positions (authenticated endpoint)."""
     _enforce_rate_limit()
     client = _get_authenticated_client()
     return client.get("/v1/portfolio/positions", authenticated=True)
-
 
 def prewarm() -> bool:
     """L6: pre-warm the persistent HTTP session at startup.
@@ -276,13 +252,11 @@ def prewarm() -> bool:
         log.debug("HTTP pre-warm failed (non-fatal): %s", e)
         return False
 
-
 def get_account_balances() -> dict:
     """Fetch account balances (authenticated endpoint)."""
     _enforce_rate_limit()
     client = _get_authenticated_client()
     return client.get("/v1/account/balances", authenticated=True)
-
 
 def usd_cash_balance(data: dict) -> float:
     """Extract USD cash from a /v1/account/balances response.
@@ -298,7 +272,6 @@ def usd_cash_balance(data: dict) -> float:
                 return 0.0
     return 0.0
 
-
 def health_check() -> bool:
     """Check connectivity to Polymarket US gateway."""
     try:
@@ -309,11 +282,9 @@ def health_check() -> bool:
         log.warning("Polymarket US health check failed: %s", e)
         return False
 
-
 # Public aliases
 get_client = _get_client
 get_authenticated_client = _get_authenticated_client
-
 
 def close() -> None:
     """Close the SDK client connection.
@@ -324,13 +295,11 @@ def close() -> None:
     # No persistent client to close; each call creates its own.
     pass
 
-
 # ── Authenticated API (order placement) ──────────────────────────────────
 
 def _poly_amount(value: float) -> dict:
     """Build an Amount dict for the Polymarket US SDK."""
     return {"value": f"{value:.2f}", "currency": "USD"}
-
 
 def _poly_price(side: str, price_dollars: float) -> float:
     """Convert a user-facing side price to the long-side (YES) price.
@@ -342,7 +311,6 @@ def _poly_price(side: str, price_dollars: float) -> float:
     if side == "yes":
         return price_dollars
     return round(1.0 - price_dollars, 4)
-
 
 def preview_order(slug: str, side: str, price_dollars: float,
                   contracts: int, good_till_time: str | None = None) -> dict | None:
@@ -381,7 +349,6 @@ def preview_order(slug: str, side: str, price_dollars: float,
         log.warning("Poly preview failed for %s %s @ %.4f: %s",
                     slug, side, price_dollars, e)
         return None
-
 
 def place_maker_order(slug: str, side: str, price_dollars: float,
                       contracts: int, preview: bool = True,
@@ -453,7 +420,6 @@ def place_maker_order(slug: str, side: str, price_dollars: float,
                     slug, side, price_dollars, e)
         return None
 
-
 def get_open_orders() -> list:
     """List open Polymarket US orders.
 
@@ -466,7 +432,6 @@ def get_open_orders() -> list:
     client = _get_authenticated_client()
     resp = client.orders.list()
     return resp.get("orders", []) or []
-
 
 def cancel_order(order_id: str, market_slug: str = "") -> bool:
     """Cancel a Polymarket US order by id and market slug.
@@ -494,7 +459,6 @@ def cancel_order(order_id: str, market_slug: str = "") -> bool:
     except Exception as e:
         log.warning("Poly cancel_order %s failed: %s", order_id, e)
         return False
-
 
 def close_position(slug: str) -> bool:
     """Close the position on a Polymarket US market."""

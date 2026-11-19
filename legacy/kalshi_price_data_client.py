@@ -11,11 +11,9 @@ ImportError with a helpful message.
 """
 
 import logging
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 log = logging.getLogger("kalshi_price_data_client")
-
 
 class KalshiPriceDataClient:
     """Wrapper around the kalshi-price-data Python SDK.
@@ -112,24 +110,6 @@ class KalshiPriceDataClient:
             )
         return snapshots
 
-    def save_to_parquet(self, snapshots: list[Dict[str, Any]],
-                        output_path: str) -> Path:
-        """Save snapshots to a Parquet file.
-
-        Args:
-            snapshots: List of snapshot dicts from get_historical_snapshots
-                or get_market_snapshots.
-            output_path: Path to write the Parquet file.
-
-        Returns the Path object of the written file.
-        """
-        import pandas as pd
-        df = pd.DataFrame(snapshots)
-        out_path = Path(output_path)
-        df.to_parquet(out_path, index=False)
-        log.info("Saved %d snapshots to %s", len(snapshots), out_path)
-        return out_path
-
     def health_check(self) -> bool:
         """Check if the SDK is installed and can reach the API."""
         if not self._available:
@@ -146,10 +126,8 @@ class KalshiPriceDataClient:
             log.warning("kalshi-price-data health check failed: %s", e)
             return False
 
-
 # Global lazy instance
 _client: Optional[KalshiPriceDataClient] = None
-
 
 def get_client(api_key: Optional[str] = None) -> KalshiPriceDataClient:
     """Get or create the global KalshiPriceDataClient instance."""
@@ -157,7 +135,6 @@ def get_client(api_key: Optional[str] = None) -> KalshiPriceDataClient:
     if _client is None:
         _client = KalshiPriceDataClient(api_key=api_key)
     return _client
-
 
 def is_available() -> bool:
     """Whether the kalshi-price-data SDK is installed."""

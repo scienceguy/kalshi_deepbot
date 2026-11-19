@@ -1,8 +1,7 @@
 """Integration tests for llm_eval.py trade evaluation."""
 
 import pytest
-import time
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 import config
 import llm_eval

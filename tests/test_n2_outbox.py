@@ -12,7 +12,6 @@ Spec acceptance:
 All fakes are local HTTP servers or tmp-path SQLite; never --live, never a
 real n8n.
 """
-import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,7 +21,6 @@ import pytest
 import config
 import n8n_client
 from n8n_client import (
-    N8nClient,
     _deliver_outbox_row,
     _drain_telemetry,
     _enqueue_telemetry,
@@ -114,7 +112,7 @@ def test_critical_delivery_attempt_bounded_on_hung_n8n(monkeypatch, tmp_path):
     monkeypatch.setitem(n8n_client._LANE_TIMEOUTS, "critical", (0.2, 0.3))
     hung = _serve(_HungHandler)
     db = _db(tmp_path)
-    rid = db.insert_outbox_event("risk.halt", '{"reason": "x"}', "critical",
+    db.insert_outbox_event("risk.halt", '{"reason": "x"}', "critical",
                                  "kalshi", "dry", "evt-hung")
     row = db.get_pending_outbox_events(limit=1, lane="critical")[0]
     _patch_base_url(monkeypatch, hung)

@@ -178,7 +178,6 @@ def main():
 
     if a.usable_only:
         keep = set(usable_dates())
-        usable_all_dates = lambda: sorted(keep)  # noqa: E731
         print(f"usable days: {len(keep)}", flush=True)
 
     mt = build_minute_table(attach_fv=any(e is not None for e in edges))

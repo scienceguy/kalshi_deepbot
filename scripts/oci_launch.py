@@ -50,7 +50,6 @@ runcmd:
   - [ sh, -c, "mkdir -p /opt/superbot && chown ubuntu:ubuntu /opt/superbot" ]
 """
 
-
 def ssh_ingress_specs(cidr: str, allow_world: bool = False) -> list:
     """The only ingress rule this launcher creates: TCP/22 from one CIDR.
 
@@ -70,7 +69,6 @@ def ssh_ingress_specs(cidr: str, allow_world: bool = False) -> list:
     return [{"protocol": "6", "source": str(network),
              "port_min": 22, "port_max": 22}]
 
-
 def _is_ssh_rule(rule) -> bool:
     """True for a TCP rule covering port 22."""
     try:
@@ -80,21 +78,12 @@ def _is_ssh_rule(rule) -> bool:
     return (str(rule.protocol) == "6" and ports is not None
             and ports.min <= 22 <= ports.max)
 
-
 def _cfg(args) -> dict:
     if oci is None:
         raise SystemExit("the oci SDK is not installed: pip install oci")
     c = oci.config.from_file(os.path.expanduser("~/.oci/config"), "DEFAULT")
     c["region"] = c.get("region", "us-phoenix-1")
     return c
-
-
-def _find(coll, pred):
-    for item in coll:
-        if pred(item):
-            return item
-    return None
-
 
 def ensure_network(net, cid, ssh_cidr: str, allow_world: bool = False) -> str:
     """Ensure VCN + internet gateway + route + security list + public subnet."""
@@ -161,7 +150,6 @@ def ensure_network(net, cid, ssh_cidr: str, allow_world: bool = False) -> str:
     print(f"subnet {sub.id}", flush=True)
     return sub.id
 
-
 def ubuntu_image(compute, cid) -> str:
     imgs = compute.list_images(
         cid, operating_system="Canonical Ubuntu",
@@ -171,11 +159,9 @@ def ubuntu_image(compute, cid) -> str:
         raise SystemExit("no Ubuntu 24.04 image for VM.Standard.A1.Flex")
     return imgs[0].id
 
-
 def existing(compute, cid):
     return [i for i in compute.list_instances(cid).data
             if i.display_name == INSTANCE_NAME and i.lifecycle_state != "TERMINATED"]
-
 
 def public_ip(compute, net, cid, inst_id) -> str | None:
     atts = compute.list_vnic_attachments(cid, instance_id=inst_id).data
@@ -186,7 +172,6 @@ def public_ip(compute, net, cid, inst_id) -> str | None:
         if v.public_ip:
             return v.public_ip
     return None
-
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -283,7 +268,6 @@ def main() -> int:
             time.sleep(30)
     print(f"launch failed: {last}", flush=True)
     return 2
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

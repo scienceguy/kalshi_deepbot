@@ -87,7 +87,6 @@ def main():
     positions = {}      # (coin, window) -> {side, entry, S0, ts}
     realised = 0.0
     n = wins = 0
-    cur_w = None
     print(f"poly5m PAPER margin={a.margin} fee={FEE} interval={a.interval}s", flush=True)
     c = 0
     while True:

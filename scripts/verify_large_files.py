@@ -71,7 +71,7 @@ def get_staged_files() -> list[tuple[str, int]]:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--staged", action="store_true", help="Check only staged files")
-    args = ap.parse_args(argv)
+    _ = ap.parse_args(argv)
 
     allowlist = load_allowlist()
     staged = get_staged_files()

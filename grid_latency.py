@@ -230,7 +230,6 @@ def parity_rows(series, k_rungs, p_rungs):
         # a systematic Polymarket reference print offset is a basis and cancels out
         # of the dispersion; a lag or a stale rung does not
         mean = sum(offsets) / len(offsets)
-        sd = (sum((o - mean) ** 2 for o in offsets) / (len(offsets) - 1)) ** 0.5
         var = sum((o - mean) ** 2 for o in offsets) / (len(offsets) - 1)
         regime = "basis" if var < 0.005 ** 2 else "dispersion"
         # duplicate Polymarket mids make the interpolated fair a guess about a

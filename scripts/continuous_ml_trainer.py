@@ -7,7 +7,6 @@ continuously trained and calibrated.
 """
 import argparse
 import logging
-import os
 import sys
 import time
 from pathlib import Path

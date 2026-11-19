@@ -141,7 +141,6 @@ def test_expired_command_applied_at_drain(control_db, caplog):
 def test_replayed_command_rejected_at_enqueue(control_db):
     row_id, ts, nonce, body = _signed_row(control_db, "pause_entries")
     assert row_id is not None
-    first_id = row_id
     # exact replay: same command bytes, same nonce
     dup = control_db.enqueue_control_command(
         "pause_entries", "agent-a", nonce, ts, body,

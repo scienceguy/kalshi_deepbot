@@ -1,7 +1,6 @@
 """Tests for kalshi_price_data_client.py — Optional wrapper for kalshi-price-data."""
 
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 class TestIsAvailable:

@@ -1,13 +1,12 @@
 """Integration tests for market_finder.py market discovery."""
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 from datetime import datetime, timezone, timedelta
 
 import config
 import market_finder
 from market_finder import MarketInfo
-from kalshi_client import KalshiClient
 
 
 class MockKalshiClient:
@@ -115,7 +114,7 @@ class TestMarketFinder:
         with patch.object(config, 'TARGET_SERIES', ['KXBTC15M', 'KXETH15M', 'KXSOL15M']):
             with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
                 with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
-                    markets = market_finder.find_active_markets(client)
+                    _ = market_finder.find_active_markets(client)
                     # Should have made 3 calls (one per series)
                     assert call_count[0] >= 3
 

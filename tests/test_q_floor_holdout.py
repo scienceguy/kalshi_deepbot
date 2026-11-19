@@ -21,7 +21,6 @@ production behaviour is byte-identical to before B17.
 """
 
 import json
-import math
 import sqlite3
 import importlib.util
 from datetime import datetime, timedelta, timezone

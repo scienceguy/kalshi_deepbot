@@ -12,7 +12,6 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 

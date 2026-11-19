@@ -4,7 +4,7 @@ These tests mock the Kalshi API responses to avoid making real network calls.
 """
 import pytest
 from unittest.mock import MagicMock, patch
-from kalshi_client import KalshiClient, KalshiAPIError
+from kalshi_client import KalshiClient
 import config
 
 

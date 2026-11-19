@@ -8,7 +8,6 @@ Acceptance criteria (per AGENT_TASKS_v6.md):
 """
 
 import importlib
-import os
 from pathlib import Path
 
 import pytest
@@ -58,7 +57,7 @@ def test_data_dir_from_env(monkeypatch, tmp_path):
 def test_trader_paths_under_data_dir(monkeypatch, tmp_path):
     """trader.py runtime files resolve under SUPERBOT_DATA_DIR."""
     data_dir = tmp_path / "trader_data"
-    cfg = _reload_with_data_dir(monkeypatch, str(data_dir))
+    _ = _reload_with_data_dir(monkeypatch, str(data_dir))
     importlib.reload(__import__("trader"))
     import trader
 
@@ -71,7 +70,7 @@ def test_trader_paths_under_data_dir(monkeypatch, tmp_path):
 def test_local_db_dir_falls_back_to_superbot_data_dir(monkeypatch, tmp_path):
     """local_db.py DB_DIR falls back to SUPERBOT_DATA_DIR (not local_data/)."""
     data_dir = tmp_path / "db_data"
-    cfg = _reload_with_data_dir(monkeypatch, str(data_dir))
+    _ = _reload_with_data_dir(monkeypatch, str(data_dir))
     importlib.reload(__import__("local_db"))
     import local_db
 
@@ -81,7 +80,7 @@ def test_local_db_dir_falls_back_to_superbot_data_dir(monkeypatch, tmp_path):
 def test_poly_us_paths_under_data_dir(monkeypatch, tmp_path):
     """poly_us_trader.py runtime files resolve under SUPERBOT_DATA_DIR/poly_us."""
     data_dir = tmp_path / "poly_data"
-    cfg = _reload_with_data_dir(monkeypatch, str(data_dir))
+    _ = _reload_with_data_dir(monkeypatch, str(data_dir))
     importlib.reload(__import__("paper_mode"))
     import paper_mode
     assert paper_mode.STATE_FILE == data_dir / "paper_state.json"

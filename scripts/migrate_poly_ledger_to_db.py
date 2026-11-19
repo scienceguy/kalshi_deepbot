@@ -55,7 +55,6 @@ def main(ledger_file: Path | None = None) -> int:
 
         pnl = float(rec.get("pnl", 0.0) or 0.0)
         fee = float(rec.get("fee_dollars", 0.0) or 0.0)
-        side = rec.get("side", "")
         qty = float(rec.get("qty", 0.0) or 0.0)
         entry = float(rec.get("entry_price", 0.0) or 0.0)
 

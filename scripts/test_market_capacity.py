@@ -10,9 +10,7 @@ Reports:
 - Top-of-book spread and depth (contracts available at bid/ask)
 - Liquidity and open interest capacity
 """
-import json
 import logging
-import os
 import sys
 from pathlib import Path
 

@@ -11,31 +11,12 @@ backtests, with environment-variable overrides for live tuning.
 import json
 import logging
 import os
-import socket
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-
-def get_local_ip() -> str:
-    """Get the bot's local IP address without relying on netlink sockets.
-
-    On Android 11+, AF_NETLINK sockets (used by `ip`, `ss`) are blocked for
-    regular apps. This fallback opens a UDP socket to an external host and
-    reads the source address — it works without special permissions.
-    """
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("1.1.1.1", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
 _MODE = os.environ.get("KALSHI_MODE", "live")
 _load_done = False
-
 
 def _load_env():
     """Load .env files into os.environ.
@@ -74,9 +55,7 @@ def _load_env():
                 if k not in os.environ:
                     os.environ[k] = v
 
-
 _load_env()
-
 
 def _env_float(name, default):
     val = os.environ.get(name, "")
@@ -87,7 +66,6 @@ def _env_float(name, default):
     except (ValueError, TypeError) as e:
         raise ValueError(f"Invalid float value for {name}: '{val}'. {e}")
 
-
 def _env_int(name, default):
     val = os.environ.get(name, "")
     if not val:
@@ -96,7 +74,6 @@ def _env_int(name, default):
         return int(val)
     except (ValueError, TypeError) as e:
         raise ValueError(f"Invalid int value for {name}: '{val}'. {e}")
-
 
 def _env_bool(name, default):
     val = os.environ.get(name, "").strip().lower()
@@ -109,11 +86,9 @@ def _env_bool(name, default):
         return default
     return val in true_vals
 
-
 def _env_str(name, default):
     """Read a string env var, returning default if unset or empty."""
     return os.environ.get(name, default) or default
-
 
 # ═════════════════════════════════════════════════════════════════════
 # DATA DIRECTORY (V1: SUPERBOT_DATA_DIR isolation)
@@ -616,7 +591,6 @@ MARKET_LOSS_WINDOW_HOURS = _env_float("MARKET_LOSS_WINDOW_HOURS", 24.0)
 # How often to re-fetch per-series fee models (GET /series) while running (B6).
 SERIES_FEE_REFRESH_HOURS = _env_float("SERIES_FEE_REFRESH_HOURS", 6.0)
 
-
 # ══════════════════════════════════════════════════════════════════════
 # FINANCIAL GUARDRAILS (Hardening Pillar B)
 # ═════════════════════════════════════════════════════════════════════
@@ -790,7 +764,6 @@ LOG_BACKUP_COUNT = _env_int("LOG_BACKUP_COUNT", 3)
 PAPER_TAKER_EXIT_FEE = _env_bool("PAPER_TAKER_EXIT_FEE", True)
 __version__ = "2.0.0-superbot"
 
-
 def validate_credentials():
     """Validate that Kalshi credentials are present and non-empty.
 
@@ -831,7 +804,6 @@ def validate_credentials():
             "Kalshi credentials are missing or incomplete.\n\n" + "\n".join(errors)
         )
 
-
 def validate_dry_run(live_explicit: bool = False) -> bool:
     """Block live trading unless --live is explicitly passed AND KALSHI_CONFIRM_LIVE=true.
 
@@ -859,7 +831,6 @@ def validate_dry_run(live_explicit: bool = False) -> bool:
         return False
 
     return True
-
 
 def validate_bands():
     """Validate entry band configuration invariants.
@@ -987,7 +958,6 @@ def validate_bands():
     if errors:
         raise ValueError("Configuration invalid:\n" + "\n".join(errors))
 
-
 def validate_kalshi_base_url() -> None:
     """Validate KALSHI_BASE_URL contains the required API path.
     
@@ -1007,7 +977,6 @@ def validate_kalshi_base_url() -> None:
                 KALSHI_BASE_URL,
             )
 
-
 def validate_all(silent: bool = False):
     """Run all validation checks. Called at module import for early failure detection."""
     validate_credentials()
@@ -1018,7 +987,6 @@ def validate_all(silent: bool = False):
     fees.validate_fee_rate()
     if not silent:
         log.info("All config validations passed")
-
 
 # validate_all() is now called at runtime from trader.main() to avoid
 # circular import risk with fees.py (S16 fix)

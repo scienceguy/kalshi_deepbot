@@ -2,7 +2,7 @@ import sys
 sys.argv = ["probe"]
 import config
 from kalshi_client import KalshiClient
-from market_finder import _parse_market_prices, _fetch_orderbook, _parse_api_time, _build
+from market_finder import _fetch_orderbook, _parse_api_time, _build
 from datetime import datetime, timezone
 
 c = KalshiClient()

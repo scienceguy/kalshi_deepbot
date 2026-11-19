@@ -30,7 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -395,7 +395,7 @@ def main() -> None:
     print("ILLUSTRATIVE, ASSUMPTION-DRIVEN — NOT A FORECAST")
     print("=" * 78)
     print(f"Start balance:           ${START:,.2f}")
-    print(f"Bands (lo-hi):           " + ", ".join(f"{lo:.2f}-{hi:.2f}" for lo, hi in BANDS))
+    print("Bands (lo-hi):           " + ", ".join(f"{lo:.2f}-{hi:.2f}" for lo, hi in BANDS))
     print(f"Payout:                  ${PAYOUT:.2f} per contract")
     print(f"Entry:                   ask + ${SLIPPAGE_DOLLARS:.2f} slippage; taker fee theta={FEE_THETA} per contract")
     print(f"Common-factor shock:     p={SHOCK_PROB:.2f} per {CONCURRENT_RUNGS}-rung window (all rungs lose together)")

@@ -1,6 +1,5 @@
 """Tests for model.py predictive fair-value models."""
 
-import math
 import pytest
 
 import model

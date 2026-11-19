@@ -44,13 +44,11 @@ _TEXT_FIELD_LIMIT = 2000
 _FAIL_OPEN_STREAK = 0
 FAIL_OPEN_ALERT_HOOK = None  # overridable for tests; default logs an error
 
-
 def _sanitize_text(value, limit=_TEXT_FIELD_LIMIT):
     """Strip control characters and cap length of a free-text field (B9)."""
     text = str(value if value is not None else "")
     text = "".join(c for c in text if ord(c) == 9 or ord(c) >= 32)
     return text[:limit]
-
 
 def record_outcome(ticker, llm_prob, hold_conf, outcome_won, ts=None):
     """Append one eval/outcome row to the calibration ledger (JSONL, B9).
@@ -79,7 +77,6 @@ def record_outcome(ticker, llm_prob, hold_conf, outcome_won, ts=None):
         log.warning("Could not write calibration ledger %s: %s", path, e)
         return False
 
-
 def calibration_report(min_n=30):
     """Brier score + per-bucket hit rates over the calibration ledger (B9).
 
@@ -106,7 +103,6 @@ def calibration_report(min_n=30):
             "buckets": {str(k): {"n": v[0], "hit_rate": round(v[1] / v[0], 4)}
                         for k, v in sorted(buckets.items())}}
 
-
 def calibration_beats_chance(min_n=30, max_brier=0.25):
     """True only when the ledger shows skill (n>=min_n, Brier<max_brier) (B9).
 
@@ -115,7 +111,6 @@ def calibration_beats_chance(min_n=30, max_brier=0.25):
     """
     report = calibration_report(min_n=min_n)
     return bool(report and report["brier"] < max_brier)
-
 
 def _fail_open_alert(streak):
     hook = FAIL_OPEN_ALERT_HOOK
@@ -130,7 +125,6 @@ def _fail_open_alert(streak):
 REQUEST_TIMEOUT = config._env_int("LLM_REQUEST_TIMEOUT", 5)
 MAX_RETRIES_PER_LAYER = config._env_int("LLM_MAX_RETRIES", 1)
 BACKOFF_BASE = config._env_float("LLM_BACKOFF_BASE", 0.5)
-
 
 def _resolve_api_key(env_key: str) -> str:
     """Return the API key from env, or from a protected file via <ENV_KEY>_FILE.
@@ -169,20 +163,15 @@ def _resolve_api_key(env_key: str) -> str:
             pass
     return ""
 
-
 # Aliases for backward compatibility and test harnesses
 _load_key = _resolve_api_key
 load_key = _resolve_api_key
-
 
 # ── Vertex AI OAuth2 ADC token cache ─────────────────────────────────────────
 _vertex_token_cache: dict[str, Any] = {"token": "", "expires_at": 0.0}
 VERTEX_DEFAULT_ADC_PATH = os.path.expanduser(
     "~/.config/gcloud/application_default_credentials.json"
 )
-VERTEX_DEFAULT_PROJECT = "project-ba3748e7-0d3a-4268-b7c"
-VERTEX_DEFAULT_LOCATION = "global"
-
 
 def _resolve_vertex_token() -> str:
     """Return a valid OAuth2 access token for Vertex AI using ADC refresh token.
@@ -254,21 +243,6 @@ def _resolve_vertex_token() -> str:
         log.debug("Vertex OAuth token refresh failed: %s", e)
         return ""
 
-
-def _vertex_base_url() -> str:
-    explicit = os.environ.get("VERTEX_BASE_URL", "")
-    if explicit:
-        return explicit
-    project = os.environ.get("VERTEX_PROJECT_ID", VERTEX_DEFAULT_PROJECT)
-    location = os.environ.get("VERTEX_LOCATION", VERTEX_DEFAULT_LOCATION)
-    host = (
-        "https://aiplatform.googleapis.com"
-        if location == "global"
-        else f"https://{location}-aiplatform.googleapis.com"
-    )
-    return f"{host}/v1beta1/projects/{project}/locations/{location}/endpoints/openapi"
-
-
 # ── Layer configurations ─────────────────────────────────────────────────────
 # Each layer: (name, env_key, base_url, model, chat_path, auth_header_name)
 
@@ -335,9 +309,7 @@ CIRCUIT_BREAKER_COOLDOWN = 25.0
 _layer_failures: dict[str, int] = {}
 _layer_skip_until: dict[str, float] = {}
 
-
 _VALID_LAYER_NAMES = {l["name"] for l in LAYERS}
-
 
 def _is_circuit_open(layer_name: str) -> bool:
     """Return True if the layer is currently skipped due to repeated failures."""
@@ -353,7 +325,6 @@ def _is_circuit_open(layer_name: str) -> bool:
         return False
     return True
 
-
 def _record_layer_failure(layer_name: str) -> None:
     """Increment failure count; open circuit if threshold reached."""
     if layer_name not in _VALID_LAYER_NAMES:
@@ -366,7 +337,6 @@ def _record_layer_failure(layer_name: str) -> None:
             layer_name, CIRCUIT_BREAKER_COOLDOWN, _layer_failures[layer_name],
         )
 
-
 def _record_layer_success(layer_name: str) -> None:
     """Reset failure count on a successful call."""
     if layer_name not in _VALID_LAYER_NAMES:
@@ -376,16 +346,13 @@ def _record_layer_success(layer_name: str) -> None:
     if layer_name in _layer_skip_until:
         _layer_skip_until.pop(layer_name, None)
 
-
 def _build_messages(system_prompt: str, user_prompt: str) -> list:
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
 
-
 _FENCE_RE = re.compile(r"^\s*```(?:json|JSON)?\s*\n?", re.MULTILINE)
-
 
 def _strip_fences(text: str) -> str:
     """Remove markdown code fences (```json ... ``` or ``` ... ```)."""
@@ -402,7 +369,6 @@ def _strip_fences(text: str) -> str:
         lines = lines[:-1]
     return "\n".join(lines)
 
-
 def _extract_json_object(text: str) -> str:
     """Find the first '{' and last '}' and return the substring between them."""
     start = text.find("{")
@@ -410,7 +376,6 @@ def _extract_json_object(text: str) -> str:
     if start == -1 or end == -1 or end <= start:
         return ""
     return text[start:end + 1]
-
 
 def _parse_llm_response(content: str) -> Optional[Dict[str, Any]]:
     """Parse LLM response text into evaluation dict.
@@ -459,7 +424,6 @@ def _parse_llm_response(content: str) -> Optional[Dict[str, Any]]:
     except (json.JSONDecodeError, ValueError, TypeError) as e:
         log.debug("LLM response parse failed: %s — content: %s", e, content[:200])
         return None
-
 
 def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> Optional[Dict[str, Any]]:
     """Call a single LLM layer. Returns parsed result or None."""
@@ -550,7 +514,6 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
                 continue
 
     return None
-
 
 def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
     """
@@ -658,7 +621,6 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
 
     log.warning("LLM eval failed across all layers — last error: %s", last_error)
     return None
-
 
 def should_block_trade(signal_info: dict, min_probability: float = 0.65, min_confidence: float = 0.45) -> tuple:
     """

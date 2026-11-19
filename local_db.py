@@ -509,7 +509,6 @@ class LocalDB:
                 ("event_outbox", "claimed_at TEXT NOT NULL DEFAULT ''"),
             ):
                 for _col in _cols.split(", "):
-                    _col_name = _col.split(" ")[0]  # extracted but unused (kept for symmetry)
                     try:
                         conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col}")
                     except Exception:
@@ -2464,7 +2463,6 @@ class PolyLocalDB(LocalDB):
             for _table in self.SYNC_TABLES:
                 for _col in ("sync_attempts INTEGER DEFAULT 0",
                              "last_error TEXT", "next_attempt_at TEXT"):
-                    _col_name = _col.split(" ")[0]  # extracted but unused (kept for symmetry)
                     try:
                         conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col}")
                     except Exception:

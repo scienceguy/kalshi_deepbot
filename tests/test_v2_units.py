@@ -13,7 +13,6 @@ no network, no orders.
 """
 
 import configparser
-import os
 import re
 import shutil
 import subprocess
@@ -193,7 +192,6 @@ def test_shutdown_cancels_resting_orders_and_flushes(live_trader):
                side_effect=lambda oid, slug: (order.append(f"cancel:{oid}"), True)[1]), \
          patch("poly_us_trader.emit_event"):
         cancelled = live_trader.cancel_all_resting_orders(reason="shutdown")
-    budget = time.monotonic() - t0
     assert cancelled == 2
     assert order == ["list", "cancel:oid-1", "cancel:oid-2"]
     # The L6 outbox flushes after the cancels within the same shutdown budget.

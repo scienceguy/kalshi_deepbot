@@ -17,7 +17,6 @@ Usage:
   python scripts/train_ml_hf.py --days 14 --test-days 3 --out data/ml_model.pt
 """
 import argparse
-import math
 import sys
 from pathlib import Path
 
@@ -34,7 +33,6 @@ from ml_model import MLFairValue, row_to_features  # noqa: E402
 from model import gbm_probability_yes_wins  # noqa: E402
 
 DATASET = "papylove/kalshi-15m-data"
-_MIN_PER_YEAR = 365 * 24 * 60
 _FEATURE_COLS = ["kalshi_yes_bid", "kalshi_yes_ask", "current_price",
                  "strike_price", "minutes_remaining", "volatility_per_min"]
 
@@ -218,8 +216,6 @@ def main(argv=None) -> int:
     import torch
     with torch.no_grad():
         p_ml = torch.sigmoid(model(torch.from_numpy(feature_matrix(te)))).numpy()
-    ann = np.clip(te.volatility_per_min.to_numpy() * math.sqrt(_MIN_PER_YEAR),
-                  config.MODEL_VOL_MIN, config.MODEL_VOL_MAX)
     p_gbm_rz = np.array([prob_above(s, k, v, m) for s, k, v, m in
                          zip(te.current_price, te.strike_price, te.volatility_per_min,
                              te.minutes_remaining)])

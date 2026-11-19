@@ -1,6 +1,6 @@
 """Tests for risk.py — Risk management."""
 import pytest
-from risk import RiskManager, RiskState
+from risk import RiskManager
 import config
 import fees
 

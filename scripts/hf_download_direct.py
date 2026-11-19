@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Direct HTTPS downloader for HF parquet datasets (bypasses httpx2 bug)."""
-import os, sys, json, concurrent.futures as cf
+import os, concurrent.futures as cf
 import requests
 
 REPO = "papylove/kalshi-15m-data"

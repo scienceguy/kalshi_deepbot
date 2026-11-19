@@ -1,8 +1,7 @@
 """Tests for signals.py — Signal engine."""
 import pytest
 from unittest.mock import MagicMock
-from dataclasses import dataclass
-from signals import (max_contracts_for_cash, _size, _maker_price, evaluate,
+from signals import (max_contracts_for_cash, _size, _maker_price,
                      rank_signals, TradeSignal, _model_volatility, SignalEngine)
 import config
 import gates

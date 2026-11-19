@@ -1,5 +1,4 @@
 """Behaviour of the live-arming gate (config.validate_dry_run)."""
-import os
 
 import config
 

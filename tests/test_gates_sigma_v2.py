@@ -8,7 +8,6 @@ defaults off, and the gate record logs both sigmas and the source used.
 import math
 import random
 import sys
-from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest

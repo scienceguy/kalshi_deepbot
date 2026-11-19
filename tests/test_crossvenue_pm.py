@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime
-from unittest.mock import patch
 
-import pytest
 
 from crossvenue import (
     Ladder,
@@ -183,9 +181,6 @@ def test__fetch_pm_ladder_with_fallback_us_first():
         result = _fetch_pm_ladder_with_fallback("bitcoin-above-on-november-5-2026")
         assert result is not None
         assert result.venue == "polymarket"
-        log_info = (
-            "polymarket source: US production api.polymarket.us"
-        )  # just verify the logic; actual log captured via test spy if needed
     finally:
         _remove_mock_us_client()
 

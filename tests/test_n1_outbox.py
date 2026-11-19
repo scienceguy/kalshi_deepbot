@@ -9,16 +9,15 @@ Covers:
 import json
 import socket
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 import pytest
 
 import config
-from events import Event, make_event, delivery_class, CRITICAL_TYPES, TELEMETRY_TYPES
+from events import Event, make_event, delivery_class
 import n8n_client
-from n8n_client import N8nClient, _sign_body, _outbox_sender, _deliver_outbox_row
+from n8n_client import N8nClient, _sign_body, _deliver_outbox_row
 
 
 # ── events.py ──────────────────────────────────────────────────────────

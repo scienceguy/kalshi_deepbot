@@ -62,7 +62,6 @@ import n8n_client  # noqa: E402
 import n8n_webhook_auth  # noqa: E402
 import agent_bus  # noqa: E402
 import report_state  # noqa: E402
-import local_db  # noqa: E402
 import paper_mode  # noqa: E402
 from local_db import LocalDB  # noqa: E402
 
@@ -534,7 +533,6 @@ def check_pillar_6_kalshi_e2e(db) -> tuple:
 
         with _MockN8n() as mock:
             # ── cycle 1: place + dry-run fill off the book ──
-            pending_before = _pending_outbox_count(db)
             trader.cycle(client)
             if TICKER not in st.positions:
                 return name, False, "cycle 1 did not book the filled paper position"

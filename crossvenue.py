@@ -42,7 +42,6 @@ _MONTHS = {m: i + 1 for i, m in enumerate(
 # A rung quoting a spread wider than this is not a price, it is an empty book.
 MAX_SPREAD = 0.08
 
-
 @dataclass
 class Rung:
     """One strike on a ladder: P(price > strike), expressed as 0..1."""
@@ -58,7 +57,6 @@ class Rung:
         if self.bid is None or self.ask is None:
             return None
         return self.ask - self.bid
-
 
 @dataclass
 class Ladder:
@@ -88,7 +86,6 @@ class Ladder:
             keep.append(r)
         return sorted(keep, key=lambda r: r.strike)
 
-
 @dataclass
 class Deviation:
     strike: float
@@ -100,13 +97,11 @@ class Deviation:
         """Positive = Kalshi prices the event cheaper than Polymarket."""
         return (self.poly_mid - self.kalshi_mid) * 100.0
 
-
 def _f(x, default=None):
     try:
         return float(x)
     except (TypeError, ValueError):
         return default
-
 
 def parse_kalshi_event(event_ticker: str) -> Optional[Tuple[str, datetime]]:
     """KXBTCD-26NOV0521 -> ('BTC', 2026-11-05 21:00 ET). Ticker hour is ET.
@@ -121,7 +116,6 @@ def parse_kalshi_event(event_ticker: str) -> Optional[Tuple[str, datetime]]:
         return asset, datetime(2000 + int(yy), _MONTHS[mon], int(dd), hour, minute)
     except (KeyError, ValueError):
         return None
-
 
 def parse_pm_slug(slug: str) -> Optional[Tuple[str, datetime]]:
     """bitcoin-above-on-november-5-2026-1pm-et -> ('BTC', 2026-11-05 13:00 ET).
@@ -141,7 +135,6 @@ def parse_pm_slug(slug: str) -> Optional[Tuple[str, datetime]]:
         return ASSETS[word], datetime(int(yyyy), month, int(dd), hour, 59 if not hh else 0)
     except (KeyError, ValueError):
         return None
-
 
 def fetch_kalshi_ladder(event_ticker: str, timeout: int = 20) -> Optional[Ladder]:
     """Terminal-threshold ('greater' strike) markets for one Kalshi event."""
@@ -175,7 +168,6 @@ def fetch_kalshi_ladder(event_ticker: str, timeout: int = 20) -> Optional[Ladder
         ladder.rungs.append(Rung(float(m["floor_strike"]), mid, bid, ask,
                                  m.get("ticker", ""), (m.get("rules_primary") or "")[:400]))
     return ladder
-
 
 def fetch_pm_ladder_us(slug: str, timeout: int = 20) -> Optional[Ladder]:
     """Threshold markets from the Polymarket US production API (api.polymarket.us).
@@ -291,7 +283,6 @@ def fetch_pm_ladder_us(slug: str, timeout: int = 20) -> Optional[Ladder]:
     ladder.rungs.append(Rung(strike_float, mid, bid, ask, ticker, ""))
     return ladder
 
-
 def fetch_pm_ladder(slug: str, timeout: int = 20) -> Optional[Ladder]:
     """Threshold markets inside one Polymarket event (a single ladder)."""
     parsed = parse_pm_slug(slug)
@@ -334,7 +325,6 @@ def fetch_pm_ladder(slug: str, timeout: int = 20) -> Optional[Ladder]:
                                  str(m.get("id", "")), (m.get("description") or "")[:400]))
     return ladder
 
-
 def _strike_from_pm(market: dict) -> Optional[float]:
     """Strike from groupItemTitle ('78,400', '↑ 88,000') or the question text."""
     gi = (market.get("groupItemTitle") or "").replace(",", "").replace("↑", "").replace("↓", "").strip()
@@ -344,7 +334,6 @@ def _strike_from_pm(market: dict) -> Optional[float]:
     q = (market.get("question") or "").replace(",", "")
     m = re.search(r"\$\s*([0-9]+(?:\.[0-9]+)?)", q)
     return float(m.group(1)) if m else None
-
 
 def to_cdf(ladder: Ladder):
     """Monotone interpolation of P(price > strike) over the ladder's strike range.
@@ -367,7 +356,6 @@ def to_cdf(ladder: Ladder):
     probs = [max(eps, min(1 - eps, p)) for p in probs]
     return list(zip(strikes, probs))
 
-
 def _interp(x, xp, fp):
     """Linear interpolation of fp at x given sorted xp. Pure stdlib."""
     i = bisect.bisect_left(xp, x)
@@ -380,7 +368,6 @@ def _interp(x, xp, fp):
     if x1 == x0:
         return f0
     return f0 + (f1 - f0) * (x - x0) / (x1 - x0)
-
 
 def compare(kalshi: Ladder, poly: Ladder):
     """Deviation at every Kalshi strike, by interpolating the Polymarket CDF."""
@@ -397,7 +384,6 @@ def compare(kalshi: Ladder, poly: Ladder):
         poly_mid = _interp(strike, [pt[0] for pt in p], [pt[1] for pt in p])
         out.append(Deviation(strike, float(kalshi_mid), poly_mid))
     return out
-
 
 def discover_kalshi_events(series: Tuple[str, ...] = ("KXBTCD", "KXETHD", "KXBTC", "KXETH", "KXBTC15M", "KXETH15M"),
                            timeout: int = 20) -> List[str]:
@@ -417,7 +403,6 @@ def discover_kalshi_events(series: Tuple[str, ...] = ("KXBTCD", "KXETHD", "KXBTC
             log.warning("kalshi events %s failed: %s", s, e)
     return out
 
-
 def candidate_pm_slugs(asset: str, expiry_et: datetime) -> List[str]:
     """Slug guesses for the Polymarket ladder that expires at the same ET time."""
     name = "bitcoin" if asset == "BTC" else "ethereum"
@@ -428,7 +413,6 @@ def candidate_pm_slugs(asset: str, expiry_et: datetime) -> List[str]:
     h12 = expiry_et.hour % 12 or 12
     ampm = "am" if expiry_et.hour < 12 else "pm"
     return [f"{base}-{h12}{ampm}-et"]
-
 
 def _et_offset_hours(naive_et: datetime) -> int:
     """US Eastern offset from UTC for a naive ET wall-clock date.
@@ -446,28 +430,10 @@ def _et_offset_hours(naive_et: datetime) -> int:
     dst_end = datetime(year, 11, first_sunday_nov, 2)
     return -4 if dst_start <= naive_et < dst_end else -5
 
-
 def to_utc(naive_et: datetime) -> datetime:
     """ET wall clock -> aware UTC."""
     offset = _et_offset_hours(naive_et)
     return naive_et.replace(tzinfo=timezone(timedelta(hours=offset))).astimezone(timezone.utc)
-
-
-def fetch_underlying(yes_side: str, yes_px: float, n_side: str, n_px: float,
-                     question: str, timeout: int = 20):
-    """Underlying print for a Polymarket market whose outcome is NOT a strike.
-
-    Kalshi threshold rungs resolve 'above X at T'; Polymarket's equivalent is
-    'above $X' with X in the slug. The hourly markets, though, resolve on an
-    *up/down* question ('BTC price up in the next 1h') and carry no strike at all,
-    so their YES/NO prices carry no P(above X) value we can compare against the
-    ladder. What we can take from them is the underlying print itself: the YES
-    side that is on-chain liquid is the direction, and the CLOB price carries the
-    exchange's own probability. This probe only asks whether the slug's options
-    name the outcomes, so it reports; it places nothing.
-    """
-    return n_side, n_px
-
 
 def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
               now: Optional[datetime] = None) -> List[dict]:
@@ -506,7 +472,6 @@ def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
         })
     return rows
 
-
 def _fetch_pm_ladder_with_fallback(slug: str, timeout: int = 20) -> Optional[Ladder]:
     """Try US production API first, fall back to Gamma."""
     # Try US production API first
@@ -517,7 +482,6 @@ def _fetch_pm_ladder_with_fallback(slug: str, timeout: int = 20) -> Optional[Lad
     # Fall back to Gamma
     log.info("polymarket source: gamma fallback")
     return fetch_pm_ladder(slug, timeout=timeout)
-
 
 def main() -> int:
     """Three-way comparison: spot-implied fair value vs each venue's ladder."""
@@ -592,7 +556,6 @@ def main() -> int:
         print("no pair with enough liquid rungs on both venues — nothing measured")
     return 0 if pairs else 1
 
-
 def _median_strike(rows: List[dict], key: str) -> float:
     """Strike where a ladder's probability crosses 50%, linearly interpolated."""
     pts = sorted(((r["strike"], r[key]) for r in rows), key=lambda x: x[0])
@@ -600,7 +563,6 @@ def _median_strike(rows: List[dict], key: str) -> float:
         if p0 >= 0.5 >= p1 and p0 != p1:
             return s0 + (p0 - 0.5) / (p0 - p1) * (s1 - s0)
     return float("nan")
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

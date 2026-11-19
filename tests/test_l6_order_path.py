@@ -11,10 +11,8 @@ Covers the four L6 mechanisms against the spec's acceptance tests:
 5. Prewarm + per-slug static memo + bounded ledger queue drop-not-block.
 """
 
-import json
 import queue
 import time
-from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,7 +21,6 @@ pytest.importorskip("polymarket_us")
 
 import config
 import latency
-import poly_us_trader
 import polymarket_us_client
 from poly_us_trader import PolyUSPaperTrader
 

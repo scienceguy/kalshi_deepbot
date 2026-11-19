@@ -133,7 +133,6 @@ def test_resting_value_tracked_on_order(fresh_state, mock_client):
     sig.market = MagicMock()
     sig.market.ticker = "TEST"
 
-    resp = {"order": {"order_id": "test_oid_123"}}
     fresh_state.resting_value["test_oid_123"] = sig.dollar_risk
     assert fresh_state.resting_value["test_oid_123"] == 10.0
 
@@ -274,7 +273,6 @@ def test_hedge_contracts_are_two_decimal_fractions():
     from market_finder import MarketInfo
     from signals import _evaluate_hedge
     from unittest.mock import patch
-    import config
     m = MarketInfo(
         ticker="T", series="S", close_time=None, strike=0, strike_type="",
         yes_bid=14, yes_ask=15, no_bid=84, no_ask=85,
@@ -806,8 +804,6 @@ def test_already_ordered_blocks_duplicate_entry(monkeypatch):
     from types import SimpleNamespace
 
     market = SimpleNamespace(ticker="KXBTC15M-26NOV08-1200", series="KXBTC15M")
-    sig = SimpleNamespace(market=market, side="yes")
-
     test_state = trader.BotState()
     monkeypatch.setattr(trader, "state", test_state)
     monkeypatch.setattr(trader.config, "DRY_RUN", True)
@@ -829,7 +825,6 @@ def test_already_ordered_blocks_duplicate_entry(monkeypatch):
 def test_cycle_llm_pre_entry_filter_blocks_signal(monkeypatch, tmp_path):
     """LLM pre-entry filter in cycle() blocks low-probability signals."""
     import trader
-    from signals import TradeSignal, floor_contracts
 
     # Enable LLM evaluation
     monkeypatch.setattr(trader.config, "LLM_EVALUATION_ENABLED", True, raising=False)
@@ -860,12 +855,6 @@ def test_cycle_llm_pre_entry_filter_blocks_signal(monkeypatch, tmp_path):
         yes_bid=85, yes_ask=86, no_bid=14, no_ask=15,
         yes_liquidity=100, no_liquidity=100, minutes_left=1.0,
         bracket_role="MAIN",
-    )
-
-    sig = TradeSignal(
-        direction="YES", side="yes", entry_price=85,
-        contracts=2.0, dollar_risk=1.7, reason="test",
-        market=market, strength=10,
     )
 
     monkeypatch.setattr(trader, "find_active_markets", lambda c: [market])

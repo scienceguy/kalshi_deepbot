@@ -1,5 +1,4 @@
 """Tests for fees.py — Kalshi fee math."""
-import pytest
 from fees import (
     taker_fee_dollars,
     taker_fee_cents,

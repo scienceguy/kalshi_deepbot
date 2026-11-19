@@ -22,7 +22,6 @@ from market_finder import _parse_api_time, _settle_yes_cents
 log = logging.getLogger("data_collector")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")
 
-
 class MarketSnapshotCollector:
     """Collects market snapshots at entry time with settlement outcomes."""
 
@@ -167,19 +166,6 @@ class MarketSnapshotCollector:
             "received_time": datetime.now(timezone.utc).isoformat(),
         }
 
-    def save_snapshots(self, snapshots: list, filename: str = None):
-        """Save snapshots to gzipped JSONL."""
-        if filename is None:
-            filename = f"collected_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.jsonl.gz"
-        out_path = self.output_dir / filename
-        # Level 6 is the sweet spot for JSONL: ~same size as level 9 with much less CPU.
-        with gzip.open(out_path, "wt", compresslevel=6) as f:
-            for s in snapshots:
-                f.write(json.dumps(s) + "\n")
-        log.info("Saved %d snapshots to %s", len(snapshots), out_path)
-        return out_path
-
-
 def main():
     parser = argparse.ArgumentParser(description="Collect market data for backtesting")
     parser.add_argument("--series", nargs="+",
@@ -201,7 +187,6 @@ def main():
         print(f"\nData saved to: {out_path}")
     else:
         print("No snapshots collected. Check API credentials and connectivity.")
-
 
 if __name__ == "__main__":
     main()

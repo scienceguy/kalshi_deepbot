@@ -4,7 +4,7 @@ Mocks kalshi_client and polymarket_us_client so no network/auth is required.
 import pytest
 import json
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 import fund_tracker as ft
 
@@ -119,7 +119,7 @@ def test_move_rejects_bad_direction(monkeypatch, tmp_path, capsys):
 # --- ledger subcommand ------------------------------------------------------
 
 def test_ledger_lists_entries(monkeypatch, tmp_path, capsys):
-    p = _ledger_file(tmp_path, monkeypatch)
+    _ = _ledger_file(tmp_path, monkeypatch)
     ft._append_ledger({"direction": "pm_to_kalshi", "amount_dollars": 40.0, "note": "x"})
     assert ft.cmd_ledger(None) == 0
     out = capsys.readouterr().out
@@ -127,7 +127,7 @@ def test_ledger_lists_entries(monkeypatch, tmp_path, capsys):
 
 
 def test_ledger_empty_message(monkeypatch, tmp_path, capsys):
-    _ledger_file(tmp_path, monkeypatch)
+    _ = _ledger_file(tmp_path, monkeypatch)
     assert ft.cmd_ledger(None) == 0
     assert "empty" in capsys.readouterr().out.lower()
 

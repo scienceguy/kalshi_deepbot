@@ -5,8 +5,6 @@ All tests mock the polymarket_us SDK; no real network or auth is required.
 """
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -132,7 +130,7 @@ def test_portfolio_positions_call(monkeypatch):
     PolymarketUS.get = mock_get
 
     try:
-        positions = polymarket_us_client.get_portfolio_positions()
+        _ = polymarket_us_client.get_portfolio_positions()
         assert call_kwargs["authenticated"] is True, (
             f"Expected authenticated=True, got {call_kwargs['authenticated']}"
         )
@@ -159,7 +157,7 @@ def test_account_balances_call(monkeypatch):
     PolymarketUS.get = mock_get
 
     try:
-        balances = polymarket_us_client.get_account_balances()
+        _ = polymarket_us_client.get_account_balances()
         assert call_kwargs["authenticated"] is True, (
             f"Expected authenticated=True, got {call_kwargs['authenticated']}"
         )
@@ -256,7 +254,7 @@ def test_missing_creds_raise_on_authenticated(monkeypatch, tmp_path):
 
     try:
         # (d1) public market call works without creds
-        market = polymarket_us_client.get_market_by_slug("test-market")
+        _ = polymarket_us_client.get_market_by_slug("test-market")
         assert call_kwargs["authenticated"] is False
 
         # (d2) authenticated call raises RuntimeError
@@ -294,7 +292,7 @@ def test_public_market_call_without_creds(monkeypatch, tmp_path):
 
     try:
         # Public call should succeed
-        market = polymarket_us_client.get_market_by_slug("test-market")
+        _ = polymarket_us_client.get_market_by_slug("test-market")
         book = polymarket_us_client.get_market_book("test-market")
         assert call_args["authenticated"] is False
         assert "bbo" in book

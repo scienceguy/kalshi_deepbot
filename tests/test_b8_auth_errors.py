@@ -15,7 +15,6 @@ sys.argv = ["trader.py"]
 
 import config
 import kalshi_client
-import resilience
 from kalshi_client import KalshiClient, KalshiAuthError
 from resilience import CycleSupervisor, ResilienceSettings
 from unittest.mock import MagicMock, patch
