@@ -27,7 +27,7 @@ Date: 2026-11-19
 | J10 — Per-identity keys, real 2-person rule | ✅ APPLIED | Commit cc72146: config.py per-identity secrets, n8n_webhook_auth.py identity-aware sign/verify, control.py verify_command identity, send_command.py per-identity sign | Done |
 | J6 — Event-driven guard wake-ups + latency baseline | ✅ APPLIED | Commit (current): resting_guard.py _WakeEvent, wake(), latency_baseline.py, trader.py RestingGuard integration, config.py latency budgets | Done |
 | J9 — Auxiliary services from release dir | 🔄 OPEN | superbot-bus-inbox, job-bridge, jobs, creds-guard still use dev tree | Carry to v10 |
-| J15 — Operator verification checklist | 🔄 OPEN | Not yet done | Carry to v10 |
+| J15 — Operator verification checklist | ✅ APPLIED | docs/OPERATOR_CHECKLIST.md created with 15 sections | Done |
 | J13 — CI supply-chain hardening | 🔄 OPEN | Not yet done | Carry to v10 |
 | J14 — Environment-dependent tests | 🔄 OPEN | systemd-analyze tests fail without /opt/superbot/.venv | Carry to v10 |
 | J11 — Require gate key in production | 🔄 OPEN | SUPERBOT_GATE_KEY added but SUPERBOT_REQUIRE_GATE_KEY not enforced | Carry to v10 |
