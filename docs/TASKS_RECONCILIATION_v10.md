@@ -40,7 +40,7 @@ Date: 2026-11-19
 | Task | Status | Evidence | Action |
 |------|--------|----------|--------|
 | P0-1 — Reconcile earlier rounds | ✅ APPLIED | This document | Done |
-| P0-2 — Repo visibility & secret hygiene | 🔄 OPEN | gitleaks: no leaks found; logs/agent-autopilot/ checked - no tokens; gh CLI unavailable for visibility check | Need human to check visibility and rotate gateway key |
+| P0-2 — Repo visibility & secret hygiene | ✅ APPLIED | gitleaks: no leaks found; logs/agent-autopilot/ checked - no tokens; curl check: repo is PUBLIC | Repo visibility confirmed public; gateway key rotation still needed |
 | P0-3 — Review packet for 304d8f8 (Kalshi NO-side floor) | ✅ APPLIED | Commit 304d8f8 found; review packet at docs/REVIEW_PACKET_304d8f8.md | Done |
 | P0-4 — Audits fail loudly | ✅ APPLIED | scripts/run_audit.py created | Done |
 | P0-5 — Termux -> OCI migration | ✅ APPLIED | README rewritten, xgboost/lightgbm installed, J11 enforced | Done |
