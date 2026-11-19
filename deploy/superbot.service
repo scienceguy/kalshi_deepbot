@@ -35,9 +35,9 @@ User=ubuntu
 Group=superbot
 WorkingDirectory=/opt/superbot-releases/current
 Environment=DRY_RUN=false
-Environment=TMPDIR=/opt/superbot/local_data
+Environment=TMPDIR=/opt/superbot-releases/current/local_data
 Environment=MEMPALACE_DIR=/var/lib/superbot/mempalace
-ExecStart=/opt/superbot/.venv/bin/python trader.py --live --interval 15
+ExecStart=/opt/superbot-releases/current/.venv/bin/python trader.py --live --interval 15
 Restart=on-failure
 RestartSec=15
 # In-flight cycle drain + resting-order cancel + ledger flush + bridge stop.
@@ -46,7 +46,7 @@ StandardOutput=journal
 StandardError=journal
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/superbot/local_data /var/lib/superbot/mempalace -/opt/superbot/.lock_kalshi
+ReadWritePaths=/opt/superbot-releases/current/local_data /var/lib/superbot/mempalace -/opt/superbot-releases/current/.lock_kalshi
 PrivateTmp=true
 LimitNOFILE=65536
 # Measured RSS of the dry twin ~306 MiB (2026-11-17); 1G = 3x headroom.

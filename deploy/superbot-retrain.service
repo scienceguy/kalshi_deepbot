@@ -16,14 +16,14 @@ Wants=network-online.target
 Type=oneshot
 User=ubuntu
 Group=superbot
-WorkingDirectory=/opt/superbot
-EnvironmentFile=-/opt/superbot/.env
-Environment=TMPDIR=/opt/superbot/local_data
-ExecStart=/bin/sh /opt/superbot/scripts/retrain_ml.sh
+WorkingDirectory=/opt/superbot-releases/current
+EnvironmentFile=-/opt/superbot-releases/current/.env
+Environment=TMPDIR=/opt/superbot-releases/current/local_data
+ExecStart=/bin/sh /opt/superbot-releases/current/scripts/retrain_ml.sh
 TimeoutStartSec=7200
 Nice=10
 IOSchedulingClass=idle
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/superbot/local_data /opt/superbot/data
+ReadWritePaths=/opt/superbot-releases/current/local_data /opt/superbot-releases/current/data
 PrivateTmp=true

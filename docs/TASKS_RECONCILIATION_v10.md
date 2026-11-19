@@ -24,8 +24,8 @@ Date: 2026-11-19
 | J8 — Scheduled jobs outbox/de-dup | ✅ APPLIED | Commits 265eda1, 240544f, ca209cc: emit_event via durable outbox, alert_history de-dup, correct paths | Done |
 | J5 — DB reads out of guard tick | ✅ APPLIED | Commit 5545e86: cached pause_entries with 250ms background refresher | Done |
 | J4 — Validate fee model vs venue fields | ✅ APPLIED | Commit 5545e86: preview_order captures commissionsBasisPoints/makerCommissionsBasisPoints | Done |
-| J10 — Per-identity keys, real 2-person rule | 🔄 OPEN | control.py still uses confirm_by string, single HMAC secret | Carry to v10 |
-| J6 — Event-driven guard wake-ups + latency baseline | 🔄 OPEN | RestingGuard is 1s timer; no A1 latency report | Carry to v10 |
+| J10 — Per-identity keys, real 2-person rule | ✅ APPLIED | Commit cc72146: config.py per-identity secrets, n8n_webhook_auth.py identity-aware sign/verify, control.py verify_command identity, send_command.py per-identity sign | Done |
+| J6 — Event-driven guard wake-ups + latency baseline | ✅ APPLIED | Commit (current): resting_guard.py _WakeEvent, wake(), latency_baseline.py, trader.py RestingGuard integration, config.py latency budgets | Done |
 | J9 — Auxiliary services from release dir | 🔄 OPEN | superbot-bus-inbox, job-bridge, jobs, creds-guard still use dev tree | Carry to v10 |
 | J15 — Operator verification checklist | 🔄 OPEN | Not yet done | Carry to v10 |
 | J13 — CI supply-chain hardening | 🔄 OPEN | Not yet done | Carry to v10 |
@@ -53,7 +53,7 @@ Date: 2026-11-19
 |------|--------|----------|--------|
 | J10 — Per-identity keys, real 2-person rule | 🔄 OPEN | control.py uses confirm_by string, single HMAC secret | Implement per-identity HMAC keys |
 | J6 — Event-driven guard wake-ups + latency baseline | 🔄 OPEN | RestingGuard is 1s timer; no A1 latency report | Add event-driven wake-ups + A1 report |
-| J9 — Auxiliary services from release dir | 🔄 OPEN | Services still reference dev tree paths | Update service WorkingDirectory to /opt/superbot-releases/current |
+| J9 — Auxiliary services from release dir | ✅ APPLIED | Commit (current): All 8 service files updated to /opt/superbot-releases/current; test_v2_units.py updated | Done |
 | J15 — Operator verification checklist | 🔄 OPEN | Not yet done | Create checklist in docs/ |
 | J13 — CI supply-chain hardening | 🔄 OPEN | Not yet done | Add dependency pinning, SBOM generation |
 | J14 — Environment-dependent tests | 🔄 OPEN | systemd-analyze tests fail without /opt/superbot/.venv | Fix tests or add venv check |

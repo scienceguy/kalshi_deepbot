@@ -25,9 +25,9 @@ TimeoutStopSec=90
 User=polybot
 Group=superbot
 WorkingDirectory=/opt/superbot-releases/current
-Environment=TMPDIR=/opt/superbot/local_data
+Environment=TMPDIR=/opt/superbot-releases/current/local_data
 Environment=MEMPALACE_DIR=/var/lib/superbot/mempalace
-ExecStart=/opt/superbot/.venv/bin/python poly_us_trader.py --interval 15
+ExecStart=/opt/superbot-releases/current/.venv/bin/python poly_us_trader.py --interval 15
 # V2: on-failure + burst — a crash loop stops instead of spinning forever.
 Restart=on-failure
 RestartSec=15
@@ -38,7 +38,7 @@ StandardError=journal
 # the lock path be absent on first start).
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/superbot/local_data -/opt/superbot/.lock_poly /var/lib/superbot/mempalace
+ReadWritePaths=/opt/superbot-releases/current/local_data -/opt/superbot-releases/current/.lock_poly /var/lib/superbot/mempalace
 PrivateTmp=true
 # H4: Shared MemPalace directory at /var/lib/superbot/mempalace (superbot group, setgid)
 # V2: 1024 fds was not enough for venue session + palace + DB + log.

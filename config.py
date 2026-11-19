@@ -403,6 +403,15 @@ RETENTION_PENDING_SEND_DAYS = _env_int("RETENTION_PENDING_SEND_DAYS", 7)
 RETENTION_LATENCY_MEASUREMENTS_DAYS = _env_int("RETENTION_LATENCY_MEASUREMENTS_DAYS", 7)
 RETENTION_SYNC_QUARANTINE_DAYS = _env_int("RETENTION_SYNC_QUARANTINE_DAYS", 30)
 
+# A1: Latency budgets for regression gate (p99 must be <= 2x budget)
+# Measured in milliseconds. Budget = expected p50; regression when p99 > 2*budget
+GUARD_TICK_BUDGET_MS = _env_float("GUARD_TICK_BUDGET_MS", 250.0)
+SIGNAL_EVAL_BUDGET_MS = _env_float("SIGNAL_EVAL_BUDGET_MS", 50.0)
+ORDER_PLACE_BUDGET_MS = _env_float("ORDER_PLACE_BUDGET_MS", 200.0)
+SETTLEMENT_BUDGET_MS = _env_float("SETTLEMENT_BUDGET_MS", 100.0)
+# Enable regression gate (fail cycle if p99 > 2*budget)
+LATENCY_REGRESSION_GATE = _env_bool("LATENCY_REGRESSION_GATE", False)
+
 # M3: n8n webhook rate limit (requests per second). All superbot-* webhooks
 # share the same n8n instance; a conservative rate prevents self-inflicted 429s.
 N8N_WEBHOOK_REQ_PER_SEC = _env_float("N8N_WEBHOOK_REQ_PER_SEC", 10.0)

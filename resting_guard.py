@@ -23,10 +23,15 @@ Cancels are idempotent and retried (caller keeps the order resting when
 the venue refuses; the next tick retries). Every cancel records its
 trigger and latency through the L1 latency recorder and emits an
 ``order.cancelled`` event with both.
+
+J6: Event-driven wake-ups + A1 latency baseline integration.
 """
 
 import logging
+import threading
 import time
+
+import config
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +41,37 @@ TRIGGER_BBO_AWAY = "bbo_moved_away"
 TRIGGER_SPOT_MOVE = "spot_move"
 
 PM_TICK = 0.01
+
+
+# J6: Event-driven wake-up support
+class _WakeEvent:
+    """Thread-safe wake event for event-driven guard evaluation."""
+    
+    def __init__(self):
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._pending = False
+    
+    def wake(self) -> None:
+        """Signal that evaluation should run immediately."""
+        with self._lock:
+            self._pending = True
+        self._event.set()
+    
+    def wait(self, timeout: float) -> bool:
+        """Wait for wake signal or timeout. Returns True if woken."""
+        return self._event.wait(timeout)
+    
+    def clear(self) -> None:
+        """Clear the wake signal."""
+        with self._lock:
+            self._pending = False
+        self._event.clear()
+    
+    def is_pending(self) -> bool:
+        """Check if a wake is pending without consuming it."""
+        with self._lock:
+            return self._pending
 
 
 def adverse_move_fraction(side, above_market, spot_entry, spot_now,
@@ -69,7 +105,8 @@ class RestingGuard:
     def __init__(self, *, lock, list_orders, cancel_one, spot_for, bbo_for,
                  feed_age, halt_active, tick: float = PM_TICK,
                  spot_move_fraction: float = 0.5, bbo_ticks: int = 5,
-                 feed_stale_seconds: float = 30.0, recorder=None):
+                 feed_stale_seconds: float = 30.0, recorder=None,
+                 wake_event=None):
         if not 0.0 < float(spot_move_fraction) < 1.0:
             raise ValueError("spot_move_fraction must be in (0, 1)")
         if int(bbo_ticks) < 1:
@@ -86,6 +123,19 @@ class RestingGuard:
         self._bbo_ticks = int(bbo_ticks)
         self._feed_stale = float(feed_stale_seconds)
         self._recorder = recorder
+        # J6: Event-driven wake-up support
+        self._wake_event = wake_event or _WakeEvent()
+        self._tick_ms = self._tick * 1000.0
+        # Latency recorder integration
+        try:
+            from scripts.latency_baseline import get_recorder
+            self._latency_recorder = get_recorder()
+        except Exception:
+            self._latency_recorder = None
+
+    def wake(self) -> None:
+        """J6: Wake the guard for immediate evaluation (called from control lane or market data updates)."""
+        self._wake_event.wake()
 
     def evaluate(self) -> dict:
         """One fast-loop tick. Non-raising."""
@@ -130,8 +180,11 @@ class RestingGuard:
                               "cancel_latency_ms": round(dt_ms, 2)})
             self._emit(o, reason, dt_ms)
         tick_ms = (time.monotonic() - t_tick) * 1000.0
-        if tick_ms > 250.0:
-            log.warning("guard tick took %.0fms (budget 250ms)", tick_ms)
+        # A1: Record guard tick latency
+        if self._latency_recorder:
+            self._latency_recorder.record("guard_tick", tick_ms)
+        if tick_ms > config.GUARD_TICK_BUDGET_MS:
+            log.warning("guard tick took %.0fms (budget %.0fms)", tick_ms, config.GUARD_TICK_BUDGET_MS)
         return {"checked": len(orders), "cancelled": cancelled}
 
     def _trigger(self, o, *, halt, feed_age) -> str | None:

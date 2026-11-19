@@ -16,12 +16,12 @@ Wants=network-online.target
 Type=oneshot
 User=ubuntu
 Group=superbot
-WorkingDirectory=/opt/superbot
-EnvironmentFile=-/opt/superbot/.env
-Environment=TMPDIR=/opt/superbot/local_data
-ExecStart=/bin/sh /opt/superbot/scripts/n8n_creds_guard.sh
+WorkingDirectory=/opt/superbot-releases/current
+EnvironmentFile=-/opt/superbot-releases/current/.env
+Environment=TMPDIR=/opt/superbot-releases/current/local_data
+ExecStart=/bin/sh /opt/superbot-releases/current/scripts/n8n_creds_guard.sh
 TimeoutStartSec=300
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/superbot/local_data %h/.n8n
+ReadWritePaths=/opt/superbot-releases/current/local_data %h/.n8n
 PrivateTmp=true

@@ -22,7 +22,7 @@ Usage:
     python trader.py --debug  # verbose logging
 """
 
-import argparse, hashlib, inspect, json, logging, os, signal as sig_mod, sys, time, uuid, fcntl
+import argparse, hashlib, inspect, json, logging, os, signal as sig_mod, sys, threading, time, uuid, fcntl
 import logging.handlers  # noqa: E402  — needed for RotatingFileHandler (submodule)
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -94,6 +94,7 @@ from market_finder import find_active_markets, _parse_api_time, _dollars_to_cent
 from risk import RiskManager  # noqa: E402
 from signals import floor_contracts  # noqa: E402
 import signals as se  # noqa: E402
+import resting_guard  # noqa: E402  — J6/A1: resting-order protection + latency baseline
 from resilience import CycleSupervisor, systemd_notify  # noqa: E402
 from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, calibration_beats_chance as _llm_calibration_beats_chance  # noqa: E402
 from emit import emit_event, emit_sync_lag  # noqa: E402
@@ -260,6 +261,17 @@ class BotState:
         self.running: bool = True
         self.risk = RiskManager()
         self.resilience = CycleSupervisor()
+        # J6: RestingGuard for sub-second protection + A1 latency baseline
+        self.resting_guard = resting_guard.RestingGuard(
+            lock=threading.RLock(),
+            list_orders=lambda: [],  # Kalshi has no resting maker orders in final-minute taker strategy
+            cancel_one=lambda o, r: True,
+            spot_for=lambda s: None,
+            bbo_for=lambda s: None,
+            feed_age=lambda: None,
+            halt_active=lambda: self.risk.is_halted(),
+            recorder=None,  # Latency recorder can be added if needed
+        )
         self.window = {
             "id": None,
             "start_cash": 0.0,

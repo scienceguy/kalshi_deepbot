@@ -30,10 +30,10 @@ User=ubuntu
 Group=superbot
 WorkingDirectory=/opt/superbot-releases/current
 Environment=DRY_RUN=true
-Environment=DRY_LOG_FILE=/opt/superbot/local_data/bot_dry.log
-Environment=TMPDIR=/opt/superbot/local_data
+Environment=DRY_LOG_FILE=/opt/superbot-releases/current/local_data/bot_dry.log
+Environment=TMPDIR=/opt/superbot-releases/current/local_data
 Environment=MEMPALACE_DIR=/var/lib/superbot/mempalace
-ExecStart=/opt/superbot/.venv/bin/python trader.py --dry --interval 15
+ExecStart=/opt/superbot-releases/current/.venv/bin/python trader.py --dry --interval 15
 # V2: on-failure + burst — a crash loop stops instead of spinning forever.
 Restart=on-failure
 RestartSec=15
@@ -44,7 +44,7 @@ StandardOutput=journal
 StandardError=journal
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/superbot/local_data /var/lib/superbot/mempalace -/opt/superbot/.lock_kalshi
+ReadWritePaths=/opt/superbot-releases/current/local_data /var/lib/superbot/mempalace -/opt/superbot-releases/current/.lock_kalshi
 PrivateTmp=true
 # Measured: bridge Errno 24 (too many open files) on the default 1024;
 # 65536 covers the venue session + palace + DB + log fds.

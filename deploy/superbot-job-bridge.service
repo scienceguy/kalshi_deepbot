@@ -21,16 +21,16 @@ StartLimitBurst=5
 Type=simple
 User=ubuntu
 Group=superbot
-WorkingDirectory=/opt/superbot
-EnvironmentFile=-/opt/superbot/.env
-Environment=TMPDIR=/opt/superbot/local_data
+WorkingDirectory=/opt/superbot-releases/current
+EnvironmentFile=-/opt/superbot-releases/current/.env
+Environment=TMPDIR=/opt/superbot-releases/current/local_data
 Environment=SUPERBOT_JOB_BRIDGE_PORT=18711
-ExecStart=/opt/superbot/.venv/bin/python /opt/superbot/scripts/job_bridge.py
+ExecStart=/opt/superbot-releases/current/.venv/bin/python /opt/superbot-releases/current/scripts/job_bridge.py
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/superbot/local_data
+ReadWritePaths=/opt/superbot-releases/current/local_data
 PrivateTmp=true
 
 [Install]

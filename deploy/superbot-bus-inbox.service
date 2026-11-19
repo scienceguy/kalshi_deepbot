@@ -22,14 +22,14 @@ StartLimitBurst=5
 Type=simple
 User=ubuntu
 Group=superbot
-WorkingDirectory=/opt/superbot
-Environment=TMPDIR=/opt/superbot/local_data
-ExecStart=/opt/superbot/.venv/bin/python -m agent_bus
+WorkingDirectory=/opt/superbot-releases/current
+Environment=TMPDIR=/opt/superbot-releases/current/local_data
+ExecStart=/opt/superbot-releases/current/.venv/bin/python -m agent_bus
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/superbot/local_data
+ReadWritePaths=/opt/superbot-releases/current/local_data
 PrivateTmp=true
 LimitNOFILE=65536
 MemoryMax=256M
