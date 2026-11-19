@@ -402,6 +402,22 @@ class LocalDB:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_latency_stage ON latency_measurements(stage, created_at)")
 
+            # J8: alert history for de-duplication (scheduled jobs).
+            # Tracks which alerts have been sent so we don't spam the operator.
+            # Key = job_name + alert_key (deterministic from job output).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS alert_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_name TEXT NOT NULL,
+                    alert_key TEXT NOT NULL,      -- hash of alert content for dedup
+                    alert_type TEXT,              -- e.g., 'heartbeat', 'sync_lag', 'position', 'digest'
+                    payload_json TEXT NOT NULL,   -- the full alert payload
+                    sent_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(job_name, alert_key)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_history_job ON alert_history(job_name, sent_at)")
+
             # D3: durable per-row sync bookkeeping + quarantine for poison rows.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sync_quarantine (
@@ -1940,6 +1956,42 @@ class LocalDB:
                 log.warning("record_latency(%s) error: %s", stage, e)
                 return False
 
+    # J8: alert history for scheduled jobs de-duplication
+    def record_alert_sent(self, job_name: str, alert_key: str,
+                          alert_type: str, payload: Dict[str, Any]) -> bool:
+        """Record that an alert was sent. Returns False if already sent (dedup)."""
+        import json as _json
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                conn.execute(
+                    "INSERT INTO alert_history (job_name, alert_key, alert_type, payload_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (job_name, alert_key, alert_type, _json.dumps(payload)))
+                conn.commit()
+                return True
+            except Exception as e:
+                # UNIQUE constraint violation = already sent
+                if "UNIQUE constraint failed" in str(e):
+                    return False
+                log.warning("record_alert_sent(%s) error: %s", job_name, e)
+                return False
+
+    def was_alert_sent(self, job_name: str, alert_key: str,
+                       max_age_s: float = 3600.0) -> bool:
+        """Check if an identical alert was sent within max_age_s (default 1h)."""
+        conn = self._get_conn()
+        with self._lock:
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM alert_history WHERE job_name = ? AND alert_key = ? "
+                    "AND sent_at >= datetime('now', ?) LIMIT 1",
+                    (job_name, alert_key, f"-{int(max_age_s)} seconds")).fetchone()
+                return row is not None
+            except Exception as e:
+                log.warning("was_alert_sent(%s) error: %s", job_name, e)
+                return False
+
     def maybe_prune(self) -> None:
         """Hourly retention prune; never raises into the caller."""
         now = time.time()
@@ -1967,6 +2019,9 @@ class LocalDB:
         deleted: a 15-minute market has long settled, so the intent is dead,
         but the audit trail stays. 'pending' rows are never deleted — they are
         live intents.
+
+        J8: alert_history rows older than 4*outbox_keep_days (default 28 days)
+        are also deleted.
         """
         conn = self._get_conn()
         with self._lock:
@@ -2000,6 +2055,12 @@ class LocalDB:
                     "AND created_at < datetime('now', ?)",
                     (f"-{int(outbox_keep_days)} days",))
                 outbox_deleted = cur.rowcount
+                # J8: prune old alert history (default 30 days)
+                cur = conn.execute(
+                    "DELETE FROM alert_history "
+                    "WHERE sent_at < datetime('now', ?)",
+                    (f"-{int(outbox_keep_days * 4)} days",))  # 28 days default
+                alert_deleted = cur.rowcount
                 cur = conn.execute(
                     "UPDATE pending_send SET status = 'failed', "
                     "venue_status = 'abandoned_stale', "
@@ -2013,12 +2074,14 @@ class LocalDB:
                         "inbox_deleted": inbox_deleted,
                         "pending_abandoned": pending_abandoned,
                         "control_deleted": control_deleted,
-                        "outbox_deleted": outbox_deleted}
+                        "outbox_deleted": outbox_deleted,
+                        "alert_deleted": alert_deleted}
             except Exception as e:
                 log.warning("prune_control_tables error: %s", e)
                 return {"latency_deleted": 0, "pending_deleted": 0,
                         "inbox_deleted": 0, "pending_abandoned": 0,
-                        "control_deleted": 0, "outbox_deleted": 0}
+                        "control_deleted": 0, "outbox_deleted": 0,
+                        "alert_deleted": 0}
 
     def get_latency_stats(self, stage: Optional[str] = None,
                           limit: int = 1000) -> List[Dict[str, Any]]:

@@ -1,41 +1,50 @@
 #!/usr/bin/env python3
-"""H5 — the jobs n8n used to schedule, run from a systemd timer instead.
+"""J8 — the jobs n8n used to schedule, run from a systemd timer instead.
 
 n8n's schedule triggers ran these through the Execute Command node, which
 required re-enabling that node for the whole instance (arbitrary shell for
 anyone with editor/API access). They now run here, from
-superbot-jobs.timer (once a minute), and post the same alert the workflow's
-Parse/Alert?/Post nodes produced.
+superbot-jobs.timer (once a minute), and emit alerts through the durable
+outbox (local_db.event_outbox + n8n_client sender threads).
 
 Each job is due when ``(now - offset_s) % every_s < 60``: stateless, so a
 missed tick costs one interval, never a replay. A job that returns
-``alert: true`` is posted to ``SUPERBOT_ALERT_WEBHOOK_URL`` (the digest sets
-the flag itself, so every job uses one rule).
+``alert: true`` is emitted as a critical/normal event (never telemetry) and
+de-duplicated via local_db.alert_history so the operator is not spammed.
+
+Per-job timeouts are configurable via SUPERBOT_JOB_TIMEOUT_SECONDS (default
+300s) or per-job override in JOBS tuple (5th element).
 """
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import time
-import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
-# name, argv, every_s, offset_s
+# name, argv, every_s, offset_s, timeout_s (optional, None = global default)
+# timeout_s overrides SUPERBOT_JOB_TIMEOUT_SECONDS for that job
 JOBS = (
-    ("daily-digest", ["scripts/daily_digest.py"], 86400, 600),
-    ("sync-lag", ["scripts/sync_lag_alert.py"], 600, 120),
+    ("daily-digest", ["scripts/daily_digest.py"], 86400, 600, 600),
+    ("sync-lag", ["scripts/sync_lag_alert.py"], 600, 120, 120),
     ("heartbeat-kalshi", ["scripts/heartbeat_watchdog.py", "--source", "kalshi",
-                          "--max-age-s", "1200"], 300, 60),
+                          "--max-age-s", "1200"], 300, 60, 120),
     ("heartbeat-poly", ["scripts/heartbeat_watchdog.py", "--source", "poly_us",
-                        "--max-age-s", "1200"], 300, 240),
+                        "--max-age-s", "1200"], 300, 240, 120),
     ("position-watchdog", ["scripts/position_watchdog.py", "--max-age-s", "7200"],
-     3600, 840),
+     3600, 840, 180),
 )
 
-TIMEOUT_SECONDS = float(os.environ.get("SUPERBOT_JOB_TIMEOUT_SECONDS", "300"))
+GLOBAL_TIMEOUT_SECONDS = float(os.environ.get("SUPERBOT_JOB_TIMEOUT_SECONDS", "300"))
+
+# Alert de-dup window: don't re-send same alert within this many seconds
+ALERT_DEDUP_WINDOW_S = float(os.environ.get("SUPERBOT_ALERT_DEDUP_WINDOW_S", "3600"))
 
 
 def due(now_s: float, every_s: int, offset_s: int) -> bool:
@@ -43,12 +52,14 @@ def due(now_s: float, every_s: int, offset_s: int) -> bool:
     return (int(now_s) - offset_s) % every_s < 60
 
 
-def run_job(argv: list, timeout: float = TIMEOUT_SECONDS) -> dict:
+def run_job(argv: list, timeout: float) -> dict:
     """Run one job and parse its JSON stdout. Never raises."""
     try:
         proc = subprocess.run(
             [sys.executable, *argv], cwd=str(BASE_DIR), capture_output=True,
             timeout=timeout, env={**os.environ, "PYTHONPATH": str(BASE_DIR)})
+    except subprocess.TimeoutExpired:
+        return {"alert": True, "error": f"{argv[0]} timed out after {timeout}s"}
     except Exception as e:
         return {"alert": True, "error": f"{argv[0]} failed to start: {e}"}
     out = proc.stdout.decode(errors="replace").strip()
@@ -63,45 +74,114 @@ def run_job(argv: list, timeout: float = TIMEOUT_SECONDS) -> dict:
     return parsed if isinstance(parsed, dict) else {"alert": True, "result": parsed}
 
 
-def alert_payload(name: str, result: dict) -> dict:
-    """The {subject, text, ...} shape the workflow's Parse node built."""
+def _alert_key(result: dict) -> str:
+    """Deterministic key for de-duplication from alert content."""
+    # Use relevant fields that define the alert's identity
+    key_parts = []
+    if "trader" in result:
+        key_parts.append(f"trader:{result['trader']}")
+    if "reason" in result:
+        key_parts.append(f"reason:{result['reason']}")
+    if "age_s" in result and result["age_s"] is not None:
+        # Round age to nearest 60s for dedup stability
+        key_parts.append(f"age:{int(result['age_s'] // 60) * 60}")
+    if "unsynced_count" in result:
+        key_parts.append(f"unsynced:{result['unsynced_count']}")
+    if "unsettled_count" in result:
+        key_parts.append(f"unsettled:{result['unsettled_count']}")
+    if "digest_text" in result:
+        # For digest, use date prefix
+        key_parts.append(f"digest:{result.get('since_utc', '')[:10]}")
+    if not key_parts:
+        key_parts.append("generic")
+    raw = "|".join(key_parts).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _alert_type_from_job(name: str, result: dict) -> str:
+    """Map job name to alert type for tracking."""
     if name == "daily-digest":
-        subject = "[SuperBot] daily digest"
-        text = result.get("digest_text") or json.dumps(result)
-    else:
-        state = "ALERT" if result.get("alert") else "ok"
-        subject = f"[SuperBot] {state}: {result.get('trader') or result.get('reason') or name}"
-        text = json.dumps(result)[:800]
-    return {"subject": subject, "text": text, **result}
+        return "digest"
+    if name.startswith("heartbeat"):
+        return "heartbeat"
+    if name == "sync-lag":
+        return "sync_lag"
+    if name == "position-watchdog":
+        return "position"
+    return "unknown"
 
 
-def post_alert(payload: dict, url: str = "", timeout: float = 5.0) -> bool:
-    """POST to SUPERBOT_ALERT_WEBHOOK_URL. False when unset/placeholder."""
-    url = url or os.environ.get("SUPERBOT_ALERT_WEBHOOK_URL", "")
-    if not url or ":9/" in url:  # n8n's placeholder when the env var is unset
-        return False
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"), method="POST",
-        headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return 200 <= resp.status < 300
-    except Exception as e:
-        print(f"alert post failed: {e}", file=sys.stderr)
-        return False
+def run_due(now_s: float = 0.0, runner=run_job) -> list:
+    """Run every due job, emit alerts via durable outbox. Returns the job names run."""
+    import config
+    from local_db import get_local_db
+    from emit import emit_event
 
-
-def run_due(now_s: float = 0.0, runner=run_job, poster=post_alert) -> list:
-    """Run every due job, post its alert. Returns the job names run."""
     ran = []
     now_s = now_s or time.time()
-    for name, argv, every_s, offset_s in JOBS:
+    db = get_local_db()
+    mode = "dry" if config.DRY_RUN else "live"
+
+    for job in JOBS:
+        # Unpack with optional timeout
+        if len(job) == 5:
+            name, argv, every_s, offset_s, timeout_s = job
+        else:
+            name, argv, every_s, offset_s = job
+            timeout_s = None
+
         if not due(now_s, every_s, offset_s):
             continue
+
         ran.append(name)
-        result = runner(argv)
-        if result.get("alert"):
-            poster(alert_payload(name, result))
+        timeout = timeout_s if timeout_s is not None else GLOBAL_TIMEOUT_SECONDS
+        result = runner(argv, timeout=timeout)
+
+        if not result.get("alert"):
+            continue
+
+        # De-duplication check
+        alert_key = _alert_key(result)
+        alert_type = _alert_type_from_job(name, result)
+        if db.was_alert_sent(name, alert_key, max_age_s=ALERT_DEDUP_WINDOW_S):
+            # Already sent recently — skip
+            continue
+
+        # Build event payload
+        if name == "daily-digest":
+            subject = "[SuperBot] daily digest"
+            text = result.get("digest_text") or json.dumps(result)
+            event_type = "daily.summary"
+            severity = "info"
+        else:
+            state = "ALERT" if result.get("alert") else "ok"
+            subject = f"[SuperBot] {state}: {result.get('trader') or result.get('reason') or name}"
+            text = json.dumps(result)[:800]
+            event_type = "calibration.alert"  # critical lane, goes to superbot-critical-alert
+            severity = "warning"
+
+        payload = {
+            "subject": subject,
+            "text": text,
+            "job_name": name,
+            "alert_type": alert_type,
+            **result,
+        }
+
+        # Emit through durable outbox (N2/N3)
+        # The key ensures deterministic event_id for replay safety
+        emit_event(
+            source="scheduled_jobs",
+            event_type=event_type,
+            payload=payload,
+            key=f"alert:{name}:{alert_key}",
+            severity=severity,
+            mode=mode,
+        )
+
+        # Record in alert history for de-duplication
+        db.record_alert_sent(name, alert_key, alert_type, result)
+
     return ran
 
 

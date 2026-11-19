@@ -118,7 +118,8 @@ def test_prune_empty_db_returns_zero_counts(tmp_path):
     out = db.prune_control_tables()
     assert out == {"latency_deleted": 0, "pending_deleted": 0,
                    "inbox_deleted": 0, "pending_abandoned": 0,
-                   "control_deleted": 0, "outbox_deleted": 0}
+                   "control_deleted": 0, "outbox_deleted": 0,
+                   "alert_deleted": 0}
     assert all(isinstance(v, int) for v in out.values())
 
 
