@@ -769,6 +769,13 @@ N8N_BASE_URL = os.environ.get("N8N_BASE_URL", "http://127.0.0.1:5678")
 # HMAC secret for signing outbound webhooks (read from ~/.secrets/ or env).
 # Keep this out of the repo; the operator sets it in .env or a secrets file.
 SUPERBOT_WEBHOOK_SECRET = os.environ.get("SUPERBOT_WEBHOOK_SECRET", "")
+# J10: Per-identity HMAC secrets for control lane two-person rule.
+# Each agent identity has its own secret; a resume_entries after risk halt
+# must be signed by a DIFFERENT identity's secret (real two-person rule).
+# Resolution: SUPERBOT_WEBHOOK_SECRET_<IDENTITY_SUFFIX> (e.g. _CODING_AGENT,
+# _KALSHI_TRADER, _POLY_TRADER, _OPERATOR, _N8N) or file
+# ~/.secrets/superbot_webhook_secret_<suffix>. Falls back to global
+# SUPERBOT_WEBHOOK_SECRET if per-identity not set.
 # J7: Gate key for /backtest and /collect routes on job bridge.
 # A second secret (separate from webhook HMAC) that must be provided as
 # X-Superbot-Gate-Key header to trigger backtest/collect jobs. Prevents

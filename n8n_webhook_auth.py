@@ -11,6 +11,10 @@ Both sides of every webhook call use this module:
   freshness (60-second window), replay (nonce store) and authenticity
   (constant-time signature comparison).
 
+J10: Per-identity HMAC secrets for the control lane (real two-person rule).
+Each agent identity has its own secret; a resume_entries after risk halt
+must be signed by a DIFFERENT identity's secret.
+
 Body canonicalization: the sender signs
 ``json.dumps(data, separators=(",", ":"), ensure_ascii=False)`` — byte-equal
 to JavaScript ``JSON.stringify`` for all content except U+2028/U+2029, which
@@ -22,6 +26,7 @@ Headers:
     X-Superbot-Timestamp  milliseconds since epoch
     X-Superbot-Nonce      random hex, unique per request
     X-Superbot-Signature  hex HMAC-SHA256 of "{timestamp}.{nonce}.{body}"
+    X-Superbot-Identity   sender identity (e.g. ubuntu:opencode:kalshi_deepbot)
 
 The secret comes from ``SUPERBOT_WEBHOOK_SECRET`` (env / config), falling
 back to ``~/.secrets/superbot_webhook_secret`` (mode 0600). It is never
@@ -47,12 +52,53 @@ SIGNATURE_WINDOW_MS = 60_000
 # Replay cache lifetime: a nonce may be remembered for at least the window.
 _NONCE_TTL_MS = 2 * SIGNATURE_WINDOW_MS
 
+# Identity suffix mapping (from agent_identity module)
+_IDENTITY_SUFFIX = {
+    "ubuntu:opencode:kalshi_deepbot": "CODING_AGENT",
+    "ubuntu:service:kalshi_trader": "KALSHI_TRADER",
+    "ubuntu:service:poly_us_trader": "POLY_TRADER",
+    "operator": "OPERATOR",
+    "n8n": "N8N",
+}
 
-def _secret_bytes() -> bytes:
-    """Resolve the webhook secret from config/env, then ~/.secrets.
+
+def _identity_suffix(identity: str) -> str:
+    """Map full identity to config suffix."""
+    return _IDENTITY_SUFFIX.get(identity, identity.replace(":", "_").replace(".", "_").upper())
+
+
+def _secret_bytes(identity: Optional[str] = None) -> bytes:
+    """Resolve the webhook secret for a specific identity.
+
+    J10: First tries per-identity secret (SUPERBOT_WEBHOOK_SECRET_<SUFFIX>),
+    then falls back to global SUPERBOT_WEBHOOK_SECRET.
 
     Raises RuntimeError when nothing is configured. Never logs the secret.
     """
+    # Try per-identity secret first
+    if identity:
+        suffix = _identity_suffix(identity)
+        env_name = f"SUPERBOT_WEBHOOK_SECRET_{suffix}"
+        secret = os.environ.get(env_name) or getattr(config, env_name, "")
+        if secret:
+            return secret.encode()
+        # Try per-identity file
+        secret_file = Path(os.environ.get(
+            f"SUPERBOT_WEBHOOK_SECRET_{suffix}_FILE",
+            os.path.expanduser(f"~/.secrets/superbot_webhook_secret_{suffix.lower()}")))
+        try:
+            mode = secret_file.stat().st_mode & 0o777
+            if mode & 0o077:
+                log.warning("%s has insecure permissions (mode %o); refusing it",
+                            secret_file, mode)
+            else:
+                secret = secret_file.read_text().strip()
+                if secret:
+                    return secret.encode()
+        except OSError:
+            pass
+
+    # Fall back to global secret
     secret = getattr(config, "SUPERBOT_WEBHOOK_SECRET", "") or os.environ.get(
         "SUPERBOT_WEBHOOK_SECRET", "")
     if not secret:
@@ -78,10 +124,10 @@ def _secret_bytes() -> bytes:
     return secret.encode()
 
 
-def sign_body(timestamp_ms, nonce: str, body: str) -> str:
+def sign_body(timestamp_ms, nonce: str, body: str, identity: Optional[str] = None) -> str:
     """HMAC-SHA256 over ``{timestamp_ms}.{nonce}.{body}`` (hex)."""
     message = f"{int(timestamp_ms)}.{nonce}.{body}".encode()
-    return hmac.new(_secret_bytes(), message, hashlib.sha256).hexdigest()
+    return hmac.new(_secret_bytes(identity), message, hashlib.sha256).hexdigest()
 
 
 def gate_key() -> str:
@@ -165,7 +211,8 @@ class NonceStore:
 def verify_request(timestamp_ms, nonce: str, body: str, signature: str,
                    *, now_ms: Optional[int] = None,
                    store: Optional[NonceStore] = None,
-                   check_freshness: bool = True):
+                   check_freshness: bool = True,
+                   identity: Optional[str] = None):
     """Receiver-side verification. Returns (ok: bool, reason: str).
 
     Checks, in order: presence of signed fields, integer timestamp,
@@ -175,6 +222,8 @@ def verify_request(timestamp_ms, nonce: str, body: str, signature: str,
 
     If check_freshness=False, the timestamp window is not enforced (used at
     drain time to verify HMAC integrity without rejecting stale-but-valid commands).
+
+    J10: When identity is provided, verifies against that identity's secret.
     """
     if timestamp_ms is None or not body or not nonce or not signature:
         return False, "missing signed fields"
@@ -186,7 +235,7 @@ def verify_request(timestamp_ms, nonce: str, body: str, signature: str,
     if check_freshness and abs(now_ms - ts) > SIGNATURE_WINDOW_MS:
         return False, f"timestamp outside {SIGNATURE_WINDOW_MS}ms window"
     try:
-        expected = sign_body(ts, nonce, body)
+        expected = sign_body(ts, nonce, body, identity)
     except RuntimeError:
         return False, "no webhook secret configured"
     if not hmac.compare_digest(expected, signature):

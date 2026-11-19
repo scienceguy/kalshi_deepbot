@@ -71,7 +71,13 @@ def _from_stdin() -> int:
         body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
     else:
         body_str = str(body or "")
-    ok, reason = n8n_webhook_auth.verify_request(ts, nonce, body_str, sig)
+    # Extract identity from body if present
+    try:
+        cmd_for_identity = json.loads(body_str) if isinstance(body, str) else body
+        agent_id_for_verify = str(cmd_for_identity.get("agent_id") or "n8n") if isinstance(cmd_for_identity, dict) else "n8n"
+    except (json.JSONDecodeError, TypeError):
+        agent_id_for_verify = "n8n"
+    ok, reason = n8n_webhook_auth.verify_request(ts, nonce, body_str, sig, identity=agent_id_for_verify)
     if not ok:
         return _refuse(f"signature: {reason}")
     try:
@@ -115,7 +121,8 @@ def _from_args(args) -> int:
     nonce = _mk_nonce()
     body_str = json.dumps({"command": command, **payload},
                           separators=(",", ":"), ensure_ascii=False)
-    sig = n8n_webhook_auth.sign_body(ts_ms, nonce, body_str)
+    # J10: Sign with per-identity secret
+    sig = n8n_webhook_auth.sign_body(ts_ms, nonce, body_str, identity=agent_id)
     return _enqueue(command, agent_id, nonce, ts_ms,
                     {"command": command, **payload}, sig)
 

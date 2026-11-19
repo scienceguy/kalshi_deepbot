@@ -85,7 +85,8 @@ def verify_command(row: dict) -> tuple:
     if not sig:
         return False, "missing signature", {}, agent_id, ""
     # H1: verify HMAC integrity only at drain; freshness was checked at ingest
-    ok, reason = n8n_webhook_auth.verify_request(ts, nonce, body, sig, check_freshness=False)
+    # J10: Verify against the sender's identity secret (per-identity HMAC)
+    ok, reason = n8n_webhook_auth.verify_request(ts, nonce, body, sig, check_freshness=False, identity=agent_id)
     if not ok:
         return False, f"signature: {reason}", {}, agent_id, ""
     try:
