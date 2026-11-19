@@ -142,3 +142,253 @@ def test_main_applies_persisted_pause_during_startup(control_db, tmp_path,
         poly_us_trader.main()
 
     assert control.STATE.pause_entries is True
+
+
+# ── Persisted-pause reload: no cycles until an explicit resume ─────────────
+
+
+def test_wait_for_resume_blocks_until_resume(control_db, monkeypatch, caplog):
+    pytest.importorskip("polymarket_us")
+    import logging
+
+    import local_db
+    import poly_us_trader
+
+    control.STATE.pause_entries = True  # what a fresh paused process looks like
+    control_db.set_control_state("pause_entries",
+                                 {"paused": True, "paused_by": "operator"})
+    monkeypatch.setattr(local_db, "get_local_db", lambda *a, **k: control_db)
+
+    calls = {"drain": 0}
+
+    def _fake_drain(state):
+        calls["drain"] += 1
+        if calls["drain"] >= 2:
+            # second drain applies the resume, as control.drain_and_apply would
+            control_db.set_control_state("pause_entries", {"paused": False})
+            control.STATE.pause_entries = False
+
+    monkeypatch.setattr(poly_us_trader, "_drain_control_commands", _fake_drain)
+    monkeypatch.setattr(poly_us_trader, "_sleep_with_watchdog",
+                        lambda s, chunk=30.0: None)
+
+    class _FakeTrader:
+        state = {"ruin_halted": False, "positions": []}
+
+    with caplog.at_level(logging.WARNING):
+        assert poly_us_trader._wait_for_resume(_FakeTrader(), interval=0.01) is True
+
+    assert calls["drain"] >= 2
+    assert control.STATE.pause_entries is False
+    assert "Paused at startup — waiting for resume" in caplog.text
+
+
+def test_wait_for_resume_stop_signal_never_resumes(control_db, monkeypatch,
+                                                   caplog):
+    pytest.importorskip("polymarket_us")
+    import logging
+
+    import local_db
+    import poly_us_trader
+
+    control.STATE.pause_entries = True
+    control_db.set_control_state("pause_entries",
+                                 {"paused": True, "paused_by": "operator"})
+    monkeypatch.setattr(local_db, "get_local_db", lambda *a, **k: control_db)
+    monkeypatch.setattr(poly_us_trader, "_stop_requested", True)
+    monkeypatch.setattr(poly_us_trader, "_drain_control_commands",
+                        lambda state: pytest.fail("must not drain once stopped"))
+
+    class _FakeTrader:
+        state = {"ruin_halted": False, "positions": []}
+
+    with caplog.at_level(logging.INFO):
+        assert poly_us_trader._wait_for_resume(_FakeTrader(), interval=0.01) is False
+
+    assert control.STATE.pause_entries is True  # pause never lifted
+    assert "not starting trading cycles" in caplog.text
+
+
+def test_pause_entries_active_prefers_persisted_resume(control_db,
+                                                       monkeypatch):
+    pytest.importorskip("polymarket_us")
+    import local_db
+    import poly_us_trader
+
+    control.STATE.pause_entries = True  # stale in-memory flag
+    control_db.set_control_state("pause_entries", {"paused": False})
+    monkeypatch.setattr(local_db, "get_local_db", lambda *a, **k: control_db)
+
+    assert poly_us_trader._pause_entries_active() is False
+    assert control.STATE.pause_entries is False
+
+
+def test_pause_entries_active_persisted_pause_beats_stale_memory(control_db,
+                                                                 monkeypatch):
+    pytest.importorskip("polymarket_us")
+    import local_db
+    import poly_us_trader
+
+    control.STATE.pause_entries = False
+    control_db.set_control_state("pause_entries",
+                                 {"paused": True, "paused_by": "operator"})
+    monkeypatch.setattr(local_db, "get_local_db", lambda *a, **k: control_db)
+
+    assert poly_us_trader._pause_entries_active() is True
+    assert control.STATE.pause_entries is True
+
+
+def test_pause_entries_active_read_failure_fails_closed(monkeypatch):
+    pytest.importorskip("polymarket_us")
+    import local_db
+    import poly_us_trader
+
+    control.STATE.pause_entries = True
+
+    def _boom(*a, **k):
+        raise OSError("db locked")
+
+    monkeypatch.setattr(local_db, "get_local_db", _boom)
+    assert poly_us_trader._pause_entries_active() is True
+    assert control.STATE.pause_entries is True
+
+
+def _stub_main(monkeypatch, tmp_path, control_db, drain_behavior):
+    """Stub every filesystem / network / process touch in main() so driving
+    it stays offline. drain_behavior(state) replaces _drain_control_commands."""
+    import sys
+
+    import agent_bus
+    import binance_feed
+    import local_db
+    import poly_us_stream
+    import polymarket_us_client
+    import poly_us_trader
+
+    monkeypatch.setattr(local_db, "get_local_db", lambda *a, **k: control_db)
+    monkeypatch.setattr(poly_us_trader, "DATA_DIR", tmp_path / "poly_us_data")
+    monkeypatch.setattr(poly_us_trader, "POLY_US_LOG_FILE",
+                        tmp_path / "poly_us_data" / "poly_us_dry.log")
+    monkeypatch.setattr(poly_us_trader, "LOCK_FILE",
+                        tmp_path / "poly_us_data" / ".lock_poly")
+    monkeypatch.setattr(poly_us_trader, "acquire_instance_lock",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(poly_us_trader, "_stop_requested", False)
+    monkeypatch.setattr(poly_us_trader, "_sleep_with_watchdog",
+                        lambda s, chunk=30.0: None)
+    monkeypatch.setattr(poly_us_trader, "_mp_bridge", lambda: None)
+    monkeypatch.setattr(binance_feed, "start_ws_streams", lambda *a, **k: None)
+    monkeypatch.setattr(poly_us_stream, "get_poly_stream", lambda *a, **k: None)
+    monkeypatch.setattr(polymarket_us_client, "prewarm", lambda *a, **k: None)
+
+    # The QueueHandler swap in main() would replace the root handlers and
+    # swallow caplog for the rest of the session — make it fail into the
+    # except branch (inline logging stays).
+    import logging
+
+    def _qh_boom(*a, **k):
+        raise RuntimeError("queue logging disabled in test")
+
+    monkeypatch.setattr(logging.handlers, "QueueHandler", _qh_boom)
+
+    # The bus would bind a loopback port — replace with no-op fakes.
+    class _FakeBus:
+        def __init__(self, *a, **k):
+            self.port = 0
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(agent_bus, "BusServer", _FakeBus)
+    monkeypatch.setattr(agent_bus, "BusReceiver", lambda *a, **k: object())
+
+    holder = {}
+
+    class _FakeTrader:
+        def __init__(self, *a, **k):
+            self.state = {"start_balance": 35.0, "ruin_halted": False,
+                          "positions": []}
+            self.cycle_calls = 0
+
+        def cycle(self):
+            self.cycle_calls += 1
+            # stop after the first cycle so the daemon loop exits under test
+            poly_us_trader._stop_requested = True
+
+        def cancel_all_resting_orders(self, reason=""):
+            return True
+
+        def flush_ledger(self, timeout=0):
+            return True
+
+    def _ctor(*a, **k):
+        trader = _FakeTrader()
+        holder["trader"] = trader
+        return trader
+
+    monkeypatch.setattr(poly_us_trader, "PolyUSPaperTrader", _ctor)
+    monkeypatch.setattr(poly_us_trader, "_drain_control_commands",
+                        drain_behavior)
+    monkeypatch.setattr(sys, "argv", ["poly_us_trader.py"])
+    return holder
+
+
+def test_main_persisted_pause_holds_cycle_loop_until_resume(control_db,
+                                                            tmp_path,
+                                                            monkeypatch,
+                                                            caplog):
+    """Fresh boot with a persisted pause: main() must not enter the cycle
+    loop; once the control inbox applies resume_entries, cycles resume."""
+    pytest.importorskip("polymarket_us")
+    import logging
+
+    import poly_us_trader
+
+    control.STATE.pause_entries = False  # fresh process; the DB carries the pause
+    control_db.set_control_state("pause_entries",
+                                 {"paused": True, "paused_by": "operator",
+                                  "reason": "restart drill"})
+
+    drained = {"n": 0}
+
+    def _drain_resumes(state):
+        drained["n"] += 1
+        # the operator's resume_entries command lands here
+        control_db.set_control_state("pause_entries", {"paused": False})
+        control.STATE.pause_entries = False
+
+    holder = _stub_main(monkeypatch, tmp_path, control_db, _drain_resumes)
+    with caplog.at_level(logging.WARNING):
+        poly_us_trader.main()
+
+    assert "Paused at startup — waiting for resume" in caplog.text
+    assert drained["n"] >= 1
+    assert holder["trader"].cycle_calls == 1  # exactly one post-resume cycle
+    assert control.STATE.pause_entries is False
+
+
+def test_main_persisted_pause_with_stop_runs_no_cycle(control_db, tmp_path,
+                                                      monkeypatch, caplog):
+    """Fresh boot with a persisted pause and a stop signal arriving while
+    paused: main() exits without running a single trading cycle."""
+    pytest.importorskip("polymarket_us")
+    import logging
+
+    import poly_us_trader
+
+    control.STATE.pause_entries = False  # fresh process; the DB carries the pause
+    control_db.set_control_state("pause_entries",
+                                 {"paused": True, "paused_by": "operator",
+                                  "reason": "restart drill"})
+
+    def _drain_never_resumes(state):
+        # SIGTERM arrives while paused; no resume is ever applied
+        poly_us_trader._stop_requested = True
+
+    holder = _stub_main(monkeypatch, tmp_path, control_db, _drain_never_resumes)
+    with caplog.at_level(logging.WARNING):
+        poly_us_trader.main()
+
+    assert "Paused at startup — waiting for resume" in caplog.text
+    assert holder["trader"].cycle_calls == 0
+    assert control.STATE.pause_entries is True  # pause never lifted

@@ -2554,18 +2554,7 @@ class PolyUSPaperTrader:
         self._cycle_requests = 0
         self.state["cycles"] = int(self.state.get("cycles", 0) or 0) + 1
         # N4: drain signed control commands from the shared local inbox.
-        try:
-            import control
-            from local_db import get_local_db
-            control.drain_and_apply(get_local_db(),
-                                    risk_halted=bool(self.state.get("ruin_halted")),
-                                    positions=self.state.get("positions") or {},
-                                    source="poly_us_trader")
-            # Retention is triggered by latency writes, and poly never writes
-            # one — without this call a poly-only host keeps every control row.
-            get_local_db().maybe_prune()
-        except Exception as e:
-            log.warning("control drain failed: %s", e)
+        _drain_control_commands(self.state)
         markets = self.scan_markets()
         market_map = {m["slug"]: m for m in markets if "slug" in m}
 
@@ -3142,6 +3131,83 @@ def _load_persisted_pause() -> None:
                   "entries until an operator resumes", e)
 
 
+def _drain_control_commands(state: dict) -> None:
+    """N4: drain the signed control inbox (shared with the Kalshi trader).
+
+    Used by cycle() and by the paused-at-startup wait, so a resume_entries
+    command is applied without running a trading cycle. Never raises.
+    """
+    try:
+        import control
+        from local_db import get_local_db
+        control.drain_and_apply(get_local_db(),
+                                risk_halted=bool(state.get("ruin_halted")),
+                                positions=state.get("positions") or {},
+                                source="poly_us_trader")
+        # Retention is triggered by latency writes, and poly never writes
+        # one — without this call a poly-only host keeps every control row.
+        get_local_db().maybe_prune()
+    except Exception as e:
+        log.warning("control drain failed: %s", e)
+
+
+def _pause_entries_active() -> bool:
+    """True while a signed pause_entries is in effect.
+
+    The persisted local_db row is the source of truth: it is reconciled
+    against (and overwrites) the in-memory flag on every call, so a peer
+    draining the shared inbox first — or a stale flag either way — cannot
+    desynchronise the gate. Fails closed when memory said paused and the
+    row cannot be read; stays unpaused when memory was freshly loaded as
+    unpaused (a transient read failure must not halt an unpaused boot).
+    A resume whose persistence failed leaves a stale paused row, which
+    keeps the gate closed until the DB recovers — control.py logs that
+    condition at ERROR with instructions to re-issue the command.
+    """
+    try:
+        import control
+        mem = bool(control.STATE.pause_entries)
+    except Exception:
+        # The control module itself is unreadable — fail closed.
+        return True
+    try:
+        from local_db import get_local_db
+        ps = get_local_db().get_control_state("pause_entries")
+    except Exception as e:
+        log.error("Persisted pause read failed (%s) — %s", e,
+                  "staying paused" if mem else "staying unpaused")
+        return mem
+    if ps is None or "paused" not in ps:
+        return mem
+    db = bool(ps.get("paused"))
+    if db != mem:
+        try:
+            import control
+            control.STATE.pause_entries = db
+        except Exception:
+            pass
+    return db
+
+
+def _wait_for_resume(trader, interval: float) -> bool:
+    """Hold the process paused until an explicit resume_entries command.
+
+    No trading cycles run while paused; the control inbox is drained (the
+    sender allowlist and signature checks live in control.py) so resume_entries
+    lifts the pause. Returns True when the pause was lifted, False when a stop
+    signal arrived first.
+    """
+    log.warning("Paused at startup — waiting for resume")
+    while not _stop_requested:
+        if not _pause_entries_active():
+            log.info("Resume received — starting trading cycles.")
+            return True
+        _drain_control_commands(trader.state)
+        _sleep_with_watchdog(max(1.0, min(float(interval), 5.0)))
+    log.info("Stop signal received while paused — not starting trading cycles.")
+    return False
+
+
 def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -3318,6 +3384,10 @@ def main():
     try:
         log.info("Starting Polymarket US Paper Trader with $%.2f Bankroll", trader.state["start_balance"])
         if args.once:
+            # A persisted pause also gates the single-shot path: no cycle
+            # until the pause is lifted (or a stop signal arrives).
+            if _pause_entries_active() and not _wait_for_resume(trader, args.interval):
+                return
             trader.cycle()
             return
         if getattr(config, "POLY_RESTING_GUARD_ENABLED", True):
@@ -3335,6 +3405,11 @@ def main():
         # Type=notify unit: init (state, lock, signals) is done; systemd may
         # now consider the service started and enforce WatchdogSec.
         systemd_notify("READY=1")
+        # H1: a signed pause_entries persisted across the restart holds the
+        # process here — no trading cycles until resume_entries is applied via
+        # the control inbox. The resting-order guard above stays live.
+        if _pause_entries_active():
+            _wait_for_resume(trader, args.interval)
         while not _stop_requested:
             try:
                 trader.cycle()
