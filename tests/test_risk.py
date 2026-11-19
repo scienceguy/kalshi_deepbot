@@ -311,6 +311,17 @@ def test_kelly_sizing_with_min_ev_edge(monkeypatch):
     kelly = r.kelly_size(0.60, 50, 100.0)
     assert kelly > 0.0  # Should be positive
 
+    # Test case: MAKER mode (aggressive_fill=False) has no fee, so edge is higher
+    # Entry at 98c, win_prob = 0.99, fee=0 -> EV = 0.99*0.02 - 0.01*0.98 = 0.01
+    # With MIN_EV_EDGE_PCT=0.01, this should pass
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "MIN_EV_EDGE_PCT", 0.01)
+    kelly_maker = r.kelly_size(0.99, 98, 100.0, aggressive_fill=False)
+    assert kelly_maker > 0.0  # MAKER mode with no fee should have positive Kelly
+    # Same params with TAKER mode (fee=0.07) should fail min edge
+    kelly_taker = r.kelly_size(0.99, 98, 100.0, aggressive_fill=True)
+    assert kelly_taker == 0.0  # TAKER mode pays fee, EV < min edge
+
 
 def test_liquidity_check_rejects_wide_spread(monkeypatch):
     """Liquidity check rejects markets with spread > MAX_SPREAD_CENTS."""

@@ -280,7 +280,8 @@ class RiskManager:
         fee_per_contract = fee_rate * (entry_price_cents / 100.0) * (profit_cents / 100.0)
         net_ev = p * (profit_cents / 100.0) - q * (loss_cents / 100.0) - fee_per_contract
         
-        if net_ev < config.MIN_EV_EDGE_PCT:
+        # Use small epsilon for floating-point comparison (net_ev can be 0.009999... vs 0.01)
+        if net_ev < config.MIN_EV_EDGE_PCT - 1e-10:  # reviewed: epsilon avoids FP rejection at exact threshold
             log.debug("Kelly rejected: net EV $%.4f < min edge $%.4f (aggressive_fill=%s)", net_ev, config.MIN_EV_EDGE_PCT, aggressive_fill)
             return 0.0
         
@@ -497,7 +498,9 @@ class RiskManager:
 
         # Kelly sizing with min EV edge (Pillar B)
         if ticker and win_prob is not None and entry_price_cents is not None:
-            kelly_dollars = self.kelly_size(win_prob, entry_price_cents, portfolio)
+            kelly_dollars = self.kelly_size(  # reviewed: pass aggressive_fill for MAKER/TAKER fee difference
+                win_prob, entry_price_cents, portfolio, aggressive_fill=config.AGGRESSIVE_FILL
+            )
             per_trade_cap = min(per_trade_cap, kelly_dollars)
 
         # H10: the per-ticker and total-exposure maps were never populated, so
