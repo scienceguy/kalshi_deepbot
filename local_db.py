@@ -444,6 +444,50 @@ class LocalDB:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_spot_ticks_symbol_ts ON spot_ticks(symbol, ts)")
 
+            # T15-13: backtest data capture — orderbook depth, BBO, settlements
+            # Persisted to Parquet via scheduled collector; retention >3 days.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS orderbook_snapshots (
+                    ts INTEGER NOT NULL,
+                    venue TEXT NOT NULL,              -- kalshi | polymarket
+                    market_id TEXT NOT NULL,          -- ticker (kalshi) or slug (poly)
+                    side TEXT NOT NULL,               -- yes | no
+                    depth_json TEXT NOT NULL,         -- array of [price, size] levels
+                    sequence INTEGER DEFAULT 0
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_ob_snapshots_venue_market_ts ON orderbook_snapshots(venue, market_id, ts)")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS bbo_snapshots (
+                    ts INTEGER NOT NULL,
+                    venue TEXT NOT NULL,
+                    market_id TEXT NOT NULL,
+                    yes_bid INTEGER,                  -- cents
+                    yes_ask INTEGER,
+                    no_bid INTEGER,
+                    no_ask INTEGER,
+                    spread_yes REAL,                  -- ask - bid in cents
+                    spread_no REAL,
+                    mid_yes REAL,
+                    mid_no REAL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_bbo_snapshots_venue_market_ts ON bbo_snapshots(venue, market_id, ts)")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS settlement_data (
+                    ts INTEGER NOT NULL,
+                    venue TEXT NOT NULL,
+                    market_id TEXT NOT NULL,
+                    settled_yes INTEGER,              -- 0 or 100 cents
+                    strike REAL,
+                    close_time TEXT,
+                    expiration_value REAL             -- raw underlying price at settlement
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_settlement_venue_market_ts ON settlement_data(venue, market_id, ts)")
+
     # H9: write-ahead order intent — pending_send records the intent
             # to place an order BEFORE the REST call. If the process crashes,
             # reconcile_on_startup reads pending_send and resolves (confirm fill
