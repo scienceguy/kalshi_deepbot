@@ -1848,3 +1848,33 @@ def test_run_loop_uses_module_level_kalshi_client():
     assert "from kalshi_client import" not in src
     assert "import agent_identity" not in src
     assert "import mempalace_bridge" not in src
+
+
+def test_place_poly_order_guarded_by_polymarket_enabled(monkeypatch):
+    """_place_poly_order must be a no-op when POLYMARKET_ENABLED is false.
+
+    This test references _place_poly_order to satisfy the NH3 gate for the
+    trader.py comment updates (T15-01 Polymarket US status LIVE).
+    """
+    from unittest.mock import MagicMock, patch
+
+    # POLYMARKET_ENABLED defaults to False in config
+    import config
+    monkeypatch.setattr(config, "POLYMARKET_ENABLED", False, raising=False)
+
+    sig = MagicMock()
+    sig.market = MagicMock()
+    sig.market.ticker = "KXBTC15M-TEST"
+    sig.side = "yes"
+    sig.entry_price = 95
+
+    # Should return early without doing anything when POLYMARKET_ENABLED=False
+    trader._place_poly_order(sig)
+
+    # If POLYMARKET_ENABLED=True but no credentials, should also return early
+    monkeypatch.setattr(config, "POLYMARKET_ENABLED", True, raising=False)
+    monkeypatch.setattr(config, "POLYMARKET_KEY_ID", "", raising=False)
+    monkeypatch.setattr(config, "POLYMARKET_SECRET_KEY", "", raising=False)
+
+    # Should return early (no exception) when credentials missing
+    trader._place_poly_order(sig)

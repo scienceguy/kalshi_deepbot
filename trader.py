@@ -612,10 +612,11 @@ def _place_poly_order(sig) -> None:
     """Place a concurrent fee-free maker order on Polymarket US.
 
     Mirrors the Kalshi signal on the same asset/side. Polymarket US crypto
-    Up/Down 15m markets are in PREPROD only (not production) as of 2026-11-13,
-    so this is currently a no-op with a clear log message. When crypto markets
-    launch on production, this path places a fee-free maker limit order
-    (participateDontInitiate=True) at the same edge as the Kalshi entry.
+    Up/Down 15m markets are LIVE on api.polymarket.us as of 2026-09-22 (BTC)
+    and 2026-10-15 (ETH/SOL/XRP), with 5m/15m/1h/4h windows. Settlement uses
+    CF Benchmarks BRTI 60s average (same as Kalshi), tie rule: Up wins on tie (>=).
+    This path places a fee-free maker limit order (participateDontInitiate=True)
+    at the same edge as the Kalshi entry when POLYMARKET_ENABLED=true.
     """
     # reviewed: skip concurrent order when polymarket execution is disabled in config
     if not getattr(config, "POLYMARKET_ENABLED", False):
@@ -3264,12 +3265,11 @@ def cycle(client: KalshiClient) -> None:
                 state.orders_today += 1
 
                 # ── Concurrent Polymarket maker order (fee-free) ──
-                # Polymarket US crypto Up/Down 15m markets are in PREPROD only
-                # (not production) as of 2026-11-13 — no crypto markets to trade
-                # yet. This path is guarded by POLYMARKET_ENABLED and is a
-                # no-op until markets launch or L2 credentials are configured
-                # for the international CLOB.
-                # reviewed: POLYMARKET_ENABLED defaults false so no Polymarket order is placed until production crypto markets exist.
+                # Polymarket US crypto Up/Down 15m markets are LIVE on
+                # api.polymarket.us as of 2026-09-22 (BTC) and 2026-10-15 (ETH/SOL/XRP).
+                # Settlement: CF Benchmarks BRTI 60s average (same as Kalshi), tie rule: Up wins on tie (>=).
+                # This path is guarded by POLYMARKET_ENABLED (default false; opt-in).
+                # reviewed: POLYMARKET_ENABLED defaults false so no Polymarket order is placed until explicitly enabled.
                 if config.POLYMARKET_ENABLED:
                     try:
                         _place_poly_order(sig)
