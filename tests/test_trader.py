@@ -1481,6 +1481,97 @@ def test_handle_task_is_log_only(monkeypatch, caplog):
     assert "evt_123" in caplog.text
 
 
+def test_cycle_detects_partial_fill_on_resting_order(monkeypatch):
+    """F-04: cycle() detects partial fills on resting orders and books the filled
+    portion as a position, with settlement queue entry for idempotent replay.
+    
+    When a maker order is partially filled between cycles, the reconciliation
+    loop computes filled = initial - remaining and books those contracts as
+    a new position with proper PnL tracking.
+    """
+    import trader
+    import json
+    import tempfile
+    import config
+    from pathlib import Path
+    from trader import CRYPTO_EXCHANGE_INDEX
+    
+    # Use a temp settlement queue file for isolation (must be Path for .with_suffix/.with_name)
+    # Create path without creating the file - let the settlement queue logic handle it
+    tmpdir = Path(tempfile.mkdtemp())
+    qfile_path = tmpdir / "settlement_queue.json"
+    
+    client = MagicMock()
+    client.get_balance.return_value = 100.0
+    client.get_shard_balance.return_value = 100.0  # for _sizing_cash when not dry-run
+    client.get_portfolio_value.return_value = 100.0  # for risk drawdown calc
+    client.get_positions.return_value = []  # no existing positions
+    # Simulate a resting order that was partially filled:
+    # initial_count=10, remaining_count=6, so filled=4
+    client.get_orders.return_value = [{
+        "order_id": "test_oid_partial_fill",
+        "initial_count_fp": "10.00",
+        "remaining_count_fp": "6.00",
+        "fill_count_fp": "4.00",
+        "yes_price_dollars": "0.85",
+        "outcome_side": "yes",
+        "ticker": "KXBTC15M-TEST",
+        "created_time": "2026-11-20T10:00:00Z",
+    }]
+    client.invalidate_markets.return_value = None
+    # Use expiration_value=None so the position doesn't settle immediately
+    client.get_market.return_value = {"expiration_value": None}
+    
+    # Create a proper market mock with minutes_left
+    mock_market = MagicMock()
+    mock_market.ticker = "KXBTC15M-TEST"
+    mock_market.yes_bid = 85
+    mock_market.yes_ask = 86
+    mock_market.no_bid = 14
+    mock_market.no_ask = 15
+    mock_market.minutes_left = 10.0  # within entry window
+    
+    monkeypatch.setattr(trader, "find_active_markets", lambda c, target_series=None: [mock_market])
+    monkeypatch.setattr(trader, "get_n8n_client", lambda: MagicMock())
+    monkeypatch.setattr(trader, "SETTLEMENT_QUEUE_FILE", qfile_path)
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    monkeypatch.setattr(config, "BOOTSTRAP_MAJOR_ONLY", False)
+    
+    test_state = trader.BotState()
+    monkeypatch.setattr(trader, "state", test_state)
+    
+    # Mock local DB to accept the settlement and provide required methods
+    mock_db = MagicMock()
+    mock_db.apply_settlement_pnl.return_value = True
+    mock_db.get_portfolio_value.return_value = 100.0  # for risk.drawdown calculation
+    mock_db.get_sync_lag_stats.return_value = {"lag_ms": 0, "healthy": True}
+    mock_db.maybe_nightly_maintenance.return_value = {}
+    monkeypatch.setattr(trader, "get_local_db", lambda: mock_db)
+
+    # Should not raise and should detect the partial fill
+    trader.cycle(client)
+    
+    # The partial fill (4 contracts) should be booked as a position
+    assert "KXBTC15M-TEST" in test_state.positions, \
+        "partial fill should be booked as a position"
+    pos = test_state.positions["KXBTC15M-TEST"]
+    assert pos["contracts"] == 4, f"expected 4 contracts filled, got {pos['contracts']}"
+    assert pos["side"] == "yes"
+    assert pos["entry_price"] == 85  # from yes_price_dollars
+    
+    # Settlement queue should have an entry for idempotent replay
+    with open(qfile_path) as f:
+        queue = json.load(f)
+    assert len(queue) == 1, "settlement queue should have one entry for the partial fill"
+    entry = queue[0]
+    assert entry["payload"]["ticker"] == "KXBTC15M-TEST"
+    assert entry["payload"]["contracts"] == 4
+    assert entry["payload"]["side"] == "yes"
+    
+    import shutil
+    shutil.rmtree(tmpdir)
+
+
 def test_p2_balance_unknown_does_not_crash_cycle(monkeypatch):
     """P2: When cash is None, cycle() evaluates cleanly without UnboundLocalError."""
     import trader

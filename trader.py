@@ -2066,6 +2066,15 @@ def cycle(client: KalshiClient) -> None:
     # the empty list would wipe the paper reservations every cycle.
     resting_orders = [] if config.DRY_RUN else client.get_orders(status="resting")
     state.live_resting_orders = resting_orders or []
+    # Load settlement queue early so we can check for already-queued tickers
+    # when detecting partial fills on resting orders.
+    settlement_queue = _load_settlement_queue()
+    queued_tickers = set()
+    for qentry in settlement_queue:
+        qpayload = qentry.get("payload", {})
+        qticker = qpayload.get("ticker", "")
+        if qticker:  # reviewed: skip empty ticker
+            queued_tickers.add(qticker)
     try:
         now = time.time()
         # A dry run has no exchange orders: a paper reservation is released by
@@ -2078,9 +2087,10 @@ def cycle(client: KalshiClient) -> None:
                 continue
             live_ids.add(oid)
             remaining = _order_remaining_count(o)
+            initial = _order_initial_count(o)
             price_dollars = _order_price_dollars(o)
             created = o.get("created_time", "")
-            if not price_dollars or not remaining:  # reviewed: a zero-priced or zero-remaining resting order reserves no cash; skip it
+            if not price_dollars or initial <= 0:  # reviewed: a zero-priced or zero-initial order reserves no cash; skip it
                 continue
             # New schema quotes the order's yes/no price in dollars directly.
             ticker = o.get("ticker", "")
@@ -2090,6 +2100,49 @@ def cycle(client: KalshiClient) -> None:
             if remaining <= 0.0:
                 state.resting_value.pop(oid, None)
                 continue
+            # F-04: detect partial fills and book the filled portion as a position.
+            # If initial > remaining, the difference has been filled and should be
+            # moved from resting_value (cash reservation) to positions (exposure).
+            filled = initial - remaining
+            if filled > 0 and ticker:  # reviewed: partial fill only matters if we have a ticker
+                # Determine order side from the order record
+                side = (o.get("outcome_side") or o.get("side") or "").lower()
+                if side in ("yes", "no"):  # reviewed: only process valid side values
+                    # Check if this fill is already recorded locally (avoid double-booking)
+                    already_tracked = ticker in state.positions
+                    # Also check settlement queue to prevent double-count on restart
+                    queued = ticker in queued_tickers if 'queued_tickers' in locals() else False
+                    if not already_tracked and not queued:  # reviewed: idempotency guard
+                        # Book the filled portion as a new position
+                        entry_price_cents = int(round(price_dollars * 100))
+                        exposure = filled * price_dollars
+                        state.positions[ticker] = {
+                            "side": side,
+                            "entry_price": entry_price_cents,
+                            "contracts": floor_contracts(filled),
+                            "order_id": oid,
+                        }
+                        state.position_risk[ticker] = exposure
+                        # Also record in settlement queue for idempotent replay
+                        queue = _load_settlement_queue()
+                        settle_key = f"partial_fill_{ticker}_{oid}"
+                        queue.append({
+                            "order_id": settle_key,
+                            "payload": {
+                                "action": "exit",
+                                "ticker": ticker,
+                                "side": side,
+                                "contracts": filled,
+                                "entry_price_cents": entry_price_cents,
+                                "entry_was_taker": False,  # resting maker order
+                                "series": fees.series_from_ticker(ticker),
+                                "status": "pending",
+                                "order_id": oid,
+                            }
+                        })
+                        _save_settlement_queue(queue)
+                        log.info("✓ Partial fill booked: %s %s %s contracts @ %sc (from resting order %s)",
+                                 ticker, side, filled, entry_price_cents, oid)
             state.resting_value[oid] = {"dollars": remaining * price_dollars, "ticker": ticker}
             if ticker:
                 state.resting_tickers.add(ticker)
@@ -2128,15 +2181,8 @@ def cycle(client: KalshiClient) -> None:
     # Record any position that appeared on the exchange but is not in local
     # state — e.g. a resting limit order that filled since the last cycle.
     # Without this, filled maker orders are never settled and their PnL is lost.
-    # Load settlement queue to check for existing entries (prevents double-count
-    # on restart if crash occurred between fill and local recording).
-    settlement_queue = _load_settlement_queue()
-    queued_tickers = set()
-    for qentry in settlement_queue:
-        qpayload = qentry.get("payload", {})
-        qticker = qpayload.get("ticker", "")
-        if qticker:
-            queued_tickers.add(qticker)
+    # Settlement queue already loaded earlier for partial-fill detection.
+    # queued_tickers is already defined.
 
     # B14: a dry run never adopts or tops up LIVE exchange positions — the
     # local DB is mode-isolated, so skipping adoption here is cheap defense
