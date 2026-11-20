@@ -229,9 +229,13 @@ class MemPalaceBridge:
             "metadata": dict(metadata or {}),
         })
 
-    def ack_event(self, event_id: str, body: str = "") -> None:
-        """Queue an ``event.ack`` for a delivered message (C1). Non-blocking."""
-        self._enqueue("ack", "ack", {"event_id": str(event_id), "body": str(body or "")})
+    def ack_event(self, event_id: str, body: str = "", status: str = "claimed") -> None:
+        """Queue an ``event.ack`` for a delivered message (C1). Non-blocking.
+
+        status: one of "applied", "blocked", "claimed", "failed", "open", "ready", "superseded".
+        Default "claimed" is correct for acknowledging a task.request.
+        """
+        self._enqueue("ack", "ack", {"event_id": str(event_id), "body": str(body or ""), "status": status})
 
     def drain_tasks(self) -> list:
         """Drain inbound task.request events from the subscriber queue.
@@ -353,14 +357,20 @@ class MemPalaceBridge:
             # No-op when mempalace library is not available (H3)
             self._breaker_success()  # Track as successful no-op
             return
-        if cmd_type == "status":
-            self._deliver_status(subtype, payload, correlation_id)
-        elif cmd_type == "kg":
-            self._deliver_kg(subtype, payload)
-        elif cmd_type == "artifact":
-            self._deliver_artifact(payload)
-        elif cmd_type == "ack":
-            self._deliver_ack(subtype, payload)
+        try:
+            if cmd_type == "status":
+                self._deliver_status(subtype, payload, correlation_id)
+            elif cmd_type == "kg":
+                self._deliver_kg(subtype, payload)
+            elif cmd_type == "artifact":
+                self._deliver_artifact(payload)
+            elif cmd_type == "ack":
+                self._deliver_ack(subtype, payload)
+        except Exception as e:
+            # Log the actual error before circuit breaker logic
+            if "circuit breaker open" not in str(e):
+                log.warning("MemPalace %s/%s delivery error: %s", cmd_type, subtype, e)
+            raise
 
     def _deliver_status(self, status_type: str, payload: dict,
                         correlation_id: str) -> None:
@@ -428,7 +438,7 @@ class MemPalaceBridge:
         try:
             ls = Logstream(db_path=_LOGSTREAM_DB)
             ls.ack_event(payload["event_id"], from_agent=self.agent_identity,
-                         status="received", body=payload.get("body") or "")
+                         status=payload.get("status", "claimed"), body=payload.get("body") or "")
             self._breaker_success()
         except Exception as e:
             self._breaker_failure()
@@ -504,15 +514,31 @@ class MemPalaceBridge:
                 time.sleep(1.0)
         if ls is None:
             return
-        # Get the latest event ID for this agent to use as cursor.
-        # This ensures we only wait for NEW events, not historical ones.
+        # Inbox sweep on startup: get recent events for this agent (newest first),
+        # put them in the inbound queue, then use the OLDEST event's ID as cursor
+        # for the wait loop. This catches up on events that arrived while we were down.
         cursor = None
         try:
-            latest = ls.list_events(to_agent=self.agent_identity, order="desc", limit=1)
-            if latest:
-                cursor = latest[0].get("id")
-        except Exception:
-            pass
+            recent = ls.list_events(to_agent=self.agent_identity, order="desc", limit=50)
+            if recent:
+                # Put events in chronological order (oldest first) for processing
+                for event in reversed(recent):
+                    # Only process task.request events (delegation tasks)
+                    if event.get("type") != "task.request":
+                        continue
+                    # Normalize: logstream uses 'id', but ack_event expects 'event_id'
+                    if event.get("id") and not event.get("event_id"):
+                        event["event_id"] = event["id"]
+                    try:
+                        self._inbound.put_nowait(event)
+                        self.metrics["inbound_received"] += 1
+                    except queue.Full:
+                        break
+                # Use the oldest event's ID as cursor so wait_events only returns newer ones
+                cursor = recent[-1].get("id")
+        except Exception as e:
+            log.warning("MemPalace inbox sweep failed: %s", e)
+        # Wait loop: block for new events after the cursor
         while not self._stop.is_set():
             try:
                 kwargs = {"timeout_ms": 2000, "to_agent": self.agent_identity}
@@ -524,6 +550,12 @@ class MemPalaceBridge:
                 # Update cursor to this event's ID for next iteration
                 if event.get("id"):
                     cursor = event["id"]
+                # Only process task.request events (delegation tasks)
+                if event.get("type") != "task.request":
+                    continue
+                # Normalize: logstream uses 'id', but ack_event expects 'event_id'
+                if event.get("id") and not event.get("event_id"):
+                    event["event_id"] = event["id"]
                 try:
                     self._inbound.put_nowait(event)
                     self.metrics["inbound_received"] += 1
