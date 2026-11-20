@@ -1728,3 +1728,20 @@ def test_ticker_close_time_dst_fallback_honours_first_sunday(monkeypatch):
     assert trader._ticker_close_time("KXBTC15M-27NOV011400-00").hour == 18
     # 2027-11-30 is after the first Sunday (Nov 7): 14:00 EST = 19:00 UTC.
     assert trader._ticker_close_time("KXBTC15M-27NOV301400-00").hour == 19
+
+
+def test_run_loop_uses_module_level_kalshi_client():
+    """_run_loop must see the module-level KalshiClient import, not a local
+    shadow. A local `from kalshi_client import KalshiClient` inside a try
+    block made Python treat the name as local to _run_loop, causing
+    UnboundLocalError at `client = KalshiClient()` when that block did not
+    run (measured 2026-11-20)."""
+    import inspect
+    import kalshi_client
+    # The name must resolve to the same class object as the module import.
+    assert trader.KalshiClient is kalshi_client.KalshiClient
+    # And _run_loop must not contain a local import/assignment that shadows it.
+    src = inspect.getsource(trader._run_loop)
+    assert "from kalshi_client import" not in src
+    assert "import agent_identity" not in src
+    assert "import mempalace_bridge" not in src

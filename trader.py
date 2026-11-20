@@ -3409,15 +3409,12 @@ def _run_loop(args) -> None:
         db = get_local_db()
         # reviewed: snapshot only when absent — first write wins, restart never overwrites day-0
         if db.get_day0_balance("kalshi") is None:
-            from kalshi_client import KalshiClient
             bal = KalshiClient().get_balance()
             src = ("kalshi /portfolio/balance (live)" if not config.DRY_RUN
                    else "kalshi paper bankroll")
             db.record_day0_balance("kalshi", float(bal), src)
             log.info("T13-32: day-0 balance snapshot kalshi=$%.2f (%s)", float(bal), src)
             try:
-                import agent_identity
-                import mempalace_bridge
                 mempalace_bridge.get_default_bridge(
                     agent_identity.KALSHI_TRADER).kg_add(
                     "venue:kalshi", "day0_balance_usd", f"{float(bal):.2f} ({src})")
