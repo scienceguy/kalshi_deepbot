@@ -116,11 +116,12 @@ KALSHI_ALLOW_NONSTANDARD_URL = _env_bool("KALSHI_ALLOW_NONSTANDARD_URL", False)
 POLYMARKET_KEY_ID = _env_str("POLYMARKET_KEY_ID", "")
 POLYMARKET_SECRET_KEY = _env_str("POLYMARKET_SECRET_KEY", "")
 
-# Polymarket concurrent trading is disabled by default: crypto Up/Down 15m
-# markets are in PREPROD on api.polymarket.us (not production) as of 2026-11-13.
-# No crypto markets exist on the US retail API yet, so there is nothing to
-# trade. Set POLYMARKET_ENABLED=true when they launch or to trade on the
-# international CLOB with L2 credentials.
+# Polymarket concurrent trading is disabled by default (opt-in via
+# POLYMARKET_ENABLED=true). As of 2026-11-20, crypto Up/Down markets for
+# BTC, ETH, SOL, XRP are LIVE on api.polymarket.us in 5m, 15m, 1h, 1d windows.
+# Settlement: CF Benchmarks BRTI 60s average (same as Kalshi), tie rule: Up
+# wins on tie (>=). Fee Tier 1 Theta=0.095 (trailing 30d vol <$10k). See
+# docs/POLY_US_MARKETS.md for full verification.
 POLYMARKET_ENABLED = _env_bool("POLYMARKET_ENABLED", False)
 
 # Polymarket US paper-trader fill model (R5): paper fills are modelled at the
@@ -768,7 +769,7 @@ def _resolve_secret_key(name: str) -> str:
             pass
     return ""
 
-VERTEX_PROJECT_ID = os.environ.get("VERTEX_PROJECT_ID", "project-ba3748e7-0d3a-4268-b7c")
+VERTEX_PROJECT_ID = os.environ.get("VERTEX_PROJECT_ID", "")
 VERTEX_LOCATION = os.environ.get("VERTEX_LOCATION", "global")
 VERTEX_MODEL = os.environ.get("VERTEX_MODEL", "google/gemini-3.6-flash")
 NVIDIA_API_KEY = _resolve_secret_key("NVIDIA_API_KEY")

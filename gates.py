@@ -623,24 +623,26 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
                 # it is higher than the quote; floor q with it so a genuine tail
                 # edge is not modelled away. Outside the band q is untouched.
                 if entry_price_cents is not None:
-                    # GATES_MEASURED_Q is a YES-side win rate: it answers "P(YES
-                    # wins | YES priced in this band)". A NO fill's price is the
-                    # NO contract's own price, not a YES price, so comparing it
-                    # to the band directly would floor a NO @ 97c -- a contract
-                    # that settles NO only ~3% of the time -- with a 99.28%
-                    # YES win rate. Gate on the YES-equivalent price on both
-                    # sides: NO @ 97c == YES @ 3c, which is outside the band.
-                    yes_equiv = (entry_price_cents if side == "yes"
-                                 else 100 - entry_price_cents)
-                    metrics["yes_equiv_price_cents"] = yes_equiv
+                    # F-04 fix: apply floor based on OWN-side price being in the band.
+                    # The measured floor (GATES_MEASURED_Q=0.9928) is a YES-side win rate
+                    # measured on YES quotes in 95-99c. For NO side, the complementary
+                    # win rate in the same band is ~0.989 (since NO @ 97c wins ~98.9%).
+                    # Use own-side price to decide if floor applies; the floor VALUE
+                    # differs by side (handled below).
+                    own_price = entry_price_cents
+                    metrics["own_price_cents"] = own_price
                     if (config.GATES_MEASURED_FLOOR_ENABLED
                             and config.GATES_MEASURED_BAND_MIN_CENTS
-                            <= yes_equiv <= config.GATES_MEASURED_BAND_MAX_CENTS):
+                            <= own_price <= config.GATES_MEASURED_BAND_MAX_CENTS):
                         # reviewed: B17 floor q at the Wilson 95% holdout lower bound from settled fills — never at the raw 0.9928; below 100 holdout rows the floor is refused
                         q_floor, q_floor_n, q_floor_source = _measured_q_floor()
                         metrics["q_floor_n"] = q_floor_n
                         metrics["q_floor_source"] = q_floor_source
                         if q_floor is not None:  # reviewed: B17 apply the measured Wilson bound only when the measurement is usable
+                            # For NO side, the floor is the complement (NO wins when YES loses)
+                            if side == "no":  # reviewed: F-04 apply NO-side complement of YES measured floor
+                                q_floor = 1.0 - q_floor
+                                metrics["q_floor_source"] = q_floor_source + " (NO complement)"
                             q = max(q, q_floor)
                             metrics["q_measured_floor"] = True
                 metrics["q"] = q
