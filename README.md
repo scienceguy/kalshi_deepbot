@@ -37,31 +37,49 @@ Run `python scripts/n8n_creds_sync.py` to sync credentials from the mirror into 
 | `trader.py` | Main trading loop (Kalshi + Polymarket US) |
 | `signals.py` | Signal engine (two-sided favourite maker) |
 | `market_finder.py` | Market discovery (parallel series fetch) |
-| `gates.py` | Pre-entry gates (ATR hurdle, fee-adjusted EV, time-decay cushion) |
+| `gates.py` | Pre-entry gates (ATR hurdle, fee-adjusted EV, time-decay cushion, KL floor) |
 | `kalshi_client.py` | Signed Kalshi REST client (RSA-PSS) |
 | `fees.py` | Kalshi fee math (configurable `KALSHI_FEE_RATE`) |
-| `risk.py` | Risk management (cash floor, exposure ceiling, drawdown halt) |
+| `risk.py` | Risk management (cash floor, exposure ceiling, drawdown halt, per-market loss limit) |
 | `resilience.py` | Cycle supervisor with backoff and client rebuild |
-| `n8n_client.py` | n8n webhook/API client |
-| `supabase_client.py` | Supabase REST client with circuit breaker |
-| `llm_eval.py` | LLM trade evaluation (4-layer fallback) |
+| `n8n_client.py` | n8n webhook/API client (health check + webhooks) |
+| `supabase_client.py` | Supabase REST client with circuit breaker + batch writes |
+| `llm_eval.py` | LLM trade evaluation (4-layer fallback, per-market verdict cache) |
 | `polymarket_us_client.py` | Polymarket US SDK wrapper (US API at api.polymarket.us) |
 | `poly_us_stream.py` | Private order/position stream for Polymarket US |
 | `poly_us_trader.py` | Polymarket US trading loop (dry-run by default) |
-| `backtest.py` | Parameter sweep backtester |
-| `data_collector.py` | Market data collector |
-| `kalshieye_downloader.py` | Kalshi Eye data downloader |
-| `scripts/train_ml.py` | ML model training (XGBoost/LightGBM/torch) |
+| `spot_consensus.py` | Cross-venue spot composite (Binance + Coinbase WS) |
+| `crossvenue.py` | Three-way ladder comparison (spot vs Kalshi vs Polymarket) |
+| `crossvenue_edge.py` | Spot-with-age getter + BRTI basis measurement |
+| `model.py` | GBM fair value baseline (d2 formula) |
+| `ml_model_lgb.py` | LightGBM/XGBoost calibrated model (opt-in via `--ml-model`) |
+| `forecast14.py` | Multi-model 14-day equity forecaster |
+| `box_arbitrage.py` | Cross-venue box arb engine (YES/NO legs) |
+| `pnl_reconcile.py` | P&L reconciliation (local DB vs Supabase vs n8n) |
+| `backtest.py` / `backtest_engine.py` | Parameter sweep backtester (replay from stored ticks) |
+| `data_collector.py` | Market data collector for backtest DB |
+| `kalshieye_downloader.py` | Kalshi Eye orderbook downloader |
+| `local_db.py` | Local SQLite (WAL) — positions, orders, fills, ledger, control, outbox |
+| `mempalace_bridge.py` | Single-owner MemPalace bridge (no-drop spill + sanctioned reads) |
+| `agent_bus.py` | Inter-agent coordination (roles, topics, ack protocol) |
+| `control.py` | Signed control commands (pause_entries, resume, reduce caps) |
+| `events.py` / `emit.py` | Durable event log with idempotency keys |
+| `scripts/train_ml.py` | ML model training (XGBoost/LightGBM) |
 | `scripts/job_bridge.py` | Loopback command bridge (n8n → scripts) |
 | `scripts/scheduled_jobs.py` | Scheduled jobs (digest, retrain, collect) |
 
 ## n8n Workflows
 
-Four workflows injected into n8n via `inject_n8n_workflows.py`:
+Seven workflows injected into n8n via `inject_n8n_workflows.py` (direct DB upsert; REST API returns 401 upstream):
 - `superbot-backtest` — Parameter sweep backtest
 - `superbot-collect` — Market data collection
 - `superbot-trade` — Settlement processor (webhook → Supabase PATCH)
-- `superbot-monitor` — Position monitoring
+- `superbot-monitor` — Position monitoring (ack-only)
+- `superbot-coordinate` — Agent dispatch (task.request/ack)
+- `superbot-control` — Signed control commands (pause/resume/reduce caps)
+- `superbot-digest` — Daily digest builder (replaces Termux job 7001)
+
+All webhooks are HMAC-signed per-identity (`SUPERBOT_WEBHOOK_SECRET_<SUFFIX>`). No Execute Command node (n8n 2.x default). Delivery via durable `event_outbox` in local SQLite with idempotency keys.
 
 ## Systemd Services
 
@@ -136,12 +154,12 @@ pip install xgboost lightgbm --no-binary :all:  # or use system packages
 ```bash
 cd /opt/superbot
 python -m pytest tests/ -q
-# 1312 passed, 10 skipped (as of 2026-11-19)
+# 1386+ passed, 3 skipped (as of 2026-11-20)
 ```
 
 Pre-commit hooks enforce:
 - No secrets in staged files
-- Token corruption guards (6 gates)
+- Token corruption guards (4 gates: verify_source, verify_compiles, verify_undefined, verify_operators)
 - Large file / log pattern guard (1MB limit)
 
 Run manually:
@@ -151,7 +169,6 @@ python3 scripts/verify_source.py --all
 python3 scripts/verify_compiles.py --all
 python3 scripts/verify_undefined.py --all
 python3 scripts/verify_operators.py
-python3 scripts/verify_review_marked.py --all
 python3 scripts/check_tmp_writes.py
 ```
 
@@ -180,6 +197,8 @@ n8n holds a **copy** of every credential, recreated from the mirror at any time.
 | Refresh mirror from Bitwarden | `BW_PASSWORD=... python scripts/bw_pull_secure_notes.py` |
 
 **Kalshi key trap:** The LIVE Kalshi pair is Bitwarden's **"Kalshi GPT API Key"** + **"Kalshi GPT RSA Key"**. The items named plain **"Kalshi API Key"** / **"Kalshi RSA Key"** are **STALE** (different key id, `INCORRECT_API_KEY_SIGNATURE`). After any `bw_pull_secure_notes.py` run, restore those two files from `.env` `KALSHI_KEY_ID` + `~/.secrets/kalshi_private.pem`.
+
+**Polymarket US markets:** The 15-minute crypto up/down series (`cpc-btc-updown-15m`) is on the **US production API** at `api.polymarket.us` (preprod note was stale). Settlement is CF Benchmarks BRTI (same as Kalshi). The `gateway.polymarket.us` public endpoints currently return 404 for 15m markets; authenticated API is required for live book data.
 
 ## License
 
