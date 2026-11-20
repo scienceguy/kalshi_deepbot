@@ -29,6 +29,8 @@ from pathlib import Path
 import binance_feed
 import config
 import fees
+from gbm import cushion_z as gbm_cushion_z, prob_above_zero_drift, GBMParams
+from kl_tools import symmetric_kl_divergence, kl_divergence
 
 log = logging.getLogger(__name__)
 
@@ -285,42 +287,6 @@ def breakeven_q(p: float, fee: float = 0.0) -> float:
     return p + fee
 
 
-def kl_divergence(p: float, q: float) -> float:
-    """Kullback-Leibler divergence KL(P||Q) for binary distributions.
-
-    For binary markets: KL(P||Q) = p*ln(p/q) + (1-p)*ln((1-p)/(1-q))
-    where p and q are probabilities in (0, 1).
-
-    Returns infinity if p or q is at boundary (0 or 1) to avoid log(0).
-    """
-    # reviewed: boundary check to avoid log(0); pure math, no money path
-    if p <= 0.0 or p >= 1.0 or q <= 0.0 or q >= 1.0:
-        return float("inf")
-    return p * math.log(p / q) + (1.0 - p) * math.log((1.0 - p) / (1.0 - q))
-
-
-def symmetric_kl_divergence(p: float, q: float) -> float:
-    """Symmetric KL divergence (Jensen-Shannon like): [KL(P||Q) + KL(Q||P)] / 2.
-
-    This measures the information-theoretic distance between two probability
-    distributions. A symmetric KL > 0.15 indicates meaningful disagreement
-    between the two venues' pricing (per prediction market research).
-
-    Args:
-        p: Probability from first venue (e.g., Kalshi)
-        q: Probability from second venue (e.g., Polymarket)
-
-    Returns:
-        Symmetric KL divergence, or inf if either probability is at boundary.
-    """
-    kl_pq = kl_divergence(p, q)
-    kl_qp = kl_divergence(q, p)
-    # reviewed: propagate boundary inf from kl_divergence
-    if kl_pq == float("inf") or kl_qp == float("inf"):
-        return float("inf")
-    return (kl_pq + kl_qp) / 2.0
-
-
 def entry_fee(p: float, series: str | None = None) -> float:
     """Per-contract entry fee per the Kalshi schedule via fees.py.
 
@@ -340,9 +306,10 @@ def entry_fee(p: float, series: str | None = None) -> float:
     return fees.taker_fee_dollars(1.0, p) if (config.GATES_FEE_TAKER or getattr(config, "AGGRESSIVE_FILL", False)) else 0.0
 
 
+# Public API with legacy signature (for backward compatibility with tests and callers)
 def cushion_z(spot: float, strike: float, sigma: float, minutes: float,
               side: str) -> float | None:
-    """Signed GBM/log strike cushion in standard deviations, or None if undefined.
+    """Signed GBM/log strike cushion in standard deviations (legacy signature).
 
     z = |ln(S / K)| / (sigma * sqrt(t)) is the cushion magnitude; the sign is
     positive when the chosen side is in-the-money (cushion in our favour) and
@@ -357,16 +324,8 @@ def cushion_z(spot: float, strike: float, sigma: float, minutes: float,
     Do NOT pass a dollar-denominated sigma: that made the old arithmetic form
     dimensionally wrong and produced huge z values that never blocked.
     """
-    if spot <= 0 or strike <= 0 or sigma <= 0:
-        return None
-    if minutes <= 0:
-        return None
-    denom = sigma * math.sqrt(minutes)
-    if denom <= 0:
-        return None
-    # ln(S/K) > 0 means YES is ITM; for NO the cushion is the mirror.
-    z = math.log(spot / strike) / denom
-    return z if side.lower() == "yes" else -z
+    params = GBMParams(spot=spot, strike=strike, minutes_left=minutes, sigma_per_min=sigma)
+    return gbm_cushion_z(params, side)
 
 
 def normal_cdf(z: float) -> float:

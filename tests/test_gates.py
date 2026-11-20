@@ -924,5 +924,43 @@ class TestBookAgeGate:
         assert res.metrics.get("book_age_seconds") is not None
 
 
+class TestKLToolsImport:
+    """Test that kl_divergence and symmetric_kl_divergence are available via kl_tools (T15-22)."""
+
+    def test_kl_divergence_imported_from_kl_tools(self):
+        """kl_divergence moved to kl_tools, verify it works."""
+        from kl_tools import kl_divergence
+        # Test boundary returns inf
+        assert kl_divergence(0.0, 0.5) == float("inf")
+        assert kl_divergence(1.0, 0.5) == float("inf")
+        assert kl_divergence(0.5, 0.0) == float("inf")
+        assert kl_divergence(0.5, 1.0) == float("inf")
+        # Test basic calculation
+        kl = kl_divergence(0.5, 0.6)
+        assert 0.01 < kl < 0.03
+
+    def test_symmetric_kl_divergence_imported_from_kl_tools(self):
+        """symmetric_kl_divergence moved to kl_tools, verify it works."""
+        from kl_tools import symmetric_kl_divergence
+        # Test boundary returns inf
+        assert symmetric_kl_divergence(0.0, 0.5) == float("inf")
+        assert symmetric_kl_divergence(0.5, 0.5) == 0.0
+        # Test basic calculation
+        skl = symmetric_kl_divergence(0.5, 0.6)
+        assert 0.01 < skl < 0.03
+
+    def test_cushion_z_delegates_to_gbm(self):
+        """cushion_z in gates.py delegates to gbm.cushion_z (T15-20)."""
+        import gates
+        from gbm import GBMParams, cushion_z as gbm_cushion_z
+        params = GBMParams(spot=100000.0, strike=95000.0, minutes_left=8.0, sigma_per_min=0.001)
+        # gates.cushion_z should delegate to gbm.cushion_z
+        result_gates = gates.cushion_z(100000.0, 95000.0, 0.001, 8.0, "yes")
+        result_gbm = gbm_cushion_z(params, "yes")
+        assert result_gates is not None
+        assert result_gbm is not None
+        assert abs(result_gates - result_gbm) < 1e-10
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

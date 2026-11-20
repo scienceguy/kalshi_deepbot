@@ -403,9 +403,9 @@ def compute_kl_divergence(kalshi: Ladder, poly: Ladder) -> List[dict]:
         WATCH_THRESHOLD = config.GATES_KL_WATCH_THRESHOLD
     
     try:
-        from gates import symmetric_kl_divergence
+        from kl_tools import symmetric_kl_divergence
     except ImportError:
-        log.warning("gates.symmetric_kl_divergence not available")
+        log.warning("kl_tools.symmetric_kl_divergence not available")
         return []
     
     k = to_cdf(kalshi)
@@ -609,6 +609,288 @@ def _median_strike(rows: List[dict], key: str) -> float:
         if p0 >= 0.5 >= p1 and p0 != p1:
             return s0 + (p0 - 0.5) / (p0 - p1) * (s1 - s0)
     return float("nan")
+
+# ═══════════════════════════════════════════════════════════════════════
+# T15-31: Cross-venue up/down matcher (fixes F-02)
+# ═══════════════════════════════════════════════════════════════════════
+
+@dataclass
+class UpDownMatch:
+    """A matched pair of Kalshi 15M and Polymarket US up/down 15m markets."""
+    kalshi_event: str              # e.g., "KXBTC15M-26NOV201530"
+    kalshi_yes_mid: float          # Kalshi YES mid price (0-1)
+    kalshi_no_mid: float           # Kalshi NO mid price (0-1)
+    polymarket_slug: str           # e.g., "cpc-btc-updown-15m-2026-11-20-1530z"
+    poly_up_mid: float             # Polymarket Up mid price (0-1)
+    poly_down_mid: float           # Polymarket Down mid price (0-1)
+    asset: str                     # BTC, ETH, SOL, XRP
+    window_start_et: datetime      # Window start time (ET)
+    window_end_et: datetime        # Window end time (ET)
+    minutes_left: float            # Minutes until window end
+    deviation_cents: float         # (Kalshi YES - Poly Up) * 100
+    basis_risk_bps: float          # Basis risk in basis points
+    tie_rule_risk: bool            # True if tie rule could flip outcome
+
+
+def parse_kalshi_15m_event(event_ticker: str) -> Optional[Tuple[str, datetime, datetime]]:
+    """
+    Parse Kalshi 15M event ticker into asset, window_start_et, window_end_et.
+    
+    KXBTC15M-26NOV201530 -> ('BTC', 2026-11-20 15:30 ET, 2026-11-20 15:45 ET)
+    15M time is HHMM, window is 15 minutes.
+    """
+    m = _KALSHI_EVENT.match(event_ticker or "")
+    if not m:
+        return None
+    asset, yy, mon, dd, hhmm = m.groups()
+    try:
+        hour = int(hhmm[:2])
+        minute = int(hhmm[2:]) if len(hhmm) > 2 else 0
+        window_start = datetime(2000 + int(yy), _MONTHS[mon], int(dd), hour, minute)
+        window_end = window_start + timedelta(minutes=15)
+        return asset, window_start, window_end
+    except (KeyError, ValueError):
+        return None
+
+
+def parse_poly_us_updown_15m_slug(slug: str) -> Optional[Tuple[str, datetime, datetime]]:
+    """
+    Parse Polymarket US up/down 15m slug into asset, window_start_et, window_end_et.
+    
+    cpc-btc-updown-15m-2026-11-20-1530z -> 
+        ('BTC', 2026-11-20 15:30 ET, 2026-11-20 15:45 ET)
+    
+    The 'z' suffix means UTC, but the time component is in ET wall clock.
+    """
+    # Pattern: cpc-{asset}-updown-15m-{date}-{time}z
+    # e.g., cpc-btc-updown-15m-2026-11-20-1530z
+    pattern = r"cpc-(btc|eth|sol|xrp)-updown-15m-(\d{4})-(\d{2})-(\d{2})-(\d{4})z"
+    m = re.match(pattern, slug or "")
+    if not m:
+        return None
+    asset_word, yyyy, mm, dd, hhmm = m.groups()
+    try:
+        hour = int(hhmm[:2])
+        minute = int(hhmm[2:]) if len(hhmm) > 2 else 0
+        asset = asset_word.upper()
+        window_start = datetime(int(yyyy), int(mm), int(dd), hour, minute)
+        window_end = window_start + timedelta(minutes=15)
+        return asset, window_start, window_end
+    except (KeyError, ValueError):
+        return None
+
+
+def discover_kalshi_15m_events(timeout: int = 20) -> List[str]:
+    """Fetch open Kalshi 15M event tickers (KXBTC15M, KXETH15M, etc.)."""
+    series = ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M")
+    events = []
+    for s in series:
+        try:
+            resp = requests.get(f"{KALSHI_BASE}/events",
+                                params={"series_ticker": s, "status": "open", "limit": 200},
+                                timeout=timeout)
+            resp.raise_for_status()
+            for e in resp.json().get("events", []):
+                t = e.get("event_ticker", "")
+                if t and t not in events:
+                    events.append(t)
+        except Exception as e:
+            log.warning("kalshi 15m events %s failed: %s", s, e)
+    return events
+
+
+def fetch_kalshi_yes_no_mids(event_ticker: str, timeout: int = 20) -> Optional[Tuple[float, float]]:
+    """
+    Fetch Kalshi YES and NO mid prices for a 15M market.
+    
+    Returns (yes_mid, no_mid) where each is in [0, 1], or None on failure.
+    """
+    try:
+        resp = requests.get(f"{KALSHI_BASE}/markets",
+                            params={"event_ticker": event_ticker, "limit": 200},
+                            timeout=timeout)
+        resp.raise_for_status()
+        markets = resp.json().get("markets", [])
+    except Exception as e:
+        log.warning("kalshi mids %s failed: %s", event_ticker, e)
+        return None
+
+    yes_mid = None
+    no_mid = None
+    for m in markets:
+        # 15M markets have a single strike (the current spot at window start)
+        # Find YES and NO sides
+        if m.get("yes_bid_dollars") is not None and m.get("yes_ask_dollars") is not None:
+            yb = _f(m.get("yes_bid_dollars"))
+            ya = _f(m.get("yes_ask_dollars"))
+            if yb is not None and ya is not None and ya > yb:
+                yes_mid = (yb + ya) / 2.0
+        if m.get("no_bid_dollars") is not None and m.get("no_ask_dollars") is not None:
+            nb = _f(m.get("no_bid_dollars"))
+            na = _f(m.get("no_ask_dollars"))
+            if nb is not None and na is not None and na > nb:
+                no_mid = (nb + na) / 2.0
+
+    if yes_mid is not None and no_mid is not None:
+        return yes_mid, no_mid
+    return None
+
+
+def fetch_poly_us_updown_15m(slug: str, timeout: int = 20) -> Optional[Tuple[float, float]]:
+    """
+    Fetch Polymarket US Up and Down mid prices for a 15m market.
+    
+    Uses polymarket_us_client.get_market_by_slug.
+    Returns (up_mid, down_mid) where each is in [0, 1], or None on failure.
+    """
+    try:
+        from polymarket_us_client import get_market_by_slug
+    except Exception:
+        log.debug("polymarket_us_client not available")
+        return None
+
+    try:
+        resp = get_market_by_slug(slug)
+    except Exception as e:
+        log.debug("poly us fetch %s failed: %s", slug, e)
+        return None
+
+    market = None
+    if isinstance(resp, dict):
+        inner = resp.get("market")
+        market = inner if isinstance(inner, dict) else resp
+    if not market:
+        return None
+
+    # The market has marketSides with YES (Up) and NO (Down) outcomes
+    # Also check bestBidQuote/bestAskQuote
+    yes_price = None
+    no_price = None
+
+    # Try marketSides first
+    for side in market.get("marketSides", []):
+        if side.get("long") and side.get("marketSideType") == "YES":
+            # Up side
+            price = _f(side.get("price"))
+            if price is not None:
+                yes_price = price
+        elif not side.get("long") and side.get("marketSideType") == "NO":
+            # Down side
+            price = _f(side.get("price"))
+            if price is not None:
+                no_price = price
+
+    # Try bestBidQuote/bestAskQuote
+    if market.get("bestBidQuote") and market.get("bestAskQuote"):
+        # Need to determine which is YES vs NO from outcomePrices or context
+        pass
+
+    # Fall back to outcomePrices
+    if yes_price is None or no_price is None:
+        outcomes = market.get("outcomePrices", [])
+        if isinstance(outcomes, list) and len(outcomes) >= 2:
+            # Usually outcomes[0] is Up/Yes, outcomes[1] is Down/No
+            if yes_price is None:
+                yes_price = _f(outcomes[0])
+            if no_price is None:
+                no_price = _f(outcomes[1])
+
+    if yes_price is not None and no_price is not None:
+        return yes_price, no_price
+    return None
+
+
+def match_updown_15m(timeout: int = 20) -> List[UpDownMatch]:
+    """
+    Main entry point: match each Kalshi 15M window with Polymarket US up/down 15m.
+    
+    Returns list of UpDownMatch objects sorted by |deviation_cents| descending.
+    """
+    matches = []
+    now = datetime.now(timezone.utc)
+    
+    # Get all open Kalshi 15M events
+    kalshi_events = discover_kalshi_15m_events(timeout)
+    log.info(f"Found {len(kalshi_events)} open Kalshi 15M events")
+
+    for event_ticker in kalshi_events:
+        parsed = parse_kalshi_15m_event(event_ticker)
+        if not parsed:
+            continue
+        asset, window_start_et, window_end_et = parsed
+        
+        # Convert to UTC for comparison
+        window_end_utc = to_utc(window_end_et)
+        minutes_left = (window_end_utc - now).total_seconds() / 60.0
+        if minutes_left <= 0:
+            continue
+        
+        # Generate expected Polymarket US slug
+        # Format: cpc-{asset}-updown-15m-YYYY-MM-DD-HHMMz
+        date_str = window_start_et.strftime("%Y-%m-%d")
+        time_str = window_start_et.strftime("%H%M")
+        poly_slug = f"cpc-{asset.lower()}-updown-15m-{date_str}-{time_str}z"
+        
+        # Fetch prices from both venues
+        kalshi_mids = fetch_kalshi_yes_no_mids(event_ticker, timeout)
+        if not kalshi_mids:
+            continue
+        kalshi_yes_mid, kalshi_no_mid = kalshi_mids
+        
+        poly_mids = fetch_poly_us_updown_15m(poly_slug, timeout)
+        if not poly_mids:
+            continue
+        poly_up_mid, poly_down_mid = poly_mids
+        
+        # Compute deviation: Kalshi YES vs Polymarket Up
+        deviation = (kalshi_yes_mid - poly_up_mid) * 100.0  # in cents
+        
+        # Basis risk: both use BRTI but with different reference times
+        # Kalshi: single settlement at window_end (60s average)
+        # Polymarket: start price AND end price (both 60s averages)
+        # The primary basis risk is the tie rule difference and double-reference
+        # We estimate basis risk from historical BRTI dispersion
+        basis_risk_bps = 5.0  # Conservative estimate from T15-11 BRTI tracker
+        
+        # Tie rule risk: Polymarket Up wins on tie (>=), Kalshi requires strictly >
+        tie_rule_risk = True
+        
+        matches.append(UpDownMatch(
+            kalshi_event=event_ticker,
+            kalshi_yes_mid=kalshi_yes_mid,
+            kalshi_no_mid=kalshi_no_mid,
+            polymarket_slug=poly_slug,
+            poly_up_mid=poly_up_mid,
+            poly_down_mid=poly_down_mid,
+            asset=asset,
+            window_start_et=window_start_et,
+            window_end_et=window_end_et,
+            minutes_left=minutes_left,
+            deviation_cents=deviation,
+            basis_risk_bps=basis_risk_bps,
+            tie_rule_risk=tie_rule_risk
+        ))
+    
+    # Sort by absolute deviation (largest first)
+    matches.sort(key=lambda m: abs(m.deviation_cents), reverse=True)
+    return matches
+
+
+def print_updown_matches(matches: List[UpDownMatch]) -> None:
+    """Print matched up/down pairs in a readable format."""
+    if not matches:
+        print("No Kalshi 15M / Polymarket US updown-15m pairs found.")
+        return
+    
+    print(f"{'Asset':<6} {'Kalshi Event':<25} {'Poly Slug':<40} {'K-YES':>7} {'P-Up':>7} {'Dev(c)':>8} {'Min':>5} {'Basis(bps)':>10} {'TieRisk'}")
+    print("-" * 120)
+    for m in matches:
+        poly_slug_short = m.polymarket_slug[:38]
+        print(f"{m.asset:<6} {m.kalshi_event:<25} {poly_slug_short:<40} "
+              f"{m.kalshi_yes_mid*100:>6.1f}c {m.poly_up_mid*100:>6.1f}c "
+              f"{m.deviation_cents:>+8.1f} {m.minutes_left:>5.0f} "
+              f"{m.basis_risk_bps:>10.1f} {'Yes' if m.tie_rule_risk else 'No'}")
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
