@@ -354,13 +354,19 @@ class TestGatesMath:
 
 
 class TestMeasuredFloorSide:
-    """GATES_MEASURED_Q is a YES-side win rate; it must never be read as NO's.
+    """F-04: measured floor uses own-side price (not YES-equivalent) to decide if in band.
 
-    A NO contract priced at 97c is the complement of a YES contract at 3c,
-    and settles NO only a few percent of the time. Flooring its model
-    probability at P(YES wins)=0.9928 would tell the bot a near-certain
-    loser is a near-certain winner, so the floor is keyed on the
-    YES-equivalent price rather than the raw side price.
+    The floor is a YES-side win rate (0.9928) measured on YES quotes in 95-99c band.
+    The fix uses own_price_cents to check band membership:
+    - YES @ 97c (favorite, own_price=97 in 95-99) -> floor applies with YES floor (0.9928)
+    - YES @ 3c (longshot, own_price=3 out of band) -> no floor
+    - NO @ 97c (favorite, own_price=97 in 95-99) -> floor applies with NO complement (~0.0072)
+    - NO @ 3c (longshot, own_price=3 out of band) -> no floor
+
+    This prevents NO @ 97c from being incorrectly floored with the YES floor
+    (the old bug used yes_equiv = 100-97 = 3, outside band -> no floor, which
+    was correct by accident; but NO @ 3c had yes_equiv = 97, inside band ->
+    got YES floor incorrectly).
     """
 
     def _run(self, side, cents, q_model):
@@ -384,12 +390,12 @@ class TestMeasuredFloorSide:
         """
         config.GATES_MEASURED_Q = 0.9928
         res = self._run("yes", 97, 0.50)
-        assert res.metrics.get("yes_equiv_price_cents") == 97
+        assert res.metrics.get("own_price_cents") == 97
         assert not res.metrics.get("q_measured_floor")
         assert res.metrics.get("q") < config.GATES_MEASURED_Q
 
     def test_yes_in_band_floor_is_opt_in(self):
-        """GATES_MEASURED_FLOOR_ENABLED=True restores the old floor behaviour."""
+        """GATES_MEASURED_FLOOR_ENABLED=True applies floor for YES favorite in band."""
         config.GATES_MEASURED_Q = 0.9928
         market = MockMarket()
         book = Mock()
@@ -404,16 +410,53 @@ class TestMeasuredFloorSide:
                 side="yes", entry_price_cents=97)
         assert res.metrics.get("q_measured_floor") is True
         assert res.metrics.get("q") >= 0.9928
+        assert res.metrics.get("own_price_cents") == 97
 
-    def test_no_at_97c_is_not_floored(self):
-        """NO @ 97c == YES @ 3c: outside the band, must not get 99.28%."""
-        res = self._run("no", 97, 0.50)
-        assert res.metrics.get("yes_equiv_price_cents") == 3
+    def test_no_favorite_in_band_gets_no_floor(self):
+        """NO @ 97c (favorite, own_price=97 in 95-99) gets NO complement floor.
 
-    def test_no_at_3c_maps_to_yes_97(self):
-        """The YES-equivalent of a NO@3c fill is 97c: inside the band."""
-        res = self._run("no", 3, 0.50)
-        assert res.metrics.get("yes_equiv_price_cents") == 97
+        This is the fix: own-side price 97c is in band, so floor applies
+        with the NO complement (1 - 0.9928 = 0.0072).
+        """
+        config.GATES_MEASURED_Q = 0.9928
+        market = MockMarket()
+        book = Mock()
+        with patch.object(gates, "normal_cdf", return_value=0.50), \
+             patch.object(gates, "spot_for", return_value=market.strike + 50.0), \
+             patch.object(gates, "atr_1m", return_value=10.0), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_EV_ENABLED", False), \
+             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True):
+            res = gates.evaluate_entry(
+                market, spot_state={}, orderbook=book,
+                side="no", entry_price_cents=97)
+        assert res.metrics.get("q_measured_floor") is True
+        assert "NO complement" in res.metrics.get("q_floor_source", "")
+        assert res.metrics.get("own_price_cents") == 97
+        # q should be max(0.50, 0.0072) = 0.50 (floor doesn't change it but is applied)
+        assert res.metrics.get("q") == 0.50
+
+    def test_no_longshot_out_of_band_no_floor(self):
+        """NO @ 3c (longshot, own_price=3 out of band) -> no floor.
+
+        This was the bug: old logic used yes_equiv=97 (in band) and applied
+        YES floor to a NO longshot that wins ~3% of the time.
+        """
+        config.GATES_MEASURED_Q = 0.9928
+        market = MockMarket()
+        book = Mock()
+        with patch.object(gates, "normal_cdf", return_value=0.50), \
+             patch.object(gates, "spot_for", return_value=market.strike + 50.0), \
+             patch.object(gates, "atr_1m", return_value=10.0), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_EV_ENABLED", False), \
+             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True):
+            res = gates.evaluate_entry(
+                market, spot_state={}, orderbook=book,
+                side="no", entry_price_cents=3)
+        assert res.metrics.get("q_measured_floor") is not True
+        assert res.metrics.get("own_price_cents") == 3
+        assert res.metrics.get("q") == 0.50
 
     def test_pin_risk_gate_blocks_when_enabled(self):
         """GATES_DENY_PIN_RISK=True blocks entries with minutes <= GATES_PIN_RISK_MINUTES."""
