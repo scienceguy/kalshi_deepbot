@@ -145,7 +145,7 @@ def _mp_resume_hint() -> Optional[dict]:
         import mempalace_bridge
         events = mempalace_bridge.get_default_bridge(
             agent_identity.POLY_TRADER).read_events(
-            topic="agent-checkpoint",
+            topic="agent-agent-checkpoint",
             from_agent=agent_identity.POLY_TRADER,
             order="desc", limit=10)
         for ev in events or []:
@@ -153,8 +153,23 @@ def _mp_resume_hint() -> Optional[dict]:
             idx = body.find("data={")
             if idx < 0:
                 continue
+            data_str = body[idx + 5:]  # Include the opening brace
+            # Find the end of the JSON object by matching braces
+            brace_count = 0
+            end_idx = -1
+            for i, c in enumerate(data_str):
+                if c == '{':
+                    brace_count += 1
+                elif c == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end_idx = i + 1
+                        break
+            if end_idx <= 0:
+                continue
+            json_str = data_str[:end_idx]
             try:
-                data = json.loads(body[idx + 6:])
+                data = json.loads(json_str)
             except ValueError:
                 continue
             if data.get("venue") == "poly":
