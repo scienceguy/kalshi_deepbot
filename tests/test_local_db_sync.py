@@ -105,3 +105,18 @@ def test_update_order_settlement_unknown_row_is_false(tmp_path):
         settled_at="2026-11-12T01:00:00Z",
         ticker="NOSUCH",
     )
+
+
+def test_day0_balance_recorded_once_and_readable(tmp_path):
+    """T13-32: the day-0 snapshot is recorded once; a second record with a
+    different balance does not overwrite it (first writer wins)."""
+    db = _db(tmp_path)
+    assert db.get_day0_balance("kalshi") is None
+    assert db.record_day0_balance("kalshi", 12.55, "kalshi /portfolio/balance (live)") is True
+    # second write is ignored — the day-0 snapshot must never drift
+    assert db.record_day0_balance("kalshi", 999.0, "bogus") is False
+    row = db.get_day0_balance("kalshi")
+    assert row["balance"] == 12.55
+    assert row["source"] == "kalshi /portfolio/balance (live)"
+    assert row["venue"] == "kalshi"
+    assert db.get_day0_balance("polymarket") is None

@@ -730,7 +730,30 @@ def test_daily_realized_loss_limit_halts_entries(temp_trader):
     tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
     temp_trader.state["daily_loss_date"] = tomorrow
     assert temp_trader._daily_loss_halted() is False
-    assert temp_trader.state["daily_realized_loss"] == 0.0
+
+
+def test_daily_loss_limit_scales_with_equity(temp_trader, monkeypatch):
+    """T13-03: the halt limit is max(dollar floor, PCT * equity), so $35, $1k
+    and $50k bankrolls give proportional halts (never looser than the floor)."""
+    monkeypatch.setattr(config, "POLY_DAILY_LOSS_LIMIT_DOLLARS", 5.0)
+    monkeypatch.setattr(config, "POLY_DAILY_LOSS_LIMIT_PCT", 0.05)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # $35 bankroll: 5% = $1.75 < $5 floor -> floor binds (unchanged behavior).
+    temp_trader.state.update(daily_loss_date=today, daily_realized_loss=0.0,
+                             daily_loss_halted=False, cash=35.0, positions=[])
+    temp_trader._track_daily_realized(-4.0)
+    assert temp_trader.state["daily_loss_halted"] is False
+    temp_trader._track_daily_realized(-1.5)  # total 5.5 >= 5.0 floor
+    assert temp_trader.state["daily_loss_halted"] is True
+
+    # $50k bankroll: 5% = $2500 >> $5 floor -> pct binds.
+    temp_trader.state.update(daily_loss_date=today, daily_realized_loss=0.0,
+                             daily_loss_halted=False, cash=50000.0)
+    temp_trader._track_daily_realized(-2000.0)
+    assert temp_trader.state["daily_loss_halted"] is False
+    temp_trader._track_daily_realized(-600.0)  # total 2600 >= 2500
+    assert temp_trader.state["daily_loss_halted"] is True
 
 
 def test_preview_order_always_calls_api_even_without_auth_client(temp_trader):

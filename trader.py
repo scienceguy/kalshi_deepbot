@@ -3403,6 +3403,29 @@ def _run_loop(args) -> None:
         log.error("H1: could not read persisted pause state (%s) — pausing entries "
                   "until an operator resumes", e)
 
+    # T13-32: record the day-0 balance snapshot once (idempotent) — growth
+    # reporting reads this row, never a prose/default balance.
+    try:
+        db = get_local_db()
+        # reviewed: snapshot only when absent — first write wins, restart never overwrites day-0
+        if db.get_day0_balance("kalshi") is None:
+            from kalshi_client import KalshiClient
+            bal = KalshiClient().get_balance()
+            src = ("kalshi /portfolio/balance (live)" if not config.DRY_RUN
+                   else "kalshi paper bankroll")
+            db.record_day0_balance("kalshi", float(bal), src)
+            log.info("T13-32: day-0 balance snapshot kalshi=$%.2f (%s)", float(bal), src)
+            try:
+                import agent_identity
+                import mempalace_bridge
+                mempalace_bridge.get_default_bridge(
+                    agent_identity.KALSHI_TRADER).kg_add(
+                    "venue:kalshi", "day0_balance_usd", f"{float(bal):.2f} ({src})")
+            except Exception:
+                pass
+    except Exception as e:
+        log.warning("T13-32: day-0 snapshot skipped: %s", e)
+
     # H9: reconcile pending_send orders at startup
     # shortcut: an unfilled resting order stays 'pending' until the next
     # restart; upgrade when pending_send depth is monitored or grows.

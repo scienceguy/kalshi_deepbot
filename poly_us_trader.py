@@ -134,16 +134,14 @@ _mp_bridge_inst = None
 
 def _mp_resume_hint() -> Optional[dict]:
     """Last checkpoint from this venue as a resume hint (startup-only read).
-    The local DB wins on any conflict; the hint never overrides state."""
+    The local DB wins on any conflict; the hint never overrides state.
+    T13-42: read goes through the bridge (single sanctioned access path),
+    never a direct Logstream open."""
     try:
-        saved_path = list(sys.path)
         import agent_identity
         import mempalace_bridge
-        from mempalace.logstream import Logstream, LOGSTREAM_DB_FILENAME
-        sys.path = saved_path
-        ls = Logstream(db_path=os.path.join(
-            mempalace_bridge.PALACE_DIR, LOGSTREAM_DB_FILENAME))
-        events = ls.list_events(
+        events = mempalace_bridge.get_default_bridge(
+            agent_identity.POLY_TRADER).read_events(
             topic="agent-checkpoint",
             from_agent=agent_identity.POLY_TRADER,
             order="desc", limit=10)
@@ -635,7 +633,17 @@ class PolyUSPaperTrader:
         daily_loss = float(self.state.get("daily_realized_loss", 0.0) or 0.0)
         daily_loss = round(daily_loss + abs(pnl), 4)
         self.state["daily_realized_loss"] = daily_loss
-        limit = float(getattr(config, "POLY_DAILY_LOSS_LIMIT_DOLLARS", 5.0))
+        # T13-03: limit scales with equity — larger of the fixed dollar floor
+        # and POLY_DAILY_LOSS_LIMIT_PCT of current equity (cash + position
+        # marks), so a $50k bankroll does not halt on the same $5 that a $35
+        # bankroll uses. Never loosens below the dollar floor.
+        total_mtm = sum(p.get("mtm_value", p.get("cost", 0.0))
+                        for p in self.state.get("positions", []))
+        equity = round(float(self.state.get("cash", 0.0) or 0.0) + total_mtm, 2)
+        limit = max(
+            float(getattr(config, "POLY_DAILY_LOSS_LIMIT_DOLLARS", 5.0)),
+            float(getattr(config, "POLY_DAILY_LOSS_LIMIT_PCT", 0.05)) * equity,
+        )
         if not self.state.get("daily_loss_halted") and daily_loss >= limit:
             self.state["daily_loss_halted"] = True
             log.warning("Daily realized loss $%.2f >= limit $%.2f — halting new entries (auto-clears next day)",
@@ -3131,6 +3139,47 @@ def _print_status(state: dict, init_cash: float) -> None:
         print(f"  - {cat}{p['slug']} | {p['side'].upper()} {p['qty']}x @ ${p['price']:.2f} -> Cur: ${cur_p:.2f} (cost: ${p['cost']:.2f}, MTM: ${p.get('mtm_value', p['cost']):.2f}, Unrealized: ${u_pnl:+.2f})")
 
 
+def _record_day0_snapshot() -> None:
+    """T13-32: record the day-0 real balance once, read from the venue API,
+    into the local DB (and a KG fact). Growth reporting references this row,
+    never a prose/default balance. Never raises; paper mode uses state cash.
+    """
+    try:
+        from local_db import get_local_db
+        db = get_local_db()
+        # reviewed: snapshot only when absent — first write wins, restart never overwrites day-0
+        if db.get_day0_balance("polymarket") is not None:
+            return
+        import polymarket_us_client
+        if os.environ.get("POLY_CONFIRM_LIVE") == "true" and "--live" in sys.argv:
+            data = polymarket_us_client.get_account_balances()
+            balance = polymarket_us_client.usd_cash_balance(data)
+            source = "polymarket_us /v1/account/balances (live)"
+        else:
+            balance = float(getattr(_get_trader_state(), {}).get("cash", 0.0) or 0.0)
+            source = "poly_us_trader paper state cash"
+        db.record_day0_balance("polymarket", balance, source)
+        log.info("T13-32: day-0 balance snapshot polymarket=$%.2f (%s)", balance, source)
+        try:
+            import agent_identity
+            import mempalace_bridge
+            mempalace_bridge.get_default_bridge(agent_identity.POLY_TRADER).kg_add(
+                "venue:polymarket", "day0_balance_usd", f"{balance:.2f} ({source})")
+        except Exception:
+            pass
+    except Exception as e:
+        log.warning("T13-32: day-0 snapshot skipped: %s", e)
+
+
+def _get_trader_state() -> dict:
+    """Best-effort current paper state for the day-0 snapshot (paper mode)."""
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
 def _load_persisted_pause() -> None:
     """H1: resume a persisted pause_entries command at startup.
 
@@ -3320,6 +3369,9 @@ def main():
     # entry path (which reads control.STATE.pause_entries in memory) refuses
     # new entries after a restart exactly as it did before it.
     _load_persisted_pause()
+
+    # T13-32: record the day-0 balance snapshot once (idempotent).
+    _record_day0_snapshot()
 
     # H6: start the spot WebSocket streams for the assets in scope. The resting
     # guard reads these ticks (max_age 1.5s); without them every guard spot is

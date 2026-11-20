@@ -131,9 +131,15 @@ class MemPalaceBridge:
         self._lock = threading.Lock()
         self._breaker_open_until = 0.0
         self._breaker_failures = 0
+        # T13-04: on queue.Full the item spills to this durable JSONL file
+        # instead of being dropped; the writer drains the spill before the
+        # in-memory queue, preserving order. Heartbeats are the only lossy
+        # telemetry and may still be dropped when the spill write fails.
+        self._spill_path = os.path.join(PALACE_DIR, "bridge_outbound_spill.jsonl")
         self.metrics = {
             "outbound_queued": 0,
             "outbound_dropped": 0,
+            "outbound_spilled": 0,
             "outbound_sent": 0,
             "outbound_failed": 0,
             "inbound_received": 0,
@@ -245,20 +251,66 @@ class MemPalaceBridge:
         with self._lock:
             return dict(self.metrics)
 
+    def read_events(self, topic: Optional[str] = None,
+                    from_agent: Optional[str] = None,
+                    order: str = "desc", limit: int = 50) -> list:
+        """T13-42: read logstream events through the bridge — the only
+        sanctioned read path, so every access goes via one owner module.
+        Returns [] when the mempalace library is unavailable."""
+        if not _MEMPALACE_AVAILABLE:
+            return []
+        try:
+            ls = Logstream(db_path=_LOGSTREAM_DB)
+            return ls.list_events(topic=topic, from_agent=from_agent,
+                                  order=order, limit=limit) or []
+        except Exception as e:
+            log.warning("MemPalace read_events failed: %s", e)
+            return []
+
     # ── internal ─────────────────────────────────────────────────────
 
     def _enqueue(self, cmd_type: str, subtype: str, payload: dict,
                  correlation_id: Optional[str] = None) -> None:
-        """Queue an outbound write. Drops oldest if full (never blocks)."""
+        """Queue an outbound write. On a full queue the item spills to a
+        durable file (T13-04) instead of being dropped — only heartbeat
+        telemetry may be dropped, and only if the spill write itself fails."""
+        item = (
+            cmd_type, subtype, dict(payload),
+            correlation_id or str(uuid.uuid4()),
+            time.time(),
+        )
         try:
-            self._outbound.put_nowait((
-                cmd_type, subtype, dict(payload),
-                correlation_id or str(uuid.uuid4()),
-                time.time(),
-            ))
+            self._outbound.put_nowait(item)
             self.metrics["outbound_queued"] += 1
         except queue.Full:
-            self.metrics["outbound_dropped"] += 1
+            try:
+                os.makedirs(PALACE_DIR, exist_ok=True)
+                with open(self._spill_path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(item) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                self.metrics["outbound_spilled"] += 1
+            except Exception:
+                # lossy telemetry only
+                self.metrics["outbound_dropped"] += 1
+                log.warning("MemPalace outbound spill failed; dropping %s/%s",
+                            cmd_type, subtype)
+
+    def _drain_spill(self) -> list:
+        """Read and remove spilled items, oldest first (T13-04)."""
+        items: list = []
+        try:
+            with open(self._spill_path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        items.append(json.loads(line))
+            os.remove(self._spill_path)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log.warning("MemPalace spill drain failed: %s", e)
+        return items
 
     # -- circuit breaker ------------------------------------------------
 
@@ -401,6 +453,15 @@ class MemPalaceBridge:
     def _writer_loop(self) -> None:
         while not self._stop.is_set():
             try:
+                # T13-04: drain the durable spill before the in-memory queue
+                # so nothing queued is ever lost.
+                for spilled in self._drain_spill():
+                    try:
+                        self._deliver(*spilled[:4])
+                        self.metrics["outbound_sent"] += 1
+                    except Exception as e:
+                        log.warning("MemPalace spilled delivery failed: %s", e)
+                        self.metrics["outbound_failed"] += 1
                 item = self._outbound.get(timeout=1.0)
                 if item is None:  # shutdown signal
                     break

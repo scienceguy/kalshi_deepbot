@@ -213,6 +213,11 @@ POLY_MAX_DRAWDOWN_DOLLARS = _env_float("POLY_MAX_DRAWDOWN_DOLLARS", 15.0)
 # Daily realized loss limit (R3): refuse new entries once today's realized P&L
 # reaches this negative amount.
 POLY_DAILY_LOSS_LIMIT_DOLLARS = _env_float("POLY_DAILY_LOSS_LIMIT_DOLLARS", 5.0)
+# T13-03: the same limit as a fraction of current equity, so the halt scales
+# with the bankroll instead of being a fixed $5 at a $50k account. The
+# effective limit is the LARGER of the two, so this never loosens the dollar
+# floor.
+POLY_DAILY_LOSS_LIMIT_PCT = _env_float("POLY_DAILY_LOSS_LIMIT_PCT", 0.05)
 # Confirm that live trading mode (--live) requires explicit consent via this flag.
 POLY_CONFIRM_LIVE = _env_bool("POLY_CONFIRM_LIVE", False)
 # Resting order TTL (seconds) before auto-cancel (R3).
@@ -1032,6 +1037,10 @@ def validate_bands():
             f"ENTRY_ASK_MAX_CENTS ({ENTRY_ASK_MAX_CENTS}) must be in [1, 99]."
         )
     # Financial Guardrails validation (Pillar B)
+    if not 0.0 < POLY_DAILY_LOSS_LIMIT_PCT <= 1.0:
+        errors.append(
+            f"POLY_DAILY_LOSS_LIMIT_PCT ({POLY_DAILY_LOSS_LIMIT_PCT}) must be in (0, 1]."
+        )
     if not 0.0 < DAILY_LOSS_LIMIT_PCT <= 1.0:
         errors.append(
             f"DAILY_LOSS_LIMIT_PCT ({DAILY_LOSS_LIMIT_PCT}) must be in (0, 1]."

@@ -418,6 +418,18 @@ class LocalDB:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_bus_inbox_status ON bus_inbox(status, created_at)")
 
+            # T13-32: day-0 real balance snapshot, read once from the venue
+            # API and stored here + as a KG fact. All growth reporting
+            # references this row, never a prose/default balance.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS day0_balance (
+                    venue TEXT PRIMARY KEY,
+                    balance REAL NOT NULL,
+                    source TEXT NOT NULL,
+                    recorded_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+
             # H9: write-ahead order intent — pending_send records the intent
             # to place an order BEFORE the REST call. If the process crashes,
             # reconcile_on_startup reads pending_send and resolves (confirm fill
@@ -1966,6 +1978,30 @@ class LocalDB:
                 f"set_control_state({key!r}) failed: {e}") from e
         _control_state_breaker.record_success()
         return True
+
+    # T13-32: day-0 real balance snapshot (recorded once, from the venue API)
+    def record_day0_balance(self, venue: str, balance: float, source: str) -> bool:
+        """Record the day-0 balance for a venue. First writer wins — the row
+        is INSERT OR IGNORE so a restart never overwrites the snapshot."""
+        conn = self._get_conn()
+        with self._lock:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO day0_balance (venue, balance, source) "
+                "VALUES (?, ?, ?)", (venue, float(balance), source))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_day0_balance(self, venue: str) -> Optional[dict]:
+        """Return {'venue', 'balance', 'source', 'recorded_at'} or None."""
+        conn = self._get_conn()
+        with self._lock:
+            row = conn.execute(
+                "SELECT venue, balance, source, recorded_at FROM day0_balance "
+                "WHERE venue = ?", (venue,)).fetchone()
+        if not row:
+            return None
+        return {"venue": row[0], "balance": row[1], "source": row[2],
+                "recorded_at": row[3]}
 
     # H9: write-ahead order intent
     def record_order_intent(self, order_id: str, ticker: str, side: str,

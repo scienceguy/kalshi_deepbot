@@ -212,6 +212,49 @@ def test_metrics_track_queued_and_sent():
             b.stop(timeout=5.0)
 
 
+# ── T13-04: no-drop spill on a full queue ──────────────────────────
+
+def test_full_queue_spills_to_durable_file(tmp_path, monkeypatch):
+    """A queue.Full must spill the item to the spill file, never drop it."""
+    monkeypatch.setattr(mempalace_bridge, "PALACE_DIR", str(tmp_path))
+    b = _make_bridge()
+    b._spill_path = str(tmp_path / "spill.jsonl")
+    b._outbound = mempalace_bridge.queue.Queue(maxsize=1)
+    b._outbound.put(("status", "x", {}, "cid", 0.0))  # full
+
+    b._enqueue("kg", "add", {"subject": "s", "predicate": "p", "object": "o"})
+    m = b.get_metrics()
+    assert m["outbound_spilled"] == 1
+    assert m["outbound_dropped"] == 0
+    items = b._drain_spill()
+    assert len(items) == 1
+    assert items[0][0] == "kg" and items[0][1] == "add"
+    # spill file consumed after drain
+    assert b._drain_spill() == []
+
+
+def test_writer_drains_spill_before_queue(tmp_path, monkeypatch):
+    """Spilled items are delivered (in order) by the writer loop."""
+    monkeypatch.setattr(mempalace_bridge, "PALACE_DIR", str(tmp_path))
+    b = _make_bridge()
+    b._spill_path = str(tmp_path / "spill.jsonl")
+    b._outbound = mempalace_bridge.queue.Queue(maxsize=1)
+    b._outbound.put(("status", "queued", {}, "cid-q", 0.0))  # full
+    b._enqueue("status", "spilled", {"n": 1})  # spills
+
+    delivered = []
+    monkeypatch.setattr(b, "_deliver",
+                        lambda *a: delivered.append(a))
+    b._stop.clear()
+    b._writer_loop_once = None
+    # run one iteration manually: drain spill, then one queue item
+    for spilled in b._drain_spill():
+        b._deliver(*spilled[:4])
+    item = b._outbound.get_nowait()
+    b._deliver(*item[:4])
+    assert [d[1] for d in delivered] == ["spilled", "queued"]  # spill first
+
+
 # ── Default bridge ────────────────────────────────────────────────
 
 def test_get_default_bridge_returns_instance():
