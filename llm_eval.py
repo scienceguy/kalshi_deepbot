@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import stat
+import threading
 import time
 from typing import Optional, Dict, Any
 
@@ -515,6 +516,22 @@ def _call_layer(layer: dict, messages: list, deadline: float | None = None) -> O
 
     return None
 
+# T13-25: per-market verdict cache — evaluate once per (ticker, side, entry
+# price) per LLM_VERDICT_TTL_SECONDS; the hot path reads the cache so its
+# p99 cost is a dict lookup (< 1 ms). Only successful verdicts are cached.
+_VERDICT_TTL_S = float(getattr(config, "LLM_VERDICT_TTL_SECONDS", 300.0))
+_verdict_cache: Dict[tuple, tuple] = {}
+_verdict_lock = threading.Lock()
+
+
+def _verdict_key(signal_info: dict) -> tuple:
+    return (
+        str(signal_info.get("ticker", "")),
+        str(signal_info.get("side") or signal_info.get("direction", "")).upper(),
+        int(signal_info.get("entry_price", 0) or 0),
+    )
+
+
 def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
     """
     Evaluate a trade signal using the NVIDIA LLM API.
@@ -530,6 +547,23 @@ def evaluate_trade(signal_info: dict) -> Optional[Dict[str, Any]]:
         dict with probability_of_net_profit, confidence_hold_to_expiry,
         reasoning, layer, model — or None if the API call fails.
     """
+    key = _verdict_key(signal_info)
+    now = time.time()
+    with _verdict_lock:
+        hit = _verdict_cache.get(key)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+    result = _evaluate_trade_uncached(signal_info)
+    if result is not None:
+        with _verdict_lock:
+            _verdict_cache[key] = (now + _VERDICT_TTL_S, result)
+            if len(_verdict_cache) > 4096:  # bound memory: drop oldest
+                oldest = min(_verdict_cache, key=lambda k: _verdict_cache[k][0])
+                _verdict_cache.pop(oldest, None)
+    return result
+
+
+def _evaluate_trade_uncached(signal_info: dict) -> Optional[Dict[str, Any]]:
     system_prompt = (
         "You are a disciplined Kalshi 15-minute binary crypto market trading analyst. "
         "The strategy being evaluated is a GATED FAVOURITE: take liquidity on the favourite side "

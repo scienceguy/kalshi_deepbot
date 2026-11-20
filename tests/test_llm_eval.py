@@ -215,3 +215,58 @@ class TestVertexAILayer:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+class TestVerdictCache:
+    """T13-25: per-market verdict cache — hot path reads the cache."""
+
+    def _signal(self, price=95):
+        return {"ticker": "KXBTC15M-26NOV200415-00", "side": "YES",
+                "entry_price": price, "mid": 96, "minutes_left": 9}
+
+    def setup_method(self):
+        llm_eval._verdict_cache.clear()
+
+    def test_same_market_price_hits_cache(self, monkeypatch):
+        monkeypatch.setattr(llm_eval, "_VERDICT_TTL_S", 300.0)
+        calls = []
+        verdict = {"probability_of_net_profit": 0.9, "confidence_hold_to_expiry": 0.8}
+
+        def fake_uncached(sig):
+            calls.append(sig)
+            return dict(verdict, layer="x", model="m", reasoning="")
+        monkeypatch.setattr(llm_eval, "_evaluate_trade_uncached", fake_uncached)
+
+        r1 = llm_eval.evaluate_trade(self._signal())
+        r2 = llm_eval.evaluate_trade(self._signal())
+        assert r1 == r2 and len(calls) == 1  # second call served from cache
+
+    def test_different_price_or_side_re_evaluates(self, monkeypatch):
+        monkeypatch.setattr(llm_eval, "_VERDICT_TTL_S", 300.0)
+        calls = []
+        monkeypatch.setattr(llm_eval, "_evaluate_trade_uncached",
+                            lambda sig: calls.append(sig) or {"probability_of_net_profit": 0.9,
+                                                              "confidence_hold_to_expiry": 0.8})
+        llm_eval.evaluate_trade(self._signal(price=95))
+        llm_eval.evaluate_trade(self._signal(price=96))   # different price -> new key
+        s = self._signal(price=95); s["side"] = "NO"
+        llm_eval.evaluate_trade(s)                        # different side -> new key
+        assert len(calls) == 3
+
+    def test_expired_ttl_re_evaluates(self, monkeypatch):
+        monkeypatch.setattr(llm_eval, "_VERDICT_TTL_S", 0.0)  # expires immediately
+        calls = []
+        monkeypatch.setattr(llm_eval, "_evaluate_trade_uncached",
+                            lambda sig: calls.append(sig) or {"probability_of_net_profit": 0.9,
+                                                              "confidence_hold_to_expiry": 0.8})
+        llm_eval.evaluate_trade(self._signal())
+        llm_eval.evaluate_trade(self._signal())
+        assert len(calls) == 2
+
+    def test_failed_eval_not_cached(self, monkeypatch):
+        monkeypatch.setattr(llm_eval, "_VERDICT_TTL_S", 300.0)
+        calls = []
+        monkeypatch.setattr(llm_eval, "_evaluate_trade_uncached",
+                            lambda sig: calls.append(sig) or None)
+        assert llm_eval.evaluate_trade(self._signal()) is None
+        assert llm_eval.evaluate_trade(self._signal()) is None
+        assert len(calls) == 2 and not llm_eval._verdict_cache
