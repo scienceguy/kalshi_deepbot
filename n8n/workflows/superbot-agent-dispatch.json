@@ -1,0 +1,150 @@
+{
+  "name": "SuperBot Agent Dispatch",
+  "nodes": [
+    {
+      "id": "node_webhook",
+      "name": "Dispatch Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "superbot-agent-dispatch",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "webhookId": "superbot-agent-dispatch",
+        "responseData": true,
+        "options": {}
+      },
+      "credentials": {"httpHeaderAuth": {"id": "", "name": "SuperBot Webhook Auth"}},
+      "webhookId": "superbot-agent-dispatch",
+      "isActive": true
+    },
+    {
+      "id": "node_verify",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst h = $json.headers || {};\nconst ts = String(h['x-superbot-timestamp'] || '');\nconst nonce = String(h['x-superbot-nonce'] || '');\nconst sig = String(h['x-superbot-signature'] || '');\nconst raw = typeof $json.body === 'string' ? $json.body : JSON.stringify($json.body);\nconst msg = ts + '.' + nonce + '.' + raw;\nconst key = $env.SUPERBOT_WEBHOOK_SECRET;\nconst expected = crypto.createHmac('sha256', key).update(msg).digest('hex');\nif (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) {\n  throw new Error('Invalid signature');\n}\nreturn [{ json: $json.body }];"
+      }
+    },
+    {
+      "id": "node_route",
+      "name": "Route to Agent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1.1,
+      "position": [440, 0],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "value": "={{ $json.type }}",
+              "operation": "equals",
+              "value": "risk_incident"
+            },
+            {
+              "value": "={{ $json.type }}",
+              "operation": "equals",
+              "value": "proposal"
+            },
+            {
+              "value": "={{ $json.type }}",
+              "operation": "equals",
+              "value": "coordination"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_risk",
+      "name": "Forward to Risk Officer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, -120],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/coordinate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ type: \"risk_incident\", payload: $json, priority: \"high\" }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_proposal",
+      "name": "Forward to Proposal Handler",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/coordinate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ type: \"proposal\", payload: $json, priority: \"normal\" }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_coord",
+      "name": "Forward to Coordination",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 120],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/coordinate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ type: \"coordination\", payload: $json, priority: \"low\" }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [880, 0],
+      "parameters": {
+        "options": {},
+        "respondWith": "json",
+        "jsonBody": "={{ { status: \"dispatched\", type: $json.type } }}"
+      }
+    }
+  ],
+  "connections": {
+    "Dispatch Webhook": {"main": [[{"node": "Verify Signature", "type": "main", "index": 0}]]},
+    "Verify Signature": {"main": [[{"node": "Route to Agent", "type": "main", "index": 0}]]},
+    "Route to Agent": {
+      "main": [
+        [{"node": "Forward to Risk Officer", "type": "main", "index": 0}],
+        [{"node": "Forward to Proposal Handler", "type": "main", "index": 0}],
+        [{"node": "Forward to Coordination", "type": "main", "index": 0}]
+      ]
+    },
+    "Forward to Risk Officer": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]},
+    "Forward to Proposal Handler": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]},
+    "Forward to Coordination": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "Agent dispatch router: HMAC-verified, routes risk_incident/proposal/coordination to job bridge"},
+  "active": true
+}

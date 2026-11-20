@@ -1,0 +1,75 @@
+{
+  "name": "SuperBot Position Watchdog",
+  "nodes": [
+    {
+      "id": "node_cron",
+      "name": "Cron Hourly",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "triggerTimes": {
+          "item": [{"hour": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23], "minute": 5}]
+        }
+      }
+    },
+    {
+      "id": "node_pos",
+      "name": "Run Position Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [220, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/position-watchdog",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ max_age_s: 7200 }) }}",
+        "options": {"timeout": 30000}
+      }
+    },
+    {
+      "id": "node_check",
+      "name": "Check Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "jsCode": "const result = $json.result || {};\nif (result.alert === true && result.count > 0) {\n  return [{ json: { alert: true, text: \"Unsettled positions: \" + result.count + \" orders older than \" + 7200 + \"s: \" + JSON.stringify(result.orders) } }];\n}\nreturn [];"
+      }
+    },
+    {
+      "id": "node_alert",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPERBOT_ALERT_WEBHOOK_URL || \"http://127.0.0.1:9/superbot-alert-placeholder\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: \"SuperBot Position Watchdog Alert\", text: $json.text, severity: \"warning\" }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Cron Hourly": {"main": [[{"node": "Run Position Check", "type": "main", "index": 0}]]},
+    "Run Position Check": {"main": [[{"node": "Check Alert", "type": "main", "index": 0}]]},
+    "Check Alert": {"main": [[{"node": "Send Alert", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "Position watchdog: runs hourly, alerts on unsettled orders older than 2h"},
+  "active": true
+}

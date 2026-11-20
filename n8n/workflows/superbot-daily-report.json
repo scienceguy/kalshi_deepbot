@@ -1,0 +1,64 @@
+{
+  "name": "SuperBot Daily Report",
+  "nodes": [
+    {
+      "id": "node_cron",
+      "name": "Cron Daily 00:10 UTC",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "triggerTimes": {
+          "item": [{"hour": 0, "minute": 10}]
+        }
+      }
+    },
+    {
+      "id": "node_report",
+      "name": "Run Daily Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [220, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/daily-report",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}",
+        "options": {"timeout": 120000}
+      }
+    },
+    {
+      "id": "node_alert",
+      "name": "Send Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPERBOT_ALERT_WEBHOOK_URL || \"http://127.0.0.1:9/superbot-alert-placeholder\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: \"SuperBot Daily Report\", text: $json.result?.report_text || JSON.stringify($json.result), severity: \"info\" }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Cron Daily 00:10 UTC": {"main": [[{"node": "Run Daily Report", "type": "main", "index": 0}]]},
+    "Run Daily Report": {"main": [[{"node": "Send Report", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "Daily report: runs at 00:10 UTC, generates comprehensive daily summary from local DB"},
+  "active": true
+}

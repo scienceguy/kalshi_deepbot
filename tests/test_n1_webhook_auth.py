@@ -320,14 +320,20 @@ def test_installer_rest_idempotent_no_db(monkeypatch, capsys):
 
     st = fake.state
     names = sorted(w["name"] for w in st["workflows"].values())
-    # H5: the digest + watchdog workflows moved to systemd timers, so only the
-    # webhook lanes remain installed in n8n.
-    assert names == [
-        "SuperBot Backtest", "SuperBot Control", "SuperBot Coordinate",
-        "SuperBot Critical Alert", "SuperBot Data Collect", "SuperBot Monitor",
+    # All SuperBot workflows installed via REST API (no DB injection).
+    # The settlement processor is skipped without Supabase creds.
+    expected_names = [
+        "SuperBot Agent Dispatch", "SuperBot Backtest", "SuperBot Breaker Alert",
+        "SuperBot Control", "SuperBot Coordinate", "SuperBot Critical Alert",
+        "SuperBot Daily Digest", "SuperBot Daily Report", "SuperBot Data Collect",
+        "SuperBot Heartbeat Watchdog Kalshi", "SuperBot Heartbeat Watchdog Polymarket",
+        "SuperBot Monitor", "SuperBot Nightly Backtest Forecast",
+        "SuperBot Position Watchdog", "SuperBot Reconcile", "SuperBot Retrain ML",
+        "SuperBot Sync Lag Alert", "SuperBot Trade",
     ]
-    # settlement processor skipped without Supabase creds; six workflows remain
-    assert len(st["workflows"]) == 6
+    assert names == expected_names
+    # settlement processor skipped without Supabase creds
+    assert len(st["workflows"]) == len(expected_names)
     assert st["updates"] >= 4                   # second run updated, never duplicated
     assert len(st["credentials"]) == 1          # credential created once
 
@@ -341,10 +347,11 @@ def test_installer_rest_idempotent_no_db(monkeypatch, capsys):
     hooked = sorted(
         w["name"] for w in st["workflows"].values()
         if any(n["type"] == "n8n-nodes-base.webhook" for n in w["nodes"]))
-    assert hooked == ["SuperBot Backtest", "SuperBot Control",
-                      "SuperBot Coordinate",
-                      "SuperBot Critical Alert", "SuperBot Data Collect",
-                      "SuperBot Monitor"]
+    assert hooked == [
+        "SuperBot Agent Dispatch", "SuperBot Backtest", "SuperBot Breaker Alert",
+        "SuperBot Control", "SuperBot Coordinate", "SuperBot Critical Alert",
+        "SuperBot Data Collect", "SuperBot Monitor", "SuperBot Trade",
+    ]
 
     # coordination workflow verifies the HMAC in a Code node before side effects
     coord = next(w for w in st["workflows"].values() if w["name"] == "SuperBot Coordinate")

@@ -1,0 +1,75 @@
+{
+  "name": "SuperBot Sync Lag Alert",
+  "nodes": [
+    {
+      "id": "node_cron",
+      "name": "Cron Every 10 Min",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "triggerTimes": {
+          "item": [{"minute": [0, 10, 20, 30, 40, 50]}]
+        }
+      }
+    },
+    {
+      "id": "node_sync",
+      "name": "Run Sync Lag Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [220, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/sync-lag",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}",
+        "options": {"timeout": 30000}
+      }
+    },
+    {
+      "id": "node_check",
+      "name": "Check Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "jsCode": "const result = $json.result || {};\nif (result.alert === true) {\n  return [{ json: { alert: true, text: \"Supabase mirror lag: age=\" + result.oldest_unsynced_age_s + \"s rows=\" + result.unsynced_count + \" thresholds=\" + JSON.stringify(result.thresholds) } }];\n}\nreturn [];"
+      }
+    },
+    {
+      "id": "node_alert",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPERBOT_ALERT_WEBHOOK_URL || \"http://127.0.0.1:9/superbot-alert-placeholder\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: \"SuperBot Sync Lag Alert\", text: $json.text, severity: \"warning\" }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Cron Every 10 Min": {"main": [[{"node": "Run Sync Lag Check", "type": "main", "index": 0}]]},
+    "Run Sync Lag Check": {"main": [[{"node": "Check Alert", "type": "main", "index": 0}]]},
+    "Check Alert": {"main": [[{"node": "Send Alert", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "Sync lag watchdog: runs every 10 min, alerts if local->Supabase mirror exceeds SLO"},
+  "active": true
+}

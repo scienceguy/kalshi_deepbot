@@ -1,0 +1,130 @@
+{
+  "name": "SuperBot Coordinate",
+  "nodes": [
+    {
+      "id": "node_webhook",
+      "name": "SuperBot Coordinate",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "superbot-coordinate",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "webhookId": "superbot-coordinate",
+        "responseData": true,
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "SuperBot Webhook Auth"
+        }
+      },
+      "webhookId": "superbot-coordinate",
+      "isActive": true
+    },
+    {
+      "id": "node_verify",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        0
+      ],
+      "parameters": {
+        "jsCode": "\nconst crypto = require('crypto');\nconst h = $json.headers || {};\nconst ts = String(h['x-superbot-timestamp'] || '');\nconst nonce = String(h['x-superbot-nonce'] || '');\nconst sig = String(h['x-superbot-signature'] || '');\nconst raw = typeof $json.body === 'string' ? $json.body : JSON.stringify($json.body);\nconst secret = $env.SUPERBOT_WEBHOOK_SECRET || '';\nif (!ts || !nonce || !sig || !secret) {\n  throw new Error('missing signed fields');\n}\nconst expected = crypto.createHmac('sha256', secret)\n  .update(ts + '.' + nonce + '.' + raw).digest('hex');\nconst fresh = Math.abs(Date.now() - Number(ts)) <= 60000;\nlet replay = false;\ntry {\n  const sd = $getWorkflowStaticData('global');\n  sd.seenNonces = sd.seenNonces || {};\n  if (sd.seenNonces[nonce]) { replay = true; } else { sd.seenNonces[nonce] = Date.now(); }\n} catch (e) { /* static data unavailable \u2014 signature freshness still enforced */ }\nconst ok = fresh && !replay && sig.length === expected.length &&\n  crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));\nif (!ok) {\n  throw new Error(replay ? 'replayed nonce' : (fresh ? 'signature mismatch' : 'stale timestamp'));\n}\nreturn [{ json: { ok: true, reason: 'ok', body: $json.body, headers: {\n  'x-superbot-timestamp': ts, 'x-superbot-nonce': nonce, 'x-superbot-signature': sig } } }];\n"
+      }
+    },
+    {
+      "id": "node_bridge",
+      "name": "Run Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/coordinate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 900000
+        }
+      }
+    },
+    {
+      "id": "node_respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        600,
+        0
+      ],
+      "parameters": {
+        "responseCode": "200",
+        "responseBody": "={{ $json }}",
+        "respondWith": "json",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "SuperBot Coordinate": {
+      "main": [
+        [
+          {
+            "node": "Verify Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Signature": {
+      "main": [
+        [
+          {
+            "node": "Run Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Job": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {},
+  "active": true
+}

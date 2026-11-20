@@ -1,0 +1,104 @@
+{
+  "name": "SuperBot Nightly Backtest Forecast",
+  "nodes": [
+    {
+      "id": "node_cron",
+      "name": "Cron Daily 02:00 UTC",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "triggerTimes": {
+          "item": [{"hour": 2, "minute": 0}]
+        }
+      }
+    },
+    {
+      "id": "node_backtest",
+      "name": "Run Backtest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [220, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/backtest",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ quick: true, limit: 100, top: 20, jobs: 4 }) }}",
+        "options": {"timeout": 600000}
+      }
+    },
+    {
+      "id": "node_forecast",
+      "name": "Run 14-Day Forecast",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/forecast14",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}",
+        "options": {"timeout": 120000}
+      }
+    },
+    {
+      "id": "node_post",
+      "name": "Post to MemPalace & Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/coordinate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ type: \"forecast_result\", payload: { backtest: $node[\"Run Backtest\"].json, forecast: $node[\"Run 14-Day Forecast\"].json } }) }}",
+        "options": {"timeout": 30000}
+      }
+    },
+    {
+      "id": "node_alert",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [880, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPERBOT_ALERT_WEBHOOK_URL || \"http://127.0.0.1:9/superbot-alert-placeholder\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: \"SuperBot Nightly Backtest + Forecast\", text: \"Backtest: \" + JSON.stringify($node[\"Run Backtest\"].json) + \"\\nForecast: \" + JSON.stringify($node[\"Run 14-Day Forecast\"].json), severity: \"info\" }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Cron Daily 02:00 UTC": {"main": [[{"node": "Run Backtest", "type": "main", "index": 0}]]},
+    "Run Backtest": {"main": [[{"node": "Run 14-Day Forecast", "type": "main", "index": 0}]]},
+    "Run 14-Day Forecast": {"main": [[{"node": "Post to MemPalace & Alert", "type": "main", "index": 0}]]},
+    "Post to MemPalace & Alert": {"main": [[{"node": "Send Alert", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "Nightly backtest + 14-day forecast: runs at 02:00 UTC, posts results to MemPalace and operator channel"},
+  "active": true
+}

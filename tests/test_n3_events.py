@@ -216,9 +216,25 @@ def test_daily_summary_emitted_on_day_rollover(monkeypatch):
 
 WORKFLOWS = sorted((REPO / "n8n" / "workflows").glob("*.json"))
 EXPECTED_WORKFLOWS = {
-    # H5: the digest and the watchdogs moved to superbot-jobs.timer; only the
-    # webhook lanes stay in n8n.
-    "superbot-critical-alert", "superbot-control",
+    # All SuperBot workflows shipped as JSON in n8n/workflows/
+    "superbot-backtest",
+    "superbot-control",
+    "superbot-coordinate",
+    "superbot-critical-alert",
+    "superbot-data-collect",
+    "superbot-daily-digest",
+    "superbot-daily-report",
+    "superbot-heartbeat-watchdog-kalshi",
+    "superbot-heartbeat-watchdog-poly",
+    "superbot-monitor",
+    "superbot-nightly-backtest-forecast",
+    "superbot-position-watchdog",
+    "superbot-reconcile",
+    "superbot-retrain-ml",
+    "superbot-sync-lag",
+    "superbot-trade",
+    "superbot-agent-dispatch",
+    "superbot-breaker-alert",
 }
 
 

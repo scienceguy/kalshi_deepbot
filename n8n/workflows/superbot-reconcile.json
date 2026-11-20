@@ -1,0 +1,75 @@
+{
+  "name": "SuperBot Reconcile",
+  "nodes": [
+    {
+      "id": "node_cron",
+      "name": "Cron Every 5 Min",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "triggerTimes": {
+          "item": [{"minute": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]}]
+        }
+      }
+    },
+    {
+      "id": "node_reconcile",
+      "name": "Run Reconcile",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [220, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/reconcile",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ tolerance_cents: 1 }) }}",
+        "options": {"timeout": 60000}
+      }
+    },
+    {
+      "id": "node_check",
+      "name": "Check Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "jsCode": "const result = $json.result || {};\nif (result.alert === true) {\n  return [{ json: { alert: true, text: \"Reconcile mismatch: \" + result.details } }];\n}\nreturn [];"
+      }
+    },
+    {
+      "id": "node_alert",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPERBOT_ALERT_WEBHOOK_URL || \"http://127.0.0.1:9/superbot-alert-placeholder\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: \"SuperBot Reconcile Alert\", text: $json.text, severity: \"critical\" }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Cron Every 5 Min": {"main": [[{"node": "Run Reconcile", "type": "main", "index": 0}]]},
+    "Run Reconcile": {"main": [[{"node": "Check Result", "type": "main", "index": 0}]]},
+    "Check Result": {"main": [[{"node": "Send Alert", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "Reconcile watchdog: runs every 5 min, checks venue balances/positions vs local DB, alerts on mismatch >1c"},
+  "active": true
+}

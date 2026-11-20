@@ -1,0 +1,86 @@
+{
+  "name": "SuperBot Breaker Alert",
+  "nodes": [
+    {
+      "id": "node_webhook",
+      "name": "Breaker Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "superbot-breaker-alert",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "webhookId": "superbot-breaker-alert",
+        "responseData": true,
+        "options": {}
+      },
+      "credentials": {"httpHeaderAuth": {"id": "", "name": "SuperBot Webhook Auth"}},
+      "webhookId": "superbot-breaker-alert",
+      "isActive": true
+    },
+    {
+      "id": "node_verify",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst h = $json.headers || {};\nconst ts = String(h['x-superbot-timestamp'] || '');\nconst nonce = String(h['x-superbot-nonce'] || '');\nconst sig = String(h['x-superbot-signature'] || '');\nconst raw = typeof $json.body === 'string' ? $json.body : JSON.stringify($json.body);\nconst msg = ts + '.' + nonce + '.' + raw;\nconst key = $env.SUPERBOT_WEBHOOK_SECRET;\nconst expected = crypto.createHmac('sha256', key).update(msg).digest('hex');\nif (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) {\n  throw new Error('Invalid signature');\n}\nreturn [{ json: $json.body }];"
+      }
+    },
+    {
+      "id": "node_format",
+      "name": "Format Breaker Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "jsCode": "const body = $json;\nconst text = \"RISK BREAKER TRIGGERED: \" + (body.reason || \"unknown\") + \"\\n\" +\n  \"Venue: \" + (body.venue || \"unknown\") + \"\\n\" +\n  \"Value: \" + (body.value !== undefined ? body.value : \"unknown\") + \"\\n\" +\n  \"Threshold: \" + (body.threshold !== undefined ? body.threshold : \"unknown\") + \"\\n\" +\n  \"Action: \" + (body.action || \"halt\") + \"\\n\" +\n  \"Timestamp: \" + (body.ts || new Date().toISOString());\nreturn [{ json: { text, severity: \"critical\", reason: body.reason, venue: body.venue } }];"
+      }
+    },
+    {
+      "id": "node_alert",
+      "name": "Send Critical Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPERBOT_ALERT_WEBHOOK_URL || \"http://127.0.0.1:9/superbot-alert-placeholder\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: \"SUPERBOT RISK BREAKER\", text: $json.text, severity: \"critical\", metadata: { reason: $json.reason, venue: $json.venue } }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [880, 0],
+      "parameters": {
+        "options": {},
+        "respondWith": "json",
+        "jsonBody": "={{ { status: \"ok\", received: true } }}"
+      }
+    }
+  ],
+  "connections": {
+    "Breaker Webhook": {"main": [[{"node": "Verify Signature", "type": "main", "index": 0}]]},
+    "Verify Signature": {"main": [[{"node": "Format Breaker Alert", "type": "main", "index": 0}]]},
+    "Format Breaker Alert": {"main": [[{"node": "Send Critical Alert", "type": "main", "index": 0}]]},
+    "Send Critical Alert": {"main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "Risk breaker alert webhook: HMAC-verified, triggers critical alert on risk limit breach"},
+  "active": true
+}

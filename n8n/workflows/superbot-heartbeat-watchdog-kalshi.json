@@ -1,0 +1,75 @@
+{
+  "name": "SuperBot Heartbeat Watchdog Kalshi",
+  "nodes": [
+    {
+      "id": "node_cron",
+      "name": "Cron Every 5 Min",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "triggerTimes": {
+          "item": [{"minute": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]}]
+        }
+      }
+    },
+    {
+      "id": "node_hb",
+      "name": "Run Heartbeat Check Kalshi",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [220, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18711/heartbeat-kalshi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ source: \"kalshi\", max_age_s: 1200 }) }}",
+        "options": {"timeout": 30000}
+      }
+    },
+    {
+      "id": "node_check",
+      "name": "Check Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "jsCode": "const result = $json.result || {};\nif (result.alert === true) {\n  return [{ json: { alert: true, text: \"Kalshi trader heartbeat stale: age=\" + result.age_s + \"s max=\" + result.max_age_s + \"s state=\" + JSON.stringify(result.state) } }];\n}\nreturn [];"
+      }
+    },
+    {
+      "id": "node_alert",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPERBOT_ALERT_WEBHOOK_URL || \"http://127.0.0.1:9/superbot-alert-placeholder\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "Content-Type", "value": "application/json"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: \"SuperBot Heartbeat Alert - Kalshi\", text: $json.text, severity: \"critical\" }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Cron Every 5 Min": {"main": [[{"node": "Run Heartbeat Check Kalshi", "type": "main", "index": 0}]]},
+    "Run Heartbeat Check Kalshi": {"main": [[{"node": "Check Alert", "type": "main", "index": 0}]]},
+    "Check Alert": {"main": [[{"node": "Send Alert", "type": "main", "index": 0}]]}
+  },
+  "settings": {},
+  "staticData": null,
+  "pinData": {},
+  "meta": {"description": "Heartbeat watchdog for Kalshi trader: runs every 5 min, alerts if heartbeat stale >20 min"},
+  "active": true
+}
