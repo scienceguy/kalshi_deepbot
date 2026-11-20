@@ -264,22 +264,20 @@ else:
     TARGET_SERIES = list(TARGET_SERIES_DEFAULT)
 
 # ═════════════════════════════════════════════════════════════════════
-# SIGNAL THRESHOLDS (optimized from backtests - 2026-11-03)
-# Backtest best: MIN_SKEW=3, MIN_TREND=8, window=6-11min, band=15-55c
-# EV=0.58/trade, win_rate=52.8%, maxDD=84.6% (needs risk management)
-# Real backtest best: EV=0.077, win_rate=48.2%, maxDD=68.4%
+# SIGNAL THRESHOLDS (optimized from backtests - 2026-11-20)
+# 95-99c band: EV=+0.43c/trade (win 97%) on HF data (papylove/kalshi-15m-data)
+# 15-55c band: EV=-0.94c/trade (win 31%) - SIGNIFICANTLY NEGATIVE
+# Entry window: prices reach 95-99c only in final 1-2 min (13-14.5 min elapsed)
 # ═════════════════════════════════════════════════════════════════════
 MIN_SKEW_CENTS = _env_int("MIN_SKEW_CENTS", 3)
 MIN_TREND_CENTS = _env_int("MIN_TREND_CENTS", 8)
 SKEW_ENTRY_MIN = _env_int("SKEW_ENTRY_MIN", 3)
 SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
-# Entry window: For the 95-99c band, prices only reach this level in the 
-# final 1-2 minutes (13-14 min elapsed / 1-2 min left). Research shows the
-# 95-99c band win rate is 97-99% ONLY in the final minutes.
+# Entry window: 95-99c band reached only in final 1-2 minutes (13-14.5 min elapsed)
 ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 13.0)
 ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.5)
-# Optimal favourite criteria price band: ask 92-99c
-MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", _env_int("ENTRY_BAND_MIN", 95))
+# Favourite-maker price band: 95-99c (validated on HF data; 15-55c is negative EV)
+MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 95)
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
 MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 50)
 MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
@@ -510,10 +508,11 @@ ORDER_TIME_IN_FORCE = _env_str("ORDER_TIME_IN_FORCE", "immediate_or_cancel")
 # do not widen this one to "look better" without re-running scripts/measure_edge.py
 # and reporting per-DISTINCT-MARKET numbers. The 15-55c AGENTS.md "Optimal
 # Parameters" band is significantly NEGATIVE on this larger sample.
-ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 92)
+# Favourite-maker price band: 95-99c (validated on HF data; 15-55c is negative EV)
+ENTRY_BAND_MIN = _env_int("ENTRY_BAND_MIN", 95)
 ENTRY_BAND_MAX = _env_int("ENTRY_BAND_MAX", 99)
 MAX_NO_ENTRY_CENTS = _env_int("MAX_NO_ENTRY_CENTS", 99)
-MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 92)
+MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 95)
 # YES favourites enabled; NO favourites disabled by default to prevent mean-reversion short traps (opt-in via ALLOW_NO_BUYS=true)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 ALLOW_NO_BUYS = _env_bool("ALLOW_NO_BUYS", False)

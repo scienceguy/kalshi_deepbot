@@ -187,3 +187,69 @@ def test_exit_take_profit_ok_at_lower_band_no_warning(monkeypatch, caplog):
         cfg.validate_bands()
     messages = [r.getMessage() for r in caplog.records]
     assert not any("EXIT_TAKE_PROFIT_CENTS" in m for m in messages), messages
+
+
+# ── T15-04: Config consistency (F-06) ────────────────────────────────────────
+
+def test_entry_band_min_matches_min_yes_price_cents_default(monkeypatch):
+    """ENTRY_BAND_MIN and MIN_YES_PRICE_CENTS must have the same default.
+
+    F-06 drift: MIN_YES_PRICE_CENTS fell back to 95 while ENTRY_BAND_MIN
+    defaulted to 92. Both must agree so signals.py and market_finder.py
+    use the same band definition.
+    """
+    cfg = _reload_with(monkeypatch, MIN_YES_PRICE_CENTS="", ENTRY_BAND_MIN="")
+    assert cfg.MIN_YES_PRICE_CENTS == cfg.ENTRY_BAND_MIN, \
+        f"MIN_YES_PRICE_CENTS ({cfg.MIN_YES_PRICE_CENTS}) != ENTRY_BAND_MIN ({cfg.ENTRY_BAND_MAX})"
+
+
+def test_entry_band_max_matches_max_yes_price_cents_default(monkeypatch):
+    """ENTRY_BAND_MAX and MAX_YES_PRICE_CENTS must have the same default."""
+    cfg = _reload_with(monkeypatch, MAX_YES_PRICE_CENTS="", ENTRY_BAND_MAX="")
+    assert cfg.MAX_YES_PRICE_CENTS == cfg.ENTRY_BAND_MAX, \
+        f"MAX_YES_PRICE_CENTS ({cfg.MAX_YES_PRICE_CENTS}) != ENTRY_BAND_MAX ({cfg.ENTRY_BAND_MAX})"
+
+
+def test_min_no_entry_cents_matches_entry_band_min_default(monkeypatch):
+    """MIN_NO_ENTRY_CENTS must match ENTRY_BAND_MIN default."""
+    cfg = _reload_with(monkeypatch, MIN_NO_ENTRY_CENTS="", ENTRY_BAND_MIN="")
+    assert cfg.MIN_NO_ENTRY_CENTS == cfg.ENTRY_BAND_MIN, \
+        f"MIN_NO_ENTRY_CENTS ({cfg.MIN_NO_ENTRY_CENTS}) != ENTRY_BAND_MIN ({cfg.ENTRY_BAND_MIN})"
+
+
+def test_entry_window_consistent_with_band_evidence(monkeypatch):
+    """ENTRY_WINDOW_START_MIN/END_MIN must match the 95-99c band timing.
+
+    Evidence: prices only reach 95-99c in final 1-2 minutes (13-14.5 min elapsed
+    into 15-min window). The old comment claiming 6-11 min elapsed was wrong.
+    """
+    cfg = _reload_with(monkeypatch,
+                       ENTRY_WINDOW_START_MIN="",
+                       ENTRY_WINDOW_END_MIN="",
+                       MIN_YES_PRICE_CENTS="",
+                       ENTRY_BAND_MIN="")
+    # Default window should be 13.0-14.5 min elapsed (final 1-2 min left)
+    assert cfg.ENTRY_WINDOW_START_MIN == 13.0
+    assert cfg.ENTRY_WINDOW_END_MIN == 14.5
+    # Band should be 95-99c
+    assert cfg.MIN_YES_PRICE_CENTS == 95
+    assert cfg.ENTRY_BAND_MIN == 95
+    assert cfg.MAX_YES_PRICE_CENTS == 99
+    assert cfg.ENTRY_BAND_MAX == 99
+
+
+def test_no_stale_15_55_band_comments_in_config():
+    """Verify the config source no longer claims 15-55c is 'backtest best'.
+
+    This is a source-level check; the old comment was misleading because
+    15-55c band is EV-negative on HF data (-0.94c/trade, win 31%).
+    """
+    import config as cfg_module
+    import inspect
+    source = inspect.getsource(cfg_module)
+    # The old misleading comment should not be present
+    assert "band=15-55c" not in source, "Stale 'band=15-55c' comment found in config.py"
+    assert "window=6-11min" not in source, "Stale 'window=6-11min' comment found in config.py"
+    # The corrected comments should be present
+    assert "95-99c band" in source, "Corrected '95-99c band' comment missing from config.py"
+    assert "15-55c band is significantly NEGATIVE" in source or "15-55c band: EV=-0.94c" in source
