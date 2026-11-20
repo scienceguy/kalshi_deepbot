@@ -303,3 +303,87 @@ def test_compute_kl_divergence_low_kl():
         assert r["symmetric_kl"] < 0.05  # Below WATCH threshold
         assert r["kl_arb_flag"] is False
         assert r["kl_watch_flag"] is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# T15-31: Cross-venue up/down matcher tests
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_parse_kalshi_15m_event():
+    """Test parsing Kalshi 15M event ticker."""
+    from crossvenue import parse_kalshi_15m_event
+    from datetime import datetime
+    
+    # KXBTC15M-26NOV201530 -> ('BTC', 2026-11-20 15:30 ET, 2026-11-20 15:45 ET)
+    result = parse_kalshi_15m_event("KXBTC15M-26NOV201530")
+    assert result is not None
+    asset, start, end = result
+    assert asset == "BTC"
+    assert start == datetime(2026, 11, 20, 15, 30)
+    assert end == datetime(2026, 11, 20, 15, 45)
+    
+    # KXETH15M-26DEC152345 -> ('ETH', 2026-12-15 23:45 ET, 2026-12-16 00:00 ET)
+    result = parse_kalshi_15m_event("KXETH15M-26DEC152345")
+    assert result is not None
+    asset, start, end = result
+    assert asset == "ETH"
+    assert start == datetime(2026, 12, 15, 23, 45)
+    assert end == datetime(2026, 12, 16, 0, 0)
+    
+    # Invalid ticker
+    assert parse_kalshi_15m_event("INVALID") is None
+    assert parse_kalshi_15m_event("") is None
+
+
+def test_parse_poly_us_updown_15m_slug():
+    """Test parsing Polymarket US up/down 15m slug."""
+    from crossvenue import parse_poly_us_updown_15m_slug
+    from datetime import datetime
+    
+    # cpc-btc-updown-15m-2026-11-20-1530z -> ('BTC', 2026-11-20 15:30 ET, 2026-11-20 15:45 ET)
+    result = parse_poly_us_updown_15m_slug("cpc-btc-updown-15m-2026-11-20-1530z")
+    assert result is not None
+    asset, start, end = result
+    assert asset == "BTC"
+    assert start == datetime(2026, 11, 20, 15, 30)
+    assert end == datetime(2026, 11, 20, 15, 45)
+    
+    # cpc-eth-updown-15m-2026-12-15-2345z
+    result = parse_poly_us_updown_15m_slug("cpc-eth-updown-15m-2026-12-15-2345z")
+    assert result is not None
+    asset, start, end = result
+    assert asset == "ETH"
+    assert start == datetime(2026, 12, 15, 23, 45)
+    assert end == datetime(2026, 12, 16, 0, 0)
+    
+    # Invalid slugs
+    assert parse_poly_us_updown_15m_slug("invalid") is None
+    assert parse_poly_us_updown_15m_slug("") is None
+    assert parse_poly_us_updown_15m_slug("cpc-btc-updown-1h-2026-11-20-1530z") is None
+
+
+def test_updown_match_dataclass_fields():
+    """Test UpDownMatch dataclass has all required fields."""
+    from crossvenue import UpDownMatch
+    from datetime import datetime
+    
+    match = UpDownMatch(
+        kalshi_event="KXBTC15M-26NOV201530",
+        kalshi_yes_mid=0.95,
+        kalshi_no_mid=0.05,
+        polymarket_slug="cpc-btc-updown-15m-2026-11-20-1530z",
+        poly_up_mid=0.94,
+        poly_down_mid=0.06,
+        asset="BTC",
+        window_start_et=datetime(2026, 11, 20, 15, 30),
+        window_end_et=datetime(2026, 11, 20, 15, 45),
+        minutes_left=8.5,
+        deviation_cents=1.0,
+        basis_risk_bps=5.0,
+        tie_rule_risk=True
+    )
+    assert match.kalshi_event == "KXBTC15M-26NOV201530"
+    assert match.kalshi_yes_mid == 0.95
+    assert match.poly_up_mid == 0.94
+    assert match.deviation_cents == 1.0
+    assert match.tie_rule_risk is True
