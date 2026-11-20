@@ -95,6 +95,7 @@ from risk import RiskManager  # noqa: E402
 from signals import floor_contracts  # noqa: E402
 import signals as se  # noqa: E402
 import sizing  # noqa: E402
+import box_arbitrage  # noqa: E402  — T15-30: cross-venue box arbitrage detection
 import resting_guard  # noqa: E402  — J6/A1: resting-order protection + latency baseline
 from resilience import CycleSupervisor, systemd_notify  # noqa: E402
 from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, calibration_beats_chance as _llm_calibration_beats_chance  # noqa: E402
@@ -2071,6 +2072,19 @@ def cycle(client: KalshiClient) -> None:
             venue="kalshi", mode="live" if not config.DRY_RUN else "dry")
     except Exception:
         pass
+
+    # T15-30: Cross-venue box arbitrage detection (log only, no orders placed)
+    # Scan Kalshi markets for within-venue boxes and cross-venue boxes with Polymarket
+    try:
+        box_opps = box_arbitrage.scan_all_venues_for_boxes(kalshi_client=client, poly_client=None)
+        if box_opps:  # reviewed: log-only, no orders placed; scanning is read-only
+            for opp in box_opps[:5]:  # Log top 5 opportunities
+                log.info("BOX OPPORTUNITY: %s", box_arbitrage.format_opportunity(opp))
+            state.box_opportunities = len(box_opps)
+        else:
+            state.box_opportunities = 0
+    except Exception as e:
+        log.debug("Box arbitrage scan failed: %s", e)
 
     # For dry-run: compute paper mark-to-market exposure from local paper positions
     # and current market mids, so cash sizing reflects unrealized gains/losses.

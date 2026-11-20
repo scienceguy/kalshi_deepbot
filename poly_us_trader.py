@@ -47,6 +47,7 @@ import resting_guard  # L5: resting-order protection
 import latency  # L1: latency recorder
 import crossvenue_edge
 import sizing  # T15-40: sizing policy across venues
+import box_arbitrage  # T15-30: cross-venue box arbitrage detection
 import config
 import report_state  # B19 operator visibility hook
 from resilience import systemd_notify

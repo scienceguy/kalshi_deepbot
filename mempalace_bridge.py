@@ -515,7 +515,7 @@ class MemPalaceBridge:
         if ls is None:
             return
         # Inbox sweep on startup: get recent events for this agent (newest first),
-        # put them in the inbound queue, then use the OLDEST event's ID as cursor
+        # put them in the inbound queue, then use the NEWEST event's ID as cursor
         # for the wait loop. This catches up on events that arrived while we were down.
         cursor = None
         try:
@@ -523,8 +523,8 @@ class MemPalaceBridge:
             if recent:
                 # Put events in chronological order (oldest first) for processing
                 for event in reversed(recent):
-                    # Only process task.request events (delegation tasks)
-                    if event.get("type") != "task.request":
+                    # Process task.request events and status events (for H4 test)
+                    if event.get("type") not in ("task.request", "status"):
                         continue
                     # Normalize: logstream uses 'id', but ack_event expects 'event_id'
                     if event.get("id") and not event.get("event_id"):
@@ -534,37 +534,91 @@ class MemPalaceBridge:
                         self.metrics["inbound_received"] += 1
                     except queue.Full:
                         break
-                # Use the oldest event's ID as cursor so wait_events only returns newer ones
-                cursor = recent[-1].get("id")
+                # Use the newest event's ID as cursor so wait_events only returns newer ones
+                cursor = recent[0].get("id")
         except Exception as e:
             log.warning("MemPalace inbox sweep failed: %s", e)
         # Wait loop: block for new events after the cursor
+        # We need to listen for both specific agent events and broadcast events (*)
+        # Use two cursors - one for each stream
+        cursor_direct = cursor
+        cursor_broadcast = None
+        
+        # Also do an initial sweep for broadcast events
+        try:
+            recent_broadcast = ls.list_events(to_agent="*", order="desc", limit=50)
+            if recent_broadcast:
+                for event in reversed(recent_broadcast):
+                    if event.get("type") not in ("task.request", "status"):
+                        continue
+                    if event.get("id") and not event.get("event_id"):
+                        event["event_id"] = event["id"]
+                    try:
+                        self._inbound.put_nowait(event)
+                        self.metrics["inbound_received"] += 1
+                    except queue.Full:
+                        break
+                cursor_broadcast = recent_broadcast[0].get("id")
+        except Exception as e:
+            log.warning("MemPalace broadcast sweep failed: %s", e)
+        
         while not self._stop.is_set():
+            # Check for direct events
             try:
                 kwargs = {"timeout_ms": 2000, "to_agent": self.agent_identity}
-                if cursor:
-                    kwargs["since_event_id"] = cursor
-                event = ls.wait_events(**kwargs)
-                if event is None:
-                    continue  # timeout, no event — poll again
-                # Update cursor to this event's ID for next iteration
-                if event.get("id"):
-                    cursor = event["id"]
-                # Only process task.request events (delegation tasks)
-                if event.get("type") != "task.request":
-                    continue
-                # Normalize: logstream uses 'id', but ack_event expects 'event_id'
-                if event.get("id") and not event.get("event_id"):
-                    event["event_id"] = event["id"]
-                try:
-                    self._inbound.put_nowait(event)
-                    self.metrics["inbound_received"] += 1
-                except queue.Full:
-                    pass  # drop inbound if queue full
-            except Exception:
+                if cursor_direct:
+                    kwargs["since_event_id"] = cursor_direct
+                log.debug("wait_events direct: %s", kwargs)
+                result = ls.wait_events(**kwargs)
+                log.debug("wait_events direct result: %s", "timeout" if result.get("timed_out") else f"{len(result.get('events', []))} events")
+                if result is not None and not result.get("timed_out"):
+                    events = result.get("events", [])
+                    for event in events:
+                        # Update cursor
+                        if event.get("id"):
+                            cursor_direct = event["id"]
+                        # Process task.request and status events
+                        if event.get("type") in ("task.request", "status"):
+                            if event.get("id") and not event.get("event_id"):
+                                event["event_id"] = event["id"]
+                            try:
+                                self._inbound.put_nowait(event)
+                                self.metrics["inbound_received"] += 1
+                                log.debug("put event in queue: %s", event.get("id"))
+                            except queue.Full:
+                                pass
+            except Exception as e:
                 # Library error or transient — back off and retry
+                log.warning("direct wait_events error: %s", e)
                 time.sleep(1.0)
                 continue
+            
+            # Check for broadcast events (non-blocking poll with short timeout)
+            try:
+                kwargs = {"timeout_ms": 500, "to_agent": "*"}
+                if cursor_broadcast:
+                    kwargs["since_event_id"] = cursor_broadcast
+                log.debug("wait_events broadcast: %s", kwargs)
+                result = ls.wait_events(**kwargs)
+                log.debug("wait_events broadcast result: %s", "timeout" if result.get("timed_out") else f"{len(result.get('events', []))} events")
+                if result is not None and not result.get("timed_out"):
+                    events = result.get("events", [])
+                    for event in events:
+                        if event.get("id"):
+                            cursor_broadcast = event["id"]
+                        if event.get("type") in ("task.request", "status"):
+                            if event.get("id") and not event.get("event_id"):
+                                event["event_id"] = event["id"]
+                            try:
+                                self._inbound.put_nowait(event)
+                                self.metrics["inbound_received"] += 1
+                                log.debug("put broadcast event in queue: %s", event.get("id"))
+                            except queue.Full:
+                                pass
+            except Exception as e:
+                # Broadcast poll failed, just continue
+                log.warning("broadcast wait_events error: %s", e)
+                pass
 
 
 

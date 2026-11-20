@@ -587,7 +587,8 @@ class TestThinCushionDenial:
         spot_state = {"spot": 95000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
         with patch.object(config, "GATES_ATR_ENABLED", False), \
              patch.object(config, "GATES_SHADOW_MODE", False), \
-             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False), \
+             patch.object(config, "GATES_MOMENTUM_ENABLED", False):
             res = gates.evaluate_entry(
                 market, spot_state=spot_state, orderbook=Mock(),
                 side="yes", entry_price_cents=77)
