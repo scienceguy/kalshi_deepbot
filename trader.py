@@ -94,6 +94,7 @@ from market_finder import find_active_markets, _parse_api_time, _dollars_to_cent
 from risk import RiskManager  # noqa: E402
 from signals import floor_contracts  # noqa: E402
 import signals as se  # noqa: E402
+import sizing  # noqa: E402
 import resting_guard  # noqa: E402  — J6/A1: resting-order protection + latency baseline
 from resilience import CycleSupervisor, systemd_notify  # noqa: E402
 from llm_eval import should_block_trade, record_outcome as _llm_record_outcome, calibration_beats_chance as _llm_calibration_beats_chance  # noqa: E402
@@ -383,6 +384,54 @@ class BotState:
                 ticker, deployed, tradable_balance,
             )
             return False
+
+        # T15-40: Apply sizing policy from sizing.py (Kelly + depth + impact + correlated caps)
+        try:
+            from risk import market_asset
+            asset = market_asset(ticker)
+            current_exposure_by_asset = {asset: exposure}
+            
+            # Get visible depth at executable price
+            if sig.side == "yes":  # reviewed: select correct liquidity field per side for depth cap
+                depth_at_price = market.yes_liquidity or 0
+            else:
+                depth_at_price = market.no_liquidity or 0
+            
+            kalshi_bal = sizing.VenueBalance(
+                venue="kalshi",
+                cash=cash,
+                exposure=exposure,
+                total=cash + exposure,
+                timestamp=time.time()
+            )
+            sizing_inputs = sizing.SizingInputs(
+                kalshi_balance=kalshi_bal,
+                polymarket_balance=None,
+                win_prob=getattr(sig, "win_prob", 0.5),
+                entry_price_cents=sig.entry_price,
+                side=sig.side,
+                series=ticker.split("-")[0] if "-" in ticker else ticker,
+                ticker=ticker,
+                depth_at_price=depth_at_price,
+                current_exposure_by_asset=current_exposure_by_asset,
+                resting_orders_value=sum(v["dollars"] for v in self.resting_value.values()),
+                paper=config.DRY_RUN
+            )
+            sizing_result = sizing.calculate_sizing(sizing_inputs)
+            
+            # Apply the tighter of signal dollar_risk and sizing result
+            if sizing_result.size_dollars < sig.dollar_risk - 1e-6:  # reviewed: sizing module provides final cap; only reduce if tighter
+                old_contracts = sig.contracts
+                old_dollar_risk = sig.dollar_risk
+                sig.dollar_risk = sizing_result.size_dollars
+                sig.contracts = sizing_result.size_contracts
+                log.info(
+                    "SIZING CAP %s — $%.2f -> $%.2f (%.1fx -> %d contracts) binding: %s",
+                    ticker, old_dollar_risk, sig.dollar_risk, old_contracts, sig.contracts,
+                    ", ".join(sizing_result.constraints_binding)
+                )
+        except Exception as e:
+            log.warning("Sizing module error for %s: %s", ticker, e)
 
         allowed, reason = self.risk.check(
             cash, exposure, sig.dollar_risk, ticker, total_value,

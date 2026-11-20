@@ -46,6 +46,7 @@ import poly_us_stream  # L4: WebSocket price stream, REST fallback
 import resting_guard  # L5: resting-order protection
 import latency  # L1: latency recorder
 import crossvenue_edge
+import sizing  # T15-40: sizing policy across venues
 import config
 import report_state  # B19 operator visibility hook
 from resilience import systemd_notify
@@ -2170,6 +2171,7 @@ class PolyUSPaperTrader:
         if max_trade_dollars < 0.90:  # Allow 1 contract at 92-99c on starting $35 bankrolls
             return False
 
+        # Initial qty calculation (may be adjusted by sizing module later)
         qty = int(max_trade_dollars / price)
         if qty < 1:
             return False
@@ -2192,6 +2194,127 @@ class PolyUSPaperTrader:
             # NO side: need yes_bid to compute NO ask = 1 - yes_bid
             ask = round(1.0 - yes_bid, 4) if yes_bid is not None else None
             book = {"bbo": {"yes_bid": yes_bid, "yes_ask": yes_ask}} if yes_bid is not None else {}
+
+        fill_price = None
+        entry_fee = 0.0
+        if getattr(self, "live_mode", False):
+            # Live: always maker entry — never at or through the ask.
+            maker_price = price_for_maker_entry(book, side)
+            if maker_price is None:
+                self.state["book_unreadable"] = int(self.state.get("book_unreadable", 0)) + 1
+                self._save_state(self.state)
+                log.info("A3 unreadable book for %s %s — skipping live maker order", slug, side)
+                return False
+            fill_price = maker_price
+            entry_fee = 0.0  # makers pay nothing
+        elif self.paper_fill_model == "maker":
+            # Paper maker: resting order at maker price (fills when the book
+            # trades through; no fee). Never at or through the ask.
+            maker_price = price_for_maker_entry(book, side)
+            if maker_price is None:
+                self.state["book_unreadable"] = int(self.state.get("book_unreadable", 0)) + 1
+                self._save_state(self.state)
+                log.info("A3 unreadable book for %s %s — skipping paper maker order", slug, side)
+                return False
+            fill_price = maker_price
+            entry_fee = 0.0  # no maker fee
+        else:
+            # Paper taker (default): fill at best ask + slippage ticks.
+            fill_price = _fill_buy_price(price, ask)
+            # A2: never fall back to the displayed mark when the book is unreadable.
+            if fill_price is None:
+                self.state["book_unreadable"] = int(self.state.get("book_unreadable", 0)) + 1
+                self._save_state(self.state)
+                log.info("A2 unreadable book for %s %s — skipping trade", slug, side)
+                return False
+            entry_fee = _taker_fee(qty, fill_price)
+
+        # A2: re-check edge at the fill price, not the displayed mark. If the
+        # edge no longer clears fee + margin after slippage, skip the trade.
+        ref_prob = float(opp.get("ref_prob") or 0.0)
+        net_edge_cents = (ref_prob - fill_price) * 100.0
+        hurdle_cents = _fee_cents(fill_price) + float(getattr(config, "PM_EDGE_MARGIN_CENTS", 0.5))
+        if net_edge_cents < hurdle_cents:
+            log.info(
+                "A2 edge check failed at fill price: net_edge=%.1fc < hurdle=%.1fc "
+                "(ref_prob=%.4f fill_price=%.4f) — skipping %s %s",
+                net_edge_cents, hurdle_cents, ref_prob, fill_price, slug, side)
+            return False
+
+        cost = round(qty * fill_price + entry_fee, 4)
+        if cost > available_window_budget or cost > available_cash:
+            return False
+
+        # T15-40: Apply sizing policy from sizing.py (Kelly + depth + impact + correlated caps)
+        try:
+            # Calculate total exposure by asset
+            current_exposure_by_asset = {}
+            for p in self.state["positions"]:
+                sym = p.get("symbol", "")
+                if sym:
+                    cost = p.get("mtm_value", p.get("cost", 0.0))
+                    current_exposure_by_asset[sym] = current_exposure_by_asset.get(sym, 0.0) + cost
+            
+            # Get visible depth at executable price
+            depth_at_price = 0.0
+            if yes_ask is not None and yes_bid is not None:
+                depth_at_price = float(opp.get("depth_at_price", 1000.0))
+            
+            poly_bal = sizing.VenueBalance(
+                venue="polymarket_us",
+                cash=self.state["cash"],
+                exposure=total_mtm,
+                total=total_balance,
+                timestamp=time.time()
+            )
+            
+            # Determine series/asset from slug
+            # cpc-btc-updown-15m-2026-11-20-1530z -> BTC
+            series = ""
+            if "btc" in slug.lower():
+                series = "BTC"
+            elif "eth" in slug.lower():
+                series = "ETH"
+            elif "sol" in slug.lower():
+                series = "SOL"
+            
+            entry_price_cents = int(round(fill_price * 100))
+            sizing_inputs = sizing.SizingInputs(
+                kalshi_balance=None,
+                polymarket_balance=poly_bal,
+                win_prob=ref_prob,
+                entry_price_cents=entry_price_cents,
+                side=side,
+                series=series,
+                ticker=slug,
+                depth_at_price=depth_at_price,
+                current_exposure_by_asset=current_exposure_by_asset,
+                resting_orders_value=0.0,  # Paper mode - no resting orders tracked separately
+                paper=True
+            )
+            sizing_result = sizing.calculate_sizing(sizing_inputs)
+            
+            # Apply the tighter of current max_trade_dollars and sizing result
+            if sizing_result.size_dollars < max_trade_dollars - 1e-6:  # reviewed: sizing module provides final cap; only reduce if tighter
+                old_max = max_trade_dollars
+                max_trade_dollars = sizing_result.size_dollars
+                log.info(
+                    "SIZING CAP %s — $%.2f -> $%.2f (binding: %s)",
+                    slug, old_max, max_trade_dollars,
+                    ", ".join(sizing_result.constraints_binding)
+                )
+                
+                # Recalculate qty with new max_trade_dollars
+                qty = int(max_trade_dollars / fill_price)
+                if qty < 1:
+                    return False
+        except Exception as e:
+            log.warning("Sizing module error for %s: %s", slug, e)
+
+        # Recalculate cost with potentially updated qty
+        cost = round(qty * fill_price + entry_fee, 4)
+        if cost > available_window_budget or cost > available_cash:
+            return False
 
         fill_price = None
         entry_fee = 0.0

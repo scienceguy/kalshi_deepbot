@@ -47,10 +47,10 @@ def disable_llm_eval(monkeypatch):
     monkeypatch.setattr(config, "LLM_EVALUATION_ENABLED", False, raising=False)
 
 
-def test_pre_trade_check_blocks_over_cap(fresh_state, mock_client):
-    """_pre_trade_check blocks trades that exceed per-trade cap."""
+def test_pre_trade_check_caps_oversized_trade(fresh_state, mock_client):
+    """_pre_trade_check caps trades that exceed per-trade cap via sizing module."""
     sig = MagicMock()
-    sig.dollar_risk = 50.0
+    sig.dollar_risk = 50.0  # Requested size exceeds per-trade cap
     sig.entry_price = 50
     sig.side = "yes"
     sig.market = MagicMock()
@@ -70,13 +70,22 @@ def test_pre_trade_check_blocks_over_cap(fresh_state, mock_client):
     allowed = fresh_state._pre_trade_check(
         sig, sig.market, cash=100.0, exposure=0.0, total_value=100.0, client=mock_client
     )
-    assert not allowed
+    # T15-40: Sizing module caps the trade to Kelly size (~$5), so it's allowed
+    assert allowed
+    # Verify the sizing module capped the dollar_risk
+    assert sig.dollar_risk < 50.0
+    assert sig.dollar_risk > 0.0
 
 
-def test_pre_trade_check_blocks_cash_floor(fresh_state, mock_client):
-    """_pre_trade_check blocks trades that breach cash floor."""
+def test_pre_trade_check_blocks_cash_floor(fresh_state, mock_client, monkeypatch):
+    """_pre_trade_check blocks trades that breach cash floor even after sizing."""
+    # Force a scenario where sizing allows a trade but cash floor blocks it
+    # Use very small cash so even the Kelly-sized trade breaches floor
+    monkeypatch.setattr(config, "PAPER_MIN_CASH_ABSOLUTE", 10.0)
+    monkeypatch.setattr(config, "PAPER_CASH_FLOOR_PCT", 0.50)
+    
     sig = MagicMock()
-    sig.dollar_risk = 99.0
+    sig.dollar_risk = 5.0  # Small enough for Kelly, but would breach floor
     sig.entry_price = 50
     sig.side = "yes"
     sig.market = MagicMock()
@@ -93,9 +102,12 @@ def test_pre_trade_check_blocks_cash_floor(fresh_state, mock_client):
     fresh_state.window["budget"] = 100.0
     fresh_state.window["used"] = 0.0
 
+    # Cash = 12, Kelly size ~$5, floor = 50% of portfolio = $6, remaining after trade = $7
+    # But if we set cash lower...
     allowed = fresh_state._pre_trade_check(
-        sig, sig.market, cash=100.0, exposure=0.0, total_value=100.0, client=mock_client
+        sig, sig.market, cash=6.0, exposure=0.0, total_value=6.0, client=mock_client
     )
+    # With $6 cash and 50% floor ($3), a $5 trade would leave $1 < $3 floor
     assert not allowed
 
 
