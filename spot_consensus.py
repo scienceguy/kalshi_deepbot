@@ -146,7 +146,7 @@ class SpotConsensusProvider:
     def get_consensus(self, symbol: str) -> Optional[SpotConsensus]:
         """Get spot consensus for a symbol."""
         venue_prices: dict[str, VenuePrice] = {}
-        
+
         for venue, getter in self._venue_getters.items():
             try:
                 price, age = getter(symbol)
@@ -158,8 +158,32 @@ class SpotConsensusProvider:
                     )
             except Exception as e:
                 log.debug("Venue %s getter failed for %s: %s", venue, symbol, e)
-        
-        return compute_spot_consensus(venue_prices)
+
+        consensus = compute_spot_consensus(venue_prices)
+        if consensus is not None:
+            _maybe_record_tick(symbol, consensus)
+        return consensus
+
+
+# T13-12: throttled persistence of consensus ticks — at most one tick per
+# SPOT_TICK_RECORD_SECONDS, best-effort, never raising into the hot path.
+_TICK_MIN_INTERVAL_S = float(getattr(config, "SPOT_TICK_RECORD_SECONDS", 1.0))
+_last_tick_recorded: float = 0.0
+
+
+def _maybe_record_tick(symbol: str, consensus: "SpotConsensus") -> None:
+    global _last_tick_recorded
+    now = time.monotonic()
+    if now - _last_tick_recorded < _TICK_MIN_INTERVAL_S:
+        return
+    _last_tick_recorded = now
+    try:
+        from local_db import get_local_db
+        db = get_local_db()
+        for vp in consensus.venues_used:
+            db.record_spot_tick(symbol, vp.venue, vp.price, vp.bid, vp.ask)
+    except Exception as e:
+        log.debug("spot tick record skipped: %s", e)
 
 
 # Global provider instance

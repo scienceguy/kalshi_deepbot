@@ -430,7 +430,21 @@ class LocalDB:
                 )
             """)
 
-            # H9: write-ahead order intent — pending_send records the intent
+            # T13-12: raw spot consensus ticks (one row per venue per tick)
+            # for edge/latency study; pruned by retention like other telemetry.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS spot_ticks (
+                    ts INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    venue TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    bid REAL,
+                    ask REAL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_spot_ticks_symbol_ts ON spot_ticks(symbol, ts)")
+
+    # H9: write-ahead order intent — pending_send records the intent
             # to place an order BEFORE the REST call. If the process crashes,
             # reconcile_on_startup reads pending_send and resolves (confirm fill
             # or cancel). Status: pending | confirmed | cancelled | failed.
@@ -2003,6 +2017,26 @@ class LocalDB:
         return {"venue": row[0], "balance": row[1], "source": row[2],
                 "recorded_at": row[3]}
 
+    # T13-12: raw spot consensus ticks (one row per venue per tick)
+    def record_spot_tick(self, symbol: str, venue: str, price: float,
+                         bid: float = None, ask: float = None,
+                         ts: int = None) -> bool:
+        """Record one spot tick. Best-effort: returns False on error,
+        never raises into the trading hot path."""
+        try:
+            conn = self._get_conn()
+            with self._lock:
+                conn.execute(
+                    "INSERT INTO spot_ticks (ts, symbol, venue, price, bid, ask) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (int(ts if ts is not None else time.time()),
+                     symbol, venue, float(price), bid, ask))
+                conn.commit()
+                return True
+        except Exception as e:
+            log.warning("record_spot_tick error: %s", e)
+            return False
+
     # H9: write-ahead order intent
     def record_order_intent(self, order_id: str, ticker: str, side: str,
                             price_cents: int, contracts: float, dollar_risk: float,
@@ -2166,7 +2200,8 @@ class LocalDB:
                              stale_pending_hours: int = 24,
                              outbox_keep_days: int = config.RETENTION_EVENT_OUTBOX_DAYS,
                              alert_keep_days: int = config.RETENTION_ALERT_HISTORY_DAYS,
-                             quarantine_keep_days: int = config.RETENTION_SYNC_QUARANTINE_DAYS) -> dict:
+                             quarantine_keep_days: int = config.RETENTION_SYNC_QUARANTINE_DAYS,
+                             tick_keep_days: int = config.RETENTION_SPOT_TICKS_DAYS) -> dict:
         """Retention for unbounded control tables.
 
         Deletes latency_measurements rows older than latency_keep_days (by
@@ -2234,6 +2269,12 @@ class LocalDB:
                     "WHERE status = 'pending' AND created_at < datetime('now', ?)",
                     (f"-{int(stale_pending_hours)} hours",))
                 pending_abandoned = cur.rowcount
+                # T13-12: spot ticks are telemetry — pruned with the hourly
+                # retention pass (ts is unix seconds).
+                cur = conn.execute(
+                    "DELETE FROM spot_ticks WHERE ts < CAST(strftime('%s','now') AS INTEGER) - ?",
+                    (int(tick_keep_days) * 86400,))
+                tick_deleted = cur.rowcount
                 conn.commit()
                 return {"latency_deleted": latency_deleted,
                         "pending_deleted": pending_deleted,
@@ -2242,13 +2283,14 @@ class LocalDB:
                         "control_deleted": control_deleted,
                         "outbox_deleted": outbox_deleted,
                         "alert_deleted": alert_deleted,
-                        "quarantine_deleted": quarantine_deleted}
+                        "quarantine_deleted": quarantine_deleted,
+                        "tick_deleted": tick_deleted}
             except Exception as e:
                 log.warning("prune_control_tables error: %s", e)
                 return {"latency_deleted": 0, "pending_deleted": 0,
                         "inbox_deleted": 0, "pending_abandoned": 0,
                         "control_deleted": 0, "outbox_deleted": 0,
-                        "alert_deleted": 0, "quarantine_deleted": 0}
+                        "alert_deleted": 0, "quarantine_deleted": 0, "tick_deleted": 0}
 
     def get_latency_stats(self, stage: Optional[str] = None,
                           limit: int = 1000) -> List[Dict[str, Any]]:
@@ -2965,6 +3007,7 @@ class PolyLocalDB(LocalDB):
         except Exception as e:
             log.warning("record_poly_candle error: %s", e)
             return False
+
 class LocalDBAPI:
     """SupabaseClient-compatible API using local database."""
     

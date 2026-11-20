@@ -424,6 +424,7 @@ RETENTION_BUS_INBOX_DAYS = _env_int("RETENTION_BUS_INBOX_DAYS", 7)
 RETENTION_PENDING_SEND_DAYS = _env_int("RETENTION_PENDING_SEND_DAYS", 7)
 RETENTION_LATENCY_MEASUREMENTS_DAYS = _env_int("RETENTION_LATENCY_MEASUREMENTS_DAYS", 7)
 RETENTION_SYNC_QUARANTINE_DAYS = _env_int("RETENTION_SYNC_QUARANTINE_DAYS", 30)
+RETENTION_SPOT_TICKS_DAYS = _env_int("RETENTION_SPOT_TICKS_DAYS", 3)
 
 # A1: Latency budgets for regression gate (p99 must be <= 2x budget)
 # Measured in milliseconds. Budget = expected p50; regression when p99 > 2*budget
@@ -437,6 +438,9 @@ LATENCY_REGRESSION_GATE = _env_bool("LATENCY_REGRESSION_GATE", False)
 # D3: Spot consensus parameters
 SPOT_MAX_AGE_SECONDS = _env_float("SPOT_MAX_AGE_SECONDS", 5.0)
 SPOT_MAX_DEVIATION_CENTS = _env_float("SPOT_MAX_DEVIATION_CENTS", 50.0)
+# T13-12: minimum seconds between persisted consensus ticks — the hot path
+# records at most one tick per interval, never blocking.
+SPOT_TICK_RECORD_SECONDS = _env_float("SPOT_TICK_RECORD_SECONDS", 1.0)
 
 # M3: n8n webhook rate limit (requests per second). All superbot-* webhooks
 # share the same n8n instance; a conservative rate prevents self-inflicted 429s.
@@ -1037,6 +1041,10 @@ def validate_bands():
             f"ENTRY_ASK_MAX_CENTS ({ENTRY_ASK_MAX_CENTS}) must be in [1, 99]."
         )
     # Financial Guardrails validation (Pillar B)
+    if not SPOT_TICK_RECORD_SECONDS > 0.0:
+        errors.append(
+            f"SPOT_TICK_RECORD_SECONDS ({SPOT_TICK_RECORD_SECONDS}) must be > 0."
+        )
     if not 0.0 < POLY_DAILY_LOSS_LIMIT_PCT <= 1.0:
         errors.append(
             f"POLY_DAILY_LOSS_LIMIT_PCT ({POLY_DAILY_LOSS_LIMIT_PCT}) must be in (0, 1]."
