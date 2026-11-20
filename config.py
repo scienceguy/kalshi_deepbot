@@ -388,6 +388,12 @@ GATES_KL_ENABLED = _env_bool("GATES_KL_ENABLED", True)
 GATES_KL_ARB_THRESHOLD = _env_float("GATES_KL_ARB_THRESHOLD", 0.15)  # ARB flag threshold
 GATES_KL_WATCH_THRESHOLD = _env_float("GATES_KL_WATCH_THRESHOLD", 0.05)  # WATCH flag threshold
 
+# Book age gate: reject entries when the venue orderbook is stale.
+# Orderbook age is measured from the venue's timestamp (or WS message receipt).
+# A stale book means the prices we're scoring against may have moved.
+GATES_BOOK_AGE_ENABLED = _env_bool("GATES_BOOK_AGE_ENABLED", True)
+GATES_MAX_BOOK_AGE_SECONDS = _env_float("GATES_MAX_BOOK_AGE_SECONDS", 5.0)
+
 # Local DB → Supabase background sync interval. Trading bots need fast crash
 # protection: a 5-minute sync window can lose up to 5 minutes of P&L/state on
 # a crash. 30s keeps the local→online gap small without hammering Supabase.
@@ -1035,6 +1041,10 @@ def validate_bands():
     if GATES_KL_WATCH_THRESHOLD >= GATES_KL_ARB_THRESHOLD:
         errors.append(
             f"GATES_KL_WATCH_THRESHOLD ({GATES_KL_WATCH_THRESHOLD}) must be < GATES_KL_ARB_THRESHOLD ({GATES_KL_ARB_THRESHOLD})."
+        )
+    if GATES_MAX_BOOK_AGE_SECONDS < 0:
+        errors.append(
+            f"GATES_MAX_BOOK_AGE_SECONDS ({GATES_MAX_BOOK_AGE_SECONDS}) must be >= 0."
         )
     if not 0.0 <= MODEL_PROB_MIN <= 1.0:
         errors.append(
