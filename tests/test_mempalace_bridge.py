@@ -226,9 +226,10 @@ def test_full_queue_spills_to_durable_file(tmp_path, monkeypatch):
     m = b.get_metrics()
     assert m["outbound_spilled"] == 1
     assert m["outbound_dropped"] == 0
+    # the queued item was flushed into the spill first — order preserved
+    assert b._outbound.empty()
     items = b._drain_spill()
-    assert len(items) == 1
-    assert items[0][0] == "kg" and items[0][1] == "add"
+    assert [it[1] for it in items] == ["x", "add"]
     # spill file consumed after drain
     assert b._drain_spill() == []
 
@@ -243,16 +244,16 @@ def test_writer_drains_spill_before_queue(tmp_path, monkeypatch):
     b._enqueue("status", "spilled", {"n": 1})  # spills
 
     delivered = []
-    monkeypatch.setattr(b, "_deliver",
-                        lambda *a: delivered.append(a))
-    b._stop.clear()
-    b._writer_loop_once = None
-    # run one iteration manually: drain spill, then one queue item
+    monkeypatch.setattr(b, "_deliver", lambda *a: delivered.append(a))
+    # writer semantics: drain the spill first (oldest first), then the queue
     for spilled in b._drain_spill():
         b._deliver(*spilled[:4])
-    item = b._outbound.get_nowait()
-    b._deliver(*item[:4])
-    assert [d[1] for d in delivered] == ["spilled", "queued"]  # spill first
+    while True:
+        try:
+            b._deliver(*b._outbound.get_nowait()[:4])
+        except mempalace_bridge.queue.Empty:
+            break
+    assert [d[1] for d in delivered] == ["queued", "spilled"]  # global order kept
 
 
 # ── Default bridge ────────────────────────────────────────────────
@@ -262,3 +263,26 @@ def test_get_default_bridge_returns_instance():
     b = mempalace_bridge.get_default_bridge()
     assert isinstance(b, MemPalaceBridge)
     assert b.agent_identity == "ubuntu:opencode:kalshi_deepbot"
+
+
+def test_flood_10x_capacity_zero_lost_order_preserved(tmp_path, monkeypatch):
+    """T13-04 acceptance: flooding the queue at 10x capacity loses nothing
+    and preserves order (spill first, then queue)."""
+    monkeypatch.setattr(mempalace_bridge, "PALACE_DIR", str(tmp_path))
+    b = _make_bridge()
+    b._spill_path = str(tmp_path / "spill.jsonl")
+    cap = 10
+    b._outbound = mempalace_bridge.queue.Queue(maxsize=cap)
+    n = cap * 10
+    for i in range(n):
+        b._enqueue("status", "flood", {"i": i})
+    assert b.get_metrics()["outbound_spilled"] >= 1
+    assert b.get_metrics()["outbound_dropped"] == 0
+    # spill drained first (oldest), then whatever remains in the queue
+    delivered = [it[2]["i"] for it in b._drain_spill()]
+    while True:
+        try:
+            delivered.append(b._outbound.get_nowait()[2]["i"])
+        except mempalace_bridge.queue.Empty:
+            break
+    assert delivered == list(range(n))  # zero lost, order preserved

@@ -283,9 +283,17 @@ class MemPalaceBridge:
             self._outbound.put_nowait(item)
             self.metrics["outbound_queued"] += 1
         except queue.Full:
+            # T13-04: move the whole queue into the spill file in order, then
+            # append the new item — strict global order is preserved and the
+            # writer (which drains the spill first) delivers oldest-first.
             try:
                 os.makedirs(PALACE_DIR, exist_ok=True)
                 with open(self._spill_path, "a", encoding="utf-8") as fh:
+                    while True:
+                        try:
+                            fh.write(json.dumps(self._outbound.get_nowait()) + "\n")
+                        except queue.Empty:
+                            break
                     fh.write(json.dumps(item) + "\n")
                     fh.flush()
                     os.fsync(fh.fileno())
