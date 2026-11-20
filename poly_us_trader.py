@@ -46,6 +46,7 @@ import poly_us_stream  # L4: WebSocket price stream, REST fallback
 import resting_guard  # L5: resting-order protection
 import latency  # L1: latency recorder
 import crossvenue_edge
+import crossvenue  # T15-32: Kalshi CDF comparison
 import sizing  # T15-40: sizing policy across venues
 import box_arbitrage  # T15-30: cross-venue box arbitrage detection
 import config
@@ -1906,34 +1907,69 @@ class PolyUSPaperTrader:
         # One sigma per decision (A7): the edge model and the z-gate below use
         # the larger of live vol and the adaptive adjusted_sigma.
         cv_edge = crossvenue_edge.evaluate_crossvenue_edge(market, sigma_floor=self.adjusted_sigma)
+
+        # T15-32: Cross-venue fair value comparison using Kalshi's CDF
+        # Fetch Kalshi ladder for the matching event and compare Polymarket price
+        # against Kalshi's implied distribution (same strike, same expiry).
+        kalshi_cdf_edge = None
+        try:
+            # Build Kalshi event ticker from Polymarket market info
+            # Polymarket slug pattern: "cpc-btc-updown-15m-20261120-1400"
+            # Kalshi event ticker pattern: "KXBTC-24NOV201400"
+            import re
+            pm_slug = market.get("slug", "")
+            match = re.search(r"cpc-(\w+)-updown-(\d+)m-(\d{8})-(\d{4})", pm_slug)
+            if match:
+                asset = match.group(1).upper()
+                window_min = int(match.group(2))
+                date_str = match.group(3)
+                time_str = match.group(4)
+                # Convert to Kalshi format: KXBTC-24NOV201400
+                import datetime as dt
+                expiry = dt.datetime.strptime(date_str + time_str, "%Y%m%d%H%M")
+                month_abbr = expiry.strftime("%b").upper()
+                kalshi_event = f"KX{asset}-{expiry.day:02d}{month_abbr}{expiry.year%100:02d}{expiry.hour:02d}{expiry.minute:02d}"
+                kalshi_ladder = crossvenue.fetch_kalshi_ladder(kalshi_event)
+                if kalshi_ladder:
+                    kalshi_cdf = crossvenue.to_cdf(kalshi_ladder)
+                    if kalshi_cdf:
+                        kalshi_cdf_edge = crossvenue_edge.evaluate_crossvenue_edge_cdf(
+                            market, kalshi_cdf, spot_override=spot
+                        )
+        except Exception as e:
+            log.debug("Kalshi CDF comparison failed for %s: %s", slug, e)
+
         # High-EV favorite hurdle: ref_prob >= MODEL_PROB_MIN (0.96) and favorite band (92c-99c).
         # Edge must clear modelled costs (fee + slippage + margin) — the raw 0.5c hurdle
         # was below any plausible spread/model error (R5).
-        if (cv_edge
-                and cv_edge["ref_prob"] >= getattr(config, "MODEL_PROB_MIN", 0.96)
-                and 0.92 <= cv_edge["best_price"] <= 0.99):
-            modelled_cost_cents = (_fee_cents(cv_edge["best_price"]) + _slippage_cents()
+        # Prefer Kalshi CDF edge if available, otherwise fall back to GBM edge
+        chosen_edge = kalshi_cdf_edge if kalshi_cdf_edge else cv_edge
+        if (chosen_edge
+                and chosen_edge["ref_prob"] >= getattr(config, "MODEL_PROB_MIN", 0.96)
+                and 0.92 <= chosen_edge["best_price"] <= 0.99):
+            modelled_cost_cents = (_fee_cents(chosen_edge["best_price"]) + _slippage_cents()
                                    + float(getattr(config, "PM_EDGE_MARGIN_CENTS", 0.5)))
-            if cv_edge["best_edge_cents"] >= modelled_cost_cents:
-                if not self._passes_entry_gates(slug, cv_edge["best_side"], terms,
+            if chosen_edge["best_edge_cents"] >= modelled_cost_cents:
+                if not self._passes_entry_gates(slug, chosen_edge["best_side"], terms,
                                                 strike_val, spot, hours_left,
-                                                sigma=cv_edge.get("vol")):
+                                                sigma=chosen_edge.get("vol")):
                     return None
                 return {
                     "slug": slug,
                     "question": market.get("question", slug),
-                    "side": cv_edge["best_side"],
-                    "price": cv_edge["best_price"],
+                    "side": chosen_edge["best_side"],
+                    "price": chosen_edge["best_price"],
                     "category": "crypto",
                     "symbol": symbol,
-                    "cross_edge_cents": cv_edge["best_edge_cents"],
-                    "ref_prob": cv_edge["ref_prob"],
-                    "spot": cv_edge["spot"],
-                    "strike": cv_edge["strike"],
+                    "cross_edge_cents": chosen_edge["best_edge_cents"],
+                    "ref_prob": chosen_edge["ref_prob"],
+                    "spot": chosen_edge["spot"],
+                    "strike": chosen_edge["strike"],
                     "end_date": end_date,
                     "hours_left": hours_left,
                     "event_slug": event_slug,
-                    "source": "crossvenue",
+                    "source": "crossvenue_kalshi_cdf" if kalshi_cdf_edge else "crossvenue",
+                    "kalshi_cdf_comparison": kalshi_cdf_edge is not None,
                 }
         # Fallback branch has no model of its own: only trade markets a model can
         # score (crypto with strike + spot), unless PM_ALLOW_UNMODELLED=true (R6).
