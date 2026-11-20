@@ -731,6 +731,32 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
                     f"(q {q:.3f} vs break-even {be:.3f})"
                 )
 
+    # ── Gate 5: Book age gate ─────────────────────────────────────────────
+    # Reject entries when the venue orderbook is stale. A stale book means
+    # the prices we're scoring against may have moved.
+    if config.GATES_BOOK_AGE_ENABLED and orderbook is not None:  # reviewed: T15-12 gate 5 entry — fail closed on stale book
+        ob_ts = None
+        # Support multiple orderbook formats: Kalshi OrderbookSnapshot, Polymarket OrderBook,
+        # BookView ConsolidatedBook, or raw dict with 'timestamp'/'updated_at'
+        if hasattr(orderbook, "timestamp"):  # reviewed: Kalshi OrderbookSnapshot.timestamp
+            ob_ts = getattr(orderbook, "timestamp")
+        elif hasattr(orderbook, "updated_at"):  # reviewed: Polymarket OrderBook.updated_at
+            ob_ts = getattr(orderbook, "updated_at")
+        elif isinstance(orderbook, dict):  # reviewed: BookView ConsolidatedBook or raw dict
+            ob_ts = orderbook.get("timestamp") or orderbook.get("updated_at")
+        # Validate that ob_ts is a real number (not a Mock or other object)
+        if isinstance(ob_ts, (int, float)) and ob_ts > 0:  # reviewed: ensure real timestamp value
+            age = time.time() - ob_ts
+            metrics["book_age_seconds"] = age
+            if age > config.GATES_MAX_BOOK_AGE_SECONDS:  # reviewed: compare age against configured max
+                block_reasons.append(
+                    f"gate5: book age {age:.1f}s > max {config.GATES_MAX_BOOK_AGE_SECONDS:.1f}s"
+                )
+        else:
+            # No valid timestamp available — treat as stale to fail closed
+            metrics["book_age_seconds"] = None
+            block_reasons.append("gate5: orderbook missing valid timestamp (fail closed)")
+
     # ── decision (shadow only logs) ─────────────────────────────────────
     would_block = bool(block_reasons)
     if would_block and config.GATES_SHADOW_MODE:
@@ -743,11 +769,12 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
     metrics["reasons"] = block_reasons
 
     log.info(
-        "GATE %s %s %s @%sc: ratio=%s z=%s q=%s fee=%s ev=%s be=%s -> %s%s",
+        "GATE %s %s %s @%sc: ratio=%s z=%s q=%s fee=%s ev=%s be=%s book_age=%ss -> %s%s",
         metrics["ticker"], side, asset, entry_price_cents,
         _fmt(metrics["hurdle_ratio"]), _fmt(metrics["cushion_z"]),
         _fmt(metrics["q"]), _fmt(metrics["fee"]), _fmt(metrics["net_ev"]),
-        _fmt(metrics["breakeven_q"]), decision,
+        _fmt(metrics["breakeven_q"]), _fmt(metrics.get("book_age_seconds")),
+        decision,
         (" — " + "; ".join(block_reasons)) if block_reasons else "",
     )
 

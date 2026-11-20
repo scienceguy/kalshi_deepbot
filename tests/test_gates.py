@@ -376,7 +376,8 @@ class TestMeasuredFloorSide:
              patch.object(gates, "spot_for", return_value=market.strike + 50.0), \
              patch.object(gates, "atr_1m", return_value=10.0), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
-             patch.object(config, "GATES_EV_ENABLED", False):
+             patch.object(config, "GATES_EV_ENABLED", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
             return gates.evaluate_entry(
                 market, spot_state={}, orderbook=book,
                 side=side, entry_price_cents=cents)
@@ -535,7 +536,8 @@ class TestPinRiskGateBoundaries:
         with patch.object(config, "GATES_DENY_PIN_RISK", True), \
              patch.object(config, "GATES_PIN_RISK_MINUTES", 6.0), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
-             patch.object(config, "GATES_SHADOW_MODE", False):
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
             res = self._eval(6.0)
         assert res.metrics["pin_risk_denied"] is True
         assert res.allowed is False
@@ -546,7 +548,8 @@ class TestPinRiskGateBoundaries:
         with patch.object(config, "GATES_DENY_PIN_RISK", True), \
              patch.object(config, "GATES_PIN_RISK_MINUTES", 6.0), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
-             patch.object(config, "GATES_SHADOW_MODE", False):
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
             res = self._eval(6.5)
         assert res.metrics["pin_risk_denied"] is False
         assert not any("pin risk" in r for r in res.reasons)
@@ -557,7 +560,8 @@ class TestPinRiskGateBoundaries:
         with patch.object(config, "GATES_DENY_PIN_RISK", False), \
              patch.object(config, "GATES_PIN_RISK_MINUTES", 6.0), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
-             patch.object(config, "GATES_SHADOW_MODE", False):
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
             res = self._eval(1.0)
         assert res.metrics["pin_risk_denied"] is False
         assert not any("pin risk" in r for r in res.reasons)
@@ -566,6 +570,7 @@ class TestPinRiskGateBoundaries:
         """minutes_left == 0 must not match the 0 < minutes guard."""
         with patch.object(config, "GATES_DENY_PIN_RISK", True), \
              patch.object(config, "GATES_PIN_RISK_MINUTES", 6.0), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
              patch.object(config, "GATES_SHADOW_MODE", False):
             res = self._eval(0.0)
@@ -581,7 +586,8 @@ class TestThinCushionDenial:
         market = MockMarket(strike=95000.0, minutes_left=8.0)
         spot_state = {"spot": 95000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
         with patch.object(config, "GATES_ATR_ENABLED", False), \
-             patch.object(config, "GATES_SHADOW_MODE", False):
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
             res = gates.evaluate_entry(
                 market, spot_state=spot_state, orderbook=Mock(),
                 side="yes", entry_price_cents=77)
@@ -595,7 +601,8 @@ class TestThinCushionDenial:
         market = MockMarket(strike=95000.0, minutes_left=8.0)
         spot_state = {"spot": 95100.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
         with patch.object(config, "GATES_ATR_ENABLED", False), \
-             patch.object(config, "GATES_SHADOW_MODE", False):
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
             res = gates.evaluate_entry(
                 market, spot_state=spot_state, orderbook=Mock(),
                 side="yes", entry_price_cents=77)
@@ -609,7 +616,8 @@ class TestThinCushionDenial:
         """No time left -> gate3 denial reason, not a crash."""
         market = MockMarket(minutes_left=0.0)
         spot_state = {"spot": 96000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
-        with patch.object(config, "GATES_SHADOW_MODE", False):
+        with patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
             res = gates.evaluate_entry(
                 market, spot_state=spot_state, orderbook=Mock(),
                 side="yes", entry_price_cents=77)
@@ -828,6 +836,92 @@ class TestMeasuredFloorFourCorners:
         if result.metrics.get("q_measured_floor") is True:
             print("BUG CONFIRMED: NO longshot @ 3c incorrectly gets YES floor")
             print(f"  q={result.metrics.get('q')}, q_floor_source={result.metrics.get('q_floor_source')}")
+
+
+class TestBookAgeGate:
+    """T15-12: Book age gate — reject entries when venue orderbook is stale."""
+
+    def test_book_age_gate_disabled_allows(self):
+        """GATES_BOOK_AGE_ENABLED=False skips the gate entirely."""
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        with patch.object(config, "GATES_BOOK_AGE_ENABLED", False), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=Mock(),
+                side="yes", entry_price_cents=95)
+        assert res.allowed is True
+        assert not any("gate5" in r for r in res.reasons)
+
+    def test_book_age_gate_fresh_book_allows(self):
+        """Orderbook with recent timestamp (< GATES_MAX_BOOK_AGE_SECONDS) passes."""
+        import time
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        fresh_book = Mock()
+        fresh_book.timestamp = time.time()  # now
+        with patch.object(config, "GATES_BOOK_AGE_ENABLED", True), \
+             patch.object(config, "GATES_MAX_BOOK_AGE_SECONDS", 5.0), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=fresh_book,
+                side="yes", entry_price_cents=95)
+        assert res.allowed is True
+        assert not any("gate5" in r for r in res.reasons)
+        assert res.metrics.get("book_age_seconds") is not None
+        assert res.metrics["book_age_seconds"] < 5.0
+
+    def test_book_age_gate_stale_book_blocks(self):
+        """Orderbook older than GATES_MAX_BOOK_AGE_SECONDS blocks the entry."""
+        import time
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        stale_book = Mock()
+        stale_book.timestamp = time.time() - 10.0  # 10 seconds old
+        with patch.object(config, "GATES_BOOK_AGE_ENABLED", True), \
+             patch.object(config, "GATES_MAX_BOOK_AGE_SECONDS", 5.0), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=stale_book,
+                side="yes", entry_price_cents=95)
+        assert res.allowed is False
+        assert any("gate5" in r for r in res.reasons)
+        assert res.metrics.get("book_age_seconds") is not None
+        assert res.metrics["book_age_seconds"] > 5.0
+
+    def test_book_age_gate_missing_timestamp_blocks(self):
+        """Orderbook without valid timestamp fails closed."""
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        book_no_ts = Mock()
+        # No timestamp attribute
+        with patch.object(config, "GATES_BOOK_AGE_ENABLED", True), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=book_no_ts,
+                side="yes", entry_price_cents=95)
+        assert res.allowed is False
+        assert any("gate5" in r and "missing valid timestamp" in r for r in res.reasons)
+
+    def test_book_age_gate_dict_with_updated_at(self):
+        """Orderbook dict with 'updated_at' key is supported."""
+        import time
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        book_dict = {"updated_at": time.time() - 2.0}  # 2 seconds old
+        with patch.object(config, "GATES_BOOK_AGE_ENABLED", True), \
+             patch.object(config, "GATES_MAX_BOOK_AGE_SECONDS", 5.0), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=book_dict,
+                side="yes", entry_price_cents=95)
+        assert res.allowed is True
+        assert res.metrics.get("book_age_seconds") is not None
 
 
 if __name__ == "__main__":
