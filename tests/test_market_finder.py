@@ -241,8 +241,9 @@ class TestMarketFinderConfig:
         with patch.object(config, 'TARGET_SERIES', ['KXBTC15M']):
             with patch.object(config, 'MIN_YES_PRICE_CENTS', 75):
                 with patch.object(config, 'MAX_YES_PRICE_CENTS', 99):
-                    markets = market_finder.find_active_markets(client)
-                    assert markets.tradable_count == 0
+                    with patch.object(config, 'HEDGE_YES_ASK_MAX', 5):
+                        markets = market_finder.find_active_markets(client)
+                        assert markets.tradable_count == 0
 
 
 class TestMarketFinderOrderbook:

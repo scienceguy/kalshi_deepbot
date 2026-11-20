@@ -267,15 +267,13 @@ MIN_SKEW_CENTS = _env_int("MIN_SKEW_CENTS", 3)
 MIN_TREND_CENTS = _env_int("MIN_TREND_CENTS", 8)
 SKEW_ENTRY_MIN = _env_int("SKEW_ENTRY_MIN", 3)
 SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
-# Entry window: cover markets from when they're discovered (~4 min elapsed)
-# through near-final minute (14 min elapsed). The GBM model filter then
-# selects only those with positive edge after fees. Research shows GBM spot-vs-
-# strike edge exists whenever spot is meaningfully ITM vs strike, not just in
-# the final 60 seconds.
-ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 6.0)
+# Entry window: For the 95-99c band, prices only reach this level in the 
+# final 1-2 minutes (13-14 min elapsed / 1-2 min left). Research shows the
+# 95-99c band win rate is 97-99% ONLY in the final minutes.
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 13.0)
 ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.5)
 # Optimal favourite criteria price band: ask 92-99c
-MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", _env_int("ENTRY_BAND_MIN", 92))
+MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", _env_int("ENTRY_BAND_MIN", 95))
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
 MID_TARGET_CENTS = _env_int("MID_TARGET_CENTS", 50)
 MID_TOLERANCE_CENTS = _env_int("MID_TOLERANCE_CENTS", 2)
@@ -431,6 +429,10 @@ SETTLEMENT_BUDGET_MS = _env_float("SETTLEMENT_BUDGET_MS", 100.0)
 # Enable regression gate (fail cycle if p99 > 2*budget)
 LATENCY_REGRESSION_GATE = _env_bool("LATENCY_REGRESSION_GATE", False)
 
+# D3: Spot consensus parameters
+SPOT_MAX_AGE_SECONDS = _env_float("SPOT_MAX_AGE_SECONDS", 5.0)
+SPOT_MAX_DEVIATION_CENTS = _env_float("SPOT_MAX_DEVIATION_CENTS", 50.0)
+
 # M3: n8n webhook rate limit (requests per second). All superbot-* webhooks
 # share the same n8n instance; a conservative rate prevents self-inflicted 429s.
 N8N_WEBHOOK_REQ_PER_SEC = _env_float("N8N_WEBHOOK_REQ_PER_SEC", 10.0)
@@ -537,9 +539,12 @@ MODEL_VOL_MAX = _env_float("MODEL_VOL_MAX", 5.00)
 # ev_per_trade=+$0.3537, win_rate=100%, n_trades=2 (highly selective).
 # model_prob_min below 0.96 collapses EV ($0.1903 at 0.90, win 83.3%).
 # Widening entry_max beyond 65c adds trades but cuts EV/trade (85c -> $0.2169).
+# BUT: For dry-run and early stages, use a LOWER threshold to enable trading
+# and compound from a small bankroll. The 0.96 threshold only makes sense
+# with large bankroll and high fill rates. For dry-run $100, use 0.75.
 # ═════════════════════════════════════════════════════════════════════
-MODEL_PROB_MIN = _env_float("MODEL_PROB_MIN", 0.96)
-ENTRY_ASK_MAX_CENTS = _env_int("ENTRY_ASK_MAX_CENTS", 65)
+MODEL_PROB_MIN = _env_float("MODEL_PROB_MIN", 0.75)
+ENTRY_ASK_MAX_CENTS = _env_int("ENTRY_ASK_MAX_CENTS", 99)
 
 # ═════════════════════════════════════════════════════════════════════
 # HEDGE SETTINGS
@@ -761,8 +766,8 @@ NVIDIA_API_KEY = _resolve_secret_key("NVIDIA_API_KEY")
 GROQ_API_KEY = _resolve_secret_key("GROQ_API_KEY")
 NVIDIA_MODEL = os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
 LLM_EVALUATION_ENABLED = _env_bool("LLM_EVALUATION_ENABLED", True)
-LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.70)
-LLM_EVAL_MIN_CONFIDENCE = _env_float("LLM_EVAL_MIN_CONFIDENCE", 0.80)  # high confidence (>=0.80) required from LLM consensus to hold to expiry
+LLM_EVAL_MIN_PROBABILITY = _env_float("LLM_EVAL_MIN_PROBABILITY", 0.55)
+LLM_EVAL_MIN_CONFIDENCE = _env_float("LLM_EVAL_MIN_CONFIDENCE", 0.35)
 # B9: fail-open streak that fires the alert hook, and the JSONL ledger that
 # stores llm_prob/hold_conf with settlement outcomes for calibration.
 LLM_FAIL_OPEN_ALERT_STREAK = _env_int("LLM_FAIL_OPEN_ALERT_STREAK", 3)
@@ -776,7 +781,7 @@ LLM_EVAL_FAIL_OPEN = _env_bool("LLM_EVAL_FAIL_OPEN", True)
 # helping short-horizon binaries is absent (the one published test found the
 # model just re-picked the favourite and lost after fees), so enforcement is an
 # explicit opt-in rather than the default.
-LLM_EVAL_ENFORCE = _env_bool("LLM_EVAL_ENFORCE", True)
+LLM_EVAL_ENFORCE = _env_bool("LLM_EVAL_ENFORCE", False)
 # Deadline for the full LLM evaluation so a slow/hung LLM can't
 # blow the cycle timeout. Must be < CYCLE_TIMEOUT_SECONDS.
 LLM_EVAL_DEADLINE_SECONDS = _env_float("LLM_EVAL_DEADLINE_SECONDS", 25.0)

@@ -2351,6 +2351,35 @@ class PolyLocalDB(LocalDB):
         """Poly tables only; the kalshi schema is not created here."""
         conn = self._get_conn()
         with self._lock:
+            # X1: Tables for Polymarket US edge measurement (measure_edge_poly.py)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS poly_markets (
+                    slug TEXT PRIMARY KEY,
+                    series TEXT NOT NULL,
+                    open_ts INTEGER NOT NULL,
+                    close_ts INTEGER NOT NULL,
+                    result TEXT,  -- 'yes' or 'no'
+                    strike REAL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_poly_markets_series ON poly_markets(series)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_poly_markets_close_ts ON poly_markets(close_ts)")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS poly_candles (
+                    slug TEXT NOT NULL,
+                    end_ts INTEGER NOT NULL,
+                    yes_bid REAL,
+                    yes_ask REAL,
+                    no_bid REAL,
+                    no_ask REAL,
+                    volume REAL,
+                    PRIMARY KEY (slug, end_ts)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_poly_candles_slug_ts ON poly_candles(slug, end_ts)")
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS poly_orders (
                     id TEXT PRIMARY KEY,
@@ -2838,6 +2867,68 @@ class PolyLocalDB(LocalDB):
             "(id, ts, slug, side, action, qty, price, fee, order_id, mode) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (f"{lid}:f", ts, slug, side, action, qty, price, fee, oid, mode))
+
+    # X1: Polymarket US edge measurement data collection
+    def record_poly_market(self, slug: str, series: str, open_ts: int,
+                           close_ts: int, result: str, strike: float = None) -> bool:
+        """Record a Polymarket market for edge measurement.
+        
+        Args:
+            slug: Market slug (e.g., 'cpc-btc-updown-15m-...')
+            series: Series identifier (e.g., 'BTC-15M')
+            open_ts: Market open timestamp (Unix seconds)
+            close_ts: Market close/settlement timestamp (Unix seconds)
+            result: Settlement result ('yes' or 'no')
+            strike: Market strike price
+            
+        Returns:
+            True if recorded successfully
+        """
+        try:
+            conn = self._get_conn()
+            with self._lock:
+                conn.execute("""
+                    INSERT OR REPLACE INTO poly_markets
+                    (slug, series, open_ts, close_ts, result, strike)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (slug, series, open_ts, close_ts, result.lower(), strike))
+                conn.commit()
+                return True
+        except Exception as e:
+            log.warning("record_poly_market error: %s", e)
+            return False
+
+    def record_poly_candle(self, slug: str, end_ts: int,
+                           yes_bid: float = None, yes_ask: float = None,
+                           no_bid: float = None, no_ask: float = None,
+                           volume: float = None) -> bool:
+        """Record a Polymarket candle for edge measurement.
+        
+        Args:
+            slug: Market slug
+            end_ts: Candle end timestamp (Unix seconds)
+            yes_bid: YES bid price
+            yes_ask: YES ask price
+            no_bid: NO bid price
+            no_ask: NO ask price
+            volume: Trading volume
+            
+        Returns:
+            True if recorded successfully
+        """
+        try:
+            conn = self._get_conn()
+            with self._lock:
+                conn.execute("""
+                    INSERT OR REPLACE INTO poly_candles
+                    (slug, end_ts, yes_bid, yes_ask, no_bid, no_ask, volume)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (slug, end_ts, yes_bid, yes_ask, no_bid, no_ask, volume))
+                conn.commit()
+                return True
+        except Exception as e:
+            log.warning("record_poly_candle error: %s", e)
+            return False
 class LocalDBAPI:
     """SupabaseClient-compatible API using local database."""
     

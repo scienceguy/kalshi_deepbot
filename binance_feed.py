@@ -138,16 +138,20 @@ _COINBASE_WS_MAX_RETRIES = int(os.environ.get("COINBASE_WS_MAX_RETRIES", "100"))
 _REDSTONE_WS_MAX_RETRIES = int(os.environ.get("REDSTONE_WS_MAX_RETRIES", "100"))
 
 def _binance_ws_loop(symbols: list[str]) -> None:
-    """Background thread: Binance.US combined @ticker stream (all symbols, subsecond cadence)."""
+    """Background thread: Binance combined bookTicker + aggTrade streams (subsecond cadence).
+
+    bookTicker: best bid/ask updates (high frequency)
+    aggTrade: aggregated trades (price + quantity)
+    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Format stream names for Binance.US: btcusd@ticker, ethusd@ticker, etc.
+    # Format stream names: btcusd@bookTicker, btcusd@aggTrade, etc.
     sym_streams = [
         s.lower() if (s.lower().endswith("usd") or s.lower().endswith("usdt")) else f"{s.lower()}usd"
         for s in symbols
     ]
-    streams = "/".join(f"{s}@ticker" for s in sym_streams)
+    streams = "/".join(f"{s}@bookTicker/{s}@aggTrade" for s in sym_streams)
     url = f"{BINANCE_WS}?streams={streams}"
     backoff = 2.0
     retries = 0
@@ -175,11 +179,25 @@ async def _binance_ws_async(url: str) -> None:
         async for raw in ws:
             try:
                 msg = json.loads(raw)
+                # Handle combined stream format: {"stream": "btcusdt@bookTicker", "data": {...}}
+                stream = msg.get("stream", "")
                 data = msg.get("data", {})
-                sym = data.get("s")
-                px = data.get("c")  # close = latest price
-                if sym and px is not None:
-                    _ws_set(sym, float(px))
+                
+                if "@bookTicker" in stream:
+                    # bookTicker: {'u': 12345, 's': 'BTCUSDT', 'b': '50000.00', 'B': '1.5', 'a': '50001.00', 'A': '1.2'}
+                    sym = data.get("s")
+                    bid = data.get("b")
+                    ask = data.get("a")
+                    if sym and bid is not None and ask is not None:
+                        # Use mid price from bookTicker
+                        mid = (float(bid) + float(ask)) / 2.0
+                        _ws_set(sym, mid)
+                elif "@aggTrade" in stream:
+                    # aggTrade: {'e': 'aggTrade', 'E': 123456789, 'a': 12345, 's': 'BTCUSDT', 'p': '50000.00', 'q': '1.5', 'f': 123, 'l': 456, 'T': 123456789, 'm': True, 'M': True}
+                    sym = data.get("s")
+                    px = data.get("p")  # trade price
+                    if sym and px is not None:
+                        _ws_set(sym, float(px))
             except Exception:
                 continue
 

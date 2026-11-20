@@ -451,12 +451,13 @@ def find_active_markets(client: KalshiClient, extra_band=None, target_series=Non
         info = _build(mkt, series, ct, ml, ob, "HEDGE_NO")
         # Use the pre-filter yes_ask (ya) for hedge check, not the orderbook yes_ask
         # which might be 0/stale if orderbook fetch failed
-        if 0 < hedge_ya <= config.HEDGE_YES_ASK_MAX:
+        # reviewed: hedge band must use the pre-filter yes_ask, not a stale orderbook 0
+        if hedge_ya is not None and 0 < hedge_ya <= config.HEDGE_YES_ASK_MAX:
             result.append(info)
             log.info("✓ HEDGE %s %.1fmin yes_ask=%dc no_ask=%dc prob≈%d%%",
                      info.ticker, ml, info.yes_ask, info.no_ask, 100 - info.no_ask)
         else:
-            log.debug("Hedge filtered hedge_ya=%dc: %s", hedge_ya, mkt["ticker"])
+            log.debug("Hedge filtered hedge_ya=%s: %s", hedge_ya, mkt["ticker"])
 
     tradable_count = len(result)
     criteria_type = "Taker criteria" if config.AGGRESSIVE_FILL else "Maker-only criteria"
