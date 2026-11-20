@@ -253,6 +253,7 @@ class MemPalaceBridge:
 
     def read_events(self, topic: Optional[str] = None,
                     from_agent: Optional[str] = None,
+                    to_agent: Optional[str] = None,
                     order: str = "desc", limit: int = 50) -> list:
         """T13-42: read logstream events through the bridge — the only
         sanctioned read path, so every access goes via one owner module.
@@ -262,7 +263,7 @@ class MemPalaceBridge:
         try:
             ls = Logstream(db_path=_LOGSTREAM_DB)
             return ls.list_events(topic=topic, from_agent=from_agent,
-                                  order=order, limit=limit) or []
+                                  to_agent=to_agent, order=order, limit=limit) or []
         except Exception as e:
             log.warning("MemPalace read_events failed: %s", e)
             return []
@@ -503,15 +504,26 @@ class MemPalaceBridge:
                 time.sleep(1.0)
         if ls is None:
             return
+        # Get the latest event ID for this agent to use as cursor.
+        # This ensures we only wait for NEW events, not historical ones.
+        cursor = None
+        try:
+            latest = ls.list_events(to_agent=self.agent_identity, order="desc", limit=1)
+            if latest:
+                cursor = latest[0].get("id")
+        except Exception:
+            pass
         while not self._stop.is_set():
             try:
-                event = ls.wait_events(
-                    timeout_ms=2000,
-                    correlation_id=f"sub-{self.agent_identity}",
-                    to_agent=self.agent_identity,
-                )
+                kwargs = {"timeout_ms": 2000, "to_agent": self.agent_identity}
+                if cursor:
+                    kwargs["since_event_id"] = cursor
+                event = ls.wait_events(**kwargs)
                 if event is None:
                     continue  # timeout, no event — poll again
+                # Update cursor to this event's ID for next iteration
+                if event.get("id"):
+                    cursor = event["id"]
                 try:
                     self._inbound.put_nowait(event)
                     self.metrics["inbound_received"] += 1

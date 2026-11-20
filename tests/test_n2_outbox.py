@@ -101,6 +101,12 @@ def _reset_breaker_and_telemetry(monkeypatch):
     monkeypatch.setattr(config, "SUPERBOT_WEBHOOK_SECRET", "n2-test-secret")
     monkeypatch.delenv("SUPERBOT_WEBHOOK_SECRET_FILE", raising=False)
     old = (_outbox_breaker._consecutive_failures, _outbox_breaker._opened_at)
+    # Prevent background outbox senders from running during tests — they are
+    # daemon threads with no clean shutdown, and they poll the main database
+    # which would interfere with test isolation (delivering events to the
+    # patched test server). Patch the starter and the started flag.
+    monkeypatch.setattr(n8n_client, "_start_outbox_sender", lambda: None)
+    monkeypatch.setattr(n8n_client, "_outbox_sender_started", True)
     yield
     _outbox_breaker._consecutive_failures, _outbox_breaker._opened_at = old
     n8n_client._telemetry_pending.clear()
