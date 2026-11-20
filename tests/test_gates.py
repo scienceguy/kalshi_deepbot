@@ -962,5 +962,277 @@ class TestKLToolsImport:
         assert abs(result_gates - result_gbm) < 1e-10
 
 
+class TestTickBusIntegration:
+    """T15-10: tick_bus integration into gates.py spot/ATR/sigma functions."""
+
+    def test_spot_for_prefers_tick_bus_when_enabled(self, monkeypatch):
+        """spot_for returns tick_bus price when USE_TICK_BUS=true and tick_bus available."""
+        import gates
+        # Mock tick_bus module
+        mock_tick_bus = Mock()
+        mock_tick_bus.spot_price.return_value = 101000.0
+        monkeypatch.setattr(gates, "TICK_BUS_AVAILABLE", True)
+        monkeypatch.setattr(gates, "tick_bus", mock_tick_bus)
+        monkeypatch.setattr(config, "USE_TICK_BUS", True)
+        monkeypatch.setattr(config, "GATES_SPOT_CACHE_SECONDS", 30)
+        
+        # Clear cache
+        gates._spot_cache.clear()
+        
+        result = gates.spot_for("BTC")
+        assert result == 101000.0
+        mock_tick_bus.spot_price.assert_called_once_with("BTC")
+
+    def test_spot_for_falls_back_when_tick_bus_unavailable(self, monkeypatch):
+        """spot_for falls back to binance_feed when tick_bus fails or disabled."""
+        import gates
+        # Disable tick bus
+        monkeypatch.setattr(gates, "TICK_BUS_AVAILABLE", False)
+        monkeypatch.setattr(config, "USE_TICK_BUS", True)
+        
+        # Mock binance_feed
+        with patch.object(gates.binance_feed, "spot_price", return_value=100000.0):
+            gates._spot_cache.clear()
+            result = gates.spot_for("BTC")
+            assert result == 100000.0
+
+    def test_atr_1m_prefers_tick_bus_when_enabled(self, monkeypatch):
+        """atr_1m returns tick_bus ATR when USE_TICK_BUS=true and tick_bus available."""
+        import gates
+        mock_tick_bus = Mock()
+        mock_tick_bus.get_atr.return_value = 15.5
+        monkeypatch.setattr(gates, "TICK_BUS_AVAILABLE", True)
+        monkeypatch.setattr(gates, "tick_bus", mock_tick_bus)
+        monkeypatch.setattr(config, "USE_TICK_BUS", True)
+        monkeypatch.setattr(config, "GATES_ATR_CACHE_SECONDS", 60)
+        
+        gates._atr_cache.clear()
+        
+        result = gates.atr_1m("BTC")
+        assert result == 15.5
+        mock_tick_bus.get_atr.assert_called_once_with("BTC")
+
+    def test_atr_1m_falls_back_when_tick_bus_returns_none(self, monkeypatch):
+        """atr_1m falls back to klines when tick_bus returns None (warm-up)."""
+        import gates
+        mock_tick_bus = Mock()
+        mock_tick_bus.get_atr.return_value = None  # warm-up
+        monkeypatch.setattr(gates, "TICK_BUS_AVAILABLE", True)
+        monkeypatch.setattr(gates, "tick_bus", mock_tick_bus)
+        monkeypatch.setattr(config, "USE_TICK_BUS", True)
+        monkeypatch.setattr(config, "GATES_ATR_LOOKBACK", 2)  # small lookback for test
+        
+        # Mock binance_feed klines (need lookback + 1 = 3 candles)
+        mock_klines = [
+            [0, 0, 101000.0, 99000.0, 100000.0, 0],  # first
+            [0, 0, 100500.0, 99500.0, 100200.0, 0],  # second
+            [0, 0, 100300.0, 99300.0, 100100.0, 0],  # third
+        ]
+        with patch.object(gates.binance_feed, "get_klines", return_value=mock_klines):
+            gates._atr_cache.clear()
+            result = gates.atr_1m("BTC")
+            assert result is not None
+            assert result > 0
+
+    def test_sigma_per_min_prefers_tick_bus_when_enabled(self, monkeypatch):
+        """sigma_per_min returns tick_bus sigma when USE_TICK_BUS=true and tick_bus available."""
+        import gates
+        mock_tick_bus = Mock()
+        mock_tick_bus.get_sigma.return_value = 0.0025
+        monkeypatch.setattr(gates, "TICK_BUS_AVAILABLE", True)
+        monkeypatch.setattr(gates, "tick_bus", mock_tick_bus)
+        monkeypatch.setattr(config, "USE_TICK_BUS", True)
+        monkeypatch.setattr(config, "GATES_SIGMA_CACHE_SECONDS", 60)
+        
+        gates._sigma_cache.clear()
+        
+        result = gates.sigma_per_min("BTC")
+        assert result == 0.0025
+        mock_tick_bus.get_sigma.assert_called_once_with("BTC")
+
+    def test_sigma_per_min_falls_back_when_tick_bus_returns_none(self, monkeypatch):
+        """sigma_per_min falls back to composite_sigma when tick_bus returns None."""
+        import gates
+        mock_tick_bus = Mock()
+        mock_tick_bus.get_sigma.return_value = None  # warm-up
+        monkeypatch.setattr(gates, "TICK_BUS_AVAILABLE", True)
+        monkeypatch.setattr(gates, "tick_bus", mock_tick_bus)
+        monkeypatch.setattr(config, "USE_TICK_BUS", True)
+        
+        with patch.object(gates.binance_feed, "composite_sigma", return_value=0.0015):
+            gates._sigma_cache.clear()
+            result = gates.sigma_per_min("BTC")
+            assert result == 0.0015
+
+
+class TestBRTIGate:
+    """T15-11: BRTI locked-share gate (Gate 6) tests."""
+
+    def test_brti_gate_enabled_without_tracker_fails_closed(self, monkeypatch):
+        """GATES_BRTI_ENABLED=true without brti_tracker module fails closed."""
+        import gates
+        monkeypatch.setattr(config, "GATES_BRTI_ENABLED", True)
+        monkeypatch.setattr(gates, "BRTI_TRACKER_AVAILABLE", False)
+        
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        
+        with patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=None,
+                side="yes", entry_price_cents=95)
+        assert res.allowed is False
+        assert any("gate6" in r and "module unavailable" in r for r in res.reasons)
+        assert res.metrics.get("brti_available") is False
+
+    def test_brti_gate_proxy_unavailable_fails_closed(self, monkeypatch):
+        """BRTI proxy unavailable during warm-up fails closed."""
+        import gates
+        monkeypatch.setattr(config, "GATES_BRTI_ENABLED", True)
+        monkeypatch.setattr(gates, "BRTI_TRACKER_AVAILABLE", True)
+        
+        mock_tracker = Mock()
+        mock_tracker.get_proxy.return_value = None  # proxy unavailable
+        monkeypatch.setattr(gates.brti_tracker, "get_brti_tracker", Mock(return_value=mock_tracker))
+        
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        
+        with patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=None,
+                side="yes", entry_price_cents=95)
+        assert res.allowed is False
+        assert any("gate6" in r and "proxy unavailable" in r for r in res.reasons)
+        assert res.metrics.get("brti_available") is False
+
+    def test_brti_gate_insufficient_samples_blocks(self, monkeypatch):
+        """BRTI proxy with insufficient samples in 60s window blocks entry."""
+        import gates
+        monkeypatch.setattr(config, "GATES_BRTI_ENABLED", True)
+        monkeypatch.setattr(gates, "BRTI_TRACKER_AVAILABLE", True)
+        monkeypatch.setattr(config, "GATES_BRTI_MIN_SAMPLES", 30)
+        
+        mock_proxy = Mock()
+        mock_proxy.samples_in_window = 10  # below minimum
+        mock_proxy.cross_venue_deviation_bps = 10.0
+        mock_proxy.staleness_flag = False
+        mock_proxy.current_average = 100000.0
+        
+        mock_tracker = Mock()
+        mock_tracker.get_proxy.return_value = mock_proxy
+        monkeypatch.setattr(gates.brti_tracker, "get_brti_tracker", Mock(return_value=mock_tracker))
+        
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        
+        with patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=None,
+                side="yes", entry_price_cents=95)
+        assert res.allowed is False
+        assert any("gate6" in r and "samples" in r for r in res.reasons)
+        assert res.metrics.get("brti_available") is True
+        assert res.metrics.get("brti_samples") == 10
+
+    def test_brti_gate_high_deviation_blocks(self, monkeypatch):
+        """BRTI proxy with cross-venue deviation above threshold blocks entry."""
+        import gates
+        monkeypatch.setattr(config, "GATES_BRTI_ENABLED", True)
+        monkeypatch.setattr(gates, "BRTI_TRACKER_AVAILABLE", True)
+        monkeypatch.setattr(config, "GATES_BRTI_MIN_SAMPLES", 30)
+        monkeypatch.setattr(config, "GATES_BRTI_MAX_DEVIATION_BPS", 50.0)
+        
+        mock_proxy = Mock()
+        mock_proxy.samples_in_window = 45
+        mock_proxy.cross_venue_deviation_bps = 100.0  # above threshold
+        mock_proxy.staleness_flag = False
+        mock_proxy.current_average = 100000.0
+        
+        mock_tracker = Mock()
+        mock_tracker.get_proxy.return_value = mock_proxy
+        monkeypatch.setattr(gates.brti_tracker, "get_brti_tracker", Mock(return_value=mock_tracker))
+        
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        
+        with patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=None,
+                side="yes", entry_price_cents=95)
+        assert res.allowed is False
+        assert any("gate6" in r and "deviation" in r for r in res.reasons)
+        assert res.metrics.get("brti_deviation_bps") == 100.0
+
+    def test_brti_gate_staleness_flag_blocks(self, monkeypatch):
+        """BRTI proxy with staleness flag raised blocks entry."""
+        import gates
+        monkeypatch.setattr(config, "GATES_BRTI_ENABLED", True)
+        monkeypatch.setattr(gates, "BRTI_TRACKER_AVAILABLE", True)
+        monkeypatch.setattr(config, "GATES_BRTI_MIN_SAMPLES", 30)
+        monkeypatch.setattr(config, "GATES_BRTI_MAX_DEVIATION_BPS", 50.0)
+        
+        mock_proxy = Mock()
+        mock_proxy.samples_in_window = 45
+        mock_proxy.cross_venue_deviation_bps = 10.0
+        mock_proxy.staleness_flag = True  # stale
+        mock_proxy.current_average = 100000.0
+        
+        mock_tracker = Mock()
+        mock_tracker.get_proxy.return_value = mock_proxy
+        monkeypatch.setattr(gates.brti_tracker, "get_brti_tracker", Mock(return_value=mock_tracker))
+        
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        
+        with patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=None,
+                side="yes", entry_price_cents=95)
+        assert res.allowed is False
+        assert any("gate6" in r and "staleness" in r for r in res.reasons)
+
+    def test_brti_gate_allows_when_all_checks_pass(self, monkeypatch):
+        """BRTI gate allows entry when all checks pass."""
+        import gates
+        monkeypatch.setattr(config, "GATES_BRTI_ENABLED", True)
+        monkeypatch.setattr(gates, "BRTI_TRACKER_AVAILABLE", True)
+        monkeypatch.setattr(config, "GATES_BRTI_MIN_SAMPLES", 30)
+        monkeypatch.setattr(config, "GATES_BRTI_MAX_DEVIATION_BPS", 50.0)
+        
+        mock_proxy = Mock()
+        mock_proxy.samples_in_window = 45
+        mock_proxy.cross_venue_deviation_bps = 10.0
+        mock_proxy.staleness_flag = False
+        mock_proxy.current_average = 100000.0
+        
+        mock_tracker = Mock()
+        mock_tracker.get_proxy.return_value = mock_proxy
+        monkeypatch.setattr(gates.brti_tracker, "get_brti_tracker", Mock(return_value=mock_tracker))
+        
+        market = MockMarket(strike=95000.0, minutes_left=8.0)
+        spot_state = {"spot": 100000.0, "sigma_per_min": 0.001, "atr_1m": 10.0}
+        
+        with patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_SHADOW_MODE", False), \
+             patch.object(config, "GATES_BOOK_AGE_ENABLED", False):
+            res = gates.evaluate_entry(
+                market, spot_state=spot_state, orderbook=None,
+                side="yes", entry_price_cents=95)
+        assert res.allowed is True
+        assert not any("gate6" in r for r in res.reasons)
+        assert res.metrics.get("brti_available") is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

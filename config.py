@@ -368,6 +368,14 @@ GATES_SIGMA_FROM_ATR_V2 = _env_bool("GATES_SIGMA_FROM_ATR_V2", False)
 # bot out of the market, but a long outage still blocks entries visibly.
 GATES_STALE_OK_SECONDS = _env_int("GATES_STALE_OK_SECONDS", 300)
 
+# T15-10: Event-driven tick bus (Binance WS + Coinbase WS) for spot/ATR/sigma
+# Default off; enable with USE_TICK_BUS=true after starting tick_bus.py service
+USE_TICK_BUS = _env_bool("USE_TICK_BUS", False)
+
+# T15-11: BRTI tracker for settlement-index reference (60s running average)
+# Default off; enable with USE_BRTI_TRACKER=true after starting brti_tracker.py service
+USE_BRTI_TRACKER = _env_bool("USE_BRTI_TRACKER", False)
+
 # Momentum gate (Coinbase lead/lag exploitation)
 # Coinbase spot momentum (change_5m + velocity_1m aligned) leads Kalshi
 # KXBTC15M pricing — when aligned, Kalshi lags the move, creating an edge.
@@ -391,6 +399,16 @@ GATES_KL_WATCH_THRESHOLD = _env_float("GATES_KL_WATCH_THRESHOLD", 0.05)  # WATCH
 # A stale book means the prices we're scoring against may have moved.
 GATES_BOOK_AGE_ENABLED = _env_bool("GATES_BOOK_AGE_ENABLED", True)
 GATES_MAX_BOOK_AGE_SECONDS = _env_float("GATES_MAX_BOOK_AGE_SECONDS", 5.0)
+
+# T15-11: BRTI locked-share gate (Gate 6) — ensures model prices the 60s
+# running average near expiry (locked share) rather than last tick. Kalshi
+# settles on CF Benchmarks BRTI 60s average. The model must use the same
+# averaging logic or it prices a different random variable.
+# This gate verifies the BRTI proxy is available and within acceptable deviation
+# from the model's sigma/vol estimate.
+GATES_BRTI_ENABLED = _env_bool("GATES_BRTI_ENABLED", False)
+GATES_BRTI_MAX_DEVIATION_BPS = _env_float("GATES_BRTI_MAX_DEVIATION_BPS", 50.0)  # max proxy-vs-settlement error
+GATES_BRTI_MIN_SAMPLES = _env_int("GATES_BRTI_MIN_SAMPLES", 30)  # min samples in 60s window
 
 # Local DB → Supabase background sync interval. Trading bots need fast crash
 # protection: a 5-minute sync window can lose up to 5 minutes of P&L/state on

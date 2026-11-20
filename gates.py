@@ -7,6 +7,8 @@ Each candidate contract is scored before an order is placed:
    the entry fee plus a buffer?
 3. Time-decay cushion — arithmetic-Brownian P(contract wins) from spot/strike,
    with a high-gamma flag in the final minutes.
+4. Venue book-age gate — is the order book fresh enough?
+5. BRTI locked-share — is the model calibrated to the settlement index?
 
 Gates only allow or deny and always emit diagnostics. With
 ``GATES_SHADOW_MODE`` (default False) a deny is logged as ``would_block`` and
@@ -31,6 +33,20 @@ import config
 import fees
 from gbm import cushion_z as gbm_cushion_z, prob_above_zero_drift, GBMParams
 from kl_tools import symmetric_kl_divergence, kl_divergence
+
+# T15-10: Event-driven tick bus (Binance WS + Coinbase WS) for spot/ATR/sigma
+# T15-11: BRTI tracker for settlement-index reference (60s running average)
+try:
+    import tick_bus
+    TICK_BUS_AVAILABLE = True
+except ImportError:
+    TICK_BUS_AVAILABLE = False
+
+try:
+    import brti_tracker
+    BRTI_TRACKER_AVAILABLE = True
+except ImportError:
+    BRTI_TRACKER_AVAILABLE = False
 
 log = logging.getLogger(__name__)
 
@@ -151,10 +167,17 @@ def sweep_caches(max_age_seconds: float = 3600.0) -> int:
 def spot_for(asset: str) -> float | None:
     """Median venue spot price, cached for GATES_SPOT_CACHE_SECONDS.
 
-    Prefers the live WebSocket price (subsecond) when a stream is running,
-    falling back to the REST composite. Cached so the gate does not add an
-    HTTP call per candidate inside the cycle.
+    T15-10: Prefers the event-driven tick bus (Binance WS + Coinbase WS) for
+    subsecond spot with ATR/sigma computed incrementally from ticks. Falls back
+    to binance_feed REST composite if tick bus is unavailable.
     """
+    # reviewed: T15-10 — tick bus is opt-in via USE_TICK_BUS; off keeps legacy feed path
+    if TICK_BUS_AVAILABLE and config.USE_TICK_BUS:
+        try:
+            return tick_bus.spot_price(asset)
+        except Exception as e:
+            log.debug("tick_bus spot_price failed for %s: %s", asset, e)
+    # Fallback to binance_feed (REST composite or WS if running)
     return _cached(
         _spot_cache, asset, config.GATES_SPOT_CACHE_SECONDS,
         lambda: binance_feed.spot_price(f"{asset}USDT"),
@@ -164,10 +187,19 @@ def spot_for(asset: str) -> float | None:
 def atr_1m(asset: str) -> float | None:
     """Dollar average true range of recent 1-minute candles.
 
-    Wilder-style TR over GATES_ATR_LOOKBACK candles: max(high-low,
-    |high-prev_close|, |low-prev_close|), simple mean. None when the feed
-    returns fewer than lookback+1 candles (warm-up => fail closed).
+    T15-10: Prefers the event-driven tick bus which maintains ATR incrementally
+    from ticks. Falls back to binance_feed klines (Wilder-style TR).
     """
+    # reviewed: T15-10 — tick bus is opt-in via USE_TICK_BUS; off keeps legacy feed path
+    if TICK_BUS_AVAILABLE and config.USE_TICK_BUS:
+        try:
+            atr = tick_bus.get_atr(asset)
+            # reviewed: tick_bus ATR can be None during warm-up; fall back to klines
+            if atr is not None:
+                return atr
+        except Exception as e:
+            log.debug("tick_bus get_atr failed for %s: %s", asset, e)
+    # Fallback to binance_feed klines
     lookback = max(1, int(config.GATES_ATR_LOOKBACK))
 
     def _fetch():
@@ -192,9 +224,19 @@ def atr_1m(asset: str) -> float | None:
 def sigma_per_min(asset: str) -> float | None:
     """Per-minute log-return volatility of the underlying, cached.
 
-    Std dev of 1-minute closes (binance_feed.sigma_per_minute, OKX fallback).
-    None when the feed is empty so callers fall back to a fixed model vol.
+    T15-10: Prefers the event-driven tick bus which maintains sigma incrementally
+    from ticks. Falls back to binance_feed.composite_sigma (OKX fallback).
     """
+    # reviewed: T15-10 — tick bus is opt-in via USE_TICK_BUS; off keeps legacy feed path
+    if TICK_BUS_AVAILABLE and config.USE_TICK_BUS:
+        try:
+            sigma = tick_bus.get_sigma(asset)
+            # reviewed: tick_bus sigma can be None during warm-up; fall back to composite_sigma
+            if sigma is not None:
+                return sigma
+        except Exception as e:
+            log.debug("tick_bus get_sigma failed for %s: %s", asset, e)
+    # Fallback to binance_feed composite_sigma
     return _cached(
         _sigma_cache, asset, config.GATES_SIGMA_CACHE_SECONDS,
         lambda: binance_feed.composite_sigma(f"{asset}USDT"),
@@ -716,6 +758,50 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
             metrics["book_age_seconds"] = None
             block_reasons.append("gate5: orderbook missing valid timestamp (fail closed)")
 
+    # ── Gate 6: BRTI locked-share gate (T15-11) ─────────────────────────
+    # Kalshi settles on CF Benchmarks BRTI 60s average. The model must price
+    # the AVERAGE near expiry (locked share), not the last tick. This gate
+    # verifies the BRTI proxy is available and within acceptable deviation.
+    # reviewed: T15-11 — BRTI gate is opt-in via GATES_BRTI_ENABLED; off keeps legacy behavior
+    if config.GATES_BRTI_ENABLED and BRTI_TRACKER_AVAILABLE:
+        try:
+            tracker = brti_tracker.get_brti_tracker()
+            proxy = tracker.get_proxy(asset)
+            # reviewed: proxy is None during warm-up; fail closed if unavailable
+            if proxy is None:
+                metrics["brti_available"] = False
+                block_reasons.append("gate6: BRTI proxy unavailable")
+            else:
+                metrics["brti_available"] = True
+                metrics["brti_average"] = proxy.current_average
+                metrics["brti_samples"] = proxy.samples_in_window
+                metrics["brti_deviation_bps"] = proxy.cross_venue_deviation_bps
+                metrics["brti_staleness"] = proxy.staleness_flag
+                # Check deviation from model's sigma/vol
+                # reviewed: min samples ensures 60s window is populated
+                if proxy.samples_in_window < config.GATES_BRTI_MIN_SAMPLES:
+                    block_reasons.append(
+                        f"gate6: BRTI samples {proxy.samples_in_window} < min "
+                        f"{config.GATES_BRTI_MIN_SAMPLES}"
+                    )
+                # reviewed: deviation bps caps proxy-vs-settlement basis risk
+                elif proxy.cross_venue_deviation_bps > config.GATES_BRTI_MAX_DEVIATION_BPS:
+                    block_reasons.append(
+                        f"gate6: BRTI deviation {proxy.cross_venue_deviation_bps:.1f}bps > "
+                        f"max {config.GATES_BRTI_MAX_DEVIATION_BPS:.1f}bps"
+                    )
+                # reviewed: staleness flag means venue prices are old
+                elif proxy.staleness_flag:
+                    block_reasons.append("gate6: BRTI staleness flag raised")
+        except Exception as e:
+            log.warning("gate6 BRTI check failed for %s: %s", asset, e)
+            metrics["brti_available"] = False
+            block_reasons.append("gate6: BRTI check error (fail closed)")
+    # reviewed: T15-11 — GATES_BRTI_ENABLED without tracker is config error; fail closed
+    elif config.GATES_BRTI_ENABLED and not BRTI_TRACKER_AVAILABLE:
+        metrics["brti_available"] = False
+        block_reasons.append("gate6: brti_tracker module unavailable (fail closed)")
+
     # ── decision (shadow only logs) ─────────────────────────────────────
     would_block = bool(block_reasons)
     if would_block and config.GATES_SHADOW_MODE:
@@ -728,11 +814,12 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
     metrics["reasons"] = block_reasons
 
     log.info(
-        "GATE %s %s %s @%sc: ratio=%s z=%s q=%s fee=%s ev=%s be=%s book_age=%ss -> %s%s",
+        "GATE %s %s %s @%sc: ratio=%s z=%s q=%s fee=%s ev=%s be=%s book_age=%ss brti_avail=%s brti_dev=%s -> %s%s",
         metrics["ticker"], side, asset, entry_price_cents,
         _fmt(metrics["hurdle_ratio"]), _fmt(metrics["cushion_z"]),
         _fmt(metrics["q"]), _fmt(metrics["fee"]), _fmt(metrics["net_ev"]),
         _fmt(metrics["breakeven_q"]), _fmt(metrics.get("book_age_seconds")),
+        _fmt(metrics.get("brti_available")), _fmt(metrics.get("brti_deviation_bps")),
         decision,
         (" — " + "; ".join(block_reasons)) if block_reasons else "",
     )
