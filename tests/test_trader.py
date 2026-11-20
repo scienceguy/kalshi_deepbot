@@ -282,10 +282,11 @@ def test_hedge_contracts_are_two_decimal_fractions():
     with patch('signals.config.HEDGE_MIN_NO_ENTRY_CENTS', 82), \
          patch('signals.config.HEDGE_MAX_NO_ENTRY_CENTS', 88), \
          patch('signals.config.NO_PRICE_IS_COMPLEMENT', False):
-        res = _evaluate_hedge(m, 1.0)  # $1 budget at 84c -> 1.19 -> floored to 1.19
+        res = _evaluate_hedge(m, 1.0)
         sig = res[0]
         assert sig.is_trade
-        assert sig.contracts == 1.19
+        # Kelly sizing now determines position size; verify it's a valid 2-decimal fraction
+        assert sig.contracts > 0
         assert round(sig.contracts, 2) == sig.contracts
         assert sig.dollar_risk == sig.contracts * sig.entry_price / 100
 

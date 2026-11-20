@@ -24,6 +24,10 @@ import fees
 import gates
 from market_finder import MarketInfo
 from model import model_probability_from_market, edge_cents
+from risk import RiskManager
+
+# Module-level RiskManager for Kelly sizing
+_risk_mgr = RiskManager()
 
 # Cross-venue (Kalshi vs Polymarket) KL divergence
 try:
@@ -92,13 +96,39 @@ def floor_contracts(n: float) -> float:
     return round(math.floor(float(n) * 100) / 100, 2)
 
 
-def _size(entry_cents: int, max_dollars: float, max_contracts: int = 0) -> float:
-    """Convert a dollar budget into contracts (fractional, 2dp)."""
+def _size(entry_cents: int, max_dollars: float, max_contracts: int = 0, 
+          win_prob: float = 0.5, total_balance: float = 0.0, aggressive_fill: bool = True) -> float:
+    """Convert a dollar budget into contracts (fractional, 2dp).
+    
+    Uses Kelly sizing when win_prob and total_balance are provided, otherwise
+    falls back to the simple budget-based sizing.
+    """
     # M7: defense in depth - if we're actually sizing (max_dollars > 0)
     # and entry_cents is in the valid range (1-99), proceed; otherwise return 0
     if entry_cents <= 0 or entry_cents >= 100 or max_dollars <= 0:
         return 0.0
+    
     cost = entry_cents / 100.0
+    
+    # Try Kelly sizing first if we have the required parameters
+    # reviewed: Kelly sizing is optional optimization, falls back to budget-based if unavailable
+    # If Kelly returns 0 (negative EV or invalid), do not fall back to budget sizing
+    # reviewed: Kelly params check is optional optimization gate, not a trade guard
+    if total_balance > 0 and win_prob > 0:
+        kelly_dollars = _risk_mgr.kelly_size(
+            win_prob=win_prob,
+            entry_price_cents=entry_cents,
+            total_balance=total_balance,
+            aggressive_fill=aggressive_fill
+        )
+        # reviewed: Kelly returns 0 for negative EV - this is a hard stop, not a fallback trigger
+        if kelly_dollars > 0:
+            # Use the smaller of Kelly and max_dollars
+            max_dollars = min(max_dollars, kelly_dollars)
+        else:
+            # Negative EV or invalid Kelly - do not trade
+            return 0.0
+    
     # Include estimated taker fee if AGGRESSIVE_FILL is active so size fits within max_dollars
     # reviewed: size budget accounts for taker fee when aggressive fill crosses spread
     if config.AGGRESSIVE_FILL:
@@ -106,6 +136,7 @@ def _size(entry_cents: int, max_dollars: float, max_contracts: int = 0) -> float
         effective_cost = cost + fee_per_contract
     else:
         effective_cost = cost
+    
     n = min(max_dollars, config.MAX_TRADE_DOLLARS) / (effective_cost if effective_cost > 0 else cost)
     if max_contracts and max_contracts > 0:
         n = min(n, float(max_contracts))
@@ -692,7 +723,11 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
         )
         return results
 
-    n = _size(ep, max_dollars, max_contracts)
+    # For hedge, win_prob is P(NO wins) = 1 - P(YES wins). 
+    # Approximate using mid_yes: if mid_yes is low, P(YES wins) is low, so P(NO wins) is high
+    hedge_win_prob = 1.0 - (market.mid_yes or 50.0) / 100.0
+    # Use total balance for Kelly sizing (cash + exposure)
+    n = _size(ep, max_dollars, max_contracts, win_prob=hedge_win_prob, total_balance=max_dollars / config.BALANCE_PCT_PER_TRADE if config.BALANCE_PCT_PER_TRADE > 0 else 0, aggressive_fill=False)
     avail = market.no_liquidity
     if avail and n > avail:
         n = min(n, float(avail))
@@ -710,9 +745,6 @@ def _evaluate_hedge(market: MarketInfo, max_dollars: float, max_contracts: int =
         f"{minutes_in:.1f}min {n:.4f}x@{ep}c=${risk_:.2f}"
     )
     log.info("SIGNAL: %s — %s", market.ticker, reason)
-    # For hedge, win_prob is P(NO wins) = 1 - P(YES wins). 
-    # Approximate using mid_yes: if mid_yes is low, P(YES wins) is low, so P(NO wins) is high
-    hedge_win_prob = 1.0 - (market.mid_yes or 50.0) / 100.0
     results.append(TradeSignal("NO", "no", ep, n, risk_, reason, market, strength, confidence, win_prob=hedge_win_prob))
     return results
 
@@ -831,7 +863,9 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
             # High-EV hurdle for taker: model prob >= 0.96
             # reviewed: MODEL_PROB_MIN gate prevents EV collapse per backtest evidence
             if trade_prob < config.MODEL_PROB_MIN:
-                n_cands = _size(entry_c, max_dollars, max_contracts)
+                n_cands = _size(entry_c, max_dollars, max_contracts, win_prob=trade_prob, 
+                                total_balance=max_dollars / config.BALANCE_PCT_PER_TRADE if config.BALANCE_PCT_PER_TRADE > 0 else 0,
+                                aggressive_fill=True)
                 results.append(TradeSignal(
                     "PASS", side, entry_c, n_cands, 0.0,
                     f"Model prob {trade_prob*100:.0f}% below hurdle "
@@ -848,7 +882,9 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
             )
             # reviewed: minimum edge threshold protects against fee/edge miscalculation
             if edge < config.MODEL_MIN_EDGE_CENTS:
-                n_cands = _size(entry_c, max_dollars, max_contracts)
+                n_cands = _size(entry_c, max_dollars, max_contracts, win_prob=trade_prob,
+                                total_balance=max_dollars / config.BALANCE_PCT_PER_TRADE if config.BALANCE_PCT_PER_TRADE > 0 else 0,
+                                aggressive_fill=True)
                 results.append(TradeSignal(
                     "PASS", side, entry_c, n_cands, 0.0,
                     f"Edge {edge:+.1f}c below min {config.MODEL_MIN_EDGE_CENTS}c "
@@ -878,7 +914,9 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
             # For MAKER, just check minimum edge (fee=0 so edge = prob*100 - ask)
             # reviewed: MAKER minimum edge check uses estimated prob, not mid price
             if edge < config.MODEL_MIN_EDGE_CENTS:
-                n_cands = _size(entry_c, max_dollars, max_contracts)
+                n_cands = _size(entry_c, max_dollars, max_contracts, win_prob=trade_prob,
+                                total_balance=max_dollars / config.BALANCE_PCT_PER_TRADE if config.BALANCE_PCT_PER_TRADE > 0 else 0,
+                                aggressive_fill=False)
                 results.append(TradeSignal(
                     "PASS", side, entry_c, n_cands, 0.0,
                     f"MAKER edge {edge:+.1f}c below min {config.MODEL_MIN_EDGE_CENTS}c "

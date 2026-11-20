@@ -30,6 +30,31 @@ def test_size_basic():
     assert result == 6.0
 
 
+def test_size_with_kelly():
+    """Kelly sizing caps position when win_prob and total_balance provided."""
+    config.MAX_TRADE_DOLLARS = 10.0
+    # Temporarily lower MIN_EV_EDGE_PCT for this test
+    original_min_ev = config.MIN_EV_EDGE_PCT
+    config.MIN_EV_EDGE_PCT = 0.005
+    try:
+        # High win prob (0.99) at 98c entry with $100 balance
+        # profit=2c, loss=98c, b=2/98, p=0.99, q=0.01
+        # Kelly = p - q/b = 0.99 - 0.01*49 = 0.50
+        # With KELLY_FRACTION=0.25 -> 0.125 * 100 = 12.5, capped at 10.0
+        result = _size(98, 10.0, win_prob=0.99, total_balance=100.0, aggressive_fill=True)
+        assert result > 0
+        assert round(result, 2) == result  # 2 decimal places
+        # Test with low win prob - at 50c with 50% win prob, EV is 0 (minus fees)
+        # Kelly returns 0 for negative EV
+        result_low = _size(50, 10.0, win_prob=0.5, total_balance=100.0, aggressive_fill=True)
+        assert result_low == 0.0
+        # Test without Kelly params falls back to budget-based
+        result_budget = _size(50, 5.0)
+        assert result_budget == 10.0  # 5.0 / 0.50 = 10.0
+    finally:
+        config.MIN_EV_EDGE_PCT = original_min_ev
+
+
 def test_maker_price_clamp():
     """Prices must be 1-99."""
     market = MagicMock()
