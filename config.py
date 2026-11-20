@@ -393,12 +393,25 @@ GATES_MOMENTUM_CACHE_SECONDS = _env_int("GATES_MOMENTUM_CACHE_SECONDS", 30)
 GATES_KL_ENABLED = _env_bool("GATES_KL_ENABLED", True)
 GATES_KL_ARB_THRESHOLD = _env_float("GATES_KL_ARB_THRESHOLD", 0.15)  # ARB flag threshold
 GATES_KL_WATCH_THRESHOLD = _env_float("GATES_KL_WATCH_THRESHOLD", 0.05)  # WATCH flag threshold
+GATES_KL_BLOCK_THRESHOLD = _env_float("GATES_KL_BLOCK_THRESHOLD", 0.15)  # BLOCK threshold for decision.py
 
 # Book age gate: reject entries when the venue orderbook is stale.
 # Orderbook age is measured from the venue's timestamp (or WS message receipt).
 # A stale book means the prices we're scoring against may have moved.
 GATES_BOOK_AGE_ENABLED = _env_bool("GATES_BOOK_AGE_ENABLED", True)
 GATES_MAX_BOOK_AGE_SECONDS = _env_float("GATES_MAX_BOOK_AGE_SECONDS", 5.0)
+
+# T15-21: Fair-value engine (maker vs taker)
+# Enables the fair-value computation that combines model probability,
+# fee structure, and fill model to produce actionable EV for both paths.
+FAIR_VALUE_ENABLED = _env_bool("FAIR_VALUE_ENABLED", True)
+FAIR_VALUE_MIN_EV = _env_float("FAIR_VALUE_MIN_EV", 0.001)  # min EV dollars/contract
+
+# T15-25: Calibration breaker
+# Blocks trades when model calibration (Brier score) exceeds threshold.
+CALIBRATION_BREAKER_ENABLED = _env_bool("CALIBRATION_BREAKER_ENABLED", True)
+CALIBRATION_BRIER_THRESHOLD = _env_float("CALIBRATION_BRIER_THRESHOLD", 0.20)  # max Brier score
+CALIBRATION_BRIER_SCORE = _env_float("CALIBRATION_BRIER_SCORE", None)  # current Brier (set by monitor)
 
 # T15-11: BRTI locked-share gate (Gate 6) — ensures model prices the 60s
 # running average near expiry (locked share) rather than last tick. Kalshi
