@@ -212,7 +212,7 @@ def test_bridge_ack_event_enqueues_without_writer(monkeypatch):
     item = bridge._outbound.get_nowait()
     cmd_type, subtype, payload = item[0], item[1], item[2]
     assert cmd_type == "ack" and subtype == "ack"
-    assert payload == {"event_id": "evt_c1_ack_enqueue", "body": "hi"}
+    assert payload == {"event_id": "evt_c1_ack_enqueue", "body": "hi", "status": "claimed"}
 
 
 def test_http_status_and_healthz(monkeypatch):
