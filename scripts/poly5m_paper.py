@@ -26,6 +26,20 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import binance_feed  # noqa: E402
 
+# M1: MemPalace bridge for agent coordination
+try:
+    import agent_identity
+    import mempalace_bridge
+    _MP_BRIDGE = mempalace_bridge.get_default_bridge(agent_identity.POLY_US_PAPER)
+    _MP_BRIDGE.start()
+    _MP_AVAILABLE = True
+except Exception as e:
+    _MP_BRIDGE = None
+    _MP_AVAILABLE = False
+    print(f"MemPalace bridge unavailable: {e} — running without coordination", file=sys.stderr)
+
+MP_CHECKPOINT_EVERY = int(os.environ.get("MEMPALACE_CHECKPOINT_INTERVAL", 5))
+
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 TF = os.environ.get("POLY_TF", "5m")   # "5m" or "15m" (both exist; 15m matches Kalshi)
@@ -71,6 +85,47 @@ def append(path, rec):
         f.write(json.dumps(rec) + "\n")
 
 
+def _mp_sweep_tasks():
+    """Sweep MemPalace inbox for task.request events addressed to this agent."""
+    if not _MP_AVAILABLE or _MP_BRIDGE is None:
+        return
+    try:
+        for task in _MP_BRIDGE.drain_tasks():
+            print(f"MEMPALACE TASK id={task.get('event_id','')} corr={task.get('correlation_id','')} from={task.get('from_agent','')} body={(task.get('body') or '')[:200]}", flush=True)
+            try:
+                _MP_BRIDGE.ack_event(task.get("event_id", ""), "task received by poly_us_paper")
+            except Exception as e:
+                print(f"MemPalace task ack failed: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"MemPalace task sweep failed: {e}", file=sys.stderr)
+
+
+def _mp_checkpoint(cycle_num, realised_pnl, open_positions, equity):
+    """Queue an operational checkpoint to MemPalace."""
+    if not _MP_AVAILABLE or _MP_BRIDGE is None:
+        return
+    try:
+        _MP_BRIDGE.checkpoint({
+            "cycles_completed": cycle_num,
+            "session_pnl": round(realised_pnl, 4),
+            "open_positions": open_positions,
+            "equity": round(equity, 2),
+            "last_activity": datetime.now(timezone.utc).isoformat(),
+        }, correlation_id=f"paper-checkpoint-cycle-{cycle_num}")
+    except Exception as e:
+        print(f"MemPalace checkpoint failed: {e}", file=sys.stderr)
+
+
+def _mp_heartbeat(cycle_num):
+    """Queue a heartbeat to MemPalace."""
+    if not _MP_AVAILABLE or _MP_BRIDGE is None:
+        return
+    try:
+        _MP_BRIDGE.heartbeat(cycle_num)
+    except Exception as e:
+        print(f"MemPalace heartbeat failed: {e}", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval", type=int, default=15)
@@ -88,9 +143,13 @@ def main():
     realised = 0.0
     n = wins = 0
     print(f"poly5m PAPER margin={a.margin} fee={FEE} interval={a.interval}s", flush=True)
+    if _MP_AVAILABLE:
+        print(f"MemPalace bridge active: {agent_identity.POLY_US_PAPER}", flush=True)
     c = 0
     while True:
         c += 1
+        # Sweep MemPalace inbox for delegated tasks
+        _mp_sweep_tasks()
         now = time.time()
         w5 = int(now - (now % WIN_SEC))
         left = max(0.0, w5 + WIN_SEC - now)
@@ -174,10 +233,27 @@ def main():
         if c % 4 == 0:
             print(f"[{c}] w={w5} left={left:.0f}s open={len(positions)} "
                   f"settled={n} cum={realised:+.4f}", flush=True)
+        # MemPalace heartbeat every cycle, checkpoint every N cycles
+        _mp_heartbeat(c)
+        if c % MP_CHECKPOINT_EVERY == 0:
+            equity = realised  # paper mode: equity = cash (no live positions)
+            _mp_checkpoint(c, realised, len(positions), equity)
         if a.cycles and c >= a.cycles:
             break
         time.sleep(a.interval)
 
 
 if __name__ == "__main__":
+    import signal
+    def _shutdown(signum, frame):
+        print(f"Signal {signum} received — shutting down gracefully", flush=True)
+        if _MP_AVAILABLE and _MP_BRIDGE is not None:
+            try:
+                _MP_BRIDGE.stop(timeout=5.0)
+                print("MemPalace bridge stopped", flush=True)
+            except Exception as e:
+                print(f"MemPalace bridge stop failed: {e}", flush=True)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
     main()

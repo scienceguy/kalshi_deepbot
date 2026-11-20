@@ -24,9 +24,11 @@ def test_constants_are_distinct_and_well_formed():
     assert agent_identity.CODING_AGENT == "ubuntu:opencode:kalshi_deepbot"
     assert agent_identity.KALSHI_TRADER == "ubuntu:service:kalshi_trader"
     assert agent_identity.POLY_TRADER == "ubuntu:service:poly_us_trader"
+    assert agent_identity.POLY_US_PAPER == "ubuntu:service:poly_us_paper"
+    assert agent_identity.POLY_US_COLLECTOR == "ubuntu:service:poly_us_collector"
     for ident in agent_identity.ALL:
         assert re.fullmatch(r"ubuntu:[a-z_]+:[a-z0-9_]+", ident)
-    assert len(set(agent_identity.ALL)) == 3
+    assert len(set(agent_identity.ALL)) == 5
 
 
 def test_presence_topic_helper():

@@ -3291,7 +3291,8 @@ def cycle(client: KalshiClient) -> None:
 # ═════════════════════════════════════════════════════════════════════
 
 def handle_task(task: dict) -> None:
-    """Log a delegated task.request so the operator is aware of it.
+    """Log a delegated task.request so the operator is aware of it,
+    then acknowledge it on the logstream so the sender knows it was received.
 
     Security guarantee: This handler is strictly log-only and NEVER executes
     or evaluates task bodies, shell commands, or arbitrary code.
@@ -3303,6 +3304,11 @@ def handle_task(task: dict) -> None:
         task.get("from_agent", ""),
         (task.get("body") or "")[:200],
     )
+    # Acknowledge the task so the delegation loop closes (C1).
+    try:
+        _bridge.ack_event(task.get("event_id", ""), "task received by kalshi_trader")
+    except Exception as e:
+        log.debug("MemPalace task ack failed: %s", e)
 
 _handle_task = handle_task
 

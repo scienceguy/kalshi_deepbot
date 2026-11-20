@@ -827,6 +827,29 @@ class PolyUSPaperTrader:
         except Exception as e:
             log.debug("MemPalace final checkpoint failed: %s", e)
 
+    def _sweep_mempalace_tasks(self) -> None:
+        """Sweep the MemPalace inbox for task.request events addressed to this
+        agent and acknowledge them. Non-blocking; safe to call every cycle."""
+        bridge = _mp_bridge()
+        if bridge is None:
+            return
+        try:
+            for task in bridge.drain_tasks():
+                log.info(
+                    "MEMPALACE TASK id=%s corr=%s from=%s body=%s",
+                    task.get("event_id", ""),
+                    task.get("correlation_id", ""),
+                    task.get("from_agent", ""),
+                    (task.get("body") or "")[:200],
+                )
+                # Acknowledge the task so the delegation loop closes.
+                try:
+                    bridge.ack_event(task.get("event_id", ""), "task received by poly_us_trader")
+                except Exception as e:
+                    log.debug("MemPalace task ack failed: %s", e)
+        except Exception as e:
+            log.debug("MemPalace task sweep failed: %s", e)
+
     def _ledger_totals(self):
         """(net realized P&L, settlement count) recorded in the paper ledger."""
         total = 0.0
@@ -2714,6 +2737,10 @@ class PolyUSPaperTrader:
         """Run one full cycle."""
         self._cycle_requests = 0
         self.state["cycles"] = int(self.state.get("cycles", 0) or 0) + 1
+        # Sweep the MemPalace inbox for task.request events addressed to this agent.
+        # M1: bridge.drain_tasks() reads from the inbound subscriber queue
+        # (non-blocking, under 1ms).
+        self._sweep_mempalace_tasks()
         # N4: drain signed control commands from the shared local inbox.
         _drain_control_commands(self.state)
         markets = self.scan_markets()
