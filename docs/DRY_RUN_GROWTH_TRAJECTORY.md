@@ -161,3 +161,27 @@ did not get filled.
 
 (Schema note: the collector emits dollar prices like the HF parquet; a
 conversion of the pre-fix cents rows was applied once to this file.)
+
+### Settlement-index replay on the completed sample (2026-11-21 12:13–12:28Z)
+
+Second collection: **559 rows, 54 settled windows, 9 series, 2.8h span**,
+replayed as the taker variant (`scripts/dryrun_growth_sim.py --taker
+--collected`, start $100):
+
+| Gate | Signals | Fills | Win rate | Total PnL |
+|---|---|---|---|---|
+| Raw feed (no index terms) | 1 | 1 | 100% | +$0.58 |
+| Index-corrected (bias −13.15bps, dispersion 17.5bps, both measured) | 0 | 0 | — | $0.00 |
+
+One clean pass (`KXXRP15M-26NOV210530-30`, minute 11, yes@97c, depth 60) is
+n=1 — it cannot support the +1.03c/trade edge the 2026-11-12 REALITY TAX note
+measured on the HF set. With the settlement index priced in — the CF
+Benchmarks BRTI 60s average the contracts actually settle on, measured
+−13.15bps below the feed over 45 windows with 17–20bps cross-venue
+dispersion — the gate finds nothing. The apparent taker edge is a
+data-source mismatch, not an edge: the model was scoring the venue mid, and
+the ask sits above that. **$3.25M remains honestly unreachable at the
+currently measured edge.** A strategy change needs a demonstrated positive
+edge against the settlement index first; the maker variant is dead by
+adverse selection (REALITY TAX: fill rate 36.5%, win rate drops 96.7% →
+91.2% on fills).
