@@ -139,3 +139,25 @@ sit on 0–30 contracts of our-side depth and `risk.check_liquidity`
 table above are therefore still **optimistic on the liquidity axis**: real
 top-of-book depth at these prices is thinner than the single HF volume column
 implied. The live-data replay is the trustworthy one.
+
+### Measured on today's live fill data (2026-11-21 07:24–08:59Z)
+
+Full collection: **905 rows, 63 settled windows, 9 series, 5.25h span**
+(41 settled NO / 13 YES). Replayed through the same code paths
+(`--collected`, start $100):
+
+| Config | Signals attempted | Fills | Fill rate | Total PnL | Final equity |
+|---|---|---|---|---|---|
+| Maker, production dry-run guards | 7 | 0 | 0% | $0.00 | $100.00 |
+| Maker, `--paper-experiment` knobs | 7 | 0 | 0% | $0.00 | $100.00 |
+
+Zero fills: the resting maker bids (ask−1) were never crossed by the live book
+inside those windows, and in-band minutes mostly carried 0–30 contracts of
+our-side depth, so `check_liquidity` refused most of them. This is the
+strategy's actual live behaviour — consistent with the 81-day replay's
+−3.2c/contract and with the 2026-11-12 REALITY TAX adverse-selection
+measurement. Over this sample the strategy neither earned nor lost; it simply
+did not get filled.
+
+(Schema note: the collector emits dollar prices like the HF parquet; a
+conversion of the pre-fix cents rows was applied once to this file.)

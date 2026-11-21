@@ -21,10 +21,12 @@ ALL AGENT_TASKSv15 pillars (T15-60 through T15-71) **COMPLETE**
 - Dry-run growth measured on 81 days of live orderbook data
   (`docs/DRY_RUN_GROWTH_TRAJECTORY.md` v2): with the fill rule corrected to
   `trader._dry_run_fill_count` semantics, **both maker configs are negative-EV**
-  (paper knobs −$25.23, production guards −$5.06); the earlier +$128 result
-  was a fabricated-fill bug and is **retracted**. There is **no compounding
-  path** to the $3.25M target at this edge — it requires a strategy change
-  (a calibrated vol gate or a different venue), not a sizing change.
+  (paper knobs −$25.23, production guards −$5.06), and on **today's live fill
+  data** (905 rows, 63 settled windows) the same strategy recorded **0 fills of
+  7 signals** — the earlier +$128 result was a fabricated-fill bug and is
+  **retracted**. There is **no compounding path** to the $3.25M target at this
+  edge — it requires a strategy change (a calibrated vol gate or a different
+  venue), not a sizing change.
 - Kill-switch verified end-to-end 2026-11-21 (pause persists, single-key
   resume rejected while risk-halted, two-key resume applies; audit trail in
   `control_inbox`); the real dry-run loop was exercised in an isolated data
@@ -186,12 +188,21 @@ $ python -c "from local_db import LocalDB; db=LocalDB(auto_sync=False); print(db
 Dry-run growth simulation against live orderbook history (81 days,
 76,507 windows, 15 series; `scripts/dryrun_growth_sim.py`, trades recorded in
 `$TMPDIR/drysim_trades.json`, write-up in `docs/DRY_RUN_GROWTH_TRAJECTORY.md`
-with the full method and the v1-fill-rule retraction):
+with the full method and the v1-fill-rule retraction) and against **today's
+live fill data** (905 rows, 63 settled windows, 5.25h span, collected by
+`scripts/live_book_collector.py` 2026-11-21 07:24–08:59Z):
 
-| Config | Fills / signals | Win | PnL (81d) | Final equity | Max DD |
+| Config | Fills / signals | Win | PnL | Final equity | Max DD |
 |---|---|---|---|---|---|
 | Maker, production dry-run guards | 44 / 385 (11.4%) | 93.2% | −$5.06 | $29.94 | 27.4% (halts at −15%) |
 | Maker, paper-experiment knobs | 300 / 10,357 (2.9%) | 92.7% | −$25.23 | $9.77 | 76.4% |
 | Taker (cross ask + fee) | 36 (5-day) | 94.4% | −$2.48 | $32.52 | 15.0% (halts) |
+| **Maker, today's live data** (both configs) | **0 / 7** | — | **$0.00** | $100.00 | 0% |
+
+The live sample is the trustworthy one: the HF `volume` column is a per-minute
+venue number, not top-of-book depth, so its fills/liquidity results are
+optimistic. On real per-side depth the resting bids were never crossed inside
+the sampled windows — the strategy neither earned nor lost, it simply did not
+get filled.
 
 **Bottom line**: Code is production-grade. Live readiness now depends entirely on **funded accounts**, **human risk approval**, and **flipping the confirm flags** — and on accepting that the corrected maker rule (fill only when our side's ask crosses our price with counterparty depth) measures **negative EV (−3.2c/contract)** at both maker configs: there is no compounding path to $3.25M, and the earlier +$128 result was a fill-rule bug, retracted in the doc. Reaching the target requires a strategy change (a calibrated model gate), not a sizing change.
