@@ -367,3 +367,57 @@ def test_maker_run_does_not_touch_the_index_terms(tmp_path):
          config.MODEL_INDEX_DISPERSION_FRAC) = saved
     assert config.MODEL_INDEX_BIAS_BPS == saved[0] == 0.0
     assert config.MODEL_INDEX_DISPERSION_FRAC == saved[1] == 0.0
+
+
+def _index_ticks_file(tmp_path, spans, name="index.jsonl"):
+    """A fetch_brti_history.py-shaped JSONL: {asset, time, value} rows.
+
+    spans maps (asset, row-minute) -> value so a test can pin exactly what the
+    join returns per minute.
+    """
+    import json as _json
+    p = tmp_path / name
+    with p.open("w") as f:
+        for asset, rows in spans.items():
+            for minute, value in rows:
+                # tick at the minute start (ms), as the passthrough emits
+                f.write(_json.dumps({"asset": asset,
+                                     "time": (1_700_000_000 + (minute - 1) * 60) * 1000,
+                                     "value": value}) + "\n")
+    return str(p)
+
+
+def test_index_join_prices_each_row_at_its_minute(tmp_path):
+    # Rows join the settlement index at their own minute, not the file's first
+    # tick and not the feed spot.
+    ticks = MOD.load_index_ticks(_index_ticks_file(tmp_path, {
+        "BTC": [(8, 100.5), (9, 100.7), (10, 100.9)]}))
+    assert MOD.index_spot_at(ticks, "BTC", 1_700_000_000 + 7 * 60) == 100.5
+    # a row recorded mid-minute finds the minute-start tick
+    assert MOD.index_spot_at(ticks, "BTC", 1_700_000_000 + 7 * 60 + 42) == 100.5
+    # before the first tick there is no index value; None, never a guess
+    assert MOD.index_spot_at(ticks, "BTC", 1_700_000_000 + 5 * 60) is None
+
+
+def test_index_priced_replay_replaces_feed_spot_and_skips_bias(tmp_path, capsys):
+    # Priced against the index itself, both index terms must be zero by
+    # construction — applying the measured bias here would double-count.
+    f = _taker_collected(tmp_path)
+    idx = _index_ticks_file(tmp_path, {
+        "BTC": [(m, 100.5) for m in range(8, 15)]})
+    saved = (config.AGGRESSIVE_FILL, config.MODEL_INDEX_BIAS_BPS,
+             config.MODEL_INDEX_DISPERSION_FRAC)
+    import sys
+    argv = sys.argv
+    try:
+        sys.argv = ["dryrun_growth_sim.py", "--taker", "--start", "35.0",
+                    "--collected", f, "--index-priced", idx]
+        MOD.main()
+        out = capsys.readouterr().out
+    finally:
+        sys.argv = argv
+        (config.AGGRESSIVE_FILL, config.MODEL_INDEX_BIAS_BPS,
+         config.MODEL_INDEX_DISPERSION_FRAC) = saved
+    assert "settlement index itself" in out
+    assert config.MODEL_INDEX_BIAS_BPS == saved[1] == 0.0
+    assert config.MODEL_INDEX_DISPERSION_FRAC == saved[2] == 0.0

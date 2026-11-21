@@ -367,3 +367,55 @@ class TestGetShardBalance:
         """Subaccount-restricted keys omit balance_breakdown: keep old behaviour."""
         c = self._client(monkeypatch, {"balance": 12249})
         assert c.get_shard_balance(2) == pytest.approx(122.49)
+
+
+class TestCfBenchmarksPassthrough:
+    """CF Benchmarks index values via Kalshi's REST passthrough.
+
+    The 15M crypto contracts settle on the CF Benchmarks 60s average, so this
+    is the settlement index itself — pricing against it removes the
+    index-vs-feed basis (measured 2026-11-21: feed prints +13.15bps above it).
+    """
+
+    def _client(self, monkeypatch, resp_json):
+        monkeypatch.setattr(config, "KALSHI_KEY_ID", "test_key_id")
+        monkeypatch.setattr(config, "REQUEST_MIN_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(config, "REQUEST_TIMEOUT_SECONDS", 10)
+        with patch.object(KalshiClient, "_load_private_key") as mock_load, \
+             patch.object(KalshiClient, "_verify_key"):
+            mock_load.return_value = MagicMock()
+            mock_load.return_value.sign.return_value = b"fake_sig"
+            client = KalshiClient()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = resp_json
+        mock_resp.status_code = 200
+        return client, mock_resp
+
+    def test_get_cfbenchmarks_values_passes_id(self, monkeypatch):
+        client, resp = self._client(monkeypatch, {
+            "data": {"payload": [{"value": "59858.90", "time": 1795276335000}]}})
+        with patch.object(client.session, "request", return_value=resp) as req:
+            result = client.get_cfbenchmarks_values("BRTI")
+        assert result["data"]["payload"][0]["value"] == "59858.90"
+        _, kwargs = req.call_args
+        assert kwargs["params"] == {"id": "BRTI"}
+
+    def test_get_cfbenchmarks_history_uses_timespan(self, monkeypatch):
+        """CF Benchmarks rejects 'span'; the param name is 'timespan'."""
+        client, resp = self._client(monkeypatch, {
+            "data": {"payload": [{"value": "58769.34", "time": 1795266000000}]}})
+        with patch.object(client.session, "request", return_value=resp) as req:
+            client.get_cfbenchmarks_history(
+                "BRTI", span="HOUR", timestamp="2026-11-21T13:00:00+00:00")
+        _, kwargs = req.call_args
+        assert kwargs["params"]["timespan"] == "HOUR"
+        assert "span" not in kwargs["params"]
+        assert kwargs["params"]["timestamp"] == "2026-11-21T13:00:00+00:00"
+
+    def test_get_cfbenchmarks_history_omits_timestamp_when_empty(self, monkeypatch):
+        client, resp = self._client(monkeypatch, {"data": {"payload": []}})
+        with patch.object(client.session, "request", return_value=resp) as req:
+            client.get_cfbenchmarks_history("ETHUSD_RTI", span="HOUR")
+        _, kwargs = req.call_args
+        assert "timestamp" not in kwargs["params"]
+        assert kwargs["params"]["timespan"] == "HOUR"

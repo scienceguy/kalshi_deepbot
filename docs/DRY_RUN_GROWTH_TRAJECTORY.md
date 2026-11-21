@@ -185,3 +185,29 @@ currently measured edge.** A strategy change needs a demonstrated positive
 edge against the settlement index first; the maker variant is dead by
 adverse selection (REALITY TAX: fill rate 36.5%, win rate drops 96.7% →
 91.2% on fills).
+
+### Priced against the actual settlement index (2026-11-21, zero basis)
+
+Kalshi's API passes the CF Benchmarks index through with the same key
+(`/trade-api/v2/cfbenchmarks/*`, `BRTI` and `{ASSET}USD_RTI`), so the
+settlement index itself is now reachable — no proxy, no measured bias:
+`scripts/fetch_brti_history.py` pulls tick-level history (5Hz BTC/ETH/SOL/
+XRP/DOGE, 1Hz the rest; 835,200 ticks over the sample span) and
+`scripts/dryrun_growth_sim.py --index-priced` rewrites each row's feed spot
+to the index value at its minute. Replayed over the same sample as the taker
+variant (72 settled windows, 9 series, 7.0h span, all 759 rows carrying the
+index at their minute):
+
+| Gate | Signals | Fills | Win rate | Total PnL |
+|---|---|---|---|---|
+| Settlement index, zero basis by construction | 1 | 1 | 100% | +$0.58 |
+
+One window survives with zero basis — it was genuine relative edge, not a
+feed/index artifact — but n=1 over 72 windows is not an edge, and the
+sensitivity runs (17.5bps dispersion → 0 signals; 1bps → 0 signals) show the
+gate's output swings on assumptions no larger sample has calibrated. The
+data-source comparison is now complete for this strategy: with the
+settlement index priced in, the gate produces nothing repeatable.
+**$3.25M remains honestly unreachable at the currently measured edge**
+(needs a demonstrated positive EV against the BRTI settlement index first;
+the maker variant is dead by adverse selection).

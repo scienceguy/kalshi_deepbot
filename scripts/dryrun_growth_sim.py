@@ -184,6 +184,61 @@ def load_collected(path):
     return pd.read_json(Path(path), lines=True)
 
 
+def load_index_ticks(path: str) -> dict:
+    """{asset: [(time_ms, value), ...]} sorted, from fetch_brti_history.py."""
+    ticks: dict = {}
+    for line in open(path):
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        ticks.setdefault(r["asset"], []).append(
+            (int(r["time"]), float(r["value"])))
+    for v in ticks.values():
+        v.sort()
+    return ticks
+
+
+def index_spot_at(ticks: dict, asset: str, ts_s: int) -> float | None:
+    """Settlement-index value at ``ts_s`` (latest tick at or before it).
+
+    Ticks arrive at 5Hz for BTC/ETH/SOL/XRP/DOGE and 1Hz for the rest, so a
+    row recorded mid-minute finds a tick within a second. A stale tick is
+    still the index — the alternative (the feed) is what put the 13bps basis
+    into the gate in the first place.
+    """
+    import bisect
+    arr = ticks.get(asset)
+    if not arr:
+        return None
+    i = bisect.bisect_right(arr, (ts_s * 1000, float("inf"))) - 1
+    return arr[i][1] if i >= 0 else None
+
+
+def repriced_against_index(df, ticks: dict):
+    """Rewrite each row's feed spot to the settlement index at its minute.
+
+    The collector's ``minute`` m covers
+    [open_ts + (m-1)*60, open_ts + m*60), so the row time is that minute's
+    start. Rows with no index coverage keep the feed spot and are counted —
+    the taker run refuses to proceed if any replayed minute lacks one.
+    """
+    import pandas as pd
+
+    spots, matched = [], 0
+    for _, r in df.iterrows():
+        asset = str(r["series"])[2:-3]  # KXBTC15M -> BTC
+        ts = int(r["open_ts"]) + (int(r["minute"]) - 1) * 60
+        v = index_spot_at(ticks, asset, ts)
+        if v is None:
+            spots.append(float(r["spot"] or 0.0))  # reviewed: leave the feed value; caller checks coverage
+        else:
+            spots.append(v)
+            matched += 1
+    df = df.copy()
+    df["spot"] = spots
+    return df, matched, len(df)
+
+
 # ═════════════════════════════════════════════════════════════════════
 # MARKET VIEW
 # ═════════════════════════════════════════════════════════════════════
@@ -501,6 +556,13 @@ def main():
                     help="Replay a live-collected book JSONL from "
                          "scripts/live_book_collector.py instead of the HF "
                          "parquet history (today's live fill data).")
+    ap.add_argument("--index-priced", metavar="JSONL",
+                    help="Tick-level settlement-index history from "
+                         "scripts/fetch_brti_history.py (asset/time/value "
+                         "JSONL). Replaces each row's feed spot with the CF "
+                         "Benchmarks value at that minute so the gate prices "
+                         "what the contract settles on; no index bias or "
+                         "dispersion terms are then needed.")
     args = ap.parse_args()
 
     if args.paper_experiment:
@@ -519,6 +581,11 @@ def main():
 
     if args.collected:
         df = load_collected(args.collected)
+        if args.index_priced:
+            ticks = load_index_ticks(args.index_priced)
+            df, matched, total = repriced_against_index(df, ticks)
+            print(f"Index-priced: {matched}/{total} rows carry the settlement"
+                  " index at their minute")
         tickers = build_tickers(df)
         # simulate() settles every ticker at its close, so a ticker without a
         # recorded settlement would book a fabricated outcome. Only replay
@@ -540,19 +607,28 @@ def main():
             # bias across nine series (scripts/measure_index_basis.py). The
             # bias is measured from this same file, so the taker gate prices
             # the index that settles the contract, not the feed.
-            bias = _measured_index_bias(args.collected)
-            if bias is None:
-                print("--taker needs the index bias measurable from the same "
-                      "file (>= %d settled windows with a recorded spot); the "
-                      "gate would otherwise price the feed against a "
-                      "settlement index" % MIN_INDEX_CALIBRATION)
-                return 2
-            config.MODEL_INDEX_BIAS_BPS = bias["mean_bps"]
-            config.MODEL_INDEX_DISPERSION_FRAC = args.index_dispersion
-            print("Index terms applied: bias %+.2fbps (measured n=%d, "
-                  "stderr %.2f), dispersion %.1fbps" % (
-                      bias["mean_bps"], bias["n"], bias["stderr_bps"],
-                      args.index_dispersion * 10_000))
+            if args.index_priced:
+                # The rows were repriced against the index itself, so both
+                # terms are zero by construction — a nonzero term here would
+                # double-count the correction.
+                config.MODEL_INDEX_BIAS_BPS = 0.0
+                config.MODEL_INDEX_DISPERSION_FRAC = 0.0
+                print("Index terms applied: none (rows priced against the "
+                      "settlement index itself)")
+            else:
+                bias = _measured_index_bias(args.collected)
+                if bias is None:
+                    print("--taker needs the index bias measurable from the same "
+                          "file (>= %d settled windows with a recorded spot); the "
+                          "gate would otherwise price the feed against a "
+                          "settlement index" % MIN_INDEX_CALIBRATION)
+                    return 2
+                config.MODEL_INDEX_BIAS_BPS = bias["mean_bps"]
+                config.MODEL_INDEX_DISPERSION_FRAC = args.index_dispersion
+                print("Index terms applied: bias %+.2fbps (measured n=%d, "
+                      "stderr %.2f), dispersion %.1fbps" % (
+                          bias["mean_bps"], bias["n"], bias["stderr_bps"],
+                          args.index_dispersion * 10_000))
         span_days = ((max(m["close_ts"] for m in tickers.values())
                       - min(m["open_ts"] for m in tickers.values())) / 86400.0
                      if tickers else 0.0)

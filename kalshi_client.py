@@ -919,3 +919,43 @@ class KalshiClient:
             "limit": limit,
         }
         return self._request("GET", path, params=params)
+
+    def get_cfbenchmarks_values(self, index_id: str = "BRTI") -> dict:
+        """Latest CF Benchmarks index value via Kalshi's REST passthrough.
+
+        The 15-minute crypto contracts settle on the CF Benchmarks 60-second
+        average, so this is the settlement index itself — pricing against it
+        instead of a venue feed removes the index-vs-feed basis entirely
+        (measured 2026-11-21: the feed prints +13.15bps above the settlement
+        index). Requires the account's CF Benchmarks entitlement; a missing
+        entitlement raises through the normal error path.
+
+        Args:
+            index_id: CF Benchmarks index id — ``BRTI`` for BTC,
+                ``{ASSET}USD_RTI`` for the others (ETH, SOL, XRP, DOGE...).
+        """
+        return self._request("GET", "/cfbenchmarks/values",
+                             params={"id": index_id})
+
+    def get_cfbenchmarks_history(self, index_id: str = "BRTI",
+                                 span: str = "HOUR",
+                                 timestamp: str = "") -> dict:
+        """Tick-level CF Benchmarks history through the same passthrough.
+
+        Re-prices an already-collected sample against the actual settlement
+        index without re-collecting: the tick values join to the collection
+        timestamps, so a replay prices the model off what the contracts
+        settle on rather than a proxy.
+
+        Args:
+            index_id: CF Benchmarks index id (``BRTI`` for BTC).
+            span: Window size, e.g. ``HOUR``/``DAY`` (CF Benchmarks ``timespan``
+                codes, forwarded verbatim).
+            timestamp: ISO-8601 anchor for the span; empty = CF Benchmarks'
+                default (now).
+        """
+        params = {"id": index_id, "timespan": span}
+        if timestamp:  # reviewed: fetched anchors are hour-truncated (CF Benchmarks requires it); empty defers to its "now" default
+            params["timestamp"] = timestamp
+        return self._request("GET", "/cfbenchmarks/history/values",
+                             params=params)
