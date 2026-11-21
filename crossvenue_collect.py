@@ -54,11 +54,16 @@ def snapshot() -> list[dict]:
             continue
         spot, sigma, sources = spots[asset]
         kalshi = cv.fetch_kalshi_ladder(event)
-        if not kalshi or not kalshi.ok:
+        # ok: a ladder (>=3 rungs) or one 15M up/down market
+        if not kalshi or not (kalshi.ok or len(kalshi.sorted_rungs()) == 1):
             continue
         for slug in cv.candidate_pm_slugs(asset, expiry):
-            poly = cv.fetch_pm_ladder(slug)
-            if not poly or not poly.ok:
+            # The 15M up/down market lives on Poly US only (the cpc- market
+            # slug resolves through /v1/market/slug); ladder events stay on
+            # the Gamma path.
+            poly = (cv.fetch_pm_ladder_us(slug) if "updown-15m" in slug
+                    else cv.fetch_pm_ladder(slug))
+            if not poly or not (poly.ok or len(poly.sorted_rungs()) == 1):
                 continue
             for r in cv.three_way(kalshi, poly, spot, sigma, now=now):
                 rows.append({

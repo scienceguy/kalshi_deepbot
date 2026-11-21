@@ -211,3 +211,60 @@ settlement index priced in, the gate produces nothing repeatable.
 **$3.25M remains honestly unreachable at the currently measured edge**
 (needs a demonstrated positive EV against the BRTI settlement index first;
 the maker variant is dead by adverse selection).
+
+### HF reality sweep: every band x window x side is negative (2026-11-21)
+
+Full sweep of the high-resolution sample (1,146,514 quote rows, 76,507
+tickers) over 14 bands x 8 entry windows x YES/NO, both honest entry models:
+
+- **taker** (cross the ask, pay the Kalshi quadratic fee): 0 of 224 combos
+  positive. Best cell [97,99]c in minutes 3-9 at -0.395c/trade (n=5,354,
+  98.3% win rate).
+- **maker** (rest one cent inside the ask, no fee, fill only when the ask
+  then trades down to the resting price — informed flow, adverse selection
+  priced in): 0 of 224 combos positive. Best cell [98,99]/[3,9] at
+  -0.219c/trade on 384 fills (12.6% fill rate — thin); the [95,99] maker
+  cell is -2.407c/trade.
+
+The published "+1.49c/contract maker ceiling" (botforkalshi, 2026-10-20)
+does not survive honest fill modelling on this data: a resting favourite
+fills only when the quote moves against it. Secondary sources agree — a live
+join-the-touch maker bot measured -12% over 7 days (-13.9c/contract at 4.7
+sigma), and the Kalshi 15M speed study shows a faster bot collects *more* of
+the losing fills (88.7% vs 76.4% at 650ms vs 5s). The one published maker
+result that survives (Buergi/Deng/Whelan: +2.6% after fees on >=50c makers)
+describes the international CLOB, not this series.
+**The maker lane stays dead by adverse selection; the taker lane is negative
+everywhere measured.**
+
+### 15M cross-venue, settled verdict: the apparent edge was feed-vs-index basis (2026-11-21)
+
+The first two 15M up/down windows collected on both venues
+(KXBTC15M <-> cpc-btc-updown-15m, same BRTI strike on each side — both
+settle on the CF Benchmarks closing 60s average) both settled `no`:
+
+| Window | Kalshi result | Closing 60s BRTI avg | Strike | Composite feed at close-1m | Feed minus index | Venues' final YES quote |
+|---|---|---|---|---|---|---|
+| 211630 | no | 60351.17 | 60362.52 | 60509.99 | +$158.8 (+26bps) | 0.125 at 4.3 min |
+| 211645 | no | 60296.57 | 60351.39 | 60440.00 | +$143.4 (+23bps) | 0.0005 at 0.6 min |
+
+The composite-feed model quoted fair 0.94-1.00 (edge +39c to +73c) through
+both windows while both venues quoted 0.0005-0.125. **Both venues were right
+both times.** The composite's own price sources disagreed by ~$142 during
+these rows — the same order as its gap to the settlement index — so the
+"edge" was entirely a basis artifact: the composite prints ~$145 (+24bps)
+above the BRTI closing average both venues settle on. Crossing the model's
+edge would have bought a losing contract at 59.5c.
+
+The venues' mutual divergence inside a window oscillates instead (0, -9.5,
+-2, +11, +2c in window 211630; 0, -3, +3, -3c in 211645) — no stable
+venue-vs-venue bias to harvest at n=2 either.
+
+Verdict: the 15M cross-venue comparison produces no repeatable edge in the
+composite-fed model. The basis is now quantified (+23..26bps, n=2 — the
+collector loop is still running to give it an error bar before anyone trades
+on it) and is zero by construction in the index-priced replay.
+**$3.25M remains honestly unreachable at the measured edge** — the
+legitimate remaining lane is the volatility model the gate depends on (the
+fixed 0.80 vol measures -0.01c live; the same gate with realised-vol
+scaling measured +1.03c on HF data), not a wider band or a looser gate.

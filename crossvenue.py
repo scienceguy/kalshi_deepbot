@@ -36,6 +36,11 @@ ASSETS = {"bitcoin": "BTC", "btc": "BTC", "ethereum": "ETH", "eth": "ETH"}
 _KALSHI_EVENT = re.compile(r"^KX(BTC|ETH)(?:D|15M)?-(\d{2})([A-Z]{3})(\d{2})(\d{2}|\d{4})$")
 _PM_SLUG = re.compile(r"^(bitcoin|ethereum|btc|eth)-above-on-([a-z]+)-(\d{1,2})-(\d{4})(?:-(\d{1,2})([ap]m)-et)?$")
 
+# Polymarket US 15M up/down windows. Verified live 2026-11-21: the event slug
+# (btc-updown-15m-<date>-<hhmm>z) carries the window START in UTC; the market
+# slug is the cpc- prefixed shape and that is what /v1/market/slug resolves.
+_PM_UPDOWN_15M = re.compile(r"^(?:cpc-)?(btc|eth)-updown-15m-(\d{4})-(\d{2})-(\d{2})-(\d{4})z$")
+
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])}
 
@@ -121,7 +126,15 @@ def parse_pm_slug(slug: str) -> Optional[Tuple[str, datetime]]:
     """bitcoin-above-on-november-5-2026-1pm-et -> ('BTC', 2026-11-05 13:00 ET).
 
     Slug with no hour means the daily ladder, which resolves at 23:59 ET.
+    btc-updown-15m-2026-11-21-1930z -> ('BTC', windowEnd in ET): the 15M
+    up/down slug carries the window START in UTC, so the expiry is start+15m.
     """
+    m = _PM_UPDOWN_15M.match(slug or "")
+    if m:
+        word, yyyy, mm, dd, hhmm = m.groups()
+        start_utc = datetime(int(yyyy), int(mm), int(dd), int(hhmm[:2]),
+                             int(hhmm[2:]), tzinfo=timezone.utc)
+        return ASSETS[word], _utc_to_naive_et(start_utc + timedelta(minutes=15))
     m = _PM_SLUG.match(slug or "")
     if not m:
         return None
@@ -154,7 +167,11 @@ def fetch_kalshi_ladder(event_ticker: str, timeout: int = 20) -> Optional[Ladder
 
     ladder = Ladder("kalshi", asset, expiry, label=event_ticker)
     for m in markets:
-        if m.get("strike_type") != "greater" or m.get("floor_strike") is None:
+        # 15M up/down markets quote greater_or_equal (verified live
+        # 2026-11-21); daily/hourly ladder events carry only greater, so
+        # accepting both adds the single 15M market without touching ladders.
+        if (m.get("strike_type") not in ("greater", "greater_or_equal")
+                or m.get("floor_strike") is None):
             continue
         bid = _f(m.get("yes_bid_dollars"))
         ask = _f(m.get("yes_ask_dollars"))
@@ -218,11 +235,14 @@ def fetch_pm_ladder_us(slug: str, timeout: int = 20) -> Optional[Ladder]:
         ru = _f(apt.get("rangeUpper"))
         if rl is not None and ru is not None:
             strike_float = (rl + ru) / 2.0
-    # For up/down markets, use priceToBeat
+    # For up/down markets, use priceToBeat (live-verified 2026-11-21: a
+    # {value, currency} quote object, not a bare number)
     if strike_float is None:
-        ptb = _f(apt.get("priceToBeat"))
+        ptb = apt.get("priceToBeat")
+        if isinstance(ptb, dict):
+            ptb = ptb.get("value")
         if ptb is not None:
-            strike_float = ptb
+            strike_float = _f(ptb)
 
     if strike_float is None:
         log.debug("US %s: could not determine strike", slug)
@@ -450,15 +470,23 @@ def discover_kalshi_events(series: Tuple[str, ...] = ("KXBTCD", "KXETHD", "KXBTC
     return out
 
 def candidate_pm_slugs(asset: str, expiry_et: datetime) -> List[str]:
-    """Slug guesses for the Polymarket ladder that expires at the same ET time."""
+    """Slug guesses for the Polymarket ladder that expires at the same ET time.
+
+    The first guess is the 15M up/down market whose window ends at expiry_et
+    (cpc- market slug; verified live 2026-11-21). Against a ladder event that
+    guess resolves to a one-rung ladder, which three_way rejects on the
+    strike, so it never produces a bogus pair.
+    """
     name = "bitcoin" if asset == "BTC" else "ethereum"
     month = expiry_et.strftime("%B").lower()
     base = f"{name}-above-on-{month}-{expiry_et.day}-{expiry_et.year}"
+    start_utc = to_utc(expiry_et) - timedelta(minutes=15)
+    updown = f"cpc-{asset.lower()}-updown-15m-{start_utc:%Y-%m-%d}-{start_utc:%H%M}z"
     if expiry_et.hour >= 23:
-        return [base]
+        return [updown, base]
     h12 = expiry_et.hour % 12 or 12
     ampm = "am" if expiry_et.hour < 12 else "pm"
-    return [f"{base}-{h12}{ampm}-et"]
+    return [updown, f"{base}-{h12}{ampm}-et"]
 
 def _et_offset_hours(naive_et: datetime) -> int:
     """US Eastern offset from UTC for a naive ET wall-clock date.
@@ -481,6 +509,18 @@ def to_utc(naive_et: datetime) -> datetime:
     offset = _et_offset_hours(naive_et)
     return naive_et.replace(tzinfo=timezone(timedelta(hours=offset))).astimezone(timezone.utc)
 
+def _utc_to_naive_et(dt_utc: datetime) -> datetime:
+    """Aware UTC -> naive ET, via the same hand-rolled DST rule as to_utc.
+
+    No zoneinfo (the host may lack tzdata); round-trip to_utc to pick the
+    offset, falling back to EST inside the ambiguous fall-back hour.
+    """
+    for off in (-4, -5):
+        naive = (dt_utc + timedelta(hours=off)).replace(tzinfo=None)
+        if to_utc(naive) == dt_utc:
+            return naive
+    return (dt_utc + timedelta(hours=-5)).replace(tzinfo=None)
+
 def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
               now: Optional[datetime] = None) -> List[dict]:
     from binance_feed import prob_above
@@ -489,6 +529,28 @@ def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
     minutes_left = (to_utc(kalshi.expiry_et) - now).total_seconds() / 60.0
     if minutes_left <= 0:
         return []
+
+    ks = kalshi.sorted_rungs()
+    ps = poly.sorted_rungs()
+    if len(ks) == 1 and len(ps) == 1:
+        # A 15M up/down pair is one market per side: no ladder to interpolate.
+        # The strike is the opening 60s BRTI average on both venues, so a
+        # mismatch means a different window, not a price disagreement.
+        if abs(ps[0].strike - ks[0].strike) > 1e-6:
+            return []
+        fair = prob_above(spot, ks[0].strike, sigma_min, minutes_left)
+        if fair != fair:  # NaN
+            return []
+        return [{
+            "strike": float(ks[0].strike),
+            "fair": fair,
+            "kalshi": float(ks[0].mid),
+            "spread": float(ks[0].spread or 0.0),
+            "poly": float(ps[0].mid),
+            "kalshi_edge_c": (fair - ks[0].mid) * 100.0,
+            "poly_edge_c": (fair - ps[0].mid) * 100.0,
+            "minutes_left": minutes_left,
+        }]
 
     k = to_cdf(kalshi)
     p = to_cdf(poly)
@@ -570,11 +632,11 @@ def main() -> int:
             continue
         spot, sigma = spot_by_asset[asset]
         kl = fetch_kalshi_ladder(et)
-        if not kl or not kl.ok:
+        if not kl or not (kl.ok or len(kl.sorted_rungs()) == 1):
             continue
         for slug in candidate_pm_slugs(asset, expiry):
             pl = _fetch_pm_ladder_with_fallback(slug)
-            if not pl or not pl.ok:
+            if not pl or not (pl.ok or len(pl.sorted_rungs()) == 1):
                 continue
             rows = three_way(kl, pl, spot, sigma)
             if not rows:

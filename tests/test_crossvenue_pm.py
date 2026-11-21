@@ -7,7 +7,7 @@ making real network calls.
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 from crossvenue import (
@@ -15,8 +15,13 @@ from crossvenue import (
     Rung,
     fetch_pm_ladder_us,
     fetch_pm_ladder,
+    fetch_kalshi_ladder,
+    candidate_pm_slugs,
+    three_way,
     _fetch_pm_ladder_with_fallback,
+    _utc_to_naive_et,
     parse_pm_slug,
+    to_utc,
 )
 
 
@@ -413,3 +418,146 @@ def test_updown_match_dataclass_fields():
     assert match.poly_up_mid == 0.94
     assert match.deviation_cents == 1.0
     assert match.tie_rule_risk is True
+
+# ---------------------------------------------------------------------------
+# 15M up/down windows (live-verified 2026-11-21): one market per side. The
+# event slug (btc-updown-15m-<date>-<hhmm>z, window START in UTC) 500s on
+# /v1/market/slug; the cpc- market slug resolves there, so the US mapper
+# carries the pair. The strike is the opening 60s BRTI average and both
+# venues settle on BRTI, so a same-strike pair is the same contract.
+# ---------------------------------------------------------------------------
+
+def _make_updown_market(price_to_beat="60236.51", bid="0.58", ask="0.59"):
+    """A US 15M up/down market dict in the shape the live API returns."""
+    return {
+        "assetPriceTerms": {
+            "strike": None,
+            "asset": {"symbol": "btc"},
+            "assetName": "Bitcoin",
+            "marketType": "",
+            "windowStart": "2026-11-21T20:00:00Z",
+            "windowEnd": "2026-11-21T20:15:00Z",
+            "horizon": "15m",
+            "indexSymbol": "BRTI",
+            # live-verified shape: a {value, currency} quote object
+            "priceToBeat": {"value": price_to_beat, "currency": "USD"},
+            "direction": "up",
+            "rangeLower": None,
+            "rangeUpper": None,
+        },
+        "bestBidQuote": {"value": bid, "currency": "USD"},
+        "bestAskQuote": {"value": ask, "currency": "USD"},
+        "marketSides": [{"price": bid, "long": True,
+                         "marketSideType": "MARKET_SIDE_TYPE_INSTRUMENT"}],
+    }
+
+
+def test_parse_pm_slug_15m_updown_gives_window_end_in_et():
+    """The slug carries the window START in UTC; the expiry is windowEnd."""
+    for slug, asset in (("btc-updown-15m-2026-11-21-1930z", "BTC"),
+                        ("cpc-eth-updown-15m-2026-11-21-1930z", "ETH")):
+        parsed = parse_pm_slug(slug)
+        assert parsed is not None, slug
+        assert parsed[0] == asset
+        # 19:30Z + 15m = 19:45Z = 14:45 ET in November (EST)
+        assert parsed[1] == datetime(2026, 11, 21, 14, 45)
+
+
+def test_candidate_pm_slugs_leads_with_the_15m_market_slug():
+    """A 15M close time produces the cpc- updown slug first, ladder after."""
+    expiry_et = datetime(2026, 11, 21, 15, 15)  # KXBTC15M-26NOV211515 = 20:15Z
+    slugs = candidate_pm_slugs("BTC", expiry_et)
+    assert slugs[0] == "cpc-btc-updown-15m-2026-11-21-2000z"
+    assert slugs[-1] == "bitcoin-above-on-november-21-2026-3pm-et"
+
+
+def test_fetch_pm_ladder_us_15m_updown_single_rung():
+    """The US mapper reads priceToBeat and the quotes into one rung."""
+    _inject_mock_us_client(_make_updown_market())
+    try:
+        ladder = fetch_pm_ladder_us("cpc-btc-updown-15m-2026-11-21-2000z")
+    finally:
+        _remove_mock_us_client()
+    assert ladder is not None
+    assert len(ladder.rungs) == 1
+    rung = ladder.rungs[0]
+    assert rung.strike == 60236.51
+    assert rung.mid == 0.585
+    # expiry is the windowEnd, in ET like every other ladder
+    # (20:00Z + 15m = 20:15Z = 15:15 ET in November)
+    assert ladder.expiry_et == datetime(2026, 11, 21, 15, 15)
+
+
+def test_fetch_kalshi_ladder_accepts_greater_or_equal(monkeypatch):
+    """15M up/down markets quote greater_or_equal, not greater."""
+    class _Resp:
+        @staticmethod
+        def raise_for_status():
+            pass
+
+        @staticmethod
+        def json():
+            return {"markets": [{
+                "ticker": "KXBTC15M-26NOV211515-45",
+                "strike_type": "greater_or_equal",
+                "floor_strike": 60236.51,
+                "yes_bid_dollars": "0.79",
+                "yes_ask_dollars": "0.80",
+                "last_price_dollars": "0.79",
+            }]}
+
+    class _FakeRequests:
+        get = staticmethod(lambda *a, **k: _Resp())
+
+    import crossvenue
+    monkeypatch.setattr(crossvenue, "requests", _FakeRequests)
+    ladder = fetch_kalshi_ladder("KXBTC15M-26NOV211515")
+    assert ladder is not None
+    assert len(ladder.rungs) == 1
+    assert ladder.rungs[0].strike == 60236.51
+    assert ladder.rungs[0].mid == 0.795
+
+
+def _one_rung_ladder(venue, strike, bid, ask, expiry_et):
+    ladder = Ladder(venue, "BTC", expiry_et, label=venue)
+    ladder.rungs.append(Rung(strike, (bid + ask) / 2.0, bid, ask, "", ""))
+    return ladder
+
+
+def test_three_way_single_market_pair_is_one_row(monkeypatch):
+    """One market per side: a row per window, not per ladder rung."""
+    import sys
+    import types
+    stub = types.ModuleType("binance_feed")
+    stub.prob_above = lambda spot, strike, sigma, minutes: 0.62
+    monkeypatch.setitem(sys.modules, "binance_feed", stub)
+
+    expiry_et = datetime(2026, 11, 21, 14, 30)  # close 19:30Z
+    now = datetime(2026, 11, 21, 19, 15, tzinfo=timezone.utc)
+    rows = three_way(
+        _one_rung_ladder("kalshi", 60236.51, 0.79, 0.80, expiry_et),
+        _one_rung_ladder("polymarket", 60236.51, 0.58, 0.59, expiry_et),
+        spot=60236.51, sigma_min=0.003, now=now)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["strike"] == 60236.51
+    assert row["kalshi"] == 0.795
+    assert row["poly"] == 0.585
+    assert row["kalshi_edge_c"] == (0.62 - 0.795) * 100
+    assert row["minutes_left"] == 15.0
+
+
+def test_three_way_single_market_strike_mismatch_is_no_pair():
+    """Same windowEnd, different opening average = a different window."""
+    expiry_et = datetime(2026, 11, 21, 14, 30)
+    now = datetime(2026, 11, 21, 19, 15, tzinfo=timezone.utc)
+    rows = three_way(
+        _one_rung_ladder("kalshi", 60236.51, 0.79, 0.80, expiry_et),
+        _one_rung_ladder("polymarket", 60312.44, 0.58, 0.59, expiry_et),
+        spot=60236.51, sigma_min=0.003, now=now)
+    assert rows == []
+
+
+def test_utc_to_naive_et_round_trips_both_dst_halves():
+    for naive_et in (datetime(2026, 7, 15, 12, 0), datetime(2026, 11, 21, 12, 0)):
+        assert _utc_to_naive_et(to_utc(naive_et)) == naive_et
