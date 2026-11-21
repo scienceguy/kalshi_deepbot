@@ -11,7 +11,8 @@ bot's own code paths.
 Row schema (JSONL, one row per ticker per minute) — dollars for prices, like
 the HF parquet (the sim converts x100 to cents), contracts for depth:
   series, ticker, minute, open_ts, close_ts, floor_strike,
-  yes_bid, yes_ask, yes_vol, no_bid, no_ask, no_vol
+  yes_bid, yes_ask, yes_vol, no_bid, no_ask, no_vol,
+  spot, sigma_per_min   # contemporaneous feed values for the model gate
   result, expiration_value                            # settlement only, minute 15
 
 USAGE:
@@ -45,6 +46,27 @@ def load_state():
 
 def save_state(state):
     STATE_PATH.write_text(json.dumps(state))
+
+
+def quote_extras(series: str) -> tuple:
+    """Contemporaneous spot + realized per-minute vol the model gate prices against.
+
+    The taker variant's edge comes from gates/model.py pricing spot vs
+    strike; replaying a historical ticker with a *current* spot is not the
+    price the venue saw, so the recorded values must come from the same
+    feed functions signals uses at record time. Missing feed -> 0.0, never
+    a substituted number.
+    """
+    try:
+        import gates
+        asset = gates.SERIES_ASSET.get(series)
+        if not asset:
+            return 0.0, 0.0
+        return (gates.spot_for(asset) or 0.0,
+                gates.sigma_per_min(asset) or 0.0)
+    except Exception as e:
+        print("quote_extras(%s) failed: %s" % (series, e))
+        return 0.0, 0.0
 
 
 def collect(client, out_path, minutes, poll_interval=60):
@@ -81,6 +103,7 @@ def collect(client, out_path, minutes, poll_interval=60):
                     minute = int((time.time() - open_ts) / 60) + 1
                     if not (1 <= minute <= 15):
                         continue
+                    spot, sigma = quote_extras(series)
                     try:
                         ob = client.get_orderbook(ticker, depth=5) or {}
                     except Exception as e:
@@ -103,6 +126,10 @@ def collect(client, out_path, minutes, poll_interval=60):
                         "no_bid": round(no[0][0] / 100.0, 4) if no else 0,
                         "no_ask": round((100 - int(round(yes[0][0]))) / 100.0, 4) if yes else 0,
                         "no_vol": int(no[0][1]) if no else 0,
+                        # Contemporaneous feed values: the taker replay must
+                        # price against the spot the venue saw, not today's.
+                        "spot": spot,
+                        "sigma_per_min": sigma,
                     }
                     fh.write(json.dumps(row) + "\n")
                     written += 1

@@ -42,6 +42,7 @@ sys.path.insert(0, str(REPO))
 
 import config  # noqa: E402
 import fees  # noqa: E402
+import gates  # noqa: E402
 import risk as risk_mod  # noqa: E402
 import signals as sig  # noqa: E402
 from market_finder import MarketInfo  # noqa: E402
@@ -93,6 +94,20 @@ def load_days(days):
     return pd.concat(frames, ignore_index=True)
 
 
+def _finite(v) -> float:
+    """float(v), with NaN/inf collapsed to 0.0.
+
+    A JSONL row collected before the spot schema has no `spot` key; pandas
+    fills it with NaN, and NaN is truthy, so without this a missing recording
+    would look like a price.
+    """
+    try:
+        f = float(v or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if math.isfinite(f) else 0.0
+
+
 def build_tickers(df):
     """{ticker: dict} with minute-indexed quote book + settlement facts.
 
@@ -118,6 +133,12 @@ def build_tickers(df):
                 "vol": yvol if yvol else nvol,
                 "yes_vol": yvol,
                 "no_vol": nvol,
+                # Contemporaneous feed values (live collection only; the HF
+                # parquet has none). signals.evaluate calls gates.spot_for /
+                # gates.sigma_per_min, so these are what the model gate must
+                # price against — 0.0 means "not recorded", never a guess.
+                "spot": _finite(r.get("spot")),
+                "sigma_per_min": _finite(r.get("sigma_per_min")),
             }
         # The settlement row is appended last (minute 15); prefer it over the
         # first quote row, which carries no result.
@@ -147,6 +168,28 @@ def load_collected(path):
 # ═════════════════════════════════════════════════════════════════════
 # MARKET VIEW
 # ═════════════════════════════════════════════════════════════════════
+
+class _recorded_feed:
+    """Pin gates.spot_for / gates.sigma_per_min to the values recorded at `minute`.
+
+    signals.evaluate calls the live feed itself, which for a replay would be
+    today's price against a historical strike — a phantom edge. Substituting
+    the contemporaneous recorded values keeps the model gate faithful.
+    """
+
+    def __init__(self, spot, sigma):
+        self.spot, self.sigma = spot, sigma
+
+    def __enter__(self):
+        self._saved = (gates.spot_for, gates.sigma_per_min)
+        gates.spot_for = lambda asset: self.spot or None
+        gates.sigma_per_min = lambda asset: self.sigma or None
+        return self
+
+    def __exit__(self, *exc):
+        gates.spot_for, gates.sigma_per_min = self._saved
+        return False
+
 
 def market_at(t, meta, minute):
     """MarketInfo with the book state at `minute` (cents, int)."""
@@ -284,8 +327,10 @@ def simulate(tickers, days_n, start_balance):
             continue
         attempts_per_ticker.add(t)        # blocked by limits = no retry
         mkt = market_at(t, meta, minute)
+        rec = meta["book"].get(minute) or {}
         try:
-            found = sig.evaluate(mkt, eq, max_trade_override=max_trade)
+            with _recorded_feed(rec.get("spot", 0.0), rec.get("sigma_per_min", 0.0)):
+                found = sig.evaluate(mkt, eq, max_trade_override=max_trade)
         except Exception as e:
             log.debug("evaluate failed %s: %s", t, e)
             continue
@@ -428,6 +473,11 @@ def main():
               "(halt threshold 90%, guard blocks bypassed)")
     if args.taker:
         config.AGGRESSIVE_FILL = True
+        if not args.collected:
+            print("--taker needs --collected: the HF parquet carries no "
+                  "underlying spot, so the model gate would price a "
+                  "historical strike against today's feed — a phantom edge.")
+            return 2
         print("Taker mode: AGGRESSIVE_FILL=true (cross the ask, model gate, "
               "taker fee)")
 
@@ -438,6 +488,17 @@ def main():
         # recorded settlement would book a fabricated outcome. Only replay
         # windows whose live result is known.
         tickers = {t: m for t, m in tickers.items() if m["has_result"]}
+        if args.taker:
+            # The taker gate prices spot vs strike; without the recorded spot
+            # the replay would silently fall back to today's feed. Refuse.
+            missing = [t for t, m in tickers.items()
+                       if not any(b.get("spot")
+                                  for b in m["book"].values())]
+            if missing:
+                print("--taker needs spot recorded per minute (scripts/"
+                      "live_book_collector.py, 2026-11-21 schema); %d of %d "
+                      "replayed windows lack it" % (len(missing), len(tickers)))
+                return 2
         span_days = ((max(m["close_ts"] for m in tickers.values())
                       - min(m["open_ts"] for m in tickers.values())) / 86400.0
                      if tickers else 0.0)

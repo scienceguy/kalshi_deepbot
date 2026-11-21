@@ -71,6 +71,17 @@ def _run(tmp_path, result="yes"):
     return [json.loads(x) for x in out.read_text().splitlines() if x.strip()]
 
 
+def test_collector_records_contemporaneous_spot_and_sigma(tmp_path, monkeypatch):
+    import gates
+    monkeypatch.setattr(gates, "spot_for", lambda asset: 100.5)
+    monkeypatch.setattr(gates, "sigma_per_min", lambda asset: 0.003)
+    rows = _run(tmp_path)
+    q = next(r for r in rows if not r.get("result"))
+    # The taker replay prices spot vs strike; without the recorded feed
+    # values it would silently price a past strike against today's spot.
+    assert q["spot"] == 100.5 and q["sigma_per_min"] == 0.003
+
+
 def test_collector_minute_index_and_complement_prices(tmp_path):
     rows = _run(tmp_path)
     quotes = [r for r in rows if not r.get("result")]

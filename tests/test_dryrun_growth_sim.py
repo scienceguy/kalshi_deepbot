@@ -5,6 +5,7 @@ the historical quote book, the resting-maker fill rule (no fabricated fills),
 and the settlement P&L booked against the recorded trades.
 """
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -74,10 +75,16 @@ def test_market_at_takes_the_loaders_cent_quotes():
     assert m.yes_liquidity == 2000 and m.no_liquidity == 2000  # per-side depth
 
 
-def _q(bid, ask, vol=2000):
-    """One book minute as build_tickers emits it: cents + per-side depth."""
+def _q(bid, ask, vol=2000, spot=0.0, sigma=0.0):
+    """One book minute as build_tickers emits it: cents + per-side depth.
+
+    spot/sigma default to 0.0 ("not recorded") exactly like a book built from
+    a source that carries no feed values, so the maker tests exercise the
+    unchanged path.
+    """
     return {"bid": bid, "ask": ask, "vol": vol,
-            "yes_vol": vol, "no_vol": vol}
+            "yes_vol": vol, "no_vol": vol,
+            "spot": spot, "sigma_per_min": sigma}
 
 
 def _fav_book():
@@ -155,3 +162,85 @@ def test_simulate_no_side_does_not_fill_on_a_low_yes_ask():
     s = MOD.simulate(tickers, days_n=1, start_balance=35.0)
     assert s.attempts == 1 and s.fills == 0
     assert s.trades == [] and s.cash == 35.0
+
+def _taker_collected(tmp_path, with_spot=True):
+    """A --collected JSONL whose only ticker has a recorded settlement.
+
+    with_spot=False omits the contemporaneous feed values, standing in for a
+    file collected before the 2026-11-21 schema change.
+    """
+    rows = []
+    for minute in range(8, 15):
+        rows.append({"series": "KXBTC15M", "ticker": "KXBTC15M-26NOV210230-30",
+                     "minute": minute, "open_ts": 1_700_000_000,
+                     "close_ts": 1_700_000_900, "floor_strike": 100.0,
+                     "yes_bid": 0.97, "yes_ask": 0.98, "yes_vol": 50,
+                     "no_bid": 0.02, "no_ask": 0.03, "no_vol": 50,
+                     **({"spot": 100.5, "sigma_per_min": 0.003}
+                        if with_spot else {})})
+    rows.append({"series": "KXBTC15M", "ticker": "KXBTC15M-26NOV210230-30",
+                 "minute": 15, "open_ts": 1_700_000_000, "close_ts": 1_700_000_900,
+                 "floor_strike": 100.0, "yes_bid": 0, "yes_ask": 0, "yes_vol": 0,
+                 "no_bid": 0, "no_ask": 0, "no_vol": 0,
+                 "result": "yes", "expiration_value": 101.0})
+    p = tmp_path / "books.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in (rows if with_spot else
+                  [dict(r, spot=0.0, sigma_per_min=0.0) for r in rows[:-1]]
+                  + [rows[-1]])) + "\n")
+    return str(p)
+
+
+def test_taker_mode_refuses_when_no_spot_was_recorded(tmp_path, capsys):
+    # A historical strike priced against today's feed is a phantom edge; the
+    # run must refuse instead of reporting a number nobody can trust.
+    saved = config.AGGRESSIVE_FILL
+    import sys
+    argv = sys.argv
+    try:
+        sys.argv = ["dryrun_growth_sim.py", "--taker", "--start", "35.0",
+                    "--collected", _taker_collected(tmp_path, with_spot=False)]
+        rc = MOD.main()
+    finally:
+        sys.argv = argv
+        config.AGGRESSIVE_FILL = saved
+    assert rc == 2
+    assert "--taker needs spot recorded per minute" in capsys.readouterr().out
+
+
+def test_taker_mode_refuses_on_hf_history(tmp_path, capsys):
+    # The HF parquet carries no underlying spot, so --taker --days must also
+    # refuse (build_tickers has nothing to pin the gate to).
+    saved_aggr = config.AGGRESSIVE_FILL
+    import sys
+    argv = sys.argv
+    try:
+        sys.argv = ["dryrun_growth_sim.py", "--taker", "--days", "2026-07-23"]
+        rc = MOD.main()
+    finally:
+        sys.argv = argv
+        config.AGGRESSIVE_FILL = saved_aggr
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "--taker needs --collected" in out
+
+
+def test_recorded_feed_pins_gates_and_restores_them():
+    # signals.evaluate calls gates.spot_for / gates.sigma_per_min itself; the
+    # replay substitutes the contemporaneous recording and must put the real
+    # functions back — including when the wrapped call raises.
+    import gates
+    saved = (gates.spot_for, gates.sigma_per_min)
+    try:
+        with MOD._recorded_feed(100.5, 0.003):
+            assert gates.spot_for("BTC") == 100.5
+            assert gates.sigma_per_min("BTC") == 0.003
+        try:
+            with MOD._recorded_feed(100.5, 0.003):
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+        # the real feed functions are back, not the pinned lambdas
+        assert gates.spot_for is saved[0]
+        assert gates.sigma_per_min is saved[1]
+    finally:
+        gates.spot_for, gates.sigma_per_min = saved
