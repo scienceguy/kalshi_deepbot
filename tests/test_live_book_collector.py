@@ -77,9 +77,10 @@ def test_collector_minute_index_and_complement_prices(tmp_path):
     assert {r["minute"] for r in quotes} == {11, 12, 13, 14, 15}
     q = quotes[0]
     assert q["ticker"] == "KXBTC15M-26NOV210230-30"
-    assert q["yes_bid"] == 64 and q["no_bid"] == 35
-    assert q["yes_ask"] == 65  # 100 - NO bid 35, the market's YES ask
-    assert q["no_ask"] == 36   # 100 - YES bid 64, the market's NO ask
+    # Dollars, like the HF parquet: build_tickers multiplies by 100 for cents.
+    assert q["yes_bid"] == 0.64 and q["no_bid"] == 0.35
+    assert q["yes_ask"] == 0.65  # 100 - NO bid 35, the market's YES ask
+    assert q["no_ask"] == 0.36   # 100 - YES bid 64, the market's NO ask
     assert q["yes_vol"] == 3326 and q["no_vol"] == 8907  # per-side depth
 
 

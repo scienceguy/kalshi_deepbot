@@ -8,9 +8,10 @@ the settlement result appended after close. The output schema matches the HF
 parquet so scripts/dryrun_growth_sim.py --collected replays it through the
 bot's own code paths.
 
-Row schema (JSONL, one row per ticker per minute):
+Row schema (JSONL, one row per ticker per minute) — dollars for prices, like
+the HF parquet (the sim converts x100 to cents), contracts for depth:
   series, ticker, minute, open_ts, close_ts, floor_strike,
-  yes_bid, yes_ask, yes_vol, no_bid, no_ask, no_vol   # cents / contracts
+  yes_bid, yes_ask, yes_vol, no_bid, no_ask, no_vol
   result, expiration_value                            # settlement only, minute 15
 
 USAGE:
@@ -94,13 +95,13 @@ def collect(client, out_path, minutes, poll_interval=60):
                         "open_ts": open_ts,
                         "close_ts": close_ts,
                         "floor_strike": mkt.get("floor_strike") or 0,
-                        # Cents: Kalshi's dollar quotes come back as floats,
-                        # and the sim's book is in cents (like the HF parquet).
-                        "yes_bid": int(round(yes[0][0])) if yes else 0,
-                        "yes_ask": (100 - int(round(no[0][0]))) if no else 0,
+                        # Dollars, matching the HF parquet schema: build_tickers
+                        # multiplies by 100 to get the sim's cents book.
+                        "yes_bid": round(yes[0][0] / 100.0, 4) if yes else 0,
+                        "yes_ask": round((100 - int(round(no[0][0]))) / 100.0, 4) if no else 0,
                         "yes_vol": int(yes[0][1]) if yes else 0,
-                        "no_bid": int(round(no[0][0])) if no else 0,
-                        "no_ask": (100 - int(round(yes[0][0]))) if yes else 0,
+                        "no_bid": round(no[0][0] / 100.0, 4) if no else 0,
+                        "no_ask": round((100 - int(round(yes[0][0]))) / 100.0, 4) if yes else 0,
                         "no_vol": int(no[0][1]) if no else 0,
                     }
                     fh.write(json.dumps(row) + "\n")
