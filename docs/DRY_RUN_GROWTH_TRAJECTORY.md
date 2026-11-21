@@ -261,9 +261,20 @@ The venues' mutual divergence inside a window oscillates instead (0, -9.5,
 venue-vs-venue bias to harvest at n=2 either.
 
 Verdict: the 15M cross-venue comparison produces no repeatable edge in the
-composite-fed model. The basis is now quantified (+23..26bps, n=2 — the
-collector loop is still running to give it an error bar before anyone trades
-on it) and is zero by construction in the index-priced replay.
+composite-fed model. The basis is now quantified over **8 adjudicated
+windows** (211630..211815, every one CONSISTENT with the index-implied
+result): live composite-minus-index is +6.6..+26bps (median +21.6bps, n=6
+rows with a composite snapshot) against +4.1bps median on the October HF
+sample — time-varying by ~10x, so a fixed correction is unsafe, and it is
+zero by construction in the index-priced replay.
+*Correction on the record:* an intermediate run flagged 211745/211800 as
+index MISMATCHes. That was a parse bug in the close time (the seconds digits
+of the HHMMSS ticker were dropped, putting two windows in the same closing
+60 seconds — their identical closing averages, 60336.37 for both, gave it
+away). Correct closes follow the +15-minute sequence from the API-verified
+211630->21:30Z. The consecutive-window chain now also checks out: each
+window's strike equals the prior window's closing average (211800's strike
+60064.13 = 211745's close 60064.13).
 **$3.25M remains honestly unreachable at the measured edge** — the
 legitimate remaining lane is the volatility model the gate depends on (the
 fixed 0.80 vol measures -0.01c live; the same gate with realised-vol
@@ -321,6 +332,24 @@ fills validate the taker fill assumption yet, and Kalshi's own calibration
 study (97.2% accuracy at close over 2.3M markets) means the ask near
 settlement is already close to fair value — the edge has to come from
 information priced later than the quote, not the quote itself.
+
+Against this candidate the independent evidence weighs the other way, and is
+recorded here in full (Research Batch 4, 2026-11-21): the publisher of the
+"+1.49c maker ceiling" ran his own live maker test (815 paper + 207 live
+contracts, fills averaging 49.5c winning 45.3% against 49.5% implied) at
+**-5.79c/contract** and no longer quotes the ceiling; a 6,303-window re-run
+of the same band structure (leading side at the ask) measured **+0.67c before
+fees and -0.42c after**, and the 90-99c first-touch "sure thing" won 96.75%
+at an average price of 96.74c — a fair price, -0.19c after fees; 237 live
+trades over two weeks realized **-1.21** against +0.7..+9.6 predicted from
+history, with 86.9% of fills at top of book (execution was not the failure);
+1,124 paper bets across five rules all came out negative; and an independent
+backtest system found the market-implied probability is the best-calibrated
+forecaster measured (ECE ~0.020 vs 0.03+ for every trained model) with every
+taker strategy failing to clear the ~2.5c round cost out of sample. The
+candidate survives on 3 held-out days (n=43); these samples are 5-50x larger.
+**It means nothing until it replicates on the 10 train days (replay running)
+and on live fills.**
 
 **$3.25M remains honestly unreachable at the measured edge** — the candidate
 is real but thin, unvalidated on live fills, and ~5 orders of magnitude
