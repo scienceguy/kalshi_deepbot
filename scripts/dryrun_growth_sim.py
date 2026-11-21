@@ -11,14 +11,20 @@ The real code paths are reused, not re-implemented:
                          cooldown, per-market daily loss, liquidity checks
   * fees.buy_cash_out / sell_cash_in — maker entry fee 0, settlement no fee
   * trader._dry_run_fill_count rule — a resting maker bid fills only on a
-    minute where the side's ask <= entry_price with quoted volume > 0
+    minute where OUR side's ask <= entry_price with counterparty depth > 0
+    (a YES buy is filled by NO bidders, and vice versa)
 
 A simulated clock (patched into risk.time) keeps the cooldown and market-loss
 windows honest without importing a fake time module.
 
 USAGE:
+  # historical replay (HF quote_history parquet, dollar prices, one volume col)
   SUPERBOT_DATA_DIR=/tmp/opencode/drysim \
     python scripts/dryrun_growth_sim.py --days 2026-07-23 ... 2026-10-11
+
+  # today's live fill data (collected by scripts/live_book_collector.py,
+  # per-side top-of-book depth in yes_vol/no_vol)
+  python scripts/dryrun_growth_sim.py --collected live_books.jsonl
 """
 import argparse
 import json
@@ -88,29 +94,54 @@ def load_days(days):
 
 
 def build_tickers(df):
-    """{ticker: dict} with minute-indexed quote book + settlement facts."""
+    """{ticker: dict} with minute-indexed quote book + settlement facts.
+
+    The HF parquet carries one `volume` column (a per-minute venue number, not
+    top-of-book depth) and dollar prices; a live collection (load_collected)
+    carries per-side top-of-book depth in yes_vol/no_vol. Both are stored in
+    cents so market_at needs no conversion.
+    """
+    has_sides = "yes_vol" in df.columns and "no_vol" in df.columns
     out = {}
     for ticker, g in df.groupby("ticker"):
         g = g.sort_values("minute")
         book = {}
         for _, r in g.iterrows():
+            if has_sides:
+                yvol = float(r["yes_vol"] or 0)
+                nvol = float(r["no_vol"] or 0)
+            else:
+                yvol = nvol = float(r["volume"] or 0)
             book[int(r["minute"])] = {
                 "bid": int(round(float(r["yes_bid"]) * 100)),
                 "ask": int(round(float(r["yes_ask"]) * 100)),
-                "vol": float(r["volume"] or 0),
+                "vol": yvol if yvol else nvol,
+                "yes_vol": yvol,
+                "no_vol": nvol,
             }
-        first = g.iloc[0]
+        # The settlement row is appended last (minute 15); prefer it over the
+        # first quote row, which carries no result.
+        settled = [r for _, r in g.iterrows()
+                   if str(r.get("result") or "").strip()]
+        first = settled[-1] if settled else g.iloc[0]
         result = str(first.get("result") or "").lower()
         out[ticker] = {
             "series": first["series"],
             "open_ts": int(first["open_ts"]),
             "close_ts": int(first["close_ts"]),
             "strike": float(first["floor_strike"]),
-            "expiration": float(first["expiration_value"]),
+            "expiration": float(first.get("expiration_value") or 0),
             "yes_won": result == "yes",
+            "has_result": bool(settled),
             "book": book,
         }
     return out
+
+
+def load_collected(path):
+    """Load a live-collected book JSONL (same schema as the HF parquet)."""
+    import pandas as pd
+    return pd.read_json(Path(path), lines=True)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -133,8 +164,8 @@ def market_at(t, meta, minute):
         # derive the complement only from a quoted YES bid.
         no_bid=(100 - ya) if ya else 0,
         no_ask=(100 - yb) if yb else 0,
-        yes_liquidity=int(q["vol"]),
-        no_liquidity=int(q["vol"]),
+        yes_liquidity=int(q["yes_vol"]),
+        no_liquidity=int(q["no_vol"]),
         minutes_left=15 - minute,
         bracket_role="MAIN",
         raw={"floor_strike": meta["strike"],
@@ -276,14 +307,22 @@ def simulate(tickers, days_n, start_balance):
         if not ok:
             continue
 
-        # Resting-maker fill: needs ask <= our price at some later minute,
-        # with quoted volume (>0) behind it.
+        # Resting-maker fill, matching trader._dry_run_fill_count: the ask on
+        # OUR side must come down to our price, and the counterparty depth is
+        # the OTHER side's bid size (a YES buy is filled by NO bidders).
+        fill_side = sig_pick.side
         for m2 in range(minute, 15):
             q2 = meta["book"].get(m2)
             if q2 is None:
                 continue
-            if q2["ask"] and q2["ask"] <= entry_price and q2["vol"] > 0:
-                n = floor_contracts(min(contracts, q2["vol"]))
+            if fill_side == "yes":
+                side_ask, depth = q2["ask"], q2["no_vol"]
+            else:
+                # NO ask is the complement of the YES bid; no YES bid = no quote
+                side_ask = (100 - q2["bid"]) if q2["bid"] else 0
+                depth = q2["yes_vol"]
+            if side_ask and side_ask <= entry_price and depth > 0:
+                n = floor_contracts(min(contracts, depth))
                 if n <= 0:
                     break
                 cost = fees.buy_cash_out(n, entry_price / 100.0, taker=False)
@@ -325,7 +364,7 @@ def summarize(s, days_n):
             d += 1
         cap_days = d if b >= 3_250_000 else None
     print("\n" + "=" * 74)
-    print("DRY-RUN GROWTH SIMULATION — historical live orderbook (HF quote_history)")
+    print("DRY-RUN GROWTH SIMULATION — live orderbook replay")
     print("=" * 74)
     print(f"Days simulated:        {days_n}")
     print(f"Market windows:        {s.attempts} signals attempted / "
@@ -377,6 +416,10 @@ def main():
                     help="Run the taker strategy (AGGRESSIVE_FILL=true: cross "
                          "the ask, model gate, taker fee) instead of the "
                          "resting maker strategy.")
+    ap.add_argument("--collected", metavar="JSONL",
+                    help="Replay a live-collected book JSONL from "
+                         "scripts/live_book_collector.py instead of the HF "
+                         "parquet history (today's live fill data).")
     args = ap.parse_args()
 
     if args.paper_experiment:
@@ -388,15 +431,32 @@ def main():
         print("Taker mode: AGGRESSIVE_FILL=true (cross the ask, model gate, "
               "taker fee)")
 
-    df = load_days(args.days)
-    tickers = build_tickers(df)
-    print(f"Loaded {len(tickers)} market windows from {len(args.days)} days "
-          f"({df['series'].nunique()} series)")
+    if args.collected:
+        df = load_collected(args.collected)
+        tickers = build_tickers(df)
+        # simulate() settles every ticker at its close, so a ticker without a
+        # recorded settlement would book a fabricated outcome. Only replay
+        # windows whose live result is known.
+        tickers = {t: m for t, m in tickers.items() if m["has_result"]}
+        span_days = ((max(m["close_ts"] for m in tickers.values())
+                      - min(m["open_ts"] for m in tickers.values())) / 86400.0
+                     if tickers else 0.0)
+        days_n = max(span_days, 1e-9)
+        print(f"Loaded {len(tickers)} settled live windows from "
+              f"{args.collected} ({df['series'].nunique()} series, "
+              f"{span_days * 24:.1f}h span)")
+    else:
+        df = load_days(args.days)
+        tickers = build_tickers(df)
+        days_n = len(args.days)
+        print(f"Loaded {len(tickers)} market windows from {len(args.days)} days "
+              f"({df['series'].nunique()} series)")
     t0 = time.time()
-    s = simulate(tickers, len(args.days), args.start)
+    s = simulate(tickers, days_n, args.start)
     print(f"Simulated in {time.time() - t0:.1f}s")
-    summarize(s, len(args.days))
-    (SCRATCH / "drysim_trades.json").write_text(
+    summarize(s, days_n)
+    out_name = "live_trades.json" if args.collected else "drysim_trades.json"
+    (SCRATCH / out_name).write_text(
         json.dumps(s.trades, indent=2, default=str))
     return 0
 

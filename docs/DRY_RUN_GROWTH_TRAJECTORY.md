@@ -1,9 +1,9 @@
 # Dry-Run Growth Trajectory — Measured on Live Orderbook Data
 
 **Prepared by**: ubuntu:opencode:kalshi_deepbot
-**Date**: 2026-11-21
+**Date**: 2026-11-21 (fill-rule correction, v2)
 **Tool**: `scripts/dryrun_growth_sim.py` (generated trades recorded in
-`/tmp/opencode/drysim_trades.json`)
+`$TMPDIR/drysim_trades.json`; live-collected replay → `live_trades.json`)
 
 ---
 
@@ -20,90 +20,111 @@ bot's own code paths — no re-implemented logic:
 | Cash floor 70%, exposure ceiling 30%, 8% drawdown halt, 3-loss cooldown, per-market daily loss, liquidity checks | `risk.RiskManager` with `paper=True` (dry-run knobs) — clock patched to the simulated timeline |
 | Maker entry fee = 0 on these series; settlement is not a trade | `fees.buy_cash_out / sell_cash_in` |
 | Settlement pays $1.00 iff `expiration_value >= floor_strike` (verified 100% agreement with the dataset's `result` column) | HF quote_history |
-| Fill rule: a resting bid at `entry_price` fills only on a minute where that side's ask ≤ `entry_price` **with quoted volume > 0** — no fabricated fills | `trader._dry_run_fill_count` semantics |
+| Fill rule: a resting bid at `entry_price` fills only on a minute where **our side's ask** ≤ `entry_price` **and the counterparty depth is > 0** — no fabricated fills | `trader._dry_run_fill_count` semantics |
 
 DRY_RUN is set True at runtime (mirrors `trader.py --dry`; the repo `.env`
 ships `DRY_RUN=false`).
 
-## Results (start $35)
+### Fill-rule correction (v2 — retracted the v1 numbers)
 
-| Config | Trades | Win rate | Fill rate | Total PnL | Final equity | Max DD | Halted? |
-|---|---|---|---|---|---|---|---|
-| **Maker, production dry-run guards** (8% DD halt) | 209 | 93.3% | 23.9% | **−$0.98** | $34.02 | 33.5% | yes, at −15% |
-| Maker, `--paper-experiment` (the built-in paper knobs: 90% halt threshold) | 2,130 | 95.3% | 21.4% | **+$128.00** | $163.00 | 55.2% | never |
-| Taker (`--taker`: cross ask, model gate, taker fee) | 36 (5-day sample) | 94.4% | 100% | **−$2.48** | $32.52 | 15.0% | yes, at −15% |
+The first version of the sim checked the **YES ask for every signal** and
+capped the fill by the **same side's** volume. `trader._dry_run_fill_count`
+defines it differently, and the v1 run therefore reported **fabricated fills**:
 
-Measured edge (paper-experiment run): **+$0.0085 per contract**, 26.3
-trades/day, daily growth factor **1.0192×**.
+- a NO bid must fill against the **NO ask** (`100 − yes_bid`), not the YES ask;
+- the available contracts are the **counterparty** depth — buying YES lifts
+  the best NO bid (`no_liquidity`), buying NO lifts the best YES bid
+  (`yes_liquidity`).
 
-### Why the two maker runs differ so much
+v1 (wrong rule): 2,130 trades, 95.3% win, **+$128.00** — **retracted**.
+v2 (faithful rule, verified against the function's docstring and code, with a
+side-aware regression test in `tests/test_dryrun_growth_sim.py`): below.
 
-Both runs place identical signals. The only difference is the drawdown halt:
-under the production 8% halt the run stops at the first −15% equity dip (peak
-$51.14, then halted — entries never resume because recovery needs a new high
-and `HALT_AUTO_RESUME=false`). The paper-experiment knobs
-(`PAPER_DRAWDOWN_HALT_PCT=0.9`, `PAPER_GUARDS_ENABLED=false`) exist exactly for
-growth-trajectory experiments and survive the drawdowns.
+## Results (start $35, 81 days)
 
-### Taker is fee-negative
+| Config | Fills / signals | Win rate | Total PnL | Final equity | Max DD | Halted? |
+|---|---|---|---|---|---|---|
+| **Maker, production dry-run guards** (8% DD halt) | 44 / 385 (11.4%) | 93.2% | **−$5.06** | $29.94 | 27.4% | yes, at −15% |
+| Maker, `--paper-experiment` growth knobs | 300 / 10,357 (2.9%) | 92.7% | **−$25.23** | $9.77 | 76.4% | never (0.9844×/day) |
+| Taker (`--taker`: cross ask, model gate, taker fee) | 36 (5-day sample) | 94.4% | **−$2.48** | $32.52 | 15.0% | yes, at −15% |
 
-The taker run matches the measured REALITY TAX analysis: the bot's fixed
-`MODEL_VOLATILITY=0.80` gate is not calibrated to realized per-minute
-volatility, so paying the ask + 7%-of-p(1−p) fee removes the edge (−1.5c per
-contract measured here, 5-day sample).
+Measured edge under the corrected maker rule: **−3.2c per contract**
+(paper-experiment run). **Both maker configs lose money.** The v1 "+$128" was
+an artifact of the fill-rule bug, not a measured edge.
+
+### Why the fill rate collapsed
+
+The resting bid sits at ask−1. Under the faithful rule it only fills when the
+market actually crosses into us — and depth must sit behind that cross. Over 81
+days that happened for 300 of 10,357 quote cycles (2.9%). The v1 rule filled
+NO orders whenever the *YES* ask was cheap, which is not how the venue matches
+orders.
 
 ## Projection to $3.25M
 
-Using the measured per-trade EV, trades/day and the $25,000 `MAX_TRADE_DOLLARS`
+Using the measured per-trade EV, fills/day and the $25,000 `MAX_TRADE_DOLLARS`
 cap (per-trade = 15% of equity until the cap binds):
 
-- Log-compounding estimate (no cap): **602 days**
-- With the $25k/trade cap: **787 days** (~2.2 years of continuous trading)
+- **Maker: never.** Daily growth factor 0.9844× — the measured EV does not
+  compound to the target at any horizon (capped model: not in 100 years).
+- **Taker: never** (fee-negative, −1.5c/contract on the 5-day sample).
 
 Under production dry-run guards: **never** — the run halts before it
-compounds (measured final equity $34.02 < $35 start).
+compounds (measured final equity $29.94 < $35 start).
 
 ## Validation against prior measurements
 
-- Realistic maker fills with adverse selection (fills only when the ask comes
-  to our price): fill rate 21.4% over 81 days.
-- Win rate on fills here is 95.3% vs the 91.2% measured in the 2026-11-12
-  REALITY TAX note on the same dataset. The entry windows differ (this run uses
-  the live 8–14.5 min config; that note measured minutes 6–11), and the periods
-  differ (Jul–Oct vs the 14 newest days of Oct). **The win-rate-on-fills
-  divergence is unresolved and should be re-measured on identical windows
-  before anyone sizes up off this model.**
+- The 2026-11-12 REALITY TAX note measured maker resting at ask−1 at
+  **−4.06c/trade** with a 36.5% fill rate and win rate dropping 96.7% → 91.2%
+  on fills (adverse selection). This run's corrected maker EV of −3.2c/contract
+  is consistent with that measurement; the v1 win rate of 95.3% was inflated by
+  the same bug.
+- Taker + a calibrated vol gate was +1.03c in that note; this sim's taker is
+  negative because `MODEL_VOLATILITY=0.80` is fixed and uncalibrated — the
+  binding problem is the gate, not the band.
 
 ## What this means for the $3.25M target
 
 The target is not reachable in any short window. Measured, evidence-based
 trajectory:
 
-1. **Under production dry-run guards: no trajectory** — breaks even and halts.
-2. **Under the paper-experiment knobs: ~787 days** of continuous trading at the
-   measured +1.9%/day, with a measured 55% peak-to-trough drawdown along the
-   way. A single operator pause, venue outage or parameter regression resets
-   the clock; the plan is not robust at this edge.
+1. **Maker: no trajectory** — negative EV at every horizon measured. The
+   honest answer is that a 1c-inside-the-spread maker strategy on this venue
+   and band does not pay.
+2. **Taker: no trajectory** — fees exceed the edge under the current gate.
 3. The live-account prerequisite (funded accounts, confirmed on
    `LIVE_READINESS_CHECKLIST.md`) is unchanged; the live Kalshi account currently
    holds **$9.82** real balance, 0 resting orders, 0 positions, risk-halted.
 
-Recommendation: treat 787 days as the model's honest answer, not a plan. The
-edge is ~1c/trade and rests on the maker fill rule; it does not survive the
-production halt config, and it has not been validated to the point where sizing
-above 15% is defensible.
+Recommendation: there is no measured path to $3.25M at this edge. Any plan that
+reaches it must first change the *strategy* (a calibrated model gate — the
++1.03c/trade taker variant from the REALITY TAX note — or a different venue),
+not the sizing. The corrected rule is a bug fix; the earlier +$128 result
+should not be cited.
 
 ## Reproduce
 
 ```bash
 cd /opt/superbot
-SUPERBOT_DATA_DIR=/tmp/opencode/drysim HF_HUB_OFFLINE=1 \
+SUPERBOT_DATA_DIR=$TMPDIR/drysim HF_HUB_OFFLINE=1 \
   python scripts/dryrun_growth_sim.py --days 2026-07-23 ... 2026-10-11 \
   --start 35.0                       # production guards
-SUPERBOT_DATA_DIR=/tmp/opencode/drysim HF_HUB_OFFLINE=1 \
+SUPERBOT_DATA_DIR=$TMPDIR/drysim HF_HUB_OFFLINE=1 \
   python scripts/dryrun_growth_sim.py --days ... --paper-experiment   # growth model
-SUPERBOT_DATA_DIR=/tmp/opencode/drysim HF_HUB_OFFLINE=1 \
+SUPERBOT_DATA_DIR=$TMPDIR/drysim HF_HUB_OFFLINE=1 \
   python scripts/dryrun_growth_sim.py --days ... --taker              # taker variant
 ```
 
-Data is cached under `/tmp/opencode/hf_cache` (81 files, ~12 MB).
+Data is cached under `$TMPDIR/hf_cache` (81 files, ~12 MB).
+
+### Today's live fill data
+
+`scripts/live_book_collector.py` records the same schema from the live venue
+(top-of-book per-side depth + settlement result), so the replay is not limited
+to the 3-week-stale HF history:
+
+```bash
+TMPDIR=/tmp/opencode python scripts/live_book_collector.py \
+    --out $TMPDIR/live_books.jsonl --minutes 95
+python scripts/dryrun_growth_sim.py --collected $TMPDIR/live_books.jsonl
+```

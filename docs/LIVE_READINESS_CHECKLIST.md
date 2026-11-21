@@ -179,12 +179,13 @@ $ python -c "from local_db import LocalDB; db=LocalDB(auto_sync=False); print(db
 
 Dry-run growth simulation against live orderbook history (81 days,
 76,507 windows, 15 series; `scripts/dryrun_growth_sim.py`, trades recorded in
-`/tmp/opencode/drysim_trades.json`, write-up in `docs/DRY_RUN_GROWTH_TRAJECTORY.md`):
+`$TMPDIR/drysim_trades.json`, write-up in `docs/DRY_RUN_GROWTH_TRAJECTORY.md`
+with the full method and the v1-fill-rule retraction):
 
-| Config | Trades | Win | Fill | PnL (81d) | Max DD |
+| Config | Fills / signals | Win | PnL (81d) | Final equity | Max DD |
 |---|---|---|---|---|---|
-| Maker, production dry-run guards | 209 | 93.3% | 23.9% | −$0.98 | 33.5% (halts at −15%) |
-| Maker, paper-experiment knobs | 2,130 | 95.3% | 21.4% | **+$128.00** | 55.2% |
-| Taker (cross ask + fee) | 36 (5-day) | 94.4% | 100% | −$2.48 | 15.0% (halts) |
+| Maker, production dry-run guards | 44 / 385 (11.4%) | 93.2% | −$5.06 | $29.94 | 27.4% (halts at −15%) |
+| Maker, paper-experiment knobs | 300 / 10,357 (2.9%) | 92.7% | −$25.23 | $9.77 | 76.4% |
+| Taker (cross ask + fee) | 36 (5-day) | 94.4% | −$2.48 | $32.52 | 15.0% (halts) |
 
-**Bottom line**: Code is production-grade. Live readiness now depends entirely on **funded accounts**, **human risk approval**, and **flipping the confirm flags** — and on accepting that the measured edge is ~1c/contract: it does not compound to $3.25M under the production halt config, and the honest model reaches the target only after ~787 days of uninterrupted paper-knob trading with a 55% peak-to-trough drawdown along the way.
+**Bottom line**: Code is production-grade. Live readiness now depends entirely on **funded accounts**, **human risk approval**, and **flipping the confirm flags** — and on accepting that the corrected maker rule (fill only when our side's ask crosses our price with counterparty depth) measures **negative EV (−3.2c/contract)** at both maker configs: there is no compounding path to $3.25M, and the earlier +$128 result was a fill-rule bug, retracted in the doc. Reaching the target requires a strategy change (a calibrated model gate), not a sizing change.
