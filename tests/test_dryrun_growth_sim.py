@@ -285,3 +285,85 @@ def test_taker_replay_does_not_fill_without_depth(monkeypatch):
     finally:
         config.AGGRESSIVE_FILL = saved
     assert s.fills == 0 and s.trades == []
+
+
+def _n_settled_windows(path, n, with_spot=True):
+    """n tickers, each quoting minutes 8-14 and settling at minute 15."""
+    rows = []
+    for i in range(n):
+        ticker = "KXBTC15M-26NOV2102%02d-30" % (30 + i)
+        for minute in range(8, 15):
+            row = {"series": "KXBTC15M", "ticker": ticker, "minute": minute,
+                   "open_ts": 1_700_000_000, "close_ts": 1_700_000_900,
+                   "floor_strike": 100.0, "yes_bid": 0.94, "yes_ask": 0.95,
+                   "yes_vol": 50, "no_bid": 0.05, "no_ask": 0.06, "no_vol": 50}
+            if with_spot:
+                row.update(spot=100.5, sigma_per_min=0.003)
+            rows.append(row)
+        rows.append({"series": "KXBTC15M", "ticker": ticker, "minute": 15,
+                     "open_ts": 1_700_000_000, "close_ts": 1_700_000_900,
+                     "floor_strike": 100.0, "yes_bid": 0, "yes_ask": 0,
+                     "yes_vol": 0, "no_bid": 0, "no_ask": 0, "no_vol": 0,
+                     "result": "yes", "expiration_value": 100.3})
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return str(path)
+
+
+def test_taker_applies_the_index_bias_measured_from_the_same_file(tmp_path, capsys):
+    # The settlement index prints below the feed; the gate must be priced
+    # against it, and the calibration comes from the replayed file itself.
+    n = MOD.MIN_INDEX_CALIBRATION + 2
+    f = _n_settled_windows(tmp_path / "books.jsonl", n)
+    saved = (config.AGGRESSIVE_FILL, config.MODEL_INDEX_BIAS_BPS,
+             config.MODEL_INDEX_DISPERSION_FRAC)
+    import sys
+    argv = sys.argv
+    try:
+        sys.argv = ["dryrun_growth_sim.py", "--taker", "--start", "35.0",
+                    "--collected", f]
+        MOD.main()
+        out = capsys.readouterr().out
+    finally:
+        sys.argv = argv
+        (config.AGGRESSIVE_FILL, config.MODEL_INDEX_BIAS_BPS,
+         config.MODEL_INDEX_DISPERSION_FRAC) = saved
+    assert "Index terms applied" in out
+    assert "bias -13" in out or "-1" in out   # mean of the recorded bases
+    assert config.MODEL_INDEX_BIAS_BPS == saved[1]  # restored, no global leak
+
+
+def test_taker_refuses_without_a_real_index_calibration(tmp_path, capsys):
+    # A handful of windows is not a calibration; refuse rather than correct
+    # the gate with noise.
+    f = _n_settled_windows(tmp_path / "books.jsonl", 3)
+    saved = config.AGGRESSIVE_FILL
+    import sys
+    argv = sys.argv
+    try:
+        sys.argv = ["dryrun_growth_sim.py", "--taker", "--start", "35.0",
+                    "--collected", f]
+        rc = MOD.main()
+    finally:
+        sys.argv = argv
+        config.AGGRESSIVE_FILL = saved
+    assert rc == 2
+    assert "--taker needs the index bias measurable" in capsys.readouterr().out
+
+
+def test_maker_run_does_not_touch_the_index_terms(tmp_path):
+    # The maker replay stays the raw-feed pricing: any index correction is a
+    # deliberate decision, not a side effect of the run mode.
+    f = _n_settled_windows(tmp_path / "books.jsonl",
+                           MOD.MIN_INDEX_CALIBRATION + 1)
+    saved = (config.MODEL_INDEX_BIAS_BPS, config.MODEL_INDEX_DISPERSION_FRAC)
+    import sys
+    argv = sys.argv
+    try:
+        sys.argv = ["dryrun_growth_sim.py", "--start", "35.0", "--collected", f]
+        MOD.main()
+    finally:
+        sys.argv = argv
+        (config.MODEL_INDEX_BIAS_BPS,
+         config.MODEL_INDEX_DISPERSION_FRAC) = saved
+    assert config.MODEL_INDEX_BIAS_BPS == saved[0] == 0.0
+    assert config.MODEL_INDEX_DISPERSION_FRAC == saved[1] == 0.0

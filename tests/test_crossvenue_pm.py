@@ -314,21 +314,22 @@ def test_parse_kalshi_15m_event():
     from crossvenue import parse_kalshi_15m_event
     from datetime import datetime
     
-    # KXBTC15M-26NOV201530 -> ('BTC', 2026-11-20 15:30 ET, 2026-11-20 15:45 ET)
+    # KXBTC15M-26NOV201530 -> window 15:15-15:30 ET: the ticker's HHMM is the
+    # ET close, verified 2026-11-21 (KXBTC15M-26NOV210845-45 closed 13:45Z).
     result = parse_kalshi_15m_event("KXBTC15M-26NOV201530")
     assert result is not None
     asset, start, end = result
     assert asset == "BTC"
-    assert start == datetime(2026, 11, 20, 15, 30)
-    assert end == datetime(2026, 11, 20, 15, 45)
-    
-    # KXETH15M-26DEC152345 -> ('ETH', 2026-12-15 23:45 ET, 2026-12-16 00:00 ET)
+    assert start == datetime(2026, 11, 20, 15, 15)
+    assert end == datetime(2026, 11, 20, 15, 30)
+
+    # KXETH15M-26DEC152345 -> ('ETH', 2026-12-15 23:30 ET, 2026-12-15 23:45 ET)
     result = parse_kalshi_15m_event("KXETH15M-26DEC152345")
     assert result is not None
     asset, start, end = result
     assert asset == "ETH"
-    assert start == datetime(2026, 12, 15, 23, 45)
-    assert end == datetime(2026, 12, 16, 0, 0)
+    assert start == datetime(2026, 12, 15, 23, 30)
+    assert end == datetime(2026, 12, 15, 23, 45)
     
     # Invalid ticker
     assert parse_kalshi_15m_event("INVALID") is None
@@ -340,26 +341,51 @@ def test_parse_poly_us_updown_15m_slug():
     from crossvenue import parse_poly_us_updown_15m_slug
     from datetime import datetime
     
-    # cpc-btc-updown-15m-2026-11-20-1530z -> ('BTC', 2026-11-20 15:30 ET, 2026-11-20 15:45 ET)
+    # cpc-btc-updown-15m-2026-11-20-1530z -> ('BTC', 2026-11-20 10:30 ET, 2026-11-20 10:45 ET)
+    # The 'z' suffix is UTC: 15:30-15:45Z is 10:30-10:45 ET in November. Verified
+    # against the live venue 2026-11-21: at 12:23Z the open window was
+    # cpc-btc-updown-15m-2026-11-21-1215z with start 12:15Z / end 12:30Z.
     result = parse_poly_us_updown_15m_slug("cpc-btc-updown-15m-2026-11-20-1530z")
     assert result is not None
     asset, start, end = result
     assert asset == "BTC"
-    assert start == datetime(2026, 11, 20, 15, 30)
-    assert end == datetime(2026, 11, 20, 15, 45)
-    
-    # cpc-eth-updown-15m-2026-12-15-2345z
+    assert start == datetime(2026, 11, 20, 10, 30)
+    assert end == datetime(2026, 11, 20, 10, 45)
+
+    # cpc-eth-updown-15m-2026-12-15-2345z (December: EST all month)
     result = parse_poly_us_updown_15m_slug("cpc-eth-updown-15m-2026-12-15-2345z")
     assert result is not None
     asset, start, end = result
     assert asset == "ETH"
-    assert start == datetime(2026, 12, 15, 23, 45)
-    assert end == datetime(2026, 12, 16, 0, 0)
-    
+    assert start == datetime(2026, 12, 15, 18, 45)
+
     # Invalid slugs
     assert parse_poly_us_updown_15m_slug("invalid") is None
     assert parse_poly_us_updown_15m_slug("") is None
     assert parse_poly_us_updown_15m_slug("cpc-btc-updown-1h-2026-11-20-1530z") is None
+
+
+def test_poly_and_kalshi_15m_clocks_convert_to_the_same_window():
+    from datetime import timezone
+    """The two venues' tickers are on different clocks; matching must convert.
+
+    KXBTC15M-26NOV210730-30 closes at 07:30 ET = 12:30Z (its 15-minute window
+    is 12:15-12:30Z). The live venue's slug for that same window is
+    cpc-btc-updown-15m-2026-11-21-1215z. Parsing both must land on the same
+    interval — reading the slug as ET put every pair five hours apart, so the
+    old matcher compared Kalshi's current window against a window that had
+    already settled and never found a real pair.
+    """
+    from crossvenue import (to_utc, parse_kalshi_15m_event,
+                            parse_poly_us_updown_15m_slug)
+    asset, start_et, end_et = parse_kalshi_15m_event("KXBTC15M-26NOV210730")
+    # the event closes 07:30 ET = 12:30Z, so its window is 12:15-12:30Z: the
+    # same interval the live venue publishes as ...-1215z.
+    assert to_utc(start_et) == datetime(2026, 11, 21, 12, 15, tzinfo=timezone.utc)
+    assert to_utc(end_et) == datetime(2026, 11, 21, 12, 30, tzinfo=timezone.utc)
+    p_asset, p_start, p_end = parse_poly_us_updown_15m_slug(
+        "cpc-btc-updown-15m-2026-11-21-1215z")
+    assert (p_asset, p_start, p_end) == (asset, start_et, end_et)
 
 
 def test_updown_match_dataclass_fields():

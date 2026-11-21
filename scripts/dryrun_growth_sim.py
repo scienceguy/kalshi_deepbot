@@ -39,6 +39,25 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Taker mode prices the model gate against the settlement index; the index
+# bias is measured from the replayed file itself (settlement vs the recorded
+# spot), so the gate never takes a feed/index mismatch for edge.
+MIN_INDEX_CALIBRATION = 10
+
+
+def _measured_index_bias(path: str) -> dict | None:
+    """Settlement-vs-spot bias measured from the file being replayed, or None.
+
+    Fewer than MIN_INDEX_CALIBRATION settled windows is not a calibration:
+    one window's basis is a coin flip, so the run refuses instead of
+    correcting the gate with noise.
+    """
+    from measure_index_basis import settlement_basis
+    rows = [json.loads(l) for l in open(path) if l.strip()]
+    rep = settlement_basis(rows)
+    return rep if rep.get("n", 0) >= MIN_INDEX_CALIBRATION else None
 
 import config  # noqa: E402
 import fees  # noqa: E402
@@ -471,7 +490,13 @@ def main():
     ap.add_argument("--taker", action="store_true",
                     help="Run the taker strategy (AGGRESSIVE_FILL=true: cross "
                          "the ask, model gate, taker fee) instead of the "
-                         "resting maker strategy.")
+                         "resting maker strategy. Applies the settlement-index "
+                         "terms measured from the same file.")
+    ap.add_argument("--index-dispersion", type=float, default=0.00175,
+                    help="Cross-venue dispersion (fraction of spot) applied to "
+                         "the taker gate. Measured 17-20bps on 2026-11-21; "
+                         "shortcut: constant, not per-minute, because the "
+                         "schema does not record dispersion per minute.")
     ap.add_argument("--collected", metavar="JSONL",
                     help="Replay a live-collected book JSONL from "
                          "scripts/live_book_collector.py instead of the HF "
@@ -510,6 +535,24 @@ def main():
                       "live_book_collector.py, 2026-11-21 schema); %d of %d "
                       "replayed windows lack it" % (len(missing), len(tickers)))
                 return 2
+            # The contracts settle on the CF Benchmarks BRTI 60s average,
+            # not on the feed the model prices from: measured -13bps mean
+            # bias across nine series (scripts/measure_index_basis.py). The
+            # bias is measured from this same file, so the taker gate prices
+            # the index that settles the contract, not the feed.
+            bias = _measured_index_bias(args.collected)
+            if bias is None:
+                print("--taker needs the index bias measurable from the same "
+                      "file (>= %d settled windows with a recorded spot); the "
+                      "gate would otherwise price the feed against a "
+                      "settlement index" % MIN_INDEX_CALIBRATION)
+                return 2
+            config.MODEL_INDEX_BIAS_BPS = bias["mean_bps"]
+            config.MODEL_INDEX_DISPERSION_FRAC = args.index_dispersion
+            print("Index terms applied: bias %+.2fbps (measured n=%d, "
+                  "stderr %.2f), dispersion %.1fbps" % (
+                      bias["mean_bps"], bias["n"], bias["stderr_bps"],
+                      args.index_dispersion * 10_000))
         span_days = ((max(m["close_ts"] for m in tickers.values())
                       - min(m["open_ts"] for m in tickers.values())) / 86400.0
                      if tickers else 0.0)

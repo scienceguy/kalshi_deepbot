@@ -578,6 +578,15 @@ MODEL_VOLATILITY = _env_float("MODEL_VOLATILITY", 0.80)
 MODEL_VOL_DYNAMIC = _env_bool("MODEL_VOL_DYNAMIC", True)
 MODEL_VOL_MIN = _env_float("MODEL_VOL_MIN", 0.20)
 MODEL_VOL_MAX = _env_float("MODEL_VOL_MAX", 5.00)
+# Settlement-index terms: the 15M/threshold contracts settle on the CF
+# Benchmarks BRTI 60s average, not on the feed the model prices from.
+# Measured 2026-11-21 (45 settled windows, all nine crypto series): the index
+# prints -13.15bps below the composite feed (stderr 1.27), and the venue
+# dispersion at the same time was 17-20bps — the uncertainty about which level
+# it prints. Left at 0 by default so nothing on the live gate changes without
+# a conscious decision; scripts/measure_index_basis.py measures them.
+MODEL_INDEX_BIAS_BPS = _env_float("MODEL_INDEX_BIAS_BPS", 0.0)
+MODEL_INDEX_DISPERSION_FRAC = _env_float("MODEL_INDEX_DISPERSION_FRAC", 0.0)
 
 # ═════════════════════════════════════════════════════════════════════
 # HIGH-EV HURDLE (HF backtest, 1,890-combo sweep, papylove/kalshi-15m-data)

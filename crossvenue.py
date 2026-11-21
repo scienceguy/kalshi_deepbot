@@ -635,9 +635,14 @@ class UpDownMatch:
 def parse_kalshi_15m_event(event_ticker: str) -> Optional[Tuple[str, datetime, datetime]]:
     """
     Parse Kalshi 15M event ticker into asset, window_start_et, window_end_et.
-    
-    KXBTC15M-26NOV201530 -> ('BTC', 2026-11-20 15:30 ET, 2026-11-20 15:45 ET)
-    15M time is HHMM, window is 15 minutes.
+
+    KXBTC15M-26NOV210730 -> ('BTC', 2026-11-21 07:15 ET, 2026-11-21 07:30 ET)
+
+    The ticker's HHMM is the window CLOSE in ET wall clock, verified against
+    the live venue 2026-11-21: market KXBTC15M-26NOV210845-45 had
+    close_time 13:45Z = 08:45 ET, and its open was 900s earlier at 07:15Z...
+    13:15Z = 08:15 ET. Reading the HHMM as the window start put every
+    cross-venue pair one window off.
     """
     m = _KALSHI_EVENT.match(event_ticker or "")
     if not m:
@@ -646,8 +651,8 @@ def parse_kalshi_15m_event(event_ticker: str) -> Optional[Tuple[str, datetime, d
     try:
         hour = int(hhmm[:2])
         minute = int(hhmm[2:]) if len(hhmm) > 2 else 0
-        window_start = datetime(2000 + int(yy), _MONTHS[mon], int(dd), hour, minute)
-        window_end = window_start + timedelta(minutes=15)
+        window_end = datetime(2000 + int(yy), _MONTHS[mon], int(dd), hour, minute)
+        window_start = window_end - timedelta(minutes=15)
         return asset, window_start, window_end
     except (KeyError, ValueError):
         return None
@@ -656,11 +661,17 @@ def parse_kalshi_15m_event(event_ticker: str) -> Optional[Tuple[str, datetime, d
 def parse_poly_us_updown_15m_slug(slug: str) -> Optional[Tuple[str, datetime, datetime]]:
     """
     Parse Polymarket US up/down 15m slug into asset, window_start_et, window_end_et.
-    
-    cpc-btc-updown-15m-2026-11-20-1530z -> 
-        ('BTC', 2026-11-20 15:30 ET, 2026-11-20 15:45 ET)
-    
-    The 'z' suffix means UTC, but the time component is in ET wall clock.
+
+    cpc-btc-updown-15m-2026-11-20-1530z ->
+        ('BTC', 2026-11-20 10:30 ET, 2026-11-20 10:45 ET)
+
+    The 'z' suffix means what it says: the time component is UTC. Verified
+    against the live venue 2026-11-21 — at 12:23Z the open BTC window was
+    cpc-btc-updown-15m-2026-11-21-1215z with start 12:15Z/end 12:30Z. Kalshi's
+    event tickers use ET wall clock (KXBTC15M-26NOV210730-30 closes at 07:30
+    ET = 12:30Z), so the two venues' clocks differ and matching must convert,
+    never compare the strings. Reading the slug as ET misaligned every pair by
+    five hours.
     """
     # Pattern: cpc-{asset}-updown-15m-{date}-{time}z
     # e.g., cpc-btc-updown-15m-2026-11-20-1530z
@@ -673,9 +684,14 @@ def parse_poly_us_updown_15m_slug(slug: str) -> Optional[Tuple[str, datetime, da
         hour = int(hhmm[:2])
         minute = int(hhmm[2:]) if len(hhmm) > 2 else 0
         asset = asset_word.upper()
-        window_start = datetime(int(yyyy), int(mm), int(dd), hour, minute)
-        window_end = window_start + timedelta(minutes=15)
-        return asset, window_start, window_end
+        start_utc = datetime(int(yyyy), int(mm), int(dd), hour, minute,
+                             tzinfo=timezone.utc)
+        # ET wall clock, as the rest of this module's datetimes are: shift by
+        # the module's own US-Eastern offset rule (DST-aware) for the date.
+        naive_et = (start_utc + timedelta(hours=_et_offset_hours(
+            start_utc.replace(tzinfo=None) + timedelta(hours=5)))).replace(
+                tzinfo=None)
+        return asset, naive_et, naive_et + timedelta(minutes=15)
     except (KeyError, ValueError):
         return None
 
@@ -827,8 +843,11 @@ def match_updown_15m(timeout: int = 20) -> List[UpDownMatch]:
         
         # Generate expected Polymarket US slug
         # Format: cpc-{asset}-updown-15m-YYYY-MM-DD-HHMMz
-        date_str = window_start_et.strftime("%Y-%m-%d")
-        time_str = window_start_et.strftime("%H%M")
+        # The slug carries the window START in UTC (verified against the live
+        # venue 2026-11-21), while window_start_et is ET wall clock.
+        start_utc = to_utc(window_start_et)
+        date_str = start_utc.strftime("%Y-%m-%d")
+        time_str = start_utc.strftime("%H%M")
         poly_slug = f"cpc-{asset.lower()}-updown-15m-{date_str}-{time_str}z"
         
         # Fetch prices from both venues

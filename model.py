@@ -32,7 +32,9 @@ def gbm_probability_yes_wins(spot_price: float, strike: float,
                              minutes_left: float,
                              volatility_annualized: float = 0.80,
                              risk_free_rate: float = 0.05,
-                             momentum_cents_per_min: float = 0.0) -> float:
+                             momentum_cents_per_min: float = 0.0,
+                             index_bias_bps: float = 0.0,
+                             index_dispersion: float = 0.0) -> float:
     """
     GBM probability that spot >= strike at expiry.
 
@@ -45,20 +47,35 @@ def gbm_probability_yes_wins(spot_price: float, strike: float,
         minutes_left: minutes until settlement
         volatility_annualized: annualized vol (0.80 = 80% for crypto)
         risk_free_rate: annualized risk-free rate (5% default)
+        index_bias_bps: settlement index level relative to this spot, in
+            basis points (negative = the index prints below the feed). The
+            contracts settle on the CF Benchmarks BRTI 60s average, not on
+            the feed we price from; measured 2026-11-21 at -13.15bps mean
+            over 45 settled windows (all nine series negative). Zero keeps
+            the old behaviour.
+        index_dispersion: uncertainty about which level the settlement index
+            prints, as a fraction of spot (e.g. 0.00175 for today's 17-20bps
+            cross-venue disagreement). Added to the volatility in quadrature,
+            so a wide venue disagreement widens the band instead of moving
+            the fair value. Zero keeps the old behaviour.
 
     Returns probability in [0, 1].
     """
+    index_spot = spot_price * (1.0 + (index_bias_bps or 0.0) / 10_000.0)
     if minutes_left <= 0:
-        return 1.0 if spot_price >= strike else 0.0
+        return 1.0 if index_spot >= strike else 0.0
     if spot_price <= 0 or strike <= 0:
         return 0.5
 
     T = minutes_left / (365.0 * 24.0 * 60.0)  # years
-    sigma = volatility_annualized
+    # Settlement is the index, not the feed: shift the spot to the index
+    # level and widen sigma by the cross-venue disagreement about that level.
+    sigma_idx = (index_dispersion or 0.0) * math.sqrt(365.0 * 24.0 * 60.0)
+    sigma = math.sqrt(volatility_annualized ** 2 + sigma_idx ** 2)
     if T <= 0 or sigma <= 0:
-        return 1.0 if spot_price >= strike else 0.0
+        return 1.0 if index_spot >= strike else 0.0
     try:
-        d2 = (math.log(spot_price / strike) +
+        d2 = (math.log(index_spot / strike) +
               (risk_free_rate - 0.5 * sigma * sigma) * T) / \
              (sigma * math.sqrt(T))
         base_prob = _NORMAL.cdf(d2)
@@ -164,14 +181,26 @@ def model_probability_from_market(market, model_type: str = "gbm",
                                   minutes_left: float = 0.0,
                                   volatility: float = 0.80,
                                   momentum_cents_per_min: float = 0.0,
-                                  seconds_into_final_minute: int = 0) -> float:
+                                  seconds_into_final_minute: int = 0,
+                                  index_bias_bps: float | None = None,
+                                  index_dispersion: float | None = None) -> float:
     """
     Compute model-implied probability of YES winning from a MarketInfo.
 
     Dispatches to the appropriate model based on model_type.
     Automatically uses locked_share model when seconds_into_final_minute > 0
     (final minute of settlement), as the BRTI 60-second average locks in.
+
+    index_bias_bps / index_dispersion default to config (MODEL_INDEX_BIAS_BPS,
+    MODEL_INDEX_DISPERSION_FRAC) so one honest calibration reaches every
+    caller; pass 0.0 explicitly to keep the raw-feed pricing.
     """
+    import config
+    if index_bias_bps is None:
+        index_bias_bps = getattr(config, "MODEL_INDEX_BIAS_BPS", 0.0)
+    if index_dispersion is None:
+        index_dispersion = getattr(config, "MODEL_INDEX_DISPERSION_FRAC", 0.0)
+
     mid = market.mid_yes
     if mid is None:
         return 0.5
@@ -187,7 +216,9 @@ def model_probability_from_market(market, model_type: str = "gbm",
     if model_type == "gbm":
         if spot_price is not None and strike is not None and minutes_left > 0:
             return gbm_probability_yes_wins(
-                spot_price, strike, minutes_left, volatility)
+                spot_price, strike, minutes_left, volatility,
+                index_bias_bps=index_bias_bps,
+                index_dispersion=index_dispersion)
         # If spot or strike is unavailable, return base_prob (market mid) so no phantom edge is minted
         log.warning("gbm missing spot/strike for %s (spot=%s, strike=%s) — returning raw mid probability",
                     getattr(market, "ticker", "?"), spot_price, strike)

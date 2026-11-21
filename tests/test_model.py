@@ -1,5 +1,8 @@
 """Tests for model.py predictive fair-value models."""
 
+import math
+from statistics import NormalDist
+
 import pytest
 
 import model
@@ -114,3 +117,50 @@ def test_raw_mid_returns_mid():
     class FakeMarket:
         mid_yes = 75.0
     assert model.model_probability_from_market(FakeMarket(), model_type="raw_mid") == 0.75
+
+
+# ── settlement-index terms (measured 2026-11-21, scripts/measure_index_basis.py) ──
+def _d2_prob(spot, strike, minutes, vol):
+    T = minutes / (365.0 * 24.0 * 60.0)
+    z = (math.log(spot / strike) + (0.05 - 0.5 * vol * vol) * T) / (vol * math.sqrt(T))
+    return NormalDist().cdf(z)
+
+
+def test_index_terms_off_is_unchanged():
+    # Zero bias/dispersion must reproduce the raw-feed probability exactly:
+    # no live gate changes unless the terms are set on purpose.
+    args = (60000.0, 60100.0, 12.0, 0.80)
+    raw = model.gbm_probability_yes_wins(*args)
+    assert raw == _d2_prob(*args)
+    assert model.gbm_probability_yes_wins(*args, index_bias_bps=0.0,
+                                          index_dispersion=0.0) == raw
+
+
+def test_negative_bias_lowers_p_above_a_farther_strike():
+    # The index prints below the feed (-13.15bps measured), so an above-spot
+    # strike is farther from the settlement level than the feed suggests.
+    spot, strike, minutes, vol = 58900.0, 59100.0, 15.0, 0.80
+    raw = model.gbm_probability_yes_wins(spot, strike, minutes, vol)
+    corrected = model.gbm_probability_yes_wins(spot, strike, minutes, vol,
+                                               index_bias_bps=-13.15)
+    assert corrected < raw
+    # and it matches the same formula priced on the index level
+    assert corrected == _d2_prob(spot * 0.998685, strike, minutes, vol)
+
+
+def test_dispersion_widens_the_band_toward_the_mid():
+    spot, strike, minutes, vol = 58900.0, 59100.0, 15.0, 0.80
+    raw = model.gbm_probability_yes_wins(spot, strike, minutes, vol)
+    wide = model.gbm_probability_yes_wins(spot, strike, minutes, vol,
+                                          index_dispersion=0.00175)
+    assert wide > raw          # above-strike probability moves up toward 0.5
+    assert model.gbm_probability_yes_wins(58900.0, 58700.0, minutes, vol,
+                                          index_dispersion=0.00175) < \
+           model.gbm_probability_yes_wins(58900.0, 58700.0, minutes, vol)
+
+
+def test_no_time_left_prices_against_the_index_level():
+    # Spot exactly at the strike: the index level, not the feed, decides.
+    assert model.gbm_probability_yes_wins(58900.0, 58900.0, 0.0, 0.80) == 1.0
+    assert model.gbm_probability_yes_wins(58900.0, 58900.0, 0.0, 0.80,
+                                          index_bias_bps=-13.15) == 0.0
