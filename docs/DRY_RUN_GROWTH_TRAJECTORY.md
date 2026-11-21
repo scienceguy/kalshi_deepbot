@@ -128,3 +128,14 @@ TMPDIR=/tmp/opencode python scripts/live_book_collector.py \
     --out $TMPDIR/live_books.jsonl --minutes 95
 python scripts/dryrun_growth_sim.py --collected $TMPDIR/live_books.jsonl
 ```
+
+One fidelity caveat between the two sources: the HF parquet carries a single
+`volume` column (a per-minute venue number, not top-of-book depth), while the
+live collector records per-side `yes_vol`/`no_vol`. First live sample
+(27 settled windows, 2026-11-21 07:20–08:00Z): 28 of 171 book-minutes in the
+8–14 entry window had an ask in the 94–99c band, but most of those minutes
+sit on 0–30 contracts of our-side depth and `risk.check_liquidity`
+(`MIN_DEPTH_CONTRACTS`) correctly refuses them. The historical numbers in the
+table above are therefore still **optimistic on the liquidity axis**: real
+top-of-book depth at these prices is thinner than the single HF volume column
+implied. The live-data replay is the trustworthy one.
