@@ -268,3 +268,69 @@ on it) and is zero by construction in the index-priced replay.
 legitimate remaining lane is the volatility model the gate depends on (the
 fixed 0.80 vol measures -0.01c live; the same gate with realised-vol
 scaling measured +1.03c on HF data), not a wider band or a looser gate.
+
+### Gate sweep on HF data: the first index-validated candidate (2026-11-21)
+
+Full sweep of the fair-value log over the same recorded inputs as
+`hf_fairvalue` (99,420 joined quote rows / 8,225 tickers, 2026-09-29..10-11;
+fair value = zero-drift digital on dynamic per-minute realized vol; entry =
+first qualifying minute per ticker): taker-with-gate **106/152 configs
+positive** (n>=100), led by band [85,99]c in minutes 0-5 at +7.0c/trade;
+maker 0/80 positive again.
+
+Train/test split (split at 2026-10-09; train = the 10 log-production days
+09-29..10-08, test = the 3 held-out days 10-09..10-11): the [85,99]/[0,5]
+taker cells are positive on **both** splits (train +6.0..+6.9c, n=82-188;
+test +7.4..+8.6c, n=25-53, win 96-98.1%) — not an in-day artifact. But the
+fair value was computed on the composite feed, which measured +6.6..+26bps
+*rich* against the settlement index on the live windows — the same basis
+artifact class that faked the cross-venue edge. So the decisive test re-prices
+the identical grid on the settlement index itself.
+
+Index-priced replay (`scripts/hf_gate_index.py`; CF Benchmarks ticks for the
+test days pulled through the Kalshi passthrough by `fetch_brti_history.py`,
+1,296,000 BTC ticks plus per-asset for all 8 coins; the last index tick at or
+before each row's timestamp; **every one of the 21,599 test rows carries an
+index price**):
+
+- The basis is real but small and unstable: composite-minus-index median
+  **+4.1bps** (p10 -4.4, p90 +16.6; 77.1% of rows positive). Per coin:
+  BTC +1.5, ETH +0.6, SOL +7.7, XRP +5.8, DOGE +6.6, HYPE +7.2, ZEC +12.5,
+  NEAR +1.9bps. The live evening windows measured larger (+6.6..+26bps), so a
+  fixed correction would not be safe; pricing on the index removes it by
+  construction.
+- **The [85,99]/[0,5] taker-gate edge survives index pricing**: +7.7..+8.6c
+  on the composite -> +4.5..+6.0c on the index (n=33-53, win 93.9-95.3%);
+  **142/142** index-priced configs positive (n>=20); the margin-0.05 grid
+  runs +8.2..+9.1c (n=37-53). This is the first config with positive EV
+  against the settlement index on held-out days.
+- Two failed runs are on the record because the diagnostics caught them, not
+  the results: mapping every row to BRTI made a $0.08 DOGE spot look -99.9%
+  against the ~$82k BTC index (basis median -9989bps), and an index-id /
+  asset-name key mismatch mapped 0/21,599 rows. What shipped is the per-coin
+  mapping with a loud guard (`rows with index: 0` aborts the run).
+
+Growth arithmetic for the surviving config (honest): n=43 over 3 test days is
+~14 trades/day; per-trade return on balance at the 8% cap is 0.08 x (6.0c /
+~93c ask) = +0.5%/trade, so ~+7%/day at best. From $10.34 that is ~$17 after
+7 days; the $3.25M target needs ~+88%/day (x314,000) — about 5 orders of
+magnitude beyond the measured edge. Caveats before anyone acts on it: n=43
+(win-rate SE ~3pp), the fair value is a model whose vol input is computed on
+the composite (the fixed 0.80 vol measures -0.01c on the same data), no live
+fills validate the taker fill assumption yet, and Kalshi's own calibration
+study (97.2% accuracy at close over 2.3M markets) means the ask near
+settlement is already close to fair value — the edge has to come from
+information priced later than the quote, not the quote itself.
+
+**$3.25M remains honestly unreachable at the measured edge** — the candidate
+is real but thin, unvalidated on live fills, and ~5 orders of magnitude
+short. Remaining lanes: validate on live fills (the collector loop is
+running), extend the replay to the 10 train days (fetch running), and
+calibrate the vol input.
+
+Reproduce:
+
+    python scripts/fetch_brti_history.py --start 2026-10-09 --hours 72 --out /tmp/opencode/brti_testdays.jsonl
+    python scripts/hf_gate_sweep.py     # full-sample grid
+    python scripts/hf_gate_split.py     # train/test split of the grid
+    python scripts/hf_gate_index.py     # index-priced replay (test days)
