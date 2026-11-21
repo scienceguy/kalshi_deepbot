@@ -19,11 +19,17 @@ ALL AGENT_TASKSv15 pillars (T15-60 through T15-71) **COMPLETE**
 - Full suite green; all 4 source-corruption gates pass (`verify_source`,
   `verify_compiles`, `verify_undefined`, `verify_operators`)
 - Dry-run growth measured on 81 days of live orderbook data
-  (`docs/DRY_RUN_GROWTH_TRAJECTORY.md`): maker paper knobs +$128 over 81 days
-  (+1.92%/day), **787 days** modelled to $3.25M with the $25k/trade cap;
-  under production dry-run guards the same signals break even and halt —
-  the $3.25M dry-run target is **not reachable in any short window** and the
-  live dry-run service cannot run (instance lock held by the live trader)
+  (`docs/DRY_RUN_GROWTH_TRAJECTORY.md` v2): with the fill rule corrected to
+  `trader._dry_run_fill_count` semantics, **both maker configs are negative-EV**
+  (paper knobs −$25.23, production guards −$5.06); the earlier +$128 result
+  was a fabricated-fill bug and is **retracted**. There is **no compounding
+  path** to the $3.25M target at this edge — it requires a strategy change
+  (a calibrated vol gate or a different venue), not a sizing change.
+- Kill-switch verified end-to-end 2026-11-21 (pause persists, single-key
+  resume rejected while risk-halted, two-key resume applies; audit trail in
+  `control_inbox`); the real dry-run loop was exercised in an isolated data
+  dir (live signal → 3-layer LLM consensus → Kelly/depth sizing → resting
+  dry order → startup reconciliation), e2e smoke 7/7, n8n credentials 49/49.
 
 ---
 
@@ -36,7 +42,7 @@ ALL AGENT_TASKSv15 pillars (T15-60 through T15-71) **COMPLETE**
 - [ ] **Polymarket US**: Live account funded (recommend ≥$500)
   - [ ] `polymarket_us` SDK credentials in Bitwarden: `polymarket_api_key` + `polymarket_secret_key` (Ed25519, no passphrase)
   - [ ] Verify via `python -c "from polymarket_us_client import health_check; print(health_check())"`
-- [ ] **Run credential sync**: `python scripts/n8n_creds_sync.py --check` (all credentials present in n8n)
+- [x] **Run credential sync**: `python scripts/n8n_creds_sync.py --check` (all credentials present in n8n) — verified 2026-11-21: **49/49 present**
 
 ### 1.2 Configuration (`.env` — `chmod 600`)
 - [ ] `KALSHI_CONFIRM_LIVE=true` (required for `--live` flag)
@@ -83,16 +89,16 @@ ALL AGENT_TASKSv15 pillars (T15-60 through T15-71) **COMPLETE**
   - [ ] `python -c "from supabase_client import get_supabase_client; c=get_supabase_client(); print(c.health_check())"`
 
 ### 2.2 Kill-Switch Verification
-- [ ] **n8n kill-switch webhook** (`superbot-control`) responds 200 to signed `pause_entries`
-- [ ] Test: `python scripts/send_command.py --command pause_entries --by ubuntu:opencode:kalshi_deepbot --reason "live readiness test"`
-- [ ] Verify: `control.STATE.pause_entries` becomes `True` within 1 cycle (15s)
-- [ ] Test resume: `python scripts/send_command.py --command resume_entries --by ubuntu:opencode:kalshi_deepbot`
-- [ ] Verify: `control.STATE.pause_entries` becomes `False` within 1 cycle
+- [x] **n8n kill-switch webhook** (`superbot-control`) responds 200 to signed `pause_entries`
+- [x] Test: `python scripts/send_command.py --command pause_entries --by ubuntu:opencode:kalshi_deepbot --reason "live readiness test"` — verified 2026-11-21: accepted, row applied, `control_state` row written `{"paused": true, "paused_by": "operator", ...}`
+- [x] Verify: `control.STATE.pause_entries` becomes `True` within 1 cycle (15s) — pause is persisted to the local DB and **reloaded at trader startup** (`trader.py` H1 block), so it also survives restarts; a DB read failure fails **closed** (pauses entries)
+- [x] Test resume: `python scripts/send_command.py --command resume_entries --by ubuntu:opencode:kalshi_deepbot` — **while the trader is risk-halted, single-key resume is REJECTED by design** ("resume after a risk halt requires confirm_by from a different identity"); the working form is `--payload-json '{"confirm_by": "<different identity>"}'`
+- [x] Verify: `control.STATE.pause_entries` becomes `False` within 1 cycle — verified with two-key resume; `control_inbox` audit trail shows applied/rejected rows and `control_state` returns to `{"paused": false}`
 
 ### 2.3 Reconciliation & P&L
-- [ ] **Startup reconciliation** works (trader.py lines 3541-3561)
-  - [ ] Pending `pending_send` intents marked cancelled/unverified at startup
-  - [ ] Fills recovered from venue positions
+- [x] **Startup reconciliation** works (trader.py lines 3541-3561) — observed live 2026-11-21: `H9: pending_send sb_... marked cancelled/unverified at startup (fills recovered from venue)`
+  - [x] Pending `pending_send` intents marked cancelled/unverified at startup
+  - [ ] Fills recovered from venue positions (only observable with a real live position; dry orders leave no venue record by design)
 - [ ] **PnL reconcile** runs (interval `PNL_RECONCILE_INTERVAL_S=600`)
   - [ ] Compares local `pnl_ledger` sum vs Supabase `bot_state.session_pnl` vs n8n `orders.pnl_dollars`
   - [ ] Drift > $0.01 triggers repair + alert
@@ -107,8 +113,8 @@ ALL AGENT_TASKSv15 pillars (T15-60 through T15-71) **COMPLETE**
 ## 3. Venue-Specific Readiness
 
 ### 3.1 Kalshi
-- [ ] **API connectivity**: `python -c "from kalshi_client import KalshiClient; c=KalshiClient(); print(c.get_markets(series='KXBTC15M', status='open', limit=1))"`
-- [ ] **Order placement test** (dry-run): `python trader.py --once --dry` → places + fills paper order
+- [x] **API connectivity**: `python -c "from kalshi_client import KalshiClient; c=KalshiClient(); print(c.get_markets(series='KXBTC15M', status='open', limit=1))"` — verified 2026-11-21
+- [x] **Order placement test** (dry-run): `python trader.py --once --dry` → places + fills paper order — verified 2026-11-21 in an isolated `SUPERBOT_DATA_DIR` (the B15 instance lock is held by the live trader, by design): a real cycle placed NO 15x @ 98c on `KXXRP15M-26NOV210330-30` ($14.70 after Kelly/depth/correlated/cash-floor/exposure-ceiling caps) with all 3 LLM layers answering live; the order rested and was correctly marked unverified at the next process start
 - [ ] **Settlement path**: Verify `position.settled` events flow to n8n → Supabase
 - [ ] **Risk halt cleared**: Current drawdown -99.8% must be reset (new account or manual override)
 - [ ] **Position limits**: Verify `10,000 contracts / $100,000` per 15M series; aggregate 25,000 / $250,000
