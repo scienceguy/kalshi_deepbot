@@ -355,8 +355,11 @@ def simulate(tickers, days_n, start_balance):
         # Resting-maker fill, matching trader._dry_run_fill_count: the ask on
         # OUR side must come down to our price, and the counterparty depth is
         # the OTHER side's bid size (a YES buy is filled by NO bidders).
+        # A taker order instead crosses the ask at placement: it fills now if
+        # there is depth behind the quote (AGGRESSIVE_FILL pays the taker fee).
         fill_side = sig_pick.side
-        for m2 in range(minute, 15):
+        scan = [minute] if config.AGGRESSIVE_FILL else range(minute, 15)
+        for m2 in scan:
             q2 = meta["book"].get(m2)
             if q2 is None:
                 continue
@@ -366,11 +369,19 @@ def simulate(tickers, days_n, start_balance):
                 # NO ask is the complement of the YES bid; no YES bid = no quote
                 side_ask = (100 - q2["bid"]) if q2["bid"] else 0
                 depth = q2["yes_vol"]
-            if side_ask and side_ask <= entry_price and depth > 0:
+            # maker: the ask must reach our bid. taker: our entry already IS
+            # the ask, so only the depth decides whether the fill happens.
+            crossed = side_ask <= entry_price if not config.AGGRESSIVE_FILL \
+                else entry_price >= side_ask
+            if side_ask and crossed and depth > 0:
                 n = floor_contracts(min(contracts, depth))
                 if n <= 0:
                     break
-                cost = fees.buy_cash_out(n, entry_price / 100.0, taker=False)
+                # A taker entry pays the exchange fee; booking a fee-free
+                # taker fill would overstate P&L exactly like the old
+                # fabricated-fill bug did.
+                cost = fees.buy_cash_out(n, entry_price / 100.0,
+                                         taker=config.AGGRESSIVE_FILL)
                 if cost <= 0:
                     break
                 s.cash -= cost

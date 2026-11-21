@@ -28,15 +28,19 @@ MOD = _load_module()
 
 
 class _FakeClient:
-    """One open window closing in 300s; fixed top-of-book."""
+    """One open window closing in 300s of the CLIENT's clock; fixed top-of-book."""
 
-    def __init__(self, result="yes"):
+    def __init__(self, result="yes", now_fn=None):
         self.result = result
+        # One fixed window: minute 11 at first quote, closing after 5 more
+        # simulated minutes, so the recorded minute index advances 11..15.
+        self.close = (now_fn or (lambda: datetime.now(timezone.utc)))() \
+            + timedelta(seconds=300)
 
     def get_markets(self, series_ticker="", status="open"):
         if series_ticker != "KXBTC15M":     # production: other series, other tickers
             return []
-        close = datetime.now(timezone.utc) + timedelta(seconds=300)
+        close = self.close
         return [{"ticker": "KXBTC15M-26NOV210230-30",
                  "close_time": close.strftime("%Y-%m-%dT%H:%M:%SZ"),
                  "floor_strike": 58106.16}]
@@ -49,37 +53,58 @@ class _FakeClient:
         return {"result": self.result, "expiration_value": 58106.16}
 
 
-def _run(tmp_path, result="yes"):
+def _run(tmp_path, result="yes", spot=100.5, sigma=0.003):
     """Drive collect() with a faked clock: one minute per poll, 15 minutes.
 
-    A minute per iteration reproduces the live 60s poll, so exactly one row
-    per minute is written and the loop terminates when the fake clock passes
-    the requested span (a frozen clock would spin: collect only sleeps while
-    the remaining span exceeds one poll interval).
+    Both time.time and datetime.now are faked off the same clock, so the test
+    does not depend on the wall clock (or on what earlier tests in the suite
+    did to the global time module). A minute per iteration reproduces the live
+    60s poll, so exactly one row per minute is written and the loop terminates
+    when the fake clock passes the requested span.
     """
+    import gates
     out = tmp_path / "books.jsonl"
     MOD.STATE_PATH = tmp_path / "state.json"   # never touch the live run's state
-    clock = {"t": real_time.time()}
-    saved_time, saved_sleep = MOD.time.time, MOD.time.sleep
+    clock = {"t": 1_700_000_000.0}
+    real_datetime = MOD.datetime
+
+    class _DateTime:
+        @staticmethod
+        def now(tz=None):
+            return real_datetime.fromtimestamp(clock["t"], tz=timezone.utc)
+        fromisoformat = staticmethod(real_datetime.fromisoformat)
+
+    saved = (MOD.time.time, MOD.time.sleep, MOD.datetime,
+             gates.spot_for, gates.sigma_per_min)
     MOD.time.time = lambda: clock["t"]
     MOD.time.sleep = lambda s: clock.__setitem__("t", clock["t"] + 60)
+    MOD.datetime = _DateTime
+    gates.spot_for = lambda asset: spot
+    gates.sigma_per_min = lambda asset: sigma
     try:
-        MOD.collect(_FakeClient(result), str(out), minutes=15,
-                    poll_interval=0)
+        # The client shares the collector's faked clock, so its close_time
+        # moves with the simulated minute instead of the wall clock.
+        client = _FakeClient(result, now_fn=lambda: _DateTime.now(timezone.utc))
+        MOD.collect(client, str(out), minutes=15, poll_interval=0)
     finally:
-        MOD.time.time, MOD.time.sleep = saved_time, saved_sleep
+        (MOD.time.time, MOD.time.sleep, MOD.datetime,
+         gates.spot_for, gates.sigma_per_min) = saved
     return [json.loads(x) for x in out.read_text().splitlines() if x.strip()]
 
 
-def test_collector_records_contemporaneous_spot_and_sigma(tmp_path, monkeypatch):
-    import gates
-    monkeypatch.setattr(gates, "spot_for", lambda asset: 100.5)
-    monkeypatch.setattr(gates, "sigma_per_min", lambda asset: 0.003)
-    rows = _run(tmp_path)
-    q = next(r for r in rows if not r.get("result"))
+def test_collector_records_contemporaneous_spot_and_sigma(tmp_path):
     # The taker replay prices spot vs strike; without the recorded feed
     # values it would silently price a past strike against today's spot.
+    rows = _run(tmp_path, spot=100.5, sigma=0.003)
+    q = next(r for r in rows if not r.get("result"))
     assert q["spot"] == 100.5 and q["sigma_per_min"] == 0.003
+
+
+def test_collector_omits_feed_values_when_the_feed_is_dead(tmp_path):
+    rows = _run(tmp_path, spot=None, sigma=None)
+    q = next(r for r in rows if not r.get("result"))
+    # A dead feed records 0.0 ("not recorded"), never a substituted number.
+    assert q["spot"] == 0.0 and q["sigma_per_min"] == 0.0
 
 
 def test_collector_minute_index_and_complement_prices(tmp_path):

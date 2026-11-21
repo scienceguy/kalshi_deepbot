@@ -837,6 +837,12 @@ def _evaluate_taker_favourite(market: MarketInfo, max_dollars: float, max_contra
         # For MAKER strategy (AGGRESSIVE_FILL=False), edge comes from time decay
         # as probability converges to 0/100 near expiry, not from model probability.
         # Skip model gate entirely for MAKER since backtest proves +EV at 94-99c.
+        # Measured 2026-11-21 that +EV claim does NOT hold: with the fill rule
+        # corrected to trader._dry_run_fill_count semantics, maker books 94-99c
+        # measured -3.2c/contract over 81 days and 0 fills of 7 signals on
+        # today's live depth (risk.check_liquidity refuses 0-30-contract
+        # minutes). Taker + the calibrated-vol gate is the only variant that
+        # measured positive (+1.03c, REALITY TAX note).
         # reviewed: MAKER/TAKER branch is a strategy mode selector, not a trade guard
         if config.AGGRESSIVE_FILL:
             fee_cents = fees.taker_fee_cents(1.0, entry_c / 100.0)

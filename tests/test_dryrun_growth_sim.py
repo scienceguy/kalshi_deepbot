@@ -244,3 +244,44 @@ def test_recorded_feed_pins_gates_and_restores_them():
         assert gates.sigma_per_min is saved[1]
     finally:
         gates.spot_for, gates.sigma_per_min = saved
+
+
+def _taker_meta(spot=102.0, sigma=0.003):
+    # A market that LAGS the model: YES ask 95c while spot sits 2% above
+    # strike, so the GBM gate reads ~97c of true probability against a 95c
+    # ask — the only regime where the taker edge is positive. Deep
+    # counterparty NO bids stand behind the ask.
+    book = {m: _q(94, 95, spot=spot, sigma=sigma) for m in range(1, 15)}
+    return _meta(book, yes_won=True)
+
+
+def test_taker_replay_fills_at_the_ask_and_pays_the_taker_fee(monkeypatch):
+    saved = config.AGGRESSIVE_FILL
+    try:
+        config.AGGRESSIVE_FILL = True
+        meta = _taker_meta()
+        s = MOD.simulate({meta["ticker"]: meta}, days_n=1, start_balance=35.0)
+    finally:
+        config.AGGRESSIVE_FILL = saved
+    assert s.attempts == 1
+    assert s.fills == 1
+    tr = s.trades[0]
+    assert tr["side"] == "yes"
+    # crosses at the ask plus the aggressive buffer (ask 95c, buffer 1c)
+    assert tr["entry_price"] == 96
+    # taker pays the fee: cost is above the raw 96c x contracts.
+    assert tr["cost"] > 0.96 * tr["contracts"]
+
+
+def test_taker_replay_does_not_fill_without_depth(monkeypatch):
+    saved = config.AGGRESSIVE_FILL
+    try:
+        config.AGGRESSIVE_FILL = True
+        # Nobody is bidding NO, so there is no counterparty for a taker lift.
+        book = {m: _q(94, 95, vol=0, spot=102.0, sigma=0.003)
+                for m in range(1, 15)}
+        meta = _meta(book, yes_won=True)
+        s = MOD.simulate({meta["ticker"]: meta}, days_n=1, start_balance=35.0)
+    finally:
+        config.AGGRESSIVE_FILL = saved
+    assert s.fills == 0 and s.trades == []
