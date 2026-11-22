@@ -412,15 +412,14 @@ class TestMeasuredFloorSide:
         in-band candidate regardless of the model, so the default must be
         the model's own value.
         """
-        config.GATES_MEASURED_Q = 0.9928
-        res = self._run("yes", 97, 0.50)
+        with patch.object(config, "GATES_MEASURED_Q", 0.9928):
+            res = self._run("yes", 97, 0.50)
         assert res.metrics.get("own_price_cents") == 97
         assert not res.metrics.get("q_measured_floor")
         assert res.metrics.get("q") < config.GATES_MEASURED_Q
 
     def test_yes_in_band_floor_is_opt_in(self):
         """GATES_MEASURED_FLOOR_ENABLED=True applies floor for YES favorite in band."""
-        config.GATES_MEASURED_Q = 0.9928
         market = MockMarket()
         book = Mock()
         with patch.object(gates, "normal_cdf", return_value=0.50), \
@@ -428,7 +427,8 @@ class TestMeasuredFloorSide:
              patch.object(gates, "atr_1m", return_value=10.0), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
              patch.object(config, "GATES_EV_ENABLED", False), \
-             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True):
+             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True), \
+             patch.object(config, "GATES_MEASURED_Q", 0.9928):
             res = gates.evaluate_entry(
                 market, spot_state={}, orderbook=book,
                 side="yes", entry_price_cents=97)
@@ -442,7 +442,6 @@ class TestMeasuredFloorSide:
         This is the fix: own-side price 97c is in band, so floor applies
         with the NO complement (1 - 0.9928 = 0.0072).
         """
-        config.GATES_MEASURED_Q = 0.9928
         market = MockMarket()
         book = Mock()
         with patch.object(gates, "normal_cdf", return_value=0.50), \
@@ -450,7 +449,9 @@ class TestMeasuredFloorSide:
              patch.object(gates, "atr_1m", return_value=10.0), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
              patch.object(config, "GATES_EV_ENABLED", False), \
-             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True):
+             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True), \
+             patch.object(config, "GATES_MEASURED_Q", 0.9928), \
+             patch.object(config, "GATES_MOMENTUM_ENABLED", False):
             res = gates.evaluate_entry(
                 market, spot_state={}, orderbook=book,
                 side="no", entry_price_cents=97)
@@ -466,7 +467,6 @@ class TestMeasuredFloorSide:
         This was the bug: old logic used yes_equiv=97 (in band) and applied
         YES floor to a NO longshot that wins ~3% of the time.
         """
-        config.GATES_MEASURED_Q = 0.9928
         market = MockMarket()
         book = Mock()
         with patch.object(gates, "normal_cdf", return_value=0.50), \
@@ -474,7 +474,8 @@ class TestMeasuredFloorSide:
              patch.object(gates, "atr_1m", return_value=10.0), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
              patch.object(config, "GATES_EV_ENABLED", False), \
-             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True):
+             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True), \
+             patch.object(config, "GATES_MEASURED_Q", 0.9928):
             res = gates.evaluate_entry(
                 market, spot_state={}, orderbook=book,
                 side="no", entry_price_cents=3)
@@ -488,7 +489,6 @@ class TestMeasuredFloorSide:
         of the 95-99c band the 0.9928 measurement was taken in, so the floor
         must not apply in either direction.
         """
-        config.GATES_MEASURED_Q = 0.9928
         market = MockMarket()
         book = Mock()
         with patch.object(gates, "normal_cdf", return_value=0.50), \
@@ -496,7 +496,9 @@ class TestMeasuredFloorSide:
              patch.object(gates, "atr_1m", return_value=10.0), \
              patch.object(config, "GATES_ATR_ENABLED", False), \
              patch.object(config, "GATES_EV_ENABLED", False), \
-             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True):
+             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True), \
+             patch.object(config, "GATES_MEASURED_Q", 0.9928), \
+             patch.object(config, "GATES_MOMENTUM_ENABLED", False):
             res = gates.evaluate_entry(
                 market, spot_state={}, orderbook=book,
                 side="yes", entry_price_cents=3)
