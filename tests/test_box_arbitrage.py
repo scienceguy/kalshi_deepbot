@@ -335,6 +335,26 @@ class TestScanFunctions:
         assert len(opps) == 1
         assert opps[0].box_type == "cross_venue"
 
+    def test_scan_all_venues_matches_kalshi_get_markets_contract(self):
+        """The production client takes series_ticker and returns a list."""
+        def get_markets(series_ticker="", status="open", limit=100):
+            return [{
+                "ticker": f"{series_ticker}-A",
+                "floor_strike": 95000.0,
+                "strike_type": "greater",
+                "yes_bid_dollars": 0.93,
+                "yes_ask_dollars": 0.94,
+                "no_bid_dollars": 0.04,
+                "no_ask_dollars": 0.05,
+            }]
+
+        client = Mock()
+        client.get_markets.side_effect = get_markets
+
+        opps = box_arbitrage.scan_all_venues_for_boxes(kalshi_client=client)
+
+        assert {opp.market_a_id for opp in opps} == {"KXBTC15M-A", "KXETH15M-A"}
+
 
 class TestFormatOpportunity:
     """Test opportunity formatting."""

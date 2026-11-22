@@ -425,11 +425,9 @@ def scan_all_venues_for_boxes(
     kalshi_markets = []
     if kalshi_client:
         try:
-            resp = kalshi_client.get_markets(series="KXBTC15M", status="open", limit=100)
-            kalshi_markets = resp.get("markets", [])
+            kalshi_markets = kalshi_client.get_markets(series_ticker="KXBTC15M", status="open", limit=100)
             # Also get ETH
-            resp = kalshi_client.get_markets(series="KXETH15M", status="open", limit=100)
-            kalshi_markets.extend(resp.get("markets", []))
+            kalshi_markets.extend(kalshi_client.get_markets(series_ticker="KXETH15M", status="open", limit=100))
         except Exception as e:
             log.warning("Failed to fetch Kalshi markets: %s", e)
 
