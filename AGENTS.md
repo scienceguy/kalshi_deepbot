@@ -1,27 +1,29 @@
 # Kalshi SuperBot — AGENTS.md
 
-Single-operator live-trading bot for Kalshi 15-minute binary crypto markets.
-Places favourite-maker limit orders (YES/NO at 92–99c), evaluates signals via an
-LLM with 4-layer fallback, writes signals/orders/bot-state to the local SQLite
-DB (source of truth; Supabase was removed 2026-11-22), and routes settlement
-P&L through n8n webhooks.
+Single-operator trading bot for Kalshi 15-minute binary crypto markets and
+Polymarket US. Dry-run is the default; live trading requires explicit human
+approval. The v17 strategy is NO-only, hold-to-expiry, taker plus a calibrated
+gate; maker entry is disabled pending real-fill evidence. Local SQLite is the
+source of truth (legacy Supabase code/config is being purged under T17-61), and
+settlement P&L events route through the durable n8n outbox.
 
 ## System constraints (all agents)
 
 - Temp files go to `$TMPDIR` or `/tmp/opencode` (not bare `/tmp`). On the old Termux box `/tmp` was a restricted mount — that constraint no longer applies on the VPS.
+- The coordinating session maintains at least two delegated subagents actively completing disjoint tasks at all times until v17 is done (maximum five). Replace completed, failed, or idle agents immediately; do not duplicate completed work. A different agent reviews every money-path diff.
 
 ## ALL AGENTS MUST USE ALL AVAILABLE TOOLS
 
 Every agent on this host must use **all** available MCP tools, not just a subset. Before answering about past work, decisions, people, or projects, search the palace. Before writing to any database, use the appropriate MCP tool. Before executing any workflow, use n8n. Tool selection is not optional — every available tool is part of every agent's default toolkit.
 
-Available MCP tools: mempalace, sqlite, sqlite-book-l2, supabase, n8n, kaggle, playwright, steam, kalshi.
+Available MCP tools: mempalace, sqlite, sqlite-book-l2, n8n, kaggle, playwright, steam, kalshi. Supabase is legacy and must not be used (T17-61).
 
 ## Repo layout
 
 | File | Purpose |
 |------|---------|
 | `trader.py` | Main trading loop (entry point). Dry-run by default; `--live` + `KALSHI_CONFIRM_LIVE=true` for real money. |
-| `AGENT_TASKSv15.md` | The active task register (F-xx findings, T15-nn tasks, status table). Verify every item against HEAD before acting; record evidence in its status table. |
+| `AGENT_TASKSv17.md` | The active task register (F-xx findings, T17-nn tasks, status table). Verify every item against HEAD before acting; record evidence in its status table. |
 | `signals.py` | Signal engine: two-sided favourite maker, stability check, confidence scoring, LLM eval integration. |
 | `market_finder.py` | Market discovery — parallel series fetch, orderbook lookup, MAIN + HEDGE_NO selection. |
 | `gates.py` | Pre-entry gates: ATR hurdle, fee-adjusted EV, time-decay cushion. Shadow mode by default; logs `gates_log.jsonl`. |
@@ -30,16 +32,16 @@ Available MCP tools: mempalace, sqlite, sqlite-book-l2, supabase, n8n, kaggle, p
 | `risk.py` | Cash floor, exposure ceiling, per-trade cap, drawdown halt, consecutive-loss cooldown. |
 | `resilience.py` | Cycle backoff + client-rebuild supervisor with rebuild cap. |
 | `n8n_client.py` | n8n webhook/API client; `n8n_health_check()` used at startup. |
-| `supabase_client.py` | Supabase REST client with circuit breaker + batch bot-state writes. |
+| `supabase_client.py` | Legacy disabled client; retained only until the T17-61 purge. |
 | `llm_eval.py` | 4-layer LLM evaluation (2 providers: NVIDIA Bolt/Lightning, Groq Qwen/Allam). |
 | `backtest.py` / `parallel_backtest.py` | Parameter-sweep backtests (public + authenticated API). |
 | `backtest_engine.py` | Shared backtest engine (entry logic, P&L, sweep grid). |
 | `data_collector.py` | Historical market snapshot collector for backtest data. |
 | `kalshieye_downloader.py` | Kalshi Eye orderbook downloader. |
 | `kalshi_price_data_client.py` | Optional kalshi-price-data SDK wrapper. |
-| `inject_n8n_workflows.py` | Injects 4 n8n workflows into n8n's SQLite DB directly. |
+| `inject_n8n_workflows.py` | Injects core n8n workflows into n8n's SQLite DB directly. |
 | `add_n8n_credentials.py` | Inserts encrypted credentials into n8n DB. |
-| `tests/` | 69 pytest tests (fees, risk, signals, kalshi_client, market_finder, n8n, supabase, kalshi_price_data, trader). |
+| `tests/` | Pytest suite; latest full run on e692c94 worktree: 1673 passed, 3 skipped. |
 
 ## Environment
 
@@ -59,7 +61,7 @@ cd /opt/superbot
 
 # 1. Copy env + fill credentials
 cp .env.example .env
-# edit .env with real KALSHI_KEY_ID, KALSHI_KEY_FILE, SUPABASE_*, N8N_API_KEY
+# edit .env with real KALSHI_KEY_ID, KALSHI_KEY_FILE, N8N_API_KEY
 
 # 2. Run tests (should all pass)
 python -m pytest tests/ -q
@@ -83,8 +85,8 @@ python trader.py --live
   the watchdogs are **not** in n8n any more — they run from
   `superbot-jobs.timer` (`scripts/scheduled_jobs.py`).
 - Inject with the real project/user ids (defaults are now correct):
-  `python inject_n8n_workflows.py` — needs `SUPABASE_URL` and
-  `SUPABASE_SERVICE_KEY` for the settlement workflow, which is skipped without them.
+  `python inject_n8n_workflows.py`. Legacy Supabase settlement wiring is
+  disabled and is being removed under T17-61; do not add new Supabase credentials.
 - **n8n must never have the Execute Command node (H5).** n8n 2.x disables
   `n8n-nodes-base.executeCommand` by default — leave it that way; do not set
   `NODES_EXCLUDE='[]'`. Workflows that need to run a script POST to the
@@ -100,7 +102,9 @@ python trader.py --live
   (dot), and expression values need a leading `=`.
 - `superbot-monitor` is ack-only by design: running `trader.py` from a webhook
   would start a second cycle that can place orders once `DRY_RUN=false`.
-- All 4 return HTTP 200 on health-check webhook. `llm-trade-veto` (external) returns 200 too.
+- Six core webhook workflows are defined: backtest, collect, trade, monitor,
+  coordinate, control. Health checks for backtest/collect/trade/monitor returned
+  HTTP 200 on 2026-11-22; coordinate/control still need current health evidence.
 - `n8n_client.py` webhook timeout = `CYCLE_TIMEOUT_SECONDS - 5` (25s) so webhooks never block a cycle.
 - n8n REST API returns 401 (upstream bug #31011); webhooks + direct DB injection are the working path.
 
@@ -271,19 +275,14 @@ HANDOFF.md "Standing trap: this session's write path corrupts source" documents 
 class. `tests/test_verify_compiles.py` asserts the whole tree parses, so one corrupted
 file fails the suite even if it is never committed.
 
-## Supabase database access
+## Local database access
 
-Use the `supabase` MCP tools for all database work; never ask me to use the dashboard SQL editor.
-- Before changing anything, call `list_tables` (verbose) to see what exists.
-- Use `execute_sql` for queries and data changes.
-- Use `apply_migration` for schema changes (create/alter/drop), with a snake_case name.
-- Tables in scope: public.bot_state, public.signals, public.orders. Never touch other tables.
-- After schema changes, run `notify pgrst, 'reload schema';` via `execute_sql`.
-- If a call is rejected, report the exact error. If it says read-only, tell me instead of retrying.
-
-## Database changes
-
-Run SQL with `psql "$SUPABASE_DB_URL" -c "..."` or `-f file.sql`. Put schema changes in `supabase/schema.sql` (idempotent), apply with `-v ON_ERROR_STOP=1 -1`, then run `notify pgrst, 'reload schema';`. Never print or store `$SUPABASE_DB_URL`. Ask before any destructive statement.
+Local SQLite is the only source of truth. Use the existing `local_db.py` /
+`PolyLocalDB` interfaces and the sqlite MCP tools for inspection; do not use
+Supabase tools or the dashboard. Legacy Supabase client, schema, workflow and
+reconciliation references remain in the tree only until T17-61 removes them.
+Backups must use SQLite-safe online backup or litestream, never `psql`.
+Do not print connection strings, keys, tokens or raw balances.
 
 ## Kalshi API (production)
 
@@ -469,13 +468,17 @@ invalid**. If your local history predates the rewrite: `git fetch` then
 
 ## Verification checklist before claiming done
 
-- [x] `python -m pytest tests/ -q` → all pass (308 passed)
-- [x] All 4 n8n webhooks return HTTP 200 (superbot-backtest/collect/trade/monitor)
+- [x] `.venv/bin/python -m pytest tests/ -q --tb=short` -> 1673 passed, 3 skipped in 226.27s (2026-11-22, e692c94 worktree)
+- [ ] All 6 core n8n webhooks return HTTP 200 (backtest/collect/trade/monitor verified 2026-11-22; coordinate/control pending)
 - [x] `kalshi_client.get_balance()` returns a dollar amount (not cents) — `cents / 100.0`
 - [x] `git status` clean
 - [x] `git push origin main` completed
 
 ## Optimal Parameters (from backtest 2026-11-03)
+
+Historical mixed-side results only; they are NOT v17 promotion evidence. The
+current NO-only strategy requires a fresh pre-registered T17-08 study. Do not
+use these parameters to widen bands, enable maker, raise size, or relax caps.
 
 Backtest results on 900 historical 15M markets:
 - **Best EV/trade**: $0.58 (win rate 52.8%, max drawdown 84.6%)

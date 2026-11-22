@@ -1,4 +1,4 @@
-# AGENT_TASKS v16 - kalshi_deepbot (FINAL-CANDIDATE)
+# AGENT_TASKS v16 - kalshi_deepbot (HISTORICAL; superseded by AGENT_TASKSv17.md)
 
 Date: 2026-11-22
 Supersedes: AGENT_TASKSv14.md and AGENT_TASKSv15.md (v16 is v15 renamed and
