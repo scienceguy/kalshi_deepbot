@@ -314,6 +314,17 @@ def _fee_cents(price_dollars: float) -> float:
     return _taker_fee(1.0, price_dollars) * 100.0
 
 
+def _own_side_prob(ref_prob: float, side: str) -> float:
+    """P(the side we actually bought wins).
+
+    Model `ref_prob` is the probability of the Up/long outcome; a NO (Down)
+    entry wins the other way round. Every edge, sizing and calibration check
+    must use this value or a NO longshot looks like a longshot of the wrong
+    event (F-04's poly-side twin, found under NO_ONLY).
+    """
+    return ref_prob if side == "yes" else 1.0 - ref_prob
+
+
 def _fill_buy_price(displayed: float, ask) -> float | None:
     """Paper fill at the best ask plus slippage ticks.
 
@@ -1959,8 +1970,10 @@ class PolyUSPaperTrader:
         # was below any plausible spread/model error (R5).
         # Prefer Kalshi CDF edge if available, otherwise fall back to GBM edge
         chosen_edge = kalshi_cdf_edge if kalshi_cdf_edge else cv_edge
+        side_prob = (_own_side_prob(chosen_edge["ref_prob"], chosen_edge["best_side"])
+                     if chosen_edge else 0.0)
         if (chosen_edge
-                and chosen_edge["ref_prob"] >= getattr(config, "MODEL_PROB_MIN", 0.96)
+                and side_prob >= getattr(config, "MODEL_PROB_MIN", 0.96)
                 and 0.92 <= chosen_edge["best_price"] <= 0.99):
             modelled_cost_cents = (_fee_cents(chosen_edge["best_price"]) + _slippage_cents()
                                    + float(getattr(config, "PM_EDGE_MARGIN_CENTS", 0.5)))
@@ -1977,7 +1990,10 @@ class PolyUSPaperTrader:
                     "category": "crypto",
                     "symbol": symbol,
                     "cross_edge_cents": chosen_edge["best_edge_cents"],
-                    "ref_prob": chosen_edge["ref_prob"],
+                    # ref_prob is OUR side's win probability from here on
+                    # (F-04 poly twin); the model's Up/long probability
+                    # stays in crossvenue_edge.
+                    "ref_prob": side_prob,
                     "spot": chosen_edge["spot"],
                     "strike": chosen_edge["strike"],
                     "end_date": end_date,
@@ -2311,13 +2327,14 @@ class PolyUSPaperTrader:
 
         # A2: re-check edge at the fill price, not the displayed mark. If the
         # edge no longer clears fee + margin after slippage, skip the trade.
+        # opp["ref_prob"] is OUR side's win probability (see _own_side_prob).
         ref_prob = float(opp.get("ref_prob") or 0.0)
         net_edge_cents = (ref_prob - fill_price) * 100.0
         hurdle_cents = _fee_cents(fill_price) + float(getattr(config, "PM_EDGE_MARGIN_CENTS", 0.5))
         if net_edge_cents < hurdle_cents:
             log.info(
                 "A2 edge check failed at fill price: net_edge=%.1fc < hurdle=%.1fc "
-                "(ref_prob=%.4f fill_price=%.4f) — skipping %s %s",
+                "(side_prob=%.4f fill_price=%.4f) — skipping %s %s",
                 net_edge_cents, hurdle_cents, ref_prob, fill_price, slug, side)
             return False
 
@@ -2432,13 +2449,14 @@ class PolyUSPaperTrader:
 
         # A2: re-check edge at the fill price, not the displayed mark. If the
         # edge no longer clears fee + margin after slippage, skip the trade.
+        # opp["ref_prob"] is OUR side's win probability (see _own_side_prob).
         ref_prob = float(opp.get("ref_prob") or 0.0)
         net_edge_cents = (ref_prob - fill_price) * 100.0
         hurdle_cents = _fee_cents(fill_price) + float(getattr(config, "PM_EDGE_MARGIN_CENTS", 0.5))
         if net_edge_cents < hurdle_cents:
             log.info(
                 "A2 edge check failed at fill price: net_edge=%.1fc < hurdle=%.1fc "
-                "(ref_prob=%.4f fill_price=%.4f) — skipping %s %s",
+                "(side_prob=%.4f fill_price=%.4f) — skipping %s %s",
                 net_edge_cents, hurdle_cents, ref_prob, fill_price, slug, side)
             return False
 

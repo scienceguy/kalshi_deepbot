@@ -2019,3 +2019,13 @@ def test_settlement_appends_a_ledger_event(temp_trader):
     assert len(settlements) == 1
     assert settlements[0]["settle_key"].startswith("poly_settle:test-ledger-settle:ORD-9")
     assert settlements[0]["payout"] == 5.0
+
+
+def test_own_side_prob_maps_to_the_side_we_bought():
+    """F-04 poly twin: ref_prob is the Up/long probability, so a NO entry must
+    use the complement. Every edge, sizing and calibration check reads this."""
+    from poly_us_trader import _own_side_prob
+    assert _own_side_prob(0.95, "yes") == 0.95
+    assert _own_side_prob(0.95, "no") == pytest.approx(0.05)
+    assert _own_side_prob(0.0, "yes") == 0.0
+    assert _own_side_prob(0.0, "no") == pytest.approx(1.0)
