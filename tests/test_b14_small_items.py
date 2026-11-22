@@ -30,6 +30,9 @@ TICKER = "KXBTC15M-26NOV15-45"
 def _isolated(monkeypatch):
     monkeypatch.setattr(config, "DRY_RUN", True)
     monkeypatch.setattr(config, "LLM_EVALUATION_ENABLED", False)
+    # Machinery tests place YES-side entries; pin the NO_ONLY strategy gate
+    # off (its own coverage lives in test_signals.py TestNoOnlyStrategy).
+    monkeypatch.setattr(config, "NO_ONLY", False)
     monkeypatch.setattr(trader.paper_mode, "cash", lambda *a, **k: 100.0)
     monkeypatch.setattr(trader.state, "positions", {})
     monkeypatch.setattr(trader.state, "position_risk", {})

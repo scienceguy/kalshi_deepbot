@@ -42,8 +42,14 @@ def _production_no_buys():
     # must be reachable; restore the suite's value afterwards.
     saved = config.ALLOW_NO_BUYS
     config.ALLOW_NO_BUYS = True
+    # The replay exercises the taker/maker/settlement machinery on the YES
+    # side; the NO_ONLY strategy gate is pinned off here (it has its own
+    # TestNoOnlyStrategy in test_signals.py).
+    saved_no_only = config.NO_ONLY
+    config.NO_ONLY = False
     yield
     config.ALLOW_NO_BUYS = saved
+    config.NO_ONLY = saved_no_only
 
 
 _TICKERS = iter(range(1, 10_000))

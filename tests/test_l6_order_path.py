@@ -50,6 +50,14 @@ def _opp(slug="l6-market"):
             "ref_prob": 0.98}
 
 
+@pytest.fixture(autouse=True)
+def _machinery_pins(monkeypatch):
+    # This module exercises the order hot path (preview cache, latency stages,
+    # ledger batching) with YES-side opportunities; the NO_ONLY strategy gate
+    # is pinned off here (its own coverage lives in test_poly_us_trader.py).
+    monkeypatch.setattr(config, "NO_ONLY", False)
+
+
 def _run_paper_buy(trader, slug="l6-market"):
     """One full paper-taker order flow with the venue mocked at the HTTP edge."""
     with _venue_preview_ok(), _book_ok():

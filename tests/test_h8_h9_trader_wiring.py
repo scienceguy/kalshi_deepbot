@@ -67,6 +67,9 @@ def db(tmp_path):
 def _isolated(monkeypatch, tmp_path, db):
     monkeypatch.setattr(config, "DRY_RUN", True)
     monkeypatch.setattr(config, "LLM_EVALUATION_ENABLED", False)
+    # Wiring tests place YES-side entries; pin the NO_ONLY strategy gate off
+    # (its own coverage lives in test_signals.py TestNoOnlyStrategy).
+    monkeypatch.setattr(config, "NO_ONLY", False)
     # Route every get_local_db() call in trader.py at the tmp DB.
     monkeypatch.setattr(trader, "get_local_db", lambda: db)
     # Hermetic side effects: no repo files, no webhooks, no reporter.
