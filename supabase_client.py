@@ -195,9 +195,14 @@ def _load_credentials() -> tuple[str, str]:
 
 
 def is_enabled() -> bool:
-    """Check whether Supabase credentials are currently available."""
-    url, key = _load_credentials()
-    return bool(url and key)
+    """Check whether Supabase credentials are currently available.
+
+    Supabase was removed from the bot on 2026-11-22 (operator instruction;
+    writes had been failing HTTP 401 - service key invalid/revoked). Local
+    SQLite is the source of truth; this gate is the single off switch every
+    consumer checks, so it returns False unconditionally.
+    """
+    return False
 
 
 url, key = _load_credentials()
@@ -700,7 +705,13 @@ def validate_at_startup() -> bool:
     forever; one failed health check disables the client for this process so
     the bot keeps trading without Supabase. Lives here so trader.py never
     touches Supabase directly.
+
+    Supabase was removed from the bot (2026-11-22): is_enabled() is the off
+    switch, so this returns without building a client or making any network
+    call — no startup probe, no credential loading.
     """
+    if not is_enabled():
+        return False
     client = get_supabase()
     if client.enabled and not client.health_check():
         log.warning(

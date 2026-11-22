@@ -3765,7 +3765,8 @@ def _run_loop(args) -> None:
                 if local_pnl is not None:
                     state.session_pnl = float(local_pnl)
                     log.info("Reconciled session_pnl from LOCAL DB: $%.2f", state.session_pnl)
-                else:
+                # reviewed: Supabase removed 2026-11-22, is_enabled() is the single off switch so this elif is permanently False
+                elif supabase_client.is_enabled():
                     saved_pnl = get_raw_supabase_client().get_bot_state("session_pnl")
                     # reviewed: fall back to remote Supabase session_pnl when local state is absent
                     if saved_pnl is not None:

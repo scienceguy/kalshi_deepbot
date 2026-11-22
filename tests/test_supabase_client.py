@@ -399,3 +399,30 @@ def test_parse_raw_key_file_kv_without_known_key_refuses(tmp_path):
     f.write_text("PREFERENCE_TOKEN=xyz\n")
     f.chmod(0o600)
     assert _parse_raw_key_file(str(f)) == ""
+
+
+class TestSupabaseRemoval:
+    """Supabase was removed from the bot on 2026-11-22 (operator instruction).
+
+    is_enabled() is the single off switch every consumer checks, so it returns
+    False unconditionally and validate_at_startup() short-circuits without
+    building a client or making a network call.
+    """
+
+    def test_is_enabled_is_always_false(self, monkeypatch):
+        monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "sb_secret_example123")
+        monkeypatch.delenv("SUPABASE_KEY_FILE", raising=False)
+        import importlib
+        importlib.reload(supabase_client)
+        assert supabase_client.is_enabled() is False
+
+    def test_validate_at_startup_short_circuits(self, monkeypatch):
+        import importlib
+        importlib.reload(supabase_client)
+
+        def _must_not_build():
+            raise AssertionError("get_supabase() must not be called")
+
+        monkeypatch.setattr(supabase_client, "get_supabase", _must_not_build)
+        assert supabase_client.validate_at_startup() is False
