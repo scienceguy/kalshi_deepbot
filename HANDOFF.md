@@ -1,12 +1,14 @@
-# HANDOFF — Kalshi DeepBot
+# HANDOFF -- Kalshi DeepBot
 
 Written at a verified green checkpoint. New session: read this first, then
 `git log --oneline -7`. Nothing here is from memory; every number was read
 from a file or a command this turn, with the command named beside it.
 
 Repo:  https://github.com/scienceguy/kalshi_deepbot   (private, main)
-Dir :  /data/data/com.termux/files/home/kalshi_deepbot
-HEAD:  dedc68a "Nice-to-have: verify_source.py - --docs-only and --prose for markdown"
+Dir :  /opt/superbot   (OCI VPS, Ubuntu; the old Termux/Android host is retired
+      -- F-16: `grep -rn termux --include=*.py` returns nothing, and
+      tests/test_h15_ops.py::test_no_termux_paths_remain passes)
+HEAD:  028a9b8 "Should fix: AGENT_TASKSv15.md status table - T15-02/03/04 filled with evidence"
 
 ## CORRECTION to earlier handoffs (read this)
 
@@ -27,17 +29,38 @@ not prose.
 
 ## Verified state
 
-    git rev-list --count HEAD      -> 230
-    git status -sb                 -> ## main...origin/main   (clean, in sync)
+Regenerated 2026-11-22 on the OCI VPS (T15-05) from commands run that turn;
+the previous block described the old Termux host (HEAD dedc68a, 230 commits,
+263 tests) and was retired along with the paths below.
+
+    git rev-list --count HEAD      -> 688
+    git status -sb                 -> ## main...origin/main (clean, in sync at 028a9b8)
     git remote get-url origin      -> https://github.com/scienceguy/kalshi_deepbot.git
-    python -m pytest tests/ -q     -> 263 passed
-    scripts/verify_source.py       -> all clean (rc 0; --all is CODE only)
-    scripts/verify_source.py --docs-only --prose -> advisory, rc 0
+    python -m pytest tests/ -q     -> 1578 passed, 3 skipped, exit 0
+    scripts/verify_source.py --all -> all clean (rc 0)
+    scripts/verify_compiles.py --all / verify_undefined.py --all -> clean (rc 0)
+    scripts/verify_operators.py    -> clean (rc 0)
+    scripts/verify_review_marked.py-> clean (rc 0)
+    LC_ALL=C grep -n '[^ -~]' on changed files -> only pre-existing
+        non-ASCII in untouched lines of config.py/README.md (advisory)
 
 Last eight commits:
 
-    dedc68a Nice-to-have: verify_source.py - --docs-only and --prose for markdown
-    22401ca Must fix: ASSESSMENT.md - remove engine splices from money-path arithmetic
+    028a9b8 Should fix: AGENT_TASKSv15.md status table - T15-02/03/04 filled with evidence
+    b5edb97 Should fix: measure_edge.py - accept ISO-string timestamps (T15-04 data step)
+    c63e5a1 Should fix: T15-04 - ENTRY_WINDOW default 6.0-11.0 min elapsed, not 13.0-14.5 (F-06)
+    cd45df2 Should fix: T15-03 - sigma_from_atr V2 (atr/1.6) is the calibrated default (F-05)
+    260f0f3 Should fix: T15-02 - secrets scan report under docs/
+    f079c5b Must fix: T15-00/T15-01 - verify the finding register on HEAD and confirm Polymarket US production market terms
+    6549f79 Must fix: AGENT_TASKSv15.md - the v15 task register, findings F-01..F-16, corrections C-a..C-g and the empty status table agents fill in
+    a4aa145 Must fix: the dry-run lane must price fair against the venue's own settlement index, not a composite feed with a ~22bps basis
+
+WORK IN PROGRESS (AGENT_TASKSv15.md register, committed at 6549f79): T15-00..04
+DONE; next in the mandated order T15-62/61/63, then the data plane T15-10..13,
+T15-50 protocol before any model result, T15-20..25, T15-51..53, T15-31/30/32,
+T15-40..43, T15-64, T15-60, T15-70. A live `trader.py --live` (PID 252244) and
+`poly_us_trader.py --interval` (PID 252337) are the operator's own processes;
+agents do not restart them.
     dd8904b Should fix: track the planning/audit docs; let the gate see markdown
     00d1798 Should fix: verify_source.py - stop failing on emoji variation selectors
     438135f Must fix: identity - single repo agent identity (pre-VPS host), not kalshi_superbot
@@ -197,7 +220,7 @@ output. Never the memory of it.
 
 ---
 
-## Appendix — environment setup (merged from handoff.md, 2026-11-05)
+## Appendix -- environment setup (merged from handoff.md, 2026-11-05)
 
 `handoff.md` ("Kalshi SuperBot Environment Setup", dated 2026-11-05) was merged
 into this file in B18; `handoff.md` no longer exists. Its content is preserved
@@ -209,7 +232,7 @@ the old Termux host; paths like `/data/data/com.termux/...` are historical.
 
 **Working solution:** proot-distro debian container
 
-xgboost 3.4.1, lightgbm 4.7.0, scipy 1.18.1, narwhals 2.28.0 — all installed and verified.
+xgboost 3.4.1, lightgbm 4.7.0, scipy 1.18.1, narwhals 2.28.0 -- all installed and verified.
 
 **Wrapper script:** `./ml_python` in repo root
 ```bash
@@ -218,7 +241,7 @@ xgboost 3.4.1, lightgbm 4.7.0, scipy 1.18.1, narwhals 2.28.0 — all installed a
 ./ml_python -m my_module
 ```
 
-**Why proot:** Native Termux Python targets `android-24-arm64_v8a` (Bionic libc). Pre-built wheels are `manylinux_2_28_aarch64` (glibc). Native xgboost built from source but scipy has no Android wheel and won't build — native xgboost can't import `scipy.sparse`.
+**Why proot:** Native Termux Python targets `android-24-arm64_v8a` (Bionic libc). Pre-built wheels are `manylinux_2_28_aarch64` (glibc). Native xgboost built from source but scipy has no Android wheel and won't build -- native xgboost can't import `scipy.sparse`.
 
 **Native build cleanup:** Removed native xgboost/lightgbm copies (glibc .so won't load on Android).
 
@@ -227,7 +250,7 @@ xgboost 3.4.1, lightgbm 4.7.0, scipy 1.18.1, narwhals 2.28.0 — all installed a
 **Status:** Active and working
 
 - **Plugin:** `~/.config/opencode/plugins/claude-mem.js` (auto-loaded by OpenCode)
-- **MCP server:** wired in `opencode.json` → `claude-mem` local MCP
+- **MCP server:** wired in `opencode.json` -> `claude-mem` local MCP
 - **Worker:** `http://127.0.0.1:37718` (healthy)
 - **Observer provider:** OpenRouter free `meta-llama/llama-3.3-70b-instruct:free`
 - **Settings:** `~/.claude-mem/settings.json`
@@ -237,11 +260,11 @@ xgboost 3.4.1, lightgbm 4.7.0, scipy 1.18.1, narwhals 2.28.0 — all installed a
 
 **What works:** Memory capture, session summaries, search, timeline, get_observations, MCP tools.
 
-### A.3 OpenCode CLI — Kilo Auto Free subagent delegation
+### A.3 OpenCode CLI -- Kilo Auto Free subagent delegation
 
 **Config file:** `/data/data/com.termux/files/home/.config/opencode/opencode.json`
 
-**Kilo provider:** OpenAI-compatible → `http://127.0.0.1:18900/v1` with API key `<redacted — local gateway key, kept outside the repo>`
+**Kilo provider:** OpenAI-compatible -> `http://127.0.0.1:18900/v1` with API key `<redacted -- local gateway key, kept outside the repo>`
 
 **Agent model assignments:**
 

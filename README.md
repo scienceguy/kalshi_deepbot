@@ -1,10 +1,10 @@
-# Kalshi SuperBot
+# Kalshi DeepBot
 
 Single-operator live-trading bot for Kalshi 15-minute binary crypto markets and Polymarket US.
 
 ## Overview
 
-Places favourite-maker limit orders (two-sided YES/NO at 92–99c), evaluates signals via an LLM with 4-layer fallback, writes signals/orders/bot-state to Supabase, and routes settlement P&L through n8n webhooks.
+Places favourite-maker limit orders (two-sided YES/NO at 92-99c), evaluates signals via an LLM with 4-layer fallback, writes signals/orders/bot-state to Supabase, and routes settlement P&L through n8n webhooks.
 
 ## Quick Start (OCI VPS)
 
@@ -23,10 +23,10 @@ For production, install systemd services (see **Systemd Services** below).
 See `.env.example` for all required variables. Never commit real credentials.
 
 Secrets are stored in `~/.secrets/` (outside the repo):
-- `~/.secrets/kalshi_private.pem` — Kalshi RSA private key (chmod 600)
-- `~/.secrets/n8n_api_key` — n8n API key
-- `~/.secrets/supabase_service_key` — Supabase service role key
-- `~/.secrets/bw/` — Bitwarden mirror (one JSON per item, chmod 600)
+- `~/.secrets/kalshi_private.pem` -- Kalshi RSA private key (chmod 600)
+- `~/.secrets/n8n_api_key` -- n8n API key
+- `~/.secrets/supabase_service_key` -- Supabase service role key
+- `~/.secrets/bw/` -- Bitwarden mirror (one JSON per item, chmod 600)
 
 Run `python scripts/n8n_creds_sync.py` to sync credentials from the mirror into n8n.
 
@@ -49,6 +49,11 @@ Run `python scripts/n8n_creds_sync.py` to sync credentials from the mirror into 
 | `poly_us_stream.py` | Private order/position stream for Polymarket US |
 | `poly_us_trader.py` | Polymarket US trading loop (dry-run by default) |
 | `spot_consensus.py` | Cross-venue spot composite (Binance + Coinbase WS) |
+| `tick_bus.py` | Event-driven tick bus (incremental ATR/spot off the WS feeds) |
+| `fair_value.py` | Fair-value/half-life estimator over the tick cache |
+| `kl_tools.py` | KL-divergence tools (symmetric KL between venue mids) |
+| `decision.py` | Decision record + T15 gates wiring |
+| `sizing.py` | Position sizing (per-trade pct, Kelly caps) |
 | `crossvenue.py` | Three-way ladder comparison (spot vs Kalshi vs Polymarket) |
 | `crossvenue_edge.py` | Spot-with-age getter + BRTI basis measurement |
 | `model.py` | GBM fair value baseline (d2 formula) |
@@ -59,25 +64,25 @@ Run `python scripts/n8n_creds_sync.py` to sync credentials from the mirror into 
 | `backtest.py` / `backtest_engine.py` | Parameter sweep backtester (replay from stored ticks) |
 | `data_collector.py` | Market data collector for backtest DB |
 | `kalshieye_downloader.py` | Kalshi Eye orderbook downloader |
-| `local_db.py` | Local SQLite (WAL) — positions, orders, fills, ledger, control, outbox |
+| `local_db.py` | Local SQLite (WAL) -- positions, orders, fills, ledger, control, outbox |
 | `mempalace_bridge.py` | Single-owner MemPalace bridge (no-drop spill + sanctioned reads) |
 | `agent_bus.py` | Inter-agent coordination (roles, topics, ack protocol) |
 | `control.py` | Signed control commands (pause_entries, resume, reduce caps) |
 | `events.py` / `emit.py` | Durable event log with idempotency keys |
 | `scripts/train_ml.py` | ML model training (XGBoost/LightGBM) |
-| `scripts/job_bridge.py` | Loopback command bridge (n8n → scripts) |
+| `scripts/job_bridge.py` | Loopback command bridge (n8n -> scripts) |
 | `scripts/scheduled_jobs.py` | Scheduled jobs (digest, retrain, collect) |
 
 ## n8n Workflows
 
 Seven workflows injected into n8n via `inject_n8n_workflows.py` (direct DB upsert; REST API returns 401 upstream):
-- `superbot-backtest` — Parameter sweep backtest
-- `superbot-collect` — Market data collection
-- `superbot-trade` — Settlement processor (webhook → Supabase PATCH)
-- `superbot-monitor` — Position monitoring (ack-only)
-- `superbot-coordinate` — Agent dispatch (task.request/ack)
-- `superbot-control` — Signed control commands (pause/resume/reduce caps)
-- `superbot-digest` — Daily digest builder (replaces Termux job 7001)
+- `superbot-backtest` -- Parameter sweep backtest
+- `superbot-collect` -- Market data collection
+- `superbot-trade` -- Settlement processor (webhook -> Supabase PATCH)
+- `superbot-monitor` -- Position monitoring (ack-only)
+- `superbot-coordinate` -- Agent dispatch (task.request/ack)
+- `superbot-control` -- Signed control commands (pause/resume/reduce caps)
+- `superbot-digest` -- Daily digest builder (scheduled locally by `superbot-jobs.timer`)
 
 All webhooks are HMAC-signed per-identity (`SUPERBOT_WEBHOOK_SECRET_<SUFFIX>`). No Execute Command node (n8n 2.x default). Delivery via durable `event_outbox` in local SQLite with idempotency keys.
 
@@ -137,7 +142,7 @@ This ensures a clone cannot accidentally start live trading.
 
 ## Continuous ML Training
 
-`scripts/train_ml.py` retrains the fair-value model from settled Kalshi history and writes the gitignored artifact `data/ml_model.pt`. It is **paper only** and is **not** wired into `trader.py` — the model loads only when `--ml-model` is passed.
+`scripts/train_ml.py` retrains the fair-value model from settled Kalshi history and writes the gitignored artifact `data/ml_model.pt`. It is **paper only** and is **not** wired into `trader.py` -- the model loads only when `--ml-model` is passed.
 
 - Uses XGBoost or LightGBM (native, no proot)
 - Scheduled every 6 hours by `superbot-retrain.timer`
@@ -179,12 +184,12 @@ python3 scripts/e2e_smoke.py
 # 7/7 pillars must pass
 ```
 
-## Credentials — Durable Store
+## Credentials -- Durable Store
 
 Agents keep deleting n8n credentials. The secrets are NOT stored in n8n or in this repo as the source of truth. They live in two places, both outside the repo:
 
-1. **Bitwarden** (ultimate source) — every "secure note" in the vault.
-2. **`~/.secrets/bw/`** — durable local mirror, one protected JSON per item (`chmod 600`, dir `chmod 700`) plus `index.json`.
+1. **Bitwarden** (ultimate source) -- every "secure note" in the vault.
+2. **`~/.secrets/bw/`** -- durable local mirror, one protected JSON per item (`chmod 600`, dir `chmod 700`) plus `index.json`.
 
 n8n holds a **copy** of every credential, recreated from the mirror at any time.
 
