@@ -369,11 +369,29 @@ above. It means nothing until it replicates on live fills.
 **$3.25M remains honestly unreachable at the measured edge** — the candidate
 survives index pricing on both splits but at +0.7..+6.0c/trade (unstable ~5x
 across splits), it is unvalidated on live fills, and the growth arithmetic
-(+3..+7%/day best case) is ~4-5 orders of magnitude short. Remaining lanes:
-live-fill validation via the paper-trade lane (the collector records both
-venues' mid, spread, strike and composite fair per row; bid/ask recording is
-being added so simulated taker and maker fills can be tested against live
-quotes), and vol-input calibration.
+(+3..+7%/day best case) is ~4-5 orders of magnitude short. The dry-run lane
+the objective names is shipped and its first honest replay is on the record:
+`scripts/paper_trades.py` replays the rule over the recorded crossvenue rows
+(both venues' top-of-book bid/ask -- recorded since 2026-11-22T00:45Z, the
+`three_way` rungs always held them and the collector now writes them), fills
+a taker at the ask or a maker when a later quote trades through the resting
+bid, settles against Kalshi's own API result (result + close_time, never a
+parsed label), and tracks realized and unrealized PnL, the per-trade cash
+cap, max drawdown and a drawdown halt, with fees from `fees.py`'s own
+taker/maker model. A daily-ladder guard (commit `924a95e`) keeps the
+collector's "above" ladder snapshots (venue mids diverging by up to 30c -- a
+different market family) out of the ledger. First replay: 575 rows today, 11
+with both books, **0 qualifying entries, balance unchanged at $10.34** -- the
+rule's own hit rate (~5% of minute 0-5 rows in the 85-99c band with a 3c
+fair-above-ask gap) means the trajectory fills in as the collector
+accumulates. The venue comparison stays honest on the 15M lane: median
+divergence 1.00c (p90 5.30c, n=35 rows), the >2c rows clustered in minutes
+13-15 as one venue lags the opened strike, same-snapshot change corr 0.854,
+and no lead-lag resolvable at the 60s cadence -- consistent with the
+independent co-located study (venues track within ~1c; cross-venue signals
+are a latency/flow question, not a mispricing free lunch). That matches the
+zero-basis replay verdict: no repeatable venue edge; the candidate is the
+index-validated time-decay taker gate. Remaining lane: vol-input calibration.
 
 Reproduce:
 
@@ -383,3 +401,10 @@ Reproduce:
     python scripts/hf_gate_split.py     # train/test split of the grid
     python scripts/hf_gate_index.py     # index-priced replay (test days)
     python scripts/hf_gate_index.py --days 2026-09-29,2026-09-30,2026-10-01,2026-10-02,2026-10-03,2026-10-04,2026-10-05,2026-10-06,2026-10-07,2026-10-08 --brti /tmp/opencode/brti_traindays.jsonl --label TRAIN
+
+Dry-run paper-trade replay against the recorded live quotes (default rule =
+the candidate config; settles each window against the Kalshi API and writes
+a ledger with realized and unrealized PnL, the cap, drawdown and halt):
+
+    python scripts/paper_trades.py --file data/crossvenue/20261122.jsonl --settle api
+    python scripts/paper_trades.py --file data/crossvenue/20261122.jsonl --mode maker --venue poly --settle api
