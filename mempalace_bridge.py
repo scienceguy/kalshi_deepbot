@@ -384,11 +384,16 @@ class MemPalaceBridge:
         ]
         if payload:
             body_parts.append(f"data={json.dumps(payload)}")
+        # Add peer_detect-compatible tokens so heartbeat watchers can
+        # identify this agent's PID and current task.
+        if status_type == "heartbeat":
+            body_parts.append(f"pid={os.getpid()}")
+            body_parts.append("task=poly_us_trader")
         try:
             ls = Logstream(db_path=_LOGSTREAM_DB)
             ls.append_event(
                 type="status",
-                stream="project/kalshi_deepbot",
+                stream="project/kalshi_superbot",
                 room="status",
                 topic=f"agent-{status_type}",
                 correlation_id=correlation_id,
