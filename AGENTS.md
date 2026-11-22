@@ -14,6 +14,7 @@ routes settlement P&L through n8n webhooks.
 | File | Purpose |
 |------|---------|
 | `trader.py` | Main trading loop (entry point). Dry-run by default; `--live` + `KALSHI_CONFIRM_LIVE=true` for real money. |
+| `AGENT_TASKSv15.md` | The active task register (F-xx findings, T15-nn tasks, status table). Verify every item against HEAD before acting; record evidence in its status table. |
 | `signals.py` | Signal engine: two-sided favourite maker, stability check, confidence scoring, LLM eval integration. |
 | `market_finder.py` | Market discovery — parallel series fetch, orderbook lookup, MAIN + HEDGE_NO selection. |
 | `gates.py` | Pre-entry gates: ATR hurdle, fee-adjusted EV, time-decay cushion. Shadow mode by default; logs `gates_log.jsonl`. |
