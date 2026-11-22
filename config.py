@@ -362,7 +362,13 @@ GATES_ATR_CACHE_SECONDS = _env_int("GATES_ATR_CACHE_SECONDS", 60)
 GATES_SIGMA_CACHE_SECONDS = _env_int("GATES_SIGMA_CACHE_SECONDS", 60)
 # B11: ATR is a mean true range (~1.6 sigma), not E|dS| (~0.8 sigma). V2
 # divides by 1.6; off keeps the legacy (atr/spot)*sqrt(pi/2). Default False.
-GATES_SIGMA_FROM_ATR_V2 = _env_bool("GATES_SIGMA_FROM_ATR_V2", False)
+# T15-03/F-05: ATR->sigma conversion. V1 (atr*sqrt(pi/2)) treated ATR as
+# E|dS| and overstated sigma ~1.8-2.1x vs realized close-to-close on the
+# same candles (measured 2026-11-22, scripts/gates_sigma_validation.py:
+# BTC 12h 1.822x / ETH 12h 1.965x / BTC 48h 2.129x; V2 measured 0.909x /
+# 0.980x / 1.062x). V2 (atr/1.6) is the calibrated default; V1 stays
+# selectable by pinning this false.
+GATES_SIGMA_FROM_ATR_V2 = _env_bool("GATES_SIGMA_FROM_ATR_V2", True)
 # How long a feed-outage stale spot/ATR may be reused before the gates fail
 # closed. 300s = 5 min of stale-ok: a transient Binance blip does not knock the
 # bot out of the market, but a long outage still blocks entries visibly.

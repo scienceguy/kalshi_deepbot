@@ -345,6 +345,29 @@ class TestGatesMath:
         sigma = atr * math.sqrt(math.pi / 2)
         assert abs(sigma - 125.33) < 0.01
 
+    def test_sigma_from_atr_v2_is_the_calibrated_default(self):
+        """F-05/T15-03: V2 (atr/1.6) is the default; V1 stays selectable.
+
+        Measured 2026-11-22 on the same candles the gates see
+        (scripts/gates_sigma_validation.py): V1 overstated realized
+        close-to-close sigma 1.822x (BTC 12h), 1.965x (ETH 12h), 2.129x
+        (BTC 48h); V2 measured 0.909x, 0.980x, 1.062x. Overstating sigma
+        pushes fair values toward 0.5, so V1 systematically understated
+        edge in the 95-99c band. The pinned-V1 path is kept byte-identical.
+        """
+        atr, spot = 100.0, 60000.0
+        # Behavior first: the unpinned default must BEHAVE as V2. Asserting
+        # the flag true here instead would let a flipped default hide behind
+        # a value pin while the formula changed under it.
+        default_unpinned = gates.sigma_from_atr(atr, spot)
+        assert abs(default_unpinned - (atr / spot) / 1.6) < 1e-12
+        assert config.GATES_SIGMA_FROM_ATR_V2 is True
+        with patch.object(config, "GATES_SIGMA_FROM_ATR_V2", False):
+            v1 = gates.sigma_from_atr(atr, spot)
+            assert abs(v1 - (atr / spot) * math.sqrt(math.pi / 2)) < 1e-12
+        # the measured overstatement multiple is what the flag buys down
+        assert v1 / default_unpinned > 1.9
+
     def test_normal_cdf(self):
         """normal_cdf should match standard normal CDF."""
         # CDF(0) = 0.5
@@ -457,6 +480,29 @@ class TestMeasuredFloorSide:
                 side="no", entry_price_cents=3)
         assert res.metrics.get("q_measured_floor") is not True
         assert res.metrics.get("own_price_cents") == 3
+
+    def test_yes_longshot_out_of_band_no_floor(self):
+        """YES @ 3c (longshot) -> no floor even when the floor is enabled.
+
+        Fourth corner of the (side, price) matrix: own-side price 3c is out
+        of the 95-99c band the 0.9928 measurement was taken in, so the floor
+        must not apply in either direction.
+        """
+        config.GATES_MEASURED_Q = 0.9928
+        market = MockMarket()
+        book = Mock()
+        with patch.object(gates, "normal_cdf", return_value=0.50), \
+             patch.object(gates, "spot_for", return_value=market.strike + 50.0), \
+             patch.object(gates, "atr_1m", return_value=10.0), \
+             patch.object(config, "GATES_ATR_ENABLED", False), \
+             patch.object(config, "GATES_EV_ENABLED", False), \
+             patch.object(config, "GATES_MEASURED_FLOOR_ENABLED", True):
+            res = gates.evaluate_entry(
+                market, spot_state={}, orderbook=book,
+                side="yes", entry_price_cents=3)
+        assert res.metrics.get("q_measured_floor") is not True
+        assert res.metrics.get("own_price_cents") == 3
+        assert res.metrics.get("q") == 0.50
         assert res.metrics.get("q") == 0.50
 
     def test_pin_risk_gate_blocks_when_enabled(self):
