@@ -152,7 +152,8 @@ def _binance_ws_loop(symbols: list[str]) -> None:
         for s in symbols
     ]
     streams = "/".join(f"{s}@bookTicker/{s}@aggTrade" for s in sym_streams)
-    url = f"{BINANCE_WS}?streams={streams}"
+    ws_base = BINANCE_WS.rstrip("/").removesuffix("/ws").removesuffix("/stream")
+    url = f"{ws_base}/stream?streams={streams}"
     backoff = 2.0
     retries = 0
     max_retries = _BINANCE_WS_MAX_RETRIES
