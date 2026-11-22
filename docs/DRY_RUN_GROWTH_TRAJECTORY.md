@@ -380,10 +380,18 @@ parsed label), and tracks realized and unrealized PnL, the per-trade cash
 cap, max drawdown and a drawdown halt, with fees from `fees.py`'s own
 taker/maker model. A daily-ladder guard (commit `924a95e`) keeps the
 collector's "above" ladder snapshots (venue mids diverging by up to 30c -- a
-different market family) out of the ledger. First replay: 575 rows today, 11
-with both books, **0 qualifying entries, balance unchanged at $10.34** -- the
-rule's own hit rate (~5% of minute 0-5 rows in the 85-99c band with a 3c
-fair-above-ask gap) means the trajectory fills in as the collector
+different market family) out of the ledger. The lane sizes with the live
+path's own rule (`signals.floor_contracts` -- Kalshi trades fractional
+contracts down to the 0.01 lot per `kalshi_client.MIN_CONTRACTS`, matching
+Kalshi's Jan-2026 CFTC rulebook amendment allowing sub-integer shares), after
+the first version's whole-contract floor wrongly dropped every entry below a
+~$11 balance. **First booked paper trade (2026-11-22T01:49:33Z):
+KXBTC15M-26NOV212100 entered the rule at minute 5, ask 0.880, fair 0.999
+(+11.9c gap), filled 0.94 contracts for $0.84 cash ($0.0069 taker fee),
+settled YES against the Kalshi API result, realized +$0.10 -- balance $10.34
+-> $10.44, n=1.** One trade proves nothing (win-rate SE at n=1 is ~50pp); the
+hit rate is the candidate's own (~5% of minute 0-5 rows in the 85-99c band
+with a 3c fair-above-ask gap), so the trajectory fills in as the collector
 accumulates. The venue comparison stays honest on the 15M lane: median
 divergence 1.00c (p90 5.30c, n=35 rows), the >2c rows clustered in minutes
 13-15 as one venue lags the opened strike, same-snapshot change corr 0.854,
@@ -391,7 +399,17 @@ and no lead-lag resolvable at the 60s cadence -- consistent with the
 independent co-located study (venues track within ~1c; cross-venue signals
 are a latency/flow question, not a mispricing free lunch). That matches the
 zero-basis replay verdict: no repeatable venue edge; the candidate is the
-index-validated time-decay taker gate. Remaining lane: vol-input calibration.
+index-validated time-decay taker gate. Reality tax on the fill model itself
+(independent literature, same session): the taker-at-ask fill is the
+OPTIMISTIC rung -- a queue-aware replay of one maker strategy deleted 58% of
+touch-fills and flipped the month's PnL sign (live shadow -$1,150 against
++$1,900 for the optimistic rung), and another maker simulator under-filled by
+5x with fills biased toward the toxic tail ("simulated volume is a lower
+bound, not an estimate"); the only validation that means anything is a paired
+live/sim run over the same window compared on fill count AND fill quality
+(time-to-fill distributions), not PnL. So this lane's numbers are an upper
+bound on the candidate until a shadow run against real fills exists.
+Remaining lanes: vol-input calibration, and the paired live/sim shadow run.
 
 Reproduce:
 

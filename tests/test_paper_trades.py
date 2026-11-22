@@ -44,12 +44,14 @@ def window(ts=T0, bid=0.89, ask=0.90, fair=0.94, minutes_left=11.0, event=EV):
 def test_taker_win_pays_out_minus_cash():
     out = pt.simulate([window()], cfg(), lambda ev: {"result": "yes"})
     t = out["trades"][0]
-    contracts = int(0.08 * 100.0 / 0.90)
-    assert t["contracts"] == contracts == 8
+    # the live path's own sizing rule: fractional contracts to the 0.01 lot,
+    # not whole contracts -- 8% of $100 at a 90c ask is 8.88 contracts
+    contracts = 8.88
+    assert t["contracts"] == contracts
     assert t["price"] == 0.90
     assert t["settled"] and t["result"] == "yes"
-    assert t["cash"] == fees.buy_cash_out(8, 0.90, taker=True)
-    assert t["realized"] == round(8 * 1.0 - t["cash"], 4)
+    assert t["cash"] == fees.buy_cash_out(contracts, 0.90, taker=True)
+    assert t["realized"] == round(contracts * 1.0 - t["cash"], 4)
     assert out["summary"]["balance"] == round(100.0 + t["realized"], 4)
     assert out["summary"]["unrealized_pnl"] == 0.0
 
@@ -68,7 +70,7 @@ def test_unsettled_window_is_unrealized_only():
     assert not t["settled"]
     assert t["realized"] == 0.0
     assert out["summary"]["balance"] == 100.0
-    assert t["unrealized"] == round(8 * 0.895 - t["cash"], 4)
+    assert t["unrealized"] == round(8.88 * 0.895 - t["cash"], 4)
     assert out["summary"]["unrealized_pnl"] == t["unrealized"]
 
 
@@ -81,7 +83,8 @@ def test_maker_fills_only_when_the_ask_comes_down():
     miss = pt.simulate([entry, later_miss], cfg(mode="maker"),
                        lambda ev: {"result": "yes"})
     assert hit["trades"][0]["price"] == 0.93       # fair - maker_offset
-    assert hit["trades"][0]["cash"] == fees.buy_cash_out(8, 0.93, taker=False)
+    # 8% of $100 at the 93c resting bid is 8.60 contracts (0.01 lot floor)
+    assert hit["trades"][0]["cash"] == fees.buy_cash_out(8.60, 0.93, taker=False)
     assert miss["trades"] == []                     # no fill, no trade
 
 
@@ -97,7 +100,9 @@ def test_rule_filters_exclude_nonqualifying_rows():
 
 
 def test_unaffordable_and_halted_entries_are_dropped():
-    poor = pt.simulate([window()], cfg(balance=1.0), lambda ev: {"result": "yes"})
+    # below the venue's 0.01 minimum lot: 8% of $0.10 at a 90c ask is 0.0089
+    # contracts, which floor_contracts rounds to zero -- no trade, dropped
+    poor = pt.simulate([window()], cfg(balance=0.10), lambda ev: {"result": "yes"})
     assert poor["trades"] == [] and poor["summary"]["dropped_unaffordable_or_halted"] == 1
 
     lose = {"result": "no"}
@@ -118,6 +123,20 @@ def test_daily_ladder_events_are_never_booked():
     out = pt.simulate([window(ts=T0 + timedelta(minutes=5)), ladder], cfg(),
                       lambda ev: {"result": "yes"})
     assert [t["event"] for t in out["trades"]] == [EV]
+
+
+def test_sizing_mirrors_the_live_fractional_rule():
+    # the first qualifying dry-run entry on the live balance: 8% of $10.34 at
+    # an 88c ask is 0.94 contracts -- the whole-contract floor would have
+    # dropped it, but the live path trades fractional lots to 0.01
+    out = pt.simulate([window(ts=T0, bid=0.87, ask=0.88, fair=0.999,
+                              minutes_left=10.45)],
+                      cfg(balance=10.34), lambda ev: {"result": "yes"})
+    t = out["trades"][0]
+    assert t["contracts"] == 0.94
+    assert t["cash"] == fees.buy_cash_out(0.94, 0.88, taker=True)
+    assert t["realized"] == round(0.94 * 1.0 - t["cash"], 4)
+    assert out["summary"]["dropped_unaffordable_or_halted"] == 0
 
 
 def test_minutes_elapsed_matches_the_sweeps_minute_column():

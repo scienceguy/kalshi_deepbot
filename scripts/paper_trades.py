@@ -20,7 +20,6 @@ the last recorded mid and never touches the realized PnL or the balance.
 
 import argparse
 import json
-import math
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import fees
+from signals import floor_contracts
 
 KALSHI_MARKETS_URL = "https://external-api.kalshi.com/trade-api/v2/markets"
 
@@ -113,8 +113,11 @@ def simulate(rows: list, cfg, settle) -> dict:
                 continue  # no fill, no trade
         if price <= 0:
             continue
-        contracts = int(math.floor(cfg.pct * balance / price))
-        if contracts < 1:  # reviewed: unaffordable paper trades are dropped, matching the trader's own paper drop (B6)
+        # the live path's own sizing rule: Kalshi trades fractional contracts
+        # down to 0.01 (kalshi_client.MIN_CONTRACTS), so a small balance sizes
+        # in exact dollars instead of rounding to whole contracts.
+        contracts = floor_contracts(cfg.pct * balance / price)
+        if contracts <= 0:  # reviewed: below the venue's minimum lot there is no trade -- floor_contracts already applies MIN_CONTRACTS, and the live path rejects the same order (B6)
             dropped += 1
             continue
         series = event.split("-")[0]
