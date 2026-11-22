@@ -509,10 +509,11 @@ def check_pillar_6_kalshi_e2e(db) -> tuple:
         market = MarketInfo(
             ticker=TICKER, series="KXBTC15M",
             close_time=datetime.now(timezone.utc), strike=0, strike_type="",
-            yes_bid=92, yes_ask=93, no_bid=7, no_ask=8,
+            yes_bid=7, yes_ask=8, no_bid=92, no_ask=93,
             yes_liquidity=100, no_liquidity=100, minutes_left=5.0,
             bracket_role="MAIN")
-        sig = TradeSignal("YES", "yes", 93, 1.0, 1.0, "x1 smoke", market,
+        # NO_ONLY is the production strategy: exercise the NO side end to end.
+        sig = TradeSignal("NO", "no", 93, 1.0, 1.0, "x1 smoke", market,
                           win_prob=0.99)
         trader.se.evaluate = lambda m, cash, max_trade_override=None: [sig]
         trader.se.rank_signals = lambda sigs: list(sigs)
@@ -526,7 +527,7 @@ def check_pillar_6_kalshi_e2e(db) -> tuple:
         client.get_balance.return_value = 100.0
         client.get_positions.return_value = []
         client.get_orders.return_value = []
-        client.get_market.return_value = {"result": "yes"}
+        client.get_market.return_value = {"result": "no"}
         client.place_order.return_value = {
             "order": {"order_id": ORDER_ID, "status": "resting"}}
         client.invalidate_markets.return_value = None
@@ -721,11 +722,13 @@ def check_pillar_7_poly_e2e(db) -> tuple:
         pm.health_check = lambda: True
         pm._get_client = lambda: None
         pm._get_authenticated_client = lambda: None
+        # NO_ONLY is the production strategy: book, prices and settlement are
+        # the NO-side (Down) mirror of the old YES pillar.
         pm.get_market_settlement = (
-            lambda slug: {"slug": slug, "settlement": 1.0})
+            lambda slug: {"slug": slug, "settlement": 0.0})
         pm.get_market_book = lambda slug: {
-            "slug": slug, "bids": [{"price": 0.94, "size": 100}],
-            "asks": [{"price": 0.96, "size": 100}]}
+            "slug": slug, "bids": [{"price": 0.05, "size": 100}],
+            "asks": [{"price": 0.07, "size": 100}]}
         crossvenue_edge.get_cached_spot = lambda symbol: 100000.0
         crossvenue_edge.get_cached_vol = lambda symbol: 0.5
         poly_us_trader._mp_bridge = lambda: None
@@ -743,10 +746,11 @@ def check_pillar_7_poly_e2e(db) -> tuple:
             "question": "BTC above 50k?",
             "category": "crypto",
             "closed": False,
-            "outcomePrices": ["0.95", "0.05"],
+            "outcomePrices": ["0.05", "0.95"],
             "assetPriceTerms": {
                 "asset": {"symbol": "BTC"},
-                "strike": {"value": 50000},
+                # NO_ONLY: strike far above spot so the model favours Down.
+                "strike": {"value": 200000},
                 "windowEnd": window_iso,
                 "marketType": "ASSET_PRICE_MARKET_TYPE_ABOVE_BELOW",
             },
@@ -755,9 +759,18 @@ def check_pillar_7_poly_e2e(db) -> tuple:
         scan_state = {"calls": 0}
 
         def fake_scan():
+            # Mirror the venue contract the real scan_markets() implements: it
+            # queries "active=true, closed=false", so a closed market is never
+            # an entry candidate. Presenting a closed market here would let the
+            # unfiltered entry path re-buy the same slug in the cycle that
+            # settles it (cycle 2), leaving a phantom position behind.
+            # Settlement still fires because check_settlements() falls back to
+            # the per-slug settlement lookup when the slug is absent from the map.
             scan_state["calls"] += 1
+            if scan_state["calls"] > 1:
+                return []
             m = dict(market)
-            m["closed"] = scan_state["calls"] > 1  # closed from cycle 2 on
+            m["closed"] = False
             return [m]
 
         trader_obj = poly_us_trader.PolyUSPaperTrader(initial_cash=35.0, reset=True)
