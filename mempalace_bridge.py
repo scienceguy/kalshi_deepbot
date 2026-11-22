@@ -292,7 +292,8 @@ class MemPalaceBridge:
             # append the new item — strict global order is preserved and the
             # writer (which drains the spill first) delivers oldest-first.
             try:
-                os.makedirs(PALACE_DIR, exist_ok=True)
+                # T16-62: never mint a second palace for a bad MEMPALACE_DIR;
+                # an absent spill directory drops only this telemetry, loudly.
                 with open(self._spill_path, "a", encoding="utf-8") as fh:
                     while True:
                         try:

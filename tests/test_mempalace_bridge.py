@@ -234,6 +234,23 @@ def test_full_queue_spills_to_durable_file(tmp_path, monkeypatch):
     assert b._drain_spill() == []
 
 
+def test_spill_never_mints_a_missing_palace_dir(tmp_path, monkeypatch):
+    """T16-62: a wrong MEMPALACE_DIR must fail loud, not silently create
+    a second palace and spill events into it."""
+    missing = tmp_path / "not-a-palace"
+    monkeypatch.setattr(mempalace_bridge, "PALACE_DIR", str(missing))
+    b = _make_bridge()
+    b._spill_path = str(missing / "spill.jsonl")
+    b._outbound = mempalace_bridge.queue.Queue(maxsize=1)
+    b._outbound.put(("status", "x", {}, "cid", 0.0))  # full
+
+    b._enqueue("kg", "add", {"subject": "s", "predicate": "p", "object": "o"})
+
+    assert not missing.exists(), "bridge must not mint a new palace dir"
+    assert b.get_metrics()["outbound_dropped"] == 1
+    assert b.get_metrics()["outbound_spilled"] == 0
+
+
 def test_writer_drains_spill_before_queue(tmp_path, monkeypatch):
     """Spilled items are delivered (in order) by the writer loop."""
     monkeypatch.setattr(mempalace_bridge, "PALACE_DIR", str(tmp_path))
