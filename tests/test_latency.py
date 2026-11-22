@@ -1,14 +1,14 @@
-"""Tests for latency.py — L1 latency instrumentation."""
+"""Tests for latency.py  L1 latency instrumentation."""
 
 import json
 import time
 
 
 import latency
-from latency import LatencyRecorder, LatencySpan, STAGES
+from latency import LatencyRecorder, LatencySpan, STAGES, DecisionTimer
 
 
-# ── Stages ──────────────────────────────────────────────────────────────
+#  Stages 
 
 
 def test_stages_are_ordered():
@@ -26,7 +26,7 @@ def test_stages_are_ordered():
     )
 
 
-# ── LatencySpan ─────────────────────────────────────────────────────────
+#  LatencySpan 
 
 
 def test_span_context_manager_records_duration():
@@ -67,7 +67,7 @@ def test_span_duration_ms_before_finish_is_zero():
     assert span.duration_ms == 0.0
 
 
-# ── LatencyRecorder.record ─────────────────────────────────────────────
+#  LatencyRecorder.record 
 
 
 def test_record_appends_sample():
@@ -136,7 +136,7 @@ def test_percentiles_computes_correctly():
     assert p["p99_ms"] == 99.0
 
 
-# ── LatencyRecorder.span context manager ───────────────────────────────
+#  LatencyRecorder.span context manager 
 
 
 def test_span_context_manager(tmp_path):
@@ -160,7 +160,7 @@ def test_span_context_manager(tmp_path):
     assert "ts" in entry
 
 
-# ── stage_stats ─────────────────────────────────────────────────────────
+#  stage_stats 
 
 
 def test_stage_stats_aggregates_per_stage():
@@ -177,7 +177,7 @@ def test_stage_stats_aggregates_per_stage():
     assert stats["gate_eval"]["avg_ms"] == 5.0
 
 
-# ── default_recorder ──────────────────────────────────────────────────
+#  default_recorder 
 
 
 def test_default_recorder_exists():
@@ -202,3 +202,121 @@ def test_span_writes_to_superbot_data_dir_by_default(tmp_path, monkeypatch):
 
     recorder = latency.LatencyRecorder()
     assert recorder.log_file == data_dir / "latency.jsonl"
+
+
+#  per-stage percentiles 
+
+def test_stage_percentiles_empty():
+    r = LatencyRecorder(max_samples=100)
+    p = r.stage_percentiles("decision")
+    assert p == {"count": 0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0}
+
+
+def test_stage_percentiles_single():
+    r = LatencyRecorder(max_samples=100)
+    r.record("decision", 42.0)
+    p = r.stage_percentiles("decision")
+    assert p["count"] == 1
+    assert p["p50_ms"] == 42.0
+    assert p["p95_ms"] == 42.0
+    assert p["p99_ms"] == 42.0
+
+
+def test_stage_percentiles_known():
+    r = LatencyRecorder(max_samples=1000)
+    for i in range(1, 101):
+        r.record("decision", float(i))
+    p = r.stage_percentiles("decision")
+    assert p["count"] == 100
+    assert p["p50_ms"] == 50.0
+    assert p["p95_ms"] == 95.0
+    assert p["p99_ms"] == 99.0
+
+
+def test_all_stage_percentiles():
+    r = LatencyRecorder(max_samples=1000)
+    r.record("decision", 10.0)
+    r.record("gate_eval", 5.0)
+    out = r.all_stage_percentiles()
+    assert set(out.keys()) == {"decision", "gate_eval"}
+    assert out["decision"]["count"] == 1
+
+
+#  DecisionTimer 
+
+def test_decision_timer_records_substages_and_e2e():
+    r = LatencyRecorder(max_samples=1000)
+    timer = DecisionTimer(r)
+    with timer:
+        timer.begin("signal")
+        time.sleep(0.005)
+        timer.end("signal")
+        timer.begin("gate_eval")
+        time.sleep(0.002)
+        timer.end("gate_eval")
+    # e2e span recorded
+    sp = r.stage_percentiles("tick_to_submit")
+    assert sp["count"] == 1
+    # substage recorded
+    assert r.stage_percentiles("signal")["count"] == 1
+    assert r.stage_percentiles("gate_eval")["count"] == 1
+    e2e = r._samples and [d for st, d in r._samples if st == "tick_to_submit"][0]
+    subs = [d for st, d in r._samples if st in ("signal", "gate_eval")]
+    assert e2e >= max(subs)
+
+
+def test_decision_timer_unknown_stage_generic():
+    r = LatencyRecorder(max_samples=1000)
+    timer = DecisionTimer(r)
+    with timer:
+        timer.begin("foo")
+        timer.end("foo")
+    # recorded under generic "decision"
+    assert r.stage_percentiles("decision")["count"] == 1
+
+
+#  budget helpers 
+
+def test_budget_breaches_flags_slow_e2e(monkeypatch):
+    import latency
+    monkeypatch.setattr(latency, "TICK_TO_SUBMIT_P95_MS", 1.0)
+    monkeypatch.setattr(latency, "TICK_TO_SUBMIT_P99_MS", 1.0)
+    r = LatencyRecorder(max_samples=1000)
+    r.record("tick_to_submit", 100.0)
+    breaches = r.budget_breaches()
+    assert len(breaches) >= 1
+    assert all(b["breach"] for b in breaches)
+
+
+def test_budget_breaches_quiet_under_budget(monkeypatch):
+    import latency
+    monkeypatch.setattr(latency, "TICK_TO_SUBMIT_P95_MS", 10000.0)
+    monkeypatch.setattr(latency, "TICK_TO_SUBMIT_P99_MS", 10000.0)
+    r = LatencyRecorder(max_samples=1000)
+    r.record("tick_to_submit", 5.0)
+    assert r.budget_breaches() == []
+
+
+def test_over_budget_never_raises():
+    r = LatencyRecorder(max_samples=100)
+    assert r.over_budget("tick_to_submit", 999999.0) in (True, False)
+    assert r.over_budget("other", 5.0) is False
+
+
+#  thread safety 
+
+def test_thread_safety_no_lost_samples():
+    import threading
+    r = LatencyRecorder(max_samples=100000)
+    r._start_writer = lambda: None
+    n_threads = 8
+    per = 100
+    def worker():
+        for i in range(per):
+            r.record("decision", float(i))
+    ts = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert r.stage_percentiles("decision")["count"] == n_threads * per
