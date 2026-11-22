@@ -345,28 +345,22 @@ class TestGatesMath:
         sigma = atr * math.sqrt(math.pi / 2)
         assert abs(sigma - 125.33) < 0.01
 
-    def test_sigma_from_atr_v2_is_the_calibrated_default(self):
-        """F-05/T15-03: V2 (atr/1.6) is the default; V1 stays selectable.
+    def test_sigma_from_atr_v2_is_opt_in_pending_per_asset_validation(self):
+        """F-05/T16-03: the global default stays V1 pending promotion evidence.
 
-        Measured 2026-11-22 on the same candles the gates see
-        (scripts/gates_sigma_validation.py): V1 overstated realized
-        close-to-close sigma 1.822x (BTC 12h), 1.965x (ETH 12h), 2.129x
-        (BTC 48h); V2 measured 0.909x, 0.980x, 1.062x. Overstating sigma
-        pushes fair values toward 0.5, so V1 systematically understated
-        edge in the 95-99c band. The pinned-V1 path is kept byte-identical.
+        V2 remains explicitly selectable, but BTC regressed on the independent
+        chronological evaluation and several configured assets were unmeasured.
         """
         atr, spot = 100.0, 60000.0
-        # Behavior first: the unpinned default must BEHAVE as V2. Asserting
-        # the flag true here instead would let a flipped default hide behind
-        # a value pin while the formula changed under it.
+        # Behavior first: the unpinned default must BEHAVE as V1. Asserting
+        # only the flag would let a flipped default hide behind a formula change.
         default_unpinned = gates.sigma_from_atr(atr, spot)
-        assert abs(default_unpinned - (atr / spot) / 1.6) < 1e-12
-        assert config.GATES_SIGMA_FROM_ATR_V2 is True
-        with patch.object(config, "GATES_SIGMA_FROM_ATR_V2", False):
-            v1 = gates.sigma_from_atr(atr, spot)
-            assert abs(v1 - (atr / spot) * math.sqrt(math.pi / 2)) < 1e-12
-        # the measured overstatement multiple is what the flag buys down
-        assert v1 / default_unpinned > 1.9
+        assert abs(default_unpinned - (atr / spot) * math.sqrt(math.pi / 2)) < 1e-12
+        assert config.GATES_SIGMA_FROM_ATR_V2 is False
+        with patch.object(config, "GATES_SIGMA_FROM_ATR_V2", True):
+            v2 = gates.sigma_from_atr(atr, spot)
+            assert abs(v2 - (atr / spot) / 1.6) < 1e-12
+        assert default_unpinned / v2 > 1.9
 
     def test_normal_cdf(self):
         """normal_cdf should match standard normal CDF."""
@@ -437,10 +431,11 @@ class TestMeasuredFloorSide:
         assert res.metrics.get("own_price_cents") == 97
 
     def test_no_favorite_in_band_gets_no_floor(self):
-        """NO @ 97c (favorite, own_price=97 in 95-99) gets NO complement floor.
+        """NO @ 97c (favorite, own_price=97 in 95-99) gets NO measured floor.
 
-        This is the fix: own-side price 97c is in band, so floor applies
-        with the NO complement (1 - 0.9928 = 0.0072).
+        F-04: the measured floor (0.9928) is a YES-side win rate measured on
+        YES quotes in the 95-99c band. It must NOT be complemented and applied
+        to NO side — we have no NO holdout measurement. NO @ 97c keeps model q.
         """
         market = MockMarket()
         book = Mock()
@@ -455,10 +450,9 @@ class TestMeasuredFloorSide:
             res = gates.evaluate_entry(
                 market, spot_state={}, orderbook=book,
                 side="no", entry_price_cents=97)
-        assert res.metrics.get("q_measured_floor") is True
-        assert "NO complement" in res.metrics.get("q_floor_source", "")
+        assert res.metrics.get("q_measured_floor") is not True
         assert res.metrics.get("own_price_cents") == 97
-        # q should be max(0.50, 0.0072) = 0.50 (floor doesn't change it but is applied)
+        # q stays at the model value, not floored to any YES-derived complement
         assert res.metrics.get("q") == 0.50
 
     def test_no_longshot_out_of_band_no_floor(self):
@@ -858,33 +852,28 @@ class TestMeasuredFloorFourCorners:
         assert result.metrics["q"] > 0.5
 
     def test_floor_no_favorite_in_band(self):
-        """NO @ 97c (favorite, in band on own side) -> should get NO-specific floor.
-        
-        The fix makes it apply a NO-specific floor when own-side price is in band.
+        """NO @ 97c (favorite, in band on own side) -> gets NO measured floor.
+
+        F-04: the measured floor (0.9928) is YES-side only. NO side has no
+        holdout measurement, so NO @ 97c keeps model q and q_measured_floor
+        is not set.
         """
         result = self._run_floor_test("no", 97, spot=94000.0)
-        # Fix: NO favorite at 97c (own_price in 95-99 band) gets NO floor
-        assert result.metrics.get("q_measured_floor") is True
-        assert result.metrics.get("q_floor_source") == "config:GATES_MEASURED_Q (NO complement)"
-        # q should be floored to NO complement (~0.989 = 1 - 0.9928? Wait, 1-0.9928=0.0072, not 0.989)
-        # Actually the floor is applied as max(q, q_floor). For NO, q_floor = 1 - 0.9928 = 0.0072
-        # But the model q for NO @ 97c with spot=94000 (strike=95000) is ~0.969 (NO is ITM)
-        # So max(0.969, 0.0072) = 0.969, floor doesn't change q but is still "applied"
-        # The test just verifies the floor logic was triggered
+        # F-04 fix: NO side does not get the YES-derived complement floor
+        assert result.metrics.get("q_measured_floor") is not True
+        assert result.metrics.get("q_floor_source") != "config:GATES_MEASURED_Q (NO complement)"
+        # q stays at model q (NO @ 97c with spot below strike is ITM for NO)
         assert result.metrics["q"] > 0.9
 
     def test_floor_no_longshot_out_of_band(self):
         """NO @ 3c (longshot, out of band) -> no floor.
-        
-        Currently this INCORRECTLY gets the YES floor because yes_equiv=97c.
-        This is the bug: a NO longshot winning ~0.7% gets floored to 99.28%.
+
+        F-04: own-side price 3c is outside the 95-99c measured band, so the
+        measured floor must not apply to NO longshots either.
         """
         result = self._run_floor_test("no", 3, spot=96000.0)
-        # BUG: currently gets YES floor because yes_equiv=97 in band
-        # This test documents the bug; after fix, q_measured_floor should be False
-        if result.metrics.get("q_measured_floor") is True:
-            print("BUG CONFIRMED: NO longshot @ 3c incorrectly gets YES floor")
-            print(f"  q={result.metrics.get('q')}, q_floor_source={result.metrics.get('q_floor_source')}")
+        assert result.metrics.get("q_measured_floor") is not True
+        assert result.metrics.get("q_floor_source") != "config:GATES_MEASURED_Q (NO complement)"
 
 
 class TestBookAgeGate:

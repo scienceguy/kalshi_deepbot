@@ -639,11 +639,7 @@ def evaluate_entry(market, spot_state=None, orderbook=None, *,
                         q_floor, q_floor_n, q_floor_source = _measured_q_floor()
                         metrics["q_floor_n"] = q_floor_n
                         metrics["q_floor_source"] = q_floor_source
-                        if q_floor is not None:  # reviewed: B17 apply the measured Wilson bound only when the measurement is usable
-                            # For NO side, the floor is the complement (NO wins when YES loses)
-                            if side == "no":  # reviewed: F-04 apply NO-side complement of YES measured floor
-                                q_floor = 1.0 - q_floor
-                                metrics["q_floor_source"] = q_floor_source + " (NO complement)"
+                        if q_floor is not None and side == "yes":  # reviewed: F-04 measured floor is YES-side win rate only; do not apply the YES-derived complement to NO side until a separate NO holdout measurement exists
                             q = max(q, q_floor)
                             metrics["q_measured_floor"] = True
                 metrics["q"] = q

@@ -385,9 +385,11 @@ GATES_SIGMA_CACHE_SECONDS = _env_int("GATES_SIGMA_CACHE_SECONDS", 60)
 # E|dS| and overstated sigma ~1.8-2.1x vs realized close-to-close on the
 # same candles (measured 2026-11-22, scripts/gates_sigma_validation.py:
 # BTC 12h 1.822x / ETH 12h 1.965x / BTC 48h 2.129x; V2 measured 0.909x /
-# 0.980x / 1.062x). V2 (atr/1.6) is the calibrated default; V1 stays
-# selectable by pinning this false.
-GATES_SIGMA_FROM_ATR_V2 = _env_bool("GATES_SIGMA_FROM_ATR_V2", True)
+# 0.980x / 1.062x). V2 improves pooled error but BTC regressed on the
+# chronological evaluation and BNB/NEAR/ZEC are unmeasured (see
+# docs/T16_GATE_REVIEW.md), so the global default stays V1 pending
+# per-asset promotion evidence. Pin this true to opt into V2.
+GATES_SIGMA_FROM_ATR_V2 = _env_bool("GATES_SIGMA_FROM_ATR_V2", False)
 # How long a feed-outage stale spot/ATR may be reused before the gates fail
 # closed. 300s = 5 min of stale-ok: a transient Binance blip does not knock the
 # bot out of the market, but a long outage still blocks entries visibly.
@@ -425,6 +427,20 @@ GATES_KL_BLOCK_THRESHOLD = _env_float("GATES_KL_BLOCK_THRESHOLD", 0.15)  # BLOCK
 # A stale book means the prices we're scoring against may have moved.
 GATES_BOOK_AGE_ENABLED = _env_bool("GATES_BOOK_AGE_ENABLED", True)
 GATES_MAX_BOOK_AGE_SECONDS = _env_float("GATES_MAX_BOOK_AGE_SECONDS", 5.0)
+
+# ═════════════════════════════════════════════════════════════════════
+# SESSION LIMITS (session_limits.py) — daily loss/trade caps, consecutive
+# loss cooldown. All amounts in whole cents.
+# ═════════════════════════════════════════════════════════════════════
+SESSION_LIMIT_DAILY_LOSS_CENTS = _env_int("SESSION_LIMIT_DAILY_LOSS_CENTS", 50000)   # $500/day
+SESSION_LIMIT_MAX_DAILY_TRADES = _env_int("SESSION_LIMIT_MAX_DAILY_TRADES", 200)
+SESSION_LIMIT_MAX_CONSECUTIVE_LOSSES = _env_int("SESSION_LIMIT_MAX_CONSECUTIVE_LOSSES", 5)
+SESSION_LIMIT_COOLDOWN_SECONDS = _env_int("SESSION_LIMIT_COOLDOWN_SECONDS", 3600)     # 1 hour
+
+# ═════════════════════════════════════════════════════════════════════
+# QUOTE FRESHNESS (quote_freshness.py) — per-symbol staleness gating
+# ═════════════════════════════════════════════════════════════════════
+QUOTE_FRESHNESS_MAX_AGE_SECONDS = _env_float("QUOTE_FRESHNESS_MAX_AGE_SECONDS", 60.0)
 
 # T15-21: Fair-value engine (maker vs taker)
 # Enables the fair-value computation that combines model probability,
