@@ -255,4 +255,21 @@ PY
 - Final HEAD observed during verification: `e2f1b6a0130088c25b9cc12c3ee06578a4df2200`; concurrent agents continued advancing it. The five hashed review files still matched their working-tree contents and had no reported modifications.
 - `LC_ALL=C grep -n '[^ -~]' docs/T16_GATE_REVIEW.md`: no matches, exit 1 as expected for this check.
 - `/opt/superbot/.venv/bin/python -B scripts/verify_source.py --all`: `all clean`, exit 0.
-- Only `docs/T16_GATE_REVIEW.md` was created by this reviewer. The other reported config modification predated this review and was not touched.
+- The only project-tree file created by this reviewer is `docs/T16_GATE_REVIEW.md`; disposable test/analysis runtime files were redirected to `/tmp/opencode`. The other reported config modification predated this review and was not touched.
+
+## Independent reproduction addendum
+
+A second read-only reviewer run on 2026-11-22 reproduced the evidence independently rather than relying on the report prose:
+
+- Focused tests: `98 passed in 2.27s` with `/opt/superbot/.venv/bin/python`.
+- The four measured-floor corner outputs matched the table above. A separate NO 97c run with model q=0.001 returned q=0.007200000000 and source `config:GATES_MEASURED_Q (NO complement)`, directly confirming that the implemented complement is not a NO-favorite measurement.
+- The dataset manifest SHA256 matched `a3180c25379eae7d0a5aa676edc33f99be0ab87d5050be2ba9e6fe177746f07e`. Independent recomputation produced 112,991 valid sigma windows and 103,980 scored quotes in 7,470 markets; the printed sigma and Brier results reproduced to full displayed precision.
+- BNB, NEAR, and ZEC remain NOT MEASURED. The separate verdicts remain F-04 CHANGES REQUIRED and F-05 CHANGES REQUIRED.
+
+## Post-fix status
+
+The reviewer findings were corrected in commit `52eb7e7`: the NO-side
+complement floor was removed, and `GATES_SIGMA_FROM_ATR_V2` was reverted to
+`False` pending per-asset promotion evidence. After the fix, focused tests
+reported 98 passed, and all source gates reported clean. No live order,
+balance read, credential, or bot-process change was made.
