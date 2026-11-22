@@ -2183,6 +2183,11 @@ class PolyUSPaperTrader:
         side = opp["side"]
         price = opp["price"]
 
+        # Strategy override (NO ONLY): Polymarket "Down" is the NO side; never buy Up.
+        if getattr(config, "NO_ONLY", True) and side == "yes":
+            log.info("NO_ONLY: refusing YES (Up) entry on %s", slug)
+            return False
+
         # Ruin halt (R4): no new entries until a manual --reset.
         if self.state.get("ruin_halted"):
             log.info("Ruin halt active — refusing new entries (manual --reset required)")
@@ -2888,7 +2893,9 @@ class PolyUSPaperTrader:
                     is_stale_long_dated = True
             # paper-only rotation: live positions must be closed at the venue,
             # never booked as a phantom exit (the venue still holds them).
-            if is_stale_long_dated and not self.live_mode:
+            # NO_ONLY holds every position to settlement, so no rotation.
+            if (is_stale_long_dated and not self.live_mode
+                    and not getattr(config, "NO_ONLY", True)):
                 # Exit at the venue bid with the same fee model — never at the
                 # displayed mark (R5). Selling NO means its bid = 1 - YES ask.
                 yes_bid, yes_ask = _bbo_for_slug(slug)

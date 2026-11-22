@@ -2,12 +2,19 @@
 
 Single-operator live-trading bot for Kalshi 15-minute binary crypto markets.
 Places favourite-maker limit orders (YES/NO at 92–99c), evaluates signals via an
-LLM with 4-layer fallback, writes signals/orders/bot-state to Supabase, and
-routes settlement P&L through n8n webhooks.
+LLM with 4-layer fallback, writes signals/orders/bot-state to the local SQLite
+DB (source of truth; Supabase was removed 2026-11-22), and routes settlement
+P&L through n8n webhooks.
 
 ## System constraints (all agents)
 
 - Temp files go to `$TMPDIR` or `/tmp/opencode` (not bare `/tmp`). On the old Termux box `/tmp` was a restricted mount — that constraint no longer applies on the VPS.
+
+## ALL AGENTS MUST USE ALL AVAILABLE TOOLS
+
+Every agent on this host must use **all** available MCP tools, not just a subset. Before answering about past work, decisions, people, or projects, search the palace. Before writing to any database, use the appropriate MCP tool. Before executing any workflow, use n8n. Tool selection is not optional — every available tool is part of every agent's default toolkit.
+
+Available MCP tools: mempalace, sqlite, sqlite-book-l2, supabase, n8n, kaggle, playwright, steam, kalshi.
 
 ## Repo layout
 

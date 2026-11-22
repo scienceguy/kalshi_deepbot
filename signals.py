@@ -61,7 +61,14 @@ class TradeSignal:
 
     @property
     def is_trade(self) -> bool:
-        """True when the signal is a real trade (not PASS, valid side/price/size)."""
+        """True when the signal is a real trade (not PASS, valid side/price/size).
+
+        NO_ONLY (strategy override, default on) makes every YES signal
+        untradeable here rather than at each call site, so no YES entry can
+        slip through a path that forgets to check (signals -> LLM -> order).
+        """
+        if config.NO_ONLY and self.side == "yes":  # reviewed: operator strategy NO ONLY -- is_trade is the single entry choke point
+            return False
         return (
             self.direction != "PASS"
             and self.side in ("yes", "no")

@@ -1669,6 +1669,9 @@ def test_p9_dry_run_fill_increments_trades_placed_once(monkeypatch):
     from gates import GateResult
 
     monkeypatch.setattr(_cfg, "DRY_RUN", True)
+    # This test counts fills for a YES entry; the NO_ONLY strategy gate is a
+    # separate concern pinned off here.
+    monkeypatch.setattr(_cfg, "NO_ONLY", False)
     monkeypatch.setattr(_cfg, "LLM_EVALUATION_ENABLED", False, raising=False)
     monkeypatch.setattr(_cfg, "GATES_ENABLED", False, raising=False)
     monkeypatch.setattr(_cfg, "MIN_EV_EDGE_PCT", 0)

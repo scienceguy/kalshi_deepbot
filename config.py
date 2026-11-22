@@ -90,6 +90,19 @@ def _env_str(name, default):
     """Read a string env var, returning default if unset or empty."""
     return os.environ.get(name, default) or default
 
+
+def _default_allow_no_buys(no_only: bool, dry_run: bool, configured: str) -> bool:
+    """NO buys are off unless explicitly configured; NO_ONLY turns them on in dry mode only.
+
+    T15-03 fixed and tested the NO-side floor on all four (side, price)
+    corners, so dry mode may buy NO without an explicit opt-in. A live run
+    must set ALLOW_NO_BUYS after recorded human approval -- the dry default
+    must never be inherited by DRY_RUN=false.
+    """
+    if configured:
+        return _env_bool("ALLOW_NO_BUYS", False)
+    return no_only and dry_run
+
 # ═════════════════════════════════════════════════════════════════════
 # DATA DIRECTORY (V1: SUPERBOT_DATA_DIR isolation)
 # ═════════════════════════════════════════════════════════════════════
@@ -559,6 +572,11 @@ MIN_NO_ENTRY_CENTS = _env_int("MIN_NO_ENTRY_CENTS", 95)
 # YES favourites enabled; NO favourites disabled by default to prevent mean-reversion short traps (opt-in via ALLOW_NO_BUYS=true)
 ALLOW_YES_BUYS = _env_bool("ALLOW_YES_BUYS", True)
 ALLOW_NO_BUYS = _env_bool("ALLOW_NO_BUYS", False)
+# Strategy override (operator directive, 2026-11-22): NO ONLY, HOLD TO EXPIRY.
+# NO_ONLY blocks every YES entry at TradeSignal.is_trade (signals.py) and
+# stops _manage_exits from ever selling (trader.py), so every position settles.
+# Default ON is the operator's standing strategy, not a tuning choice.
+NO_ONLY = _env_bool("NO_ONLY", True)
 
 # NO *market data* format only: Kalshi returns NO prices directly (not
 # complemented), so this stays False. It does NOT affect order pricing —
@@ -784,6 +802,8 @@ ZERO_TRADEABLE_ALERT_CYCLES = _env_int("ZERO_TRADEABLE_ALERT_CYCLES", 10)
 # verify DRY_RUN before running from a directory whose .env you did not write.
 # ══════════════════════════════════════════════════════════════════════
 DRY_RUN = _env_bool("DRY_RUN", True)
+ALLOW_NO_BUYS = _default_allow_no_buys(
+    NO_ONLY, DRY_RUN, os.environ.get("ALLOW_NO_BUYS", ""))
 DRY_STARTING_BALANCE = _env_float("DRY_STARTING_BALANCE", 100.0)
 DRY_TARGET_PROFIT_CENTS = _env_int("DRY_TARGET_PROFIT_CENTS", 4)
 DRY_MAX_PROFIT_CENTS = _env_int("DRY_MAX_PROFIT_CENTS", 4)

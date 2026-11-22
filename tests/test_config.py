@@ -243,6 +243,20 @@ def test_entry_window_consistent_with_band_evidence(monkeypatch):
     assert cfg.ENTRY_BAND_MAX == 99
 
 
+def test_allow_no_buys_defaults_on_only_in_dry_run():
+    """T15-03 fixed the NO-side floor, so NO entries default on in dry mode.
+
+    A live run must set ALLOW_NO_BUYS explicitly after recorded human approval,
+    so the dry-only default must never leak into DRY_RUN=false. An explicit
+    setting always wins.
+    """
+    from config import _default_allow_no_buys
+    assert _default_allow_no_buys(True, True, "") is True
+    assert _default_allow_no_buys(True, False, "") is False
+    assert _default_allow_no_buys(False, True, "") is False
+    assert _default_allow_no_buys(True, True, "false") is False
+
+
 def test_no_stale_15_55_band_comments_in_config():
     """Verify the config source no longer claims 15-55c is 'backtest best'.
 

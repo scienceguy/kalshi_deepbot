@@ -152,6 +152,7 @@ def test_manage_exits_partial_fill_stamps_last_exit_ts(monkeypatch):
                   "fill_count_fp": "4"},
     }
     monkeypatch.setattr(config, "EXIT_ENABLED", True)
+    monkeypatch.setattr(config, "NO_ONLY", False)  # exercise the exit machinery
     monkeypatch.setattr(config, "EXIT_TAKE_PROFIT_CENTS", 3)
     monkeypatch.setattr(config, "EXIT_STOP_LOSS_CENTS", 25)
     monkeypatch.setattr(config, "EXIT_MIN_MINUTES_LEFT", 1.0)

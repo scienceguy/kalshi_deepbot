@@ -99,8 +99,29 @@ def make_mock_signal(ticker, side="yes", entry_price=50, strength=50.0, confiden
     )
 
 
+class TestNoOnlyStrategy:
+    """Operator strategy (NO ONLY, hold to expiry): only NO entries are tradeable."""
+
+    def test_yes_is_untradeable(self, monkeypatch):
+        monkeypatch.setattr(config, "NO_ONLY", True)
+        assert make_mock_signal("TEST1", side="yes").is_trade is False
+
+    def test_no_is_tradeable(self, monkeypatch):
+        monkeypatch.setattr(config, "NO_ONLY", True)
+        assert make_mock_signal("TEST1", side="no").is_trade is True
+
+    def test_yes_is_tradeable_when_flag_off(self, monkeypatch):
+        monkeypatch.setattr(config, "NO_ONLY", False)
+        assert make_mock_signal("TEST1", side="yes").is_trade is True
+
+
 class TestRankSignals:
     """Tests for rank_signals ranking function."""
+
+    @pytest.fixture(autouse=True)
+    def _allow_yes(self, monkeypatch):
+        """Ranking is side-agnostic; the NO_ONLY strategy gate is pinned off."""
+        monkeypatch.setattr(config, "NO_ONLY", False)
 
     def test_rank_signals_empty(self):
         """Empty list returns empty list."""

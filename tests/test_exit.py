@@ -31,6 +31,11 @@ def paper_fills(monkeypatch):
     """
     monkeypatch.setattr(trader.config, "DRY_RUN", True)
     monkeypatch.setattr(trader.config, "AGGRESSIVE_FILL", False)
+    # These tests exercise the exit machinery itself, which stays available;
+    # the operator strategy (NO_ONLY, hold to expiry) is pinned off here so
+    # the sell path remains covered. test_manage_exits_hold_to_expiry turns
+    # it back on and asserts nothing is sold.
+    monkeypatch.setattr(trader.config, "NO_ONLY", False)
 
 
 @pytest.fixture
@@ -80,6 +85,17 @@ def test_no_side_uses_no_bid(exits_on, monkeypatch):
     client.sell_position.assert_called_once_with(
         "KXBTC15M-1", "no", 2, 80, client_order_id=ANY)
     assert len(booked) == 1
+
+
+def test_manage_exits_holds_to_expiry_under_no_only(exits_on, monkeypatch):
+    """NO_ONLY strategy: a position at take-profit is never sold; it settles."""
+    monkeypatch.setattr(trader.config, "NO_ONLY", True)
+    client = MagicMock()
+    trader.state.positions["KXBTC15M-1"] = _pos(30)
+    booked = _run(monkeypatch, client, (52, 47, 5.0))
+    client.sell_position.assert_not_called()
+    assert booked == []
+    assert "KXBTC15M-1" in trader.state.positions
 
 
 def test_holds_when_inside_the_band(exits_on, monkeypatch):

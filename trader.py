@@ -1651,7 +1651,10 @@ def _manage_exits(client):
     # Clear position cache for this cycle
     if hasattr(_manage_exits, "_cached_positions"):  # reviewed: K7 per-cycle cache avoids stale position data across exits
         del _manage_exits._cached_positions
-    if not config.EXIT_ENABLED:
+    # Strategy override: NO ONLY, HOLD TO EXPIRY. NO_ONLY means positions are
+    # never sold or stopped out; every one settles. Only unfilled entry orders
+    # may be cancelled (that happens on the entry side, not here).
+    if not config.EXIT_ENABLED or config.NO_ONLY:  # reviewed: NO ONLY holds every position to settlement -- no sell or stop-out path
         return
     for ticker, pos in list(state.positions.items()):
         side = pos.get("side")

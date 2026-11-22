@@ -37,6 +37,63 @@ def temp_trader(tmp_path):
         yield trader
 
 
+@pytest.fixture(autouse=True)
+def _no_only_off(monkeypatch):
+    """These tests exercise the machinery on both sides; the NO_ONLY strategy
+    gate is pinned off here and covered by TestNoOnly."""
+    monkeypatch.setattr(config, "NO_ONLY", False)
+
+
+class TestNoOnly:
+    """Operator strategy: only the NO (Down) side may be bought."""
+
+    def _opp(self, side, slug):
+        return {"slug": slug, "question": "Q", "side": side,
+                "price": 0.95, "ref_prob": 0.98}
+
+    def test_refuses_yes_entry(self, temp_trader, monkeypatch):
+        monkeypatch.setattr(config, "NO_ONLY", True)
+        temp_trader.preview_order = MagicMock(return_value=True)
+        book = {"bbo": {"yes_bid": "0.94", "yes_ask": "0.96"}}
+        with patch("poly_us_trader.polymarket_us_client.get_market_book",
+                   return_value=book):
+            assert temp_trader.execute_paper_trade(self._opp("yes", "no-yes")) is False
+        assert temp_trader.state["positions"] == []
+
+    def test_allows_no_entry(self, temp_trader, monkeypatch):
+        monkeypatch.setattr(config, "NO_ONLY", True)
+        temp_trader.preview_order = MagicMock(return_value=True)
+        book = {"bbo": {"yes_bid": "0.04", "yes_ask": "0.06"}}
+        with patch("poly_us_trader.polymarket_us_client.get_market_book",
+                   return_value=book):
+            assert temp_trader.execute_paper_trade(self._opp("no", "no-no")) is True
+        assert len(temp_trader.state["positions"]) == 1
+
+    def test_holds_long_dated_position_instead_of_rotating(self, temp_trader, monkeypatch):
+        monkeypatch.setattr(config, "NO_ONLY", True)
+        future_30d = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        temp_trader.state["positions"] = [{
+            "slug": "stale-hold", "side": "no", "price": 0.99,
+            "qty": 5, "cost": 4.95, "current_price": 0.99,
+        }]
+        temp_trader.state["cash"] = 50.0
+        market_map = {
+            "stale-hold": {
+                "slug": "stale-hold",
+                "endDate": future_30d,
+                "outcomePrices": ["0.01", "0.99"],
+            }
+        }
+        book = {"bbo": {"yes_bid": "0.00", "yes_ask": "0.02"}}
+        with patch.object(temp_trader, "scan_markets",
+                          return_value=list(market_map.values())), \
+             patch("poly_us_trader.polymarket_us_client.get_market_book",
+                   return_value=book):
+            temp_trader.cycle()
+        assert len(temp_trader.state["positions"]) == 1
+        assert temp_trader.state["cash"] == 50.0
+
+
 def test_initial_state(temp_trader):
     assert temp_trader.state["cash"] == 35.0
     assert temp_trader.state["start_balance"] == 35.0
