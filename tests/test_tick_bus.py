@@ -309,5 +309,97 @@ class TestTickBusModuleSingleton:
         assert not bus._running
 
 
+class TestTickBusIngestionAPI:
+    """Test the thread-safe ingestion API (ingest_tick/trade/index)."""
+
+    def setup_method(self):
+        set_test_mode(True)
+
+    def teardown_method(self):
+        set_test_mode(False)
+
+    def test_ingest_tick_updates_snapshot(self):
+        """ingest_tick from any thread updates snapshot via _build_snapshots."""
+        bus = TickBus(symbols=["BTC"])
+        bus.ingest_tick("BTC", "kraken", 50000.0, bid=49999.0, ask=50001.0)
+        bus._build_snapshots()
+        snap = bus.get_snapshot("BTC")
+        assert snap is not None
+        assert snap.price == 50000.0
+        assert snap.bid == 49999.0
+        assert snap.ask == 50001.0
+        assert "kraken" in snap.venues
+        bus.stop()
+
+    def test_ingest_tick_any_venue(self):
+        """ingest_tick accepts any venue string (dynamic venue support)."""
+        bus = TickBus(symbols=["BTC"])
+        bus.ingest_tick("BTC", "bybit", 60000.0)
+        bus._build_snapshots()
+        snap = bus.get_snapshot("BTC")
+        assert snap is not None and snap.price == 60000.0
+        assert snap.venues["bybit"].venue == "bybit"
+        bus.stop()
+
+    def test_ingest_tick_get_snapshot_with_age(self):
+        """ingest_tick reflects in get_snapshot_with_age with small age."""
+        bus = TickBus(symbols=["BTC"])
+        bus.ingest_tick("BTC", "binance", 50000.0)
+        bus._build_snapshots()
+        price, age = bus.get_snapshot_with_age("BTC")
+        assert price == 50000.0
+        assert age is not None and 0.0 <= age < 1.0
+        bus.stop()
+
+    def test_ingest_trade_tape_bounded_newest_last(self):
+        """ingest_trade appends to bounded tape, newest last, oldest dropped."""
+        bus = TickBus(symbols=["BTC"])
+        bus._trade_tape["BTC"] = __import__("collections").deque(maxlen=3)
+        bus.ingest_trade("BTC", "binance", 50000.0, 1.0, "buy")
+        bus.ingest_trade("BTC", "binance", 50001.0, 2.0, "sell")
+        bus.ingest_trade("BTC", "binance", 50002.0, 3.0, "buy")
+        tape = bus.get_trade_tape("BTC")
+        assert len(tape) == 3
+        assert tape[-1]["price"] == 50002.0
+        assert tape[0]["price"] == 50000.0
+        bus.ingest_trade("BTC", "binance", 50003.0, 4.0, "sell")
+        tape = bus.get_trade_tape("BTC")
+        assert len(tape) == 3
+        assert tape[0]["price"] == 50001.0
+        assert tape[-1]["price"] == 50003.0
+        bus.stop()
+
+    def test_get_trade_tape_unknown_symbol(self):
+        """get_trade_tape returns [] for a symbol with no trades."""
+        bus = TickBus(symbols=["BTC"])
+        assert bus.get_trade_tape("ETH") == []
+        bus.stop()
+
+    def test_ingest_index_ref_with_age(self):
+        """ingest_index / get_index_ref / get_index_with_age round-trip."""
+        bus = TickBus(symbols=["BTC"])
+        assert bus.get_index_ref("BRTI") is None
+        assert bus.get_index_with_age("BRTI") == (None, None)
+        bus.ingest_index("BRTI", 65000.5)
+        assert bus.get_index_ref("BRTI") == 65000.5
+        value, age = bus.get_index_with_age("BRTI")
+        assert value == 65000.5
+        assert age is not None and 0.0 <= age < 1.0
+        bus.stop()
+
+    def test_index_is_stale(self):
+        """index_is_stale: fresh=False, stale=True, missing=True."""
+        bus = TickBus(symbols=["BTC"])
+        assert bus.index_is_stale("BRTI") is True
+        bus.ingest_index("BRTI", 65000.5)
+        assert bus.index_is_stale("BRTI") is False
+        old = time.monotonic() - 10.0
+        with bus._index_lock:
+            bus._index_cache["BRTI"] = (65000.5, old)
+        assert bus.index_is_stale("BRTI") is True
+        assert bus.index_is_stale("BRTI", stale_seconds=60.0) is False
+        bus.stop()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -52,6 +52,12 @@ COINBASE_WS_MAX_RETRIES = int(os.environ.get("COINBASE_WS_MAX_RETRIES", "100"))
 ATR_WINDOW = int(os.environ.get("TICK_BUS_ATR_WINDOW", "60"))
 # Sigma window size (number of 1-minute bars)
 SIGMA_WINDOW = int(os.environ.get("TICK_BUS_SIGMA_WINDOW", "60"))
+# Use CF Benchmarks settlement index (Kalshi CF Benchmarks WS channels)
+USE_CFB_INDEX = os.environ.get("USE_CFB_INDEX", "").lower() in ("1", "true", "yes", "on")
+# Staleness threshold for CF Benchmarks index values (seconds)
+WS_INDEX_STALE_SECONDS = float(os.environ.get("WS_INDEX_STALE_SECONDS", "1.0"))
+# Bounded trade tape size per symbol (newest last)
+TRADE_TAPE_SIZE = int(os.environ.get("TRADE_TAPE_SIZE", "500"))
 
 log = logging.getLogger("tick_bus")
 
@@ -141,6 +147,16 @@ class TickBus:
             s: deque(maxlen=SIGMA_WINDOW) for s in self.symbols
         }
         self._last_price: dict[str, float] = {}
+
+        # Trade tape: bounded per-symbol deque of trades (newest last)
+        self._trade_tape: dict[str, deque] = {
+            s: deque(maxlen=TRADE_TAPE_SIZE) for s in self.symbols
+        }
+        self._trade_tape_lock = threading.RLock()
+
+        # CF Benchmarks index cache: index_id -> (value, monotonic receive time)
+        self._index_cache: dict[str, tuple[float, float]] = {}
+        self._index_lock = threading.RLock()
 
         # Consumer queues (for any downstream tasks that want raw ticks)
         self._consumer_queues: list[asyncio.Queue] = []
@@ -429,6 +445,110 @@ class TickBus:
         self._consumer_queues.append(queue)
         return queue
 
+    # ── Thread-safe ingestion API (callable from any thread, no loop required) ──
+
+    def ingest_tick(
+        self,
+        symbol: str,
+        venue: str,
+        price: float,
+        bid: Optional[float] = None,
+        ask: Optional[float] = None,
+        venue_timestamp: Optional[float] = None,
+        sequence: Optional[int] = None,
+    ) -> Tick:
+        """Ingest a venue tick into the bus.
+
+        Thread-safe and works with no background event loop running. Updates the
+        per-venue latest-tick cache so get_snapshot/get_snapshot_with_age reflect
+        it on the next snapshot build. Accepts any venue string (dynamic venue
+        support for cryptofeed-normalized venues).
+        """
+        symbol = symbol.upper()
+        tick = Tick(
+            symbol=symbol,
+            venue=venue,
+            price=float(price),
+            bid=None if bid is None else float(bid),
+            ask=None if ask is None else float(ask),
+            timestamp=time.monotonic(),
+            venue_timestamp=venue_timestamp,
+            sequence=sequence,
+        )
+        with self._latest_ticks_lock:
+            venue_ticks = self._latest_ticks.setdefault(venue, {})
+            venue_ticks[symbol] = tick
+        with self._snapshot_lock:
+            if venue not in self._venue_states:
+                self._venue_states[venue] = VenueState(name=venue)
+            self._venue_states[venue].last_message_at = time.monotonic()
+        return tick
+
+    def ingest_trade(
+        self, symbol: str, venue: str, price: float, size: float, side: str
+    ) -> dict:
+        """Ingest a trade into the bounded per-symbol trade tape (newest last)."""
+        symbol = symbol.upper()
+        trade = {
+            "symbol": symbol,
+            "venue": venue,
+            "price": float(price),
+            "size": float(size),
+            "side": side,
+            "timestamp": time.monotonic(),
+        }
+        with self._trade_tape_lock:
+            tape = self._trade_tape.setdefault(symbol, deque(maxlen=TRADE_TAPE_SIZE))
+            tape.append(trade)
+        return trade
+
+    def get_trade_tape(self, symbol: str, limit: Optional[int] = None) -> list:
+        """Return the trade tape for a symbol (newest last), optionally truncated to limit."""
+        symbol = symbol.upper()
+        with self._trade_tape_lock:
+            tape = self._trade_tape.get(symbol)
+            if not tape:
+                return []
+            items = list(tape)
+        if limit is not None:
+            items = items[-limit:]
+        return items
+
+    def ingest_index(self, index_id: str, value: float,
+                     source_timestamp: Optional[float] = None) -> None:
+        """Ingest a CF Benchmarks index value (e.g. BRTI)."""
+        receive_ts = time.monotonic()
+        with self._index_lock:
+            self._index_cache[index_id] = (float(value), receive_ts)
+
+    def get_index_ref(self, index_id: str) -> Optional[float]:
+        """Return the latest CF Benchmarks index value, or None if never ingested."""
+        with self._index_lock:
+            entry = self._index_cache.get(index_id)
+        if entry is None:
+            return None
+        return entry[0]
+
+    def get_index_with_age(self, index_id: str) -> tuple[Optional[float], Optional[float]]:
+        """Return (value, age_seconds) for a CF Benchmarks index, or (None, None)."""
+        with self._index_lock:
+            entry = self._index_cache.get(index_id)
+        if entry is None:
+            return None, None
+        value, receive_ts = entry
+        age = max(0.0, time.monotonic() - receive_ts)
+        return value, age
+
+    def index_is_stale(self, index_id: str,
+                       stale_seconds: Optional[float] = None) -> bool:
+        """Return True if a CF Benchmarks index has no value or is older than the threshold."""
+        if stale_seconds is None:
+            stale_seconds = WS_INDEX_STALE_SECONDS
+        value, age = self.get_index_with_age(index_id)
+        if value is None:
+            return True
+        return age > stale_seconds
+
     # ── Snapshot Builder ──────────────────────────────────────────────────
 
     async def _snapshot_builder_task(self) -> None:
@@ -443,16 +563,16 @@ class TickBus:
         with self._latest_ticks_lock:
             with self._snapshot_lock:
                 for symbol in self.symbols:
-                    venue_ticks = {}
+                    venue_ticks_result: dict = {}
                     prices = []
                     bids = []
                     asks = []
 
-                    # Collect latest tick from each venue
-                    for venue_name in ("binance", "coinbase"):
-                        tick = self._latest_ticks[venue_name].get(symbol)
+                    # Collect latest tick from each venue (any venue, not just binance/coinbase)
+                    for venue_name, vt in self._latest_ticks.items():
+                        tick = vt.get(symbol)
                         if tick is not None:
-                            venue_ticks[venue_name] = tick
+                            venue_ticks_result[venue_name] = tick
                             prices.append(tick.price)
                             if tick.bid is not None:
                                 bids.append(tick.bid)
@@ -481,7 +601,7 @@ class TickBus:
                             price=median_price,
                             bid=best_bid,
                             ask=best_ask,
-                            venues=venue_ticks,
+                            venues=venue_ticks_result,
                             timestamp=now,
                         )
                         self._snapshots[symbol] = snap
@@ -489,7 +609,7 @@ class TickBus:
                         snap.price = median_price
                         snap.bid = best_bid
                         snap.ask = best_ask
-                        snap.venues = venue_ticks
+                        snap.venues = venue_ticks_result
                         snap.timestamp = now
 
     # ── ATR / Sigma Calculator ────────────────────────────────────────────
