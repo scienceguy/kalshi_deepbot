@@ -409,7 +409,28 @@ bound, not an estimate"); the only validation that means anything is a paired
 live/sim run over the same window compared on fill count AND fill quality
 (time-to-fill distributions), not PnL. So this lane's numbers are an upper
 bound on the candidate until a shadow run against real fills exists.
-Remaining lanes: vol-input calibration, and the paired live/sim shadow run.
+KL-divergence edge (the objective's named mechanism, measured 2026-11-22 on
+the 37 test-day entries at the 3c gate): D_KL(fair || ask) has median 0.025
+bits, and 64.9% of entries sit below 0.05 bits -- the threshold the KL
+literature calls the trap zone where fees win -- with only 13.5% in the
+0.10-0.20 "real edge" band. The first live dry-run entry (fair 0.999, ask
+0.880) measures 0.176 bits, near the band's top, but n=1. A model that
+equals the book scores 0.000 by construction, and the independent
+calibration evidence (2,783 blocks: sides priced ~89c settle YES ~9 times
+in 10; "a record that merely equals it is the book, relabelled") says the
+measured 89.5-95.3% win rate at a mean ask of 88.7c matches the book's own
+number -- so the right tail of the KL distribution is where any real edge
+would live, and it is 13.5% of entries, unvalidated on live fills.
+Staleness tax on this lane's own fills: an independent Kalshi lab measured a
+paper engine that priced at a remembered ask (~20s old) at +1.85c/trade and
+-7.12c/trade when repriced at the live ask (median staleness cost 3c, mean
+3.92c), and its checklist says to assume any paper edge under 3c is zero.
+Our collector's 60s cadence means every fill in this ledger is up to 60s
+stale by construction -- the first trade's +$0.10 carries that bias, and the
+fix that lab names (count a fill only when a real trade prints at or through
+the price) is what the recorded bid/ask rows cannot yet provide.
+Remaining lanes: vol-input calibration, trade-print fill confirmation, and
+the paired live/sim shadow run.
 
 Reproduce:
 
