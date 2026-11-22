@@ -220,17 +220,22 @@ def test_min_no_entry_cents_matches_entry_band_min_default(monkeypatch):
 def test_entry_window_consistent_with_band_evidence(monkeypatch):
     """ENTRY_WINDOW_START_MIN/END_MIN must match the 95-99c band timing.
 
-    Evidence: prices only reach 95-99c in final 1-2 minutes (13-14.5 min elapsed
-    into 15-min window). The old comment claiming 6-11 min elapsed was wrong.
+    Evidence (T15-04): the 14-day HF index replay pins (95-99 band, minutes
+    6-11 elapsed) as the config it tested -- ~28% of windows reach 95-99c at
+    those minutes (scripts/hf_gate_index.py); the VPS candle DB measures 18
+    in-band quotes in that window (scripts/measure_edge.py --minutes 6 11).
+    This test previously pinned 13.0-14.5 on the claim "prices only reach
+    95-99c in final 1-2 minutes", which both sources contradict; it also
+    discarded every window the evidence actually covered.
     """
     cfg = _reload_with(monkeypatch,
                        ENTRY_WINDOW_START_MIN="",
                        ENTRY_WINDOW_END_MIN="",
                        MIN_YES_PRICE_CENTS="",
                        ENTRY_BAND_MIN="")
-    # Default window should be 13.0-14.5 min elapsed (final 1-2 min left)
-    assert cfg.ENTRY_WINDOW_START_MIN == 13.0
-    assert cfg.ENTRY_WINDOW_END_MIN == 14.5
+    # Default window should be 6.0-11.0 min elapsed (the tested config)
+    assert cfg.ENTRY_WINDOW_START_MIN == 6.0
+    assert cfg.ENTRY_WINDOW_END_MIN == 11.0
     # Band should be 95-99c
     assert cfg.MIN_YES_PRICE_CENTS == 95
     assert cfg.ENTRY_BAND_MIN == 95

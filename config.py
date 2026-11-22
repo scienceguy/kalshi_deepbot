@@ -273,9 +273,15 @@ MIN_SKEW_CENTS = _env_int("MIN_SKEW_CENTS", 3)
 MIN_TREND_CENTS = _env_int("MIN_TREND_CENTS", 8)
 SKEW_ENTRY_MIN = _env_int("SKEW_ENTRY_MIN", 3)
 SKEW_ENTRY_MAX = _env_int("SKEW_ENTRY_MAX", 97)
-# Entry window: 95-99c band reached only in final 1-2 minutes (13-14.5 min elapsed)
-ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 13.0)
-ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 14.5)
+# Entry window: minutes elapsed into the 15m period. The default was pinned
+# 13.0-14.5 on the (false) claim "95-99c only in the final 1-2 minutes":
+# the 14-day HF index replay shows ~28% of windows reach 95-99c at minutes
+# 6-11 elapsed and pins (95-99, 6-11) as the tested config
+# (scripts/hf_gate_index.py); the VPS candle DB measures 18 in-band quotes
+# in that window (scripts/measure_edge.py --minutes 6 11). The old window
+# also discarded every window the evidence actually covered. T15-04.
+ENTRY_WINDOW_START_MIN = _env_float("ENTRY_WINDOW_START_MIN", 6.0)
+ENTRY_WINDOW_END_MIN = _env_float("ENTRY_WINDOW_END_MIN", 11.0)
 # Favourite-maker price band: 95-99c (validated on HF data; 15-55c is negative EV)
 MIN_YES_PRICE_CENTS = _env_int("MIN_YES_PRICE_CENTS", 95)
 MAX_YES_PRICE_CENTS = _env_int("MAX_YES_PRICE_CENTS", 99)
