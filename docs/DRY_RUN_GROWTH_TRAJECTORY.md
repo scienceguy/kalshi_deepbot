@@ -321,17 +321,19 @@ index price**):
   asset-name key mismatch mapped 0/21,599 rows. What shipped is the per-coin
   mapping with a loud guard (`rows with index: 0` aborts the run).
 
-Growth arithmetic for the surviving config (honest): n=43 over 3 test days is
-~14 trades/day; per-trade return on balance at the 8% cap is 0.08 x (6.0c /
-~93c ask) = +0.5%/trade, so ~+7%/day at best. From $10.34 that is ~$17 after
-7 days; the $3.25M target needs ~+88%/day (x314,000) — about 5 orders of
-magnitude beyond the measured edge. Caveats before anyone acts on it: n=43
-(win-rate SE ~3pp), the fair value is a model whose vol input is computed on
-the composite (the fixed 0.80 vol measures -0.01c on the same data), no live
-fills validate the taker fill assumption yet, and Kalshi's own calibration
-study (97.2% accuracy at close over 2.3M markets) means the ask near
-settlement is already close to fair value — the edge has to come from
-information priced later than the quote, not the quote itself.
+Growth arithmetic for the surviving config (honest), now measured on both
+splits: ~14 trades/day; per-trade return on balance at the 8% cap is
+0.08 x (EV / ~89c ask), so +6.0c/test-day EV is +0.5%/trade (~+7%/day best
+case) and +2.4c/train-day EV is +0.2%/trade (~+3%/day). From $10.34 that is
+~$13.5-17.7 after 7 days; the $3.25M target needs ~+88%/day (x314,000) --
+about 4-5 orders of magnitude beyond the measured edge. Caveats before anyone
+acts on it: n=43-225 per split (win-rate SE ~3-10pp), the fair value is a
+model whose vol input is computed on the composite (the fixed 0.80 vol
+measures -0.01c on the same data), no live fills validate the taker fill
+assumption yet, and Kalshi's own calibration study (97.2% accuracy at close
+over 2.3M markets) means the ask near settlement is already close to fair
+value -- the edge has to come from information priced later than the quote,
+not the quote itself.
 
 Against this candidate the independent evidence weighs the other way, and is
 recorded here in full (Research Batch 4, 2026-11-21): the publisher of the
@@ -348,18 +350,36 @@ backtest system found the market-implied probability is the best-calibrated
 forecaster measured (ECE ~0.020 vs 0.03+ for every trained model) with every
 taker strategy failing to clear the ~2.5c round cost out of sample. The
 candidate survives on 3 held-out days (n=43); these samples are 5-50x larger.
-**It means nothing until it replicates on the 10 train days (replay running)
-and on live fills.**
+**The 10 train days replayed at index pricing (2026-11-22, same tool): it
+survives, thinner.** Train days 09-29..10-08 (77,821 rows / 6,762 tickers, all
+rows carrying an index price, formula replication corr=0.999998): the
+[85,99]/[0,5] taker cells stay positive on the index at +0.7c (n=76, margin
+0.05), +4.2c (n=129, 0.03), +2.4c (n=150, 0.02) and +2.3c (n=196, 0) --
+against +4.5..+6.0c on the test days for the same config. The composite side
+reproduces the earlier split exactly (+6.9/+6.4/+6.1/+3.0c), so the difference
+is the basis cost, which is larger on the train days (train basis median
++2.6bps, per coin -0.7..+8.5). Best index-priced train cells: [75,99]/[0,5]
+margin 0.08 +6.2c (n=96, win 88.5%), [90,99]/[0,5] margin 0.03 +5.5c (n=63),
+[85,99]/[3,9] margin 0.08 +5.2c (n=45); 166/175 index-priced configs positive
+(n>=20). Over the full 13 days the config's index-priced EV is positive on
+every split but ranges +0.7..+6.0c with the win rate 89.5-95.3% -- unstable by
+~5x across splits, and still dwarfed by the independent n=5,787..6,303 windows
+above. It means nothing until it replicates on live fills.
 
 **$3.25M remains honestly unreachable at the measured edge** — the candidate
-is real but thin, unvalidated on live fills, and ~5 orders of magnitude
-short. Remaining lanes: validate on live fills (the collector loop is
-running), extend the replay to the 10 train days (fetch running), and
-calibrate the vol input.
+survives index pricing on both splits but at +0.7..+6.0c/trade (unstable ~5x
+across splits), it is unvalidated on live fills, and the growth arithmetic
+(+3..+7%/day best case) is ~4-5 orders of magnitude short. Remaining lanes:
+live-fill validation via the paper-trade lane (the collector records both
+venues' mid, spread, strike and composite fair per row; bid/ask recording is
+being added so simulated taker and maker fills can be tested against live
+quotes), and vol-input calibration.
 
 Reproduce:
 
     python scripts/fetch_brti_history.py --start 2026-10-09 --hours 72 --out /tmp/opencode/brti_testdays.jsonl
+    python scripts/fetch_brti_history.py --start 2026-09-29 --hours 240 --out /tmp/opencode/brti_traindays.jsonl
     python scripts/hf_gate_sweep.py     # full-sample grid
     python scripts/hf_gate_split.py     # train/test split of the grid
     python scripts/hf_gate_index.py     # index-priced replay (test days)
+    python scripts/hf_gate_index.py --days 2026-09-29,2026-09-30,2026-10-01,2026-10-02,2026-10-03,2026-10-04,2026-10-05,2026-10-06,2026-10-07,2026-10-08 --brti /tmp/opencode/brti_traindays.jsonl --label TRAIN
