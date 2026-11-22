@@ -1,6 +1,7 @@
-"""Tests for kalshi_ws.py — Kalshi WebSocket client."""
+"""Tests for kalshi_ws.py - Kalshi WebSocket client."""
 
 import json
+import logging
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,7 +9,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import kalshi_ws
-from kalshi_ws import KalshiWebSocket, MarketData, FillData, OrderUpdate, OrderbookSnapshot, OrderbookDelta
+from kalshi_ws import (
+    KalshiWebSocket,
+    MarketData,
+    FillData,
+    OrderUpdate,
+    OrderbookSnapshot,
+    OrderbookDelta,
+    CFB_INDEX_IDS,
+    BASE_ASSET_TO_CFB_INDEX,
+    WS_MSG_CFB_VALUE,
+    WS_MSG_CFB_VALUE_5HZ,
+)
+
+
+def _make_ws(monkeypatch):
+    """Build a KalshiWebSocket with mocked config/key loading (no real PEM)."""
+    monkeypatch.setattr("kalshi_ws.config.KALSHI_KEY_ID", "test-key-id")
+    monkeypatch.setattr("kalshi_ws.config.KALSHI_KEY_FILE", "/tmp/test.pem")
+    monkeypatch.setattr("kalshi_ws.config.KALSHI_PRIVATE_KEY_CONTENT", None)
+    with patch("kalshi_ws.Path.exists", return_value=False):
+        return KalshiWebSocket()
 
 
 class TestKalshiWebSocketInit:
@@ -172,6 +193,225 @@ class TestKalshiWebSocketSubscriptionMessages:
         assert msg["cmd"] == "unsubscribe"
         assert msg["params"]["channels"] == ["ticker"]
         assert msg["params"]["market_tickers"] == ["KXBTC15M-26DEC3123-BTC"]
+
+
+class TestKalshiWebSocketCFBSubscription:
+    """Test CF Benchmarks subscription payloads (subscribe via index_ids)."""
+
+    def test_subscribe_cfb_value_message_format(self, monkeypatch):
+        """Test subscribe message uses index_ids for the 1 Hz CFB channel."""
+        ws = _make_ws(monkeypatch)
+        mock_ws = AsyncMock()
+        ws._ws = mock_ws
+        ws._connected = True
+        ws._loop = AsyncMock()
+
+        ws.subscribe_cfb_value(["BRTI", "ETHUSD_RTI"])
+
+        call_args = mock_ws.send.call_args[0][0]
+        msg = json.loads(call_args)
+        assert msg["cmd"] == "subscribe"
+        assert msg["params"]["channels"] == ["cfbenchmarks_value"]
+        assert msg["params"]["index_ids"] == ["BRTI", "ETHUSD_RTI"]
+        # CFB channels must NOT send market_tickers
+        assert "market_tickers" not in msg["params"]
+
+    def test_subscribe_cfb_value_5hz_message_format(self, monkeypatch):
+        """Test subscribe message uses index_ids for the 5 Hz CFB channel."""
+        ws = _make_ws(monkeypatch)
+        mock_ws = AsyncMock()
+        ws._ws = mock_ws
+        ws._connected = True
+        ws._loop = AsyncMock()
+
+        ws.subscribe_cfb_value_5hz(["SOLUSD_RTI"])
+
+        call_args = mock_ws.send.call_args[0][0]
+        msg = json.loads(call_args)
+        assert msg["cmd"] == "subscribe"
+        assert msg["params"]["channels"] == ["cfbenchmarks_value_5hz"]
+        assert msg["params"]["index_ids"] == ["SOLUSD_RTI"]
+        assert "market_tickers" not in msg["params"]
+
+    def test_subscribe_cfb_value_defaults_to_all_index_ids(self, monkeypatch):
+        """Test subscribe with no args sends the full index_ids list."""
+        ws = _make_ws(monkeypatch)
+        mock_ws = AsyncMock()
+        ws._ws = mock_ws
+        ws._connected = True
+        ws._loop = AsyncMock()
+
+        ws.subscribe_cfb_value()
+
+        call_args = mock_ws.send.call_args[0][0]
+        msg = json.loads(call_args)
+        assert msg["params"]["channels"] == ["cfbenchmarks_value"]
+        assert msg["params"]["index_ids"] == CFB_INDEX_IDS
+
+    def test_subscribe_cfb_value_5hz_defaults_to_all_index_ids(self, monkeypatch):
+        """Test 5 Hz subscribe with no args sends the full index_ids list."""
+        ws = _make_ws(monkeypatch)
+        mock_ws = AsyncMock()
+        ws._ws = mock_ws
+        ws._connected = True
+        ws._loop = AsyncMock()
+
+        ws.subscribe_cfb_value_5hz()
+
+        call_args = mock_ws.send.call_args[0][0]
+        msg = json.loads(call_args)
+        assert msg["params"]["channels"] == ["cfbenchmarks_value_5hz"]
+        assert msg["params"]["index_ids"] == CFB_INDEX_IDS
+
+    def test_cfb_subscriptions_tracked_when_disconnected(self, monkeypatch):
+        """Test CFB index_ids are recorded for resubscribe while not connected."""
+        ws = _make_ws(monkeypatch)
+        ws._connected = False
+
+        ws.subscribe_cfb_value(["BRTI"])
+        ws.subscribe_cfb_value_5hz(["ETHUSD_RTI"])
+
+        assert ws._subscriptions["cfbenchmarks_value"] == {"BRTI"}
+        assert ws._subscriptions["cfbenchmarks_value_5hz"] == {"ETHUSD_RTI"}
+
+
+class TestKalshiWebSocketCFBMessageHandling:
+    """Test CF Benchmarks message parsing (data field is a JSON string)."""
+
+    @pytest.fixture
+    def ws_client(self, monkeypatch):
+        ws = _make_ws(monkeypatch)
+        ws._privkey = MagicMock()
+        ws._privkey.sign.return_value = b"fake-sig"
+        return ws
+
+    def test_handle_cfb_value_with_60s_average(self, ws_client):
+        """Parse a realistic cfbenchmarks_value frame carrying the 60s average."""
+        import asyncio
+
+        ws_client._cfb_cache["BRTI"] = (62000.0, time.time())
+        raw_frame = json.dumps({
+            "symbol": "BRTI",
+            "timestamp": "2026-11-22T12:34:56Z",
+            "value": 62000.0,
+            "average_60s": 61950.5,
+        })
+        message = {"type": WS_MSG_CFB_VALUE, "msg": {"data": raw_frame}}
+
+        asyncio.run(ws_client._handle_message(json.dumps(message)))
+
+        assert ws_client.get_cfb_value("BRTI") == 62000.0
+        value, age = ws_client.get_cfb_with_age("BRTI")
+        assert value == 62000.0
+        assert age is not None and age < 1.0
+
+    def test_handle_cfb_value_5hz_lean_frame(self, ws_client):
+        """Parse a lean cfbenchmarks_value_5hz frame (no averages)."""
+        import asyncio
+
+        ws_client._cfb_cache["ETHUSD_RTI"] = (3000.25, time.time())
+        raw_frame = json.dumps({
+            "symbol": "ETHUSD_RTI",
+            "timestamp": "2026-11-22T12:34:56Z",
+            "value": 3000.25,
+        })
+        message = {"type": WS_MSG_CFB_VALUE_5HZ, "msg": {"data": raw_frame}}
+
+        asyncio.run(ws_client._handle_message(json.dumps(message)))
+
+        assert ws_client.get_cfb_value("ETHUSD_RTI") == 3000.25
+
+    def test_handle_cfb_value_index_id_field(self, ws_client):
+        """Payloads using index_id instead of symbol are parsed too."""
+        import asyncio
+
+        ws_client._cfb_cache["SOLUSD_RTI"] = (150.0, time.time())
+        raw_frame = json.dumps({"index_id": "SOLUSD_RTI", "current": 150.0})
+        message = {"type": WS_MSG_CFB_VALUE, "msg": {"data": raw_frame}}
+
+        asyncio.run(ws_client._handle_message(json.dumps(message)))
+
+        assert ws_client.get_cfb_value("SOLUSD_RTI") == 150.0
+
+    def test_handle_cfb_malformed_data_logs_warning(self, ws_client, caplog):
+        """A malformed data string logs a warning and does not raise."""
+        import asyncio
+
+        caplog.set_level(logging.WARNING)
+        message = {"type": WS_MSG_CFB_VALUE, "msg": {"data": "not-json{"}}
+
+        # Must not raise
+        asyncio.run(ws_client._handle_message(json.dumps(message)))
+
+        # Should log a JSON parsing warning
+        assert any("Failed to parse cfbenchmarks_value data:" in record.message for record in caplog.records)
+        assert ws_client.get_cfb_index_ids() == []
+
+    def test_handle_cfb_missing_symbol_ignored(self, ws_client):
+        """A frame with no index id is ignored, no cache entry created."""
+        import asyncio
+
+        raw_frame = json.dumps({"value": 100.0})
+        message = {"type": WS_MSG_CFB_VALUE, "msg": {"data": raw_frame}}
+
+        asyncio.run(ws_client._handle_message(json.dumps(message)))
+
+        assert ws_client.get_cfb_index_ids() == []
+
+
+class TestKalshiWebSocketCFBCache:
+    """Test CF Benchmarks cache getters and staleness."""
+
+    def test_get_cfb_value_from_cache(self, monkeypatch):
+        ws = _make_ws(monkeypatch)
+        ws._cfb_cache["BRTI"] = (62000.0, time.time())
+
+        assert ws.get_cfb_value("BRTI") == 62000.0
+        assert ws.get_cfb_value("NONEXISTENT") is None
+
+    def test_get_cfb_with_age(self, monkeypatch):
+        ws = _make_ws(monkeypatch)
+        ws._cfb_cache["ETHUSD_RTI"] = (3000.0, time.time())
+
+        value, age = ws.get_cfb_with_age("ETHUSD_RTI")
+        assert value == 3000.0
+        assert age is not None and age < 1.0
+
+        assert ws.get_cfb_with_age("NONEXISTENT") == (None, None)
+
+    def test_get_cfb_index_ids(self, monkeypatch):
+        ws = _make_ws(monkeypatch)
+        ws._cfb_cache["BRTI"] = (62000.0, time.time())
+        ws._cfb_cache["ETHUSD_RTI"] = (3000.0, time.time())
+
+        assert set(ws.get_cfb_index_ids()) == {"BRTI", "ETHUSD_RTI"}
+
+    def test_cfb_is_stale(self, monkeypatch):
+        ws = _make_ws(monkeypatch)
+        ws._cfb_cache["BRTI"] = (62000.0, time.time())  # fresh
+        ws._cfb_cache["OLD_INDEX"] = (100.0, time.time() - 1000.0)  # very old
+
+        assert not ws.cfb_is_stale("BRTI", stale_seconds=1.0)
+        assert ws.cfb_is_stale("OLD_INDEX", stale_seconds=1.0)
+
+    def test_cfb_is_stale_no_value(self, monkeypatch):
+        ws = _make_ws(monkeypatch)
+
+        assert ws.cfb_is_stale("NONEXISTENT", stale_seconds=1.0)
+
+
+class TestCFBIndexMapping:
+    """Test CF Benchmarks index id constants and base-asset map."""
+
+    def test_base_asset_to_cfb_index_mapping(self):
+        assert BASE_ASSET_TO_CFB_INDEX["BTC"] == "BRTI"
+        assert BASE_ASSET_TO_CFB_INDEX["ETH"] == "ETHUSD_RTI"
+        assert BASE_ASSET_TO_CFB_INDEX["SOL"] == "SOLUSD_RTI"
+        assert BASE_ASSET_TO_CFB_INDEX["XRP"] == "XRPUSD_RSI"
+        assert BASE_ASSET_TO_CFB_INDEX["DOGE"] == "DOGEUSD_RSI"
+
+    def test_cfb_index_ids_match_map_values(self):
+        assert set(CFB_INDEX_IDS) == set(BASE_ASSET_TO_CFB_INDEX.values())
 
 
 class TestKalshiWebSocketMessageHandling:
@@ -380,9 +620,8 @@ class TestKalshiWebSocketMessageHandling:
 
     def test_unknown_message_type_logged(self, ws_client, caplog):
         """Test unknown message types are logged at debug level."""
-        import logging
         caplog.set_level(logging.DEBUG)
-        
+
         message = {"type": "unknown_type", "msg": {}}
 
         import asyncio

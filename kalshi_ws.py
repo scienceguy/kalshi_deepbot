@@ -15,6 +15,13 @@ Subscriptions (per Kalshi WS API):
 - "fill": user fill notifications (private)
 - "order": user order updates (private)
 - "market_positions": user position updates (private)
+- "cfbenchmarks_value": CF Benchmarks index value (~1 tick/sec, includes averages)
+- "cfbenchmarks_value_5hz": CF Benchmarks index value (up to 5 ticks/sec, lean)
+
+CF Benchmarks channels (both authenticated, subscribe via index_ids):
+    https://docs.kalshi.com/websockets/cfbenchmarks-value (2026-11-22)
+    https://docs.kalshi.com/websockets/cfbenchmarks-value-5hz (2026-11-22)
+    https://docs.kalshi.com/websockets/websocket-connection (2026-11-22)
 """
 
 import asyncio
@@ -26,7 +33,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import websockets
@@ -59,6 +66,26 @@ WS_MSG_ERROR = "error"
 WS_MSG_WELCOME = "welcome"
 WS_MSG_SUBSCRIBED = "subscribed"
 WS_MSG_UNSUBSCRIBED = "unsubscribed"
+WS_MSG_CFB_VALUE = "cfbenchmarks_value"
+WS_MSG_CFB_VALUE_5HZ = "cfbenchmarks_value_5hz"
+
+# CF Benchmarks index IDs for supported assets (index_ids subscription parameter)
+CFB_INDEX_IDS = [
+    "BRTI",       # Bitcoin
+    "ETHUSD_RTI", # Ethereum
+    "SOLUSD_RTI", # Solana
+    "XRPUSD_RSI", # XRP
+    "DOGEUSD_RSI" # Dogecoin
+]
+
+# Base asset to CF Benchmarks index ID mapping
+BASE_ASSET_TO_CFB_INDEX = {
+    "BTC": "BRTI",
+    "ETH": "ETHUSD_RTI",
+    "SOL": "SOLUSD_RTI",
+    "XRP": "XRPUSD_RSI",
+    "DOGE": "DOGEUSD_RSI",
+}
 
 
 @dataclass
@@ -191,6 +218,8 @@ class KalshiWebSocket:
             "fill": set(),
             "order": set(),
             "market_positions": set(),
+            "cfbenchmarks_value": set(),
+            "cfbenchmarks_value_5hz": set(),
         }
 
         # Caches
@@ -199,6 +228,8 @@ class KalshiWebSocket:
         self._fill_cache: List[FillData] = []
         self._order_cache: Dict[str, OrderUpdate] = {}
         self._position_cache: Dict[str, Dict] = {}
+        # CF Benchmarks index cache: index_id -> (value, receive_timestamp)
+        self._cfb_cache: Dict[str, Tuple[float, float]] = {}
 
     def _load_private_key(self) -> rsa.RSAPrivateKey:
         """Load RSA private key from file or inline content."""
@@ -366,6 +397,32 @@ class KalshiWebSocket:
         if self._connected:
             self._send_subscribe("market_positions", ["*"])
 
+    def subscribe_cfb_value(self, index_ids: Optional[List[str]] = None) -> None:
+        """Subscribe to CF Benchmarks index value channel (1 Hz with averages).
+
+        Args:
+            index_ids: List of index IDs (e.g. ["BRTI", "ETHUSD_RTI"]). If None, subscribes to all.
+        """
+        if index_ids is None:
+            index_ids = CFB_INDEX_IDS
+        for index_id in index_ids:
+            self._subscriptions["cfbenchmarks_value"].add(index_id)
+        if self._connected:
+            self._send_subscribe_cfb("cfbenchmarks_value", index_ids)
+
+    def subscribe_cfb_value_5hz(self, index_ids: Optional[List[str]] = None) -> None:
+        """Subscribe to CF Benchmarks index value channel (5 Hz lean, no averages).
+
+        Args:
+            index_ids: List of index IDs (e.g. ["BRTI", "ETHUSD_RTI"]). If None, subscribes to all.
+        """
+        if index_ids is None:
+            index_ids = CFB_INDEX_IDS
+        for index_id in index_ids:
+            self._subscriptions["cfbenchmarks_value_5hz"].add(index_id)
+        if self._connected:
+            self._send_subscribe_cfb("cfbenchmarks_value_5hz", index_ids)
+
     def unsubscribe(self, channel: str, tickers: List[str]) -> None:
         """Unsubscribe from a channel for the given tickers."""
         for ticker in tickers:
@@ -401,6 +458,33 @@ class KalshiWebSocket:
         """Get latest cached position."""
         return self._position_cache.get(ticker)
 
+    def get_cfb_value(self, index_id: str) -> Optional[float]:
+        """Get latest cached CF Benchmarks index value, or None if never received."""
+        entry = self._cfb_cache.get(index_id)
+        if entry is None:
+            return None
+        return entry[0]
+
+    def get_cfb_with_age(self, index_id: str) -> Tuple[Optional[float], Optional[float]]:
+        """Get (value, age_seconds) for a CF Benchmarks index, or (None, None)."""
+        entry = self._cfb_cache.get(index_id)
+        if entry is None:
+            return None, None
+        value, receive_ts = entry
+        age = max(0.0, time.time() - receive_ts)
+        return value, age
+
+    def get_cfb_index_ids(self) -> List[str]:
+        """Get list of CF Benchmarks index IDs currently cached."""
+        return list(self._cfb_cache.keys())
+
+    def cfb_is_stale(self, index_id: str, stale_seconds: float = 1.0) -> bool:
+        """Return True if a CF Benchmarks index has no value or is older than the threshold."""
+        value, age = self.get_cfb_with_age(index_id)
+        if value is None:
+            return True
+        return age > stale_seconds
+
     # ── Internal message sending ──────────────────────────────────────
 
     def _send_subscribe(self, channel: str, params: List[str]) -> None:
@@ -410,6 +494,18 @@ class KalshiWebSocket:
             "params": {
                 "channels": [channel],
                 "market_tickers": params,
+            }
+        }
+        if self._ws:
+            asyncio.run_coroutine_threadsafe(self._ws.send(json.dumps(msg)), self._loop)
+
+    def _send_subscribe_cfb(self, channel: str, index_ids: List[str]) -> None:
+        """Send a subscribe message for CF Benchmarks channels (uses index_ids, not market_tickers)."""
+        msg = {
+            "cmd": WS_CMD_SUBSCRIBE,
+            "params": {
+                "channels": [channel],
+                "index_ids": index_ids,
             }
         }
         if self._ws:
@@ -502,13 +598,23 @@ class KalshiWebSocket:
         """Resubscribe to all previously subscribed channels."""
         for channel, params in self._subscriptions.items():
             if params:
-                await self._ws.send(json.dumps({
-                    "cmd": WS_CMD_SUBSCRIBE,
-                    "params": {
-                        "channels": [channel],
-                        "market_tickers": list(params),
-                    }
-                }))
+                # CF Benchmarks channels use index_ids, others use market_tickers
+                if channel in ("cfbenchmarks_value", "cfbenchmarks_value_5hz"):
+                    await self._ws.send(json.dumps({
+                        "cmd": WS_CMD_SUBSCRIBE,
+                        "params": {
+                            "channels": [channel],
+                            "index_ids": list(params),
+                        }
+                    }))
+                else:
+                    await self._ws.send(json.dumps({
+                        "cmd": WS_CMD_SUBSCRIBE,
+                        "params": {
+                            "channels": [channel],
+                            "market_tickers": list(params),
+                        }
+                    }))
                 log.debug("Resubscribed to %s: %s", channel, params)
 
     async def _handle_message(self, message: str) -> None:
@@ -545,6 +651,10 @@ class KalshiWebSocket:
             await self._handle_order(data)
         elif msg_type == WS_MSG_MARKET_POSITIONS:
             await self._handle_market_positions(data)
+        elif msg_type == WS_MSG_CFB_VALUE:
+            await self._handle_cfb_value(data)
+        elif msg_type == WS_MSG_CFB_VALUE_5HZ:
+            await self._handle_cfb_value_5hz(data)
         else:
             log.debug("Unknown WS message type: %s", msg_type)
 
@@ -708,6 +818,56 @@ class KalshiWebSocket:
                         log.warning("Market positions callback error: %s", e)
         except Exception as e:
             log.warning("Failed to handle market positions: %s", e)
+
+    async def _handle_cfb_value(self, data: Dict) -> None:
+        """Handle cfbenchmarks_value message (1 Hz with averages)."""
+        try:
+            payload = await self._parse_cfb_frame(data)
+            if payload is None:
+                return
+            index_id = payload.get("index_id") or payload.get("symbol")
+            if not index_id:
+                return
+            value = payload.get("current") or payload.get("value") or payload.get("price")
+            if value is not None:
+                self._cfb_cache[index_id] = (float(value), time.time())
+                log.debug("CFB value updated: %s = %f", index_id, float(value))
+        except json.JSONDecodeError as e:
+            log.warning("Failed to parse cfbenchmarks_value data: %s", e)
+        except Exception as e:
+            log.warning("Failed to handle cfbenchmarks_value: %s", e)
+
+    async def _handle_cfb_value_5hz(self, data: Dict) -> None:
+        """Handle cfbenchmarks_value_5hz message (5 Hz lean, no averages)."""
+        try:
+            payload = await self._parse_cfb_frame(data)
+            if payload is None:
+                return
+            index_id = payload.get("index_id") or payload.get("symbol")
+            if not index_id:
+                return
+            value = payload.get("current") or payload.get("value") or payload.get("price")
+            if value is not None:
+                self._cfb_cache[index_id] = (float(value), time.time())
+                log.debug("CFB 5Hz value updated: %s = %f", index_id, float(value))
+        except json.JSONDecodeError as e:
+            log.warning("Failed to parse cfbenchmarks_value_5hz data: %s", e)
+        except Exception as e:
+            log.warning("Failed to handle cfbenchmarks_value_5hz: %s", e)
+
+    async def _parse_cfb_frame(self, data: Dict) -> Optional[Dict]:
+        """Parse a CF Benchmarks frame payload from a WS message (data is a JSON string)."""
+        try:
+            data_str = data.get("data", data.get("msg", {}).get("data", "{}"))
+            if isinstance(data_str, str):
+                payload = json.loads(data_str)
+            else:
+                payload = data_str
+            return payload if isinstance(payload, dict) else None
+        except json.JSONDecodeError:
+            raise
+        except Exception:
+            raise
 
 
 # Convenience function for getting a singleton instance (like the REST client)
