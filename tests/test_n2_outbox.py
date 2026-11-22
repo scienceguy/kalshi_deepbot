@@ -12,6 +12,7 @@ Spec acceptance:
 All fakes are local HTTP servers or tmp-path SQLite; never --live, never a
 real n8n.
 """
+import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -316,3 +317,67 @@ def test_lane_filter_returns_only_that_lane(tmp_path):
     critical = db.get_pending_outbox_events(limit=10, lane="critical")
     assert [r["event_id"] for r in normal] == ["n1"]
     assert [r["event_id"] for r in critical] == ["c1"]
+
+
+def _open_stale_outbox_snapshot(db, row_id):
+    """Hold a read snapshot, then commit an independent outbox write."""
+    conn = db._get_conn()
+    conn.execute("BEGIN")
+    conn.execute(
+        "SELECT status FROM event_outbox WHERE id = ?", (row_id,)
+    ).fetchone()
+    writer = sqlite3.connect(db.db_path)
+    try:
+        writer.execute(
+            "UPDATE event_outbox SET last_error = 'concurrent' WHERE id = ?",
+            (row_id,),
+        )
+        writer.commit()
+    finally:
+        writer.close()
+    return conn
+
+
+def test_claim_recovers_from_stale_snapshot(tmp_path):
+    """A failed read-to-write upgrade must not poison later outbox claims."""
+    db = _db(tmp_path)
+    row_id = db.insert_outbox_event(
+        "risk.halt", '{}', "critical", "kalshi", "dry", "stale-claim"
+    )
+    conn = _open_stale_outbox_snapshot(db, row_id)
+
+    rows = db.claim_pending_outbox_events(limit=1, lane="critical")
+
+    assert [row["id"] for row in rows] == [row_id]
+    assert not conn.in_transaction
+    assert db.claim_pending_outbox_events(limit=1, lane="critical") == []
+    check = sqlite3.connect(db.db_path)
+    try:
+        status = check.execute(
+            "SELECT status FROM event_outbox WHERE id = ?", (row_id,)
+        ).fetchone()[0]
+    finally:
+        check.close()
+    assert status == "sending"
+
+
+def test_mark_sent_recovers_from_stale_snapshot(tmp_path):
+    """A concurrent commit must not strand a delivered row in sending."""
+    db = _db(tmp_path)
+    row_id = db.insert_outbox_event(
+        "risk.halt", '{}', "critical", "kalshi", "dry", "stale-sent"
+    )
+    conn = _open_stale_outbox_snapshot(db, row_id)
+
+    assert db.mark_outbox_sent(row_id)
+    assert not conn.in_transaction
+    check = sqlite3.connect(db.db_path)
+    try:
+        status, delivered_at = check.execute(
+            "SELECT status, delivered_at FROM event_outbox WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+    finally:
+        check.close()
+    assert status == "sent"
+    assert delivered_at

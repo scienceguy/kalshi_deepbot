@@ -1141,6 +1141,23 @@ class LocalDB:
                 log.warning("get_pending_outbox_events error: %s", e)
                 return []
 
+    @staticmethod
+    def _execute_outbox_write(conn: sqlite3.Connection, sql: str,
+                              params: Any = ()) -> list:
+        """Retry one write after rolling back a stale SQLite read snapshot."""
+        for attempt in range(2):
+            try:
+                rows = conn.execute(sql, params).fetchall()
+                conn.commit()
+                return rows
+            except sqlite3.OperationalError as e:
+                conn.rollback()
+                if attempt or e.sqlite_errorcode != sqlite3.SQLITE_BUSY_SNAPSHOT:
+                    raise
+            except Exception:
+                conn.rollback()
+                raise
+
     def claim_pending_outbox_events(self, limit: int = 100,
                                     lane: Optional[str] = None,
                                     claim_ttl_seconds: int = 300,
@@ -1167,7 +1184,7 @@ class LocalDB:
                 if lane:
                     params.append(lane)
                 params.append(limit)
-                rows = conn.execute(f"""
+                rows = self._execute_outbox_write(conn, f"""
                     UPDATE event_outbox
                     SET status = 'sending', claimed_at = ?
                     WHERE id IN (
@@ -1186,8 +1203,7 @@ class LocalDB:
                     RETURNING id, event_id, type, delivery_class, payload_json,
                               venue, mode, created_at, attempts, next_attempt_at,
                               last_error, status, webhook_path
-                """, params).fetchall()
-                conn.commit()
+                """, params)
                 return [dict(zip(
                     ["id", "event_id", "type", "delivery_class", "payload_json",
                      "venue", "mode", "created_at", "attempts", "next_attempt_at",
@@ -1201,12 +1217,12 @@ class LocalDB:
         conn = self._get_conn()
         with self._lock:
             try:
-                conn.execute(
+                self._execute_outbox_write(
+                    conn,
                     "UPDATE event_outbox SET status = 'sent', "
                     "delivered_at = datetime('now') WHERE id = ?",
                     (event_id,),
                 )
-                conn.commit()
                 return True
             except Exception as e:
                 log.warning("mark_outbox_sent(%s) error: %s", event_id, e)
