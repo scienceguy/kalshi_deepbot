@@ -82,6 +82,10 @@ def snapshot() -> list[dict]:
                     "poly": round(r["poly"], 4),
                     "kalshi_edge_c": round(r["kalshi_edge_c"], 2),
                     "poly_edge_c": round(r["poly_edge_c"], 2),
+                    "kalshi_bid": r.get("kalshi_bid"),
+                    "kalshi_ask": r.get("kalshi_ask"),
+                    "poly_bid": r.get("poly_bid"),
+                    "poly_ask": r.get("poly_ask"),
                 })
     return rows
 

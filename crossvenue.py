@@ -550,6 +550,14 @@ def three_way(kalshi: Ladder, poly: Ladder, spot: float, sigma_min: float,
             "kalshi_edge_c": (fair - ks[0].mid) * 100.0,
             "poly_edge_c": (fair - ps[0].mid) * 100.0,
             "minutes_left": minutes_left,
+            # raw top-of-book per venue: the live fill data a simulated
+            # taker (fill at ask) or maker (rest, fill when ask trades
+            # through) must be tested against. None when the ladder had
+            # only a last price to go on.
+            "kalshi_bid": ks[0].bid,
+            "kalshi_ask": ks[0].ask,
+            "poly_bid": ps[0].bid,
+            "poly_ask": ps[0].ask,
         }]
 
     k = to_cdf(kalshi)
