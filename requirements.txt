@@ -1,4 +1,4 @@
-# Runtime — imported by the trading loop and the modules it loads.
+# Runtime -- imported by the trading loop and the modules it loads.
 requests>=2.31.0
 cryptography>=41.0.0
 numpy>=1.24
@@ -9,18 +9,19 @@ python-dateutil>=2.9        # backtest_real.py
 polars>=1.0                 # scripts/ dataset loaders (HF parquet)
 huggingface_hub>=0.20       # hf_backtest.py, dataset loaders
 scipy>=1.11                 # scripts/hf_fairvalue.py
+cryptofeed==2.5.0           # cryptofeed_feed.py normalized Coinbase/Binance WS feeds
 
-# Optional — ml_model.py / train_xgboost.py detect these at import and the
+# Optional -- ml_model.py / train_xgboost.py detect these at import and the
 # trading loop runs without them (the ML gate is opt-in via --ml-model).
 # torch
 # xgboost
 # lightgbm
 
-# Optional — binance_feed.stream_trades (live WS streaming). The trading loop
+# Optional -- binance_feed.stream_trades (live WS streaming). The trading loop
 # uses the REST path and does not need this.
 # websockets>=12
 
-# Optional — legacy/kalshi_price_data_client.py only.
+# Optional -- legacy/kalshi_price_data_client.py only.
 # kalshi-price-data
 
 # Test + pre-commit gates (scripts/verify_*.py). Not needed to run the bot.
