@@ -28,6 +28,7 @@ comment; do not edit the constant by hand.
 import argparse
 import math
 import sqlite3
+from datetime import datetime
 
 FEE_MULTIPLIER = 0.07  # Kalshi taker: 0.07 * p * (1 - p) per contract
 
@@ -73,7 +74,7 @@ def load_quotes(db):
             mid = (bid + ask) / 2.0
             if not 0.0 < mid < 1.0:
                 continue
-            minutes_left = (m["close_ts"] - r["end_ts"]) / 60.0
+            minutes_left = (_ts(m["close_ts"]) - _ts(r["end_ts"])) / 60.0
             quotes.append({
                 "ticker": r["ticker"],
                 "series": m["series"],
@@ -84,6 +85,20 @@ def load_quotes(db):
     finally:
         conn.close()
     return markets, quotes
+
+
+def _ts(v) -> float:
+    """Epoch seconds from either a numeric ts or an ISO-8601 string.
+
+    The sibling collector on this host writes ISO strings into close_ts /
+    end_ts; the original numeric row shape keeps working unchanged.
+    """
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def summarize(quotes, cluster=False):
