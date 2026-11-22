@@ -116,9 +116,11 @@ _sys_path_before_bridge = list(_sys.path)
 import mempalace_bridge  # noqa: E402  (M1: MemPalace bridge off hot path)
 _sys.path = _sys_path_before_bridge
 
-# Polymarket US client (order placement infra ready for when crypto markets
-# launch on production; currently preprod only — no crypto updown markets on
-# the US retail API). Imported lazily so the bot starts without Polymarket
+# Polymarket US client (order placement infra; crypto Up/Down markets for
+# BTC, ETH, SOL, XRP are LIVE on api.polymarket.us, verified 2026-11-22 against
+# the production API: cpc-btc-/cpceth-/cpcsol-/cpcxrp- updown 15m slugs settle
+# on CF Benchmarks RTI indexes with a >= tie rule, tick 0.01, min 0.01,
+# feeCoefficient 0.095). Imported lazily so the bot starts without Polymarket
 # credentials present.
 _poly_client = None
 
@@ -654,15 +656,15 @@ def _place_poly_order(sig) -> None:
         log.debug("No Polymarket asset mapping for %s — skipping concurrent order", ticker)
         return
 
-    # Polymarket US slugs for crypto updown markets follow the pattern
-    # cpc-{asset}-updown-15m-YYYY-MM-DD (preprod only). Since no production
-    # markets exist yet, we cannot resolve a slug — log and skip.
-    # When markets launch, resolve via GET /v1/markets?categories=crypto and
-    # match on assetPriceTerms.asset.symbol == {asset.lower()}.
+    # Polymarket US market slugs are live but per-asset (verified 2026-11-22):
+    # BTC is cpc-btc-, the others are cpceth-/cpcsol-/cpcxrp- (plain
+    # cpc-{asset}- guesses 404 outside BTC). Resolve via search_events plus
+    # /v1/market/slug/{slug} and match assetPriceTerms.asset.symbol; until
+    # resolution lands here, log and skip.
     log.debug(
-        "Polymarket concurrent order skipped for %s (%s): no production crypto "
-        "Up/Down 15m market on api.polymarket.us (preprod only). Set "
-        "POLYMARKET_ENABLED=true and add slug resolution when markets launch.",
+        "Polymarket concurrent order skipped for %s (%s): unresolved live 15m "
+        "market on api.polymarket.us (verified per-asset cpc prefixes; add "
+        "resolution before enabling POLYMARKET_ENABLED for the Poly leg).",
         ticker, asset,
     )
 

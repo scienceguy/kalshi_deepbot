@@ -676,17 +676,43 @@ live ramp. Daily reporting and retrain scheduling can start earlier.
 
 | ID            | Status | Evidence (command + output summary) | Agent | Reviewer |
 |---------------|--------|-------------------------------------|-------|----------|
-| F-01 .. F-16  |        |                                     |       |          |
-| C-a .. C-g    |        |                                     |       |          |
-| T15-00..05    |        |                                     |       |          |
-| T15-10..13    |        |                                     |       |          |
-| T15-16        |        |                                     |       |          |
-| T15-20..25    |        |                                     |       |          |
-| T15-30..32    |        |                                     |       |          |
-| T15-40..43    |        |                                     |       |          |
-| T15-50..53    |        |                                     |       |          |
-| T15-60..64    |        |                                     |       |          |
-| T15-70..71    |        |                                     |       |          |
+| F-01 | WRONG (in part) | Production API get_market_by_slug on live slugs returns assetPriceTerms.indexSymbol = BRTI / ETHUSD_RTI / SOLUSD_RTI / XRPUSD_RTI for BTC/ETH/SOL/XRP 15m; BTC market description verbatim: "settle to Up if the Bitcoin price ... is greater than or equal to the price at ... Outcome sourced from CF Benchmarks' Bitcoin Real-Time Index (BRTI)". Same index family as Kalshi; the Chainlink report is the international site. Session audit 2026-11-22: strike(N) = prior window final-minute BRTI TWAP to <0.1bps. Basis risk narrows to window alignment, not zero until T15-31 fills the equivalence table. | opencode:kalshi_deepbot | |
+| F-02 | CONFIRMED | crossvenue.py:75 `Ladder.ok` requires >= 3 rungs; :591-596 `_fetch_pm_ladder_with_fallback` returns the US ladder whenever it is non-None, so a 1-rung US ladder blocks the Gamma fallback; Gamma targets the international venue. Real 15m slugs are per-asset (cpc-btc-, cpceth-, cpcsol-, cpcxrp-); plain cpc-{asset}- 404s outside BTC. | opencode:kalshi_deepbot | |
+| F-03 | FIXED | `grep -rn "def symmetric_kl_divergence"` -> kl_tools.py:45; crossvenue.py:426 imports it (guarded warning path remains). | opencode:kalshi_deepbot | |
+| F-04 | CONFIRMED (latent) | config.py:333-336 GATES_MEASURED_Q=0.9928 with GATES_MEASURED_FLOOR_ENABLED=false; :549 ALLOW_NO_BUYS=false; gates.py:398-413 documents the floor as a YES-side win rate. Latent, not live. | opencode:kalshi_deepbot | |
+| F-05 | CONFIRMED | gates.py:262-270 documents V1 (sqrt(pi/2)) as ~1.9x overstatement and V2 (/1.6) behind GATES_SIGMA_FROM_ATR_V2, default off (config grep). | opencode:kalshi_deepbot | |
+| F-06 | PARTIAL | config.py:280 MIN_YES_PRICE_CENTS=95, :543 ENTRY_BAND_MIN=95, :277-278 ENTRY_WINDOW_START/END=13.0/14.5. Band is now one definition (95-99); the window-vs-minutes-6-11 conflict stays for T15-04. | opencode:kalshi_deepbot | |
+| F-07 | CONFIRMED | Measured edge +0.7..+6.0c/trade (docs/DRY_RUN_GROWTH_TRAJECTORY.md "DECISIVE DATA-SOURCE AUDIT"), i.e. +3..+7%/day best case vs ~+110%/day required at a $100 balance. | opencode:kalshi_deepbot | |
+| F-08 | CONFIRMED | config.py:360 GATES_SPOT_CACHE_SECONDS=30. | opencode:kalshi_deepbot | |
+| F-09 | CONFIRMED | config.py:472 LATENCY_REGRESSION_GATE=false; gates.py:828 `_write_log` on the decision path; config.py:760 loop 15 s. | opencode:kalshi_deepbot | |
+| F-10 | FIXED | config.py:817 `VERTEX_PROJECT_ID = os.environ.get("VERTEX_PROJECT_ID", "")` (no hardcoded project default). | opencode:kalshi_deepbot | |
+| F-11 | CONFIRMED | config.py:640-641 MAX_TRADE_DOLLARS=25000 / MAX_CONTRACTS_CAP=10000; :728 MIN_DEPTH_CONTRACTS=10. | opencode:kalshi_deepbot | |
+| F-12 | PARTIAL | poly_us_trader.py:138-143 `_mp_resume_hint` reads via mempalace_bridge (T13-42), no direct Logstream open. JSON-state-vs-DB cash authority stays for T15-61. | opencode:kalshi_deepbot | |
+| F-13 | CONFIRMED | poly_us_trader.py:444 `initial_cash: float = 35.0` vs config.py:775 DRY_STARTING_BALANCE=100. | opencode:kalshi_deepbot | |
+| F-14 | CONFIRMED | config.py:839 LLM_EVAL_ENFORCE=false. | opencode:kalshi_deepbot | |
+| F-15 | CONFIRMED | Live market field feeCoefficient=0.095 (Tier 1) matches the model; scripts/fee_probe.py preview returns OK but body keys ['order'] carry no fee field, so the market term is the evidence. | opencode:kalshi_deepbot | |
+| F-16 | FIXED | tests/test_h15_ops.py:56 `test_no_termux_paths_remain` passes (full suite 1570 passed / 3 skipped at 6549f79). | opencode:kalshi_deepbot | |
+| C-a | CONFIRMED | Floor and NO buys both off (config grep above); the 304d8f8 inversion is latent. | opencode:kalshi_deepbot | |
+| C-b | CONFIRMED | gates.py:262-270 V2 behind the flag, default off. | opencode:kalshi_deepbot | |
+| C-c | CONFIRMED | config.py:760 LOOP_INTERVAL_SECONDS=15 (min 5); :796 CYCLE_TIMEOUT_SECONDS=30; :360 spot cache 30 s. | opencode:kalshi_deepbot | |
+| C-d | CONFIRMED | poly_us_trader.py:656 comment: daily-loss scales with equity ($5 floor at a $35 bankroll). | opencode:kalshi_deepbot | |
+| C-e | CONFIRMED | config.py:886-887 BINANCE_ENABLED / COINBASE_ENABLED both false; WS spot feeds remain a build item (T15-10). | opencode:kalshi_deepbot | |
+| C-f | FIXED | kl_tools.py defines symmetric_kl_divergence; crossvenue imports it. | opencode:kalshi_deepbot | |
+| C-g | CONFIRMED | Local-first DB, outbox, bus inbox, signed n8n lane present in tree (local_db.py, emit.py, events.py); treated as audits plus gap-fills. | opencode:kalshi_deepbot | |
+| T15-00 | DONE | HEAD recorded 6549f79; `git ls-files > docs/FILES_6549f79.txt` (381 files); `pytest tests/ -q` -> 1570 passed, 3 skipped, exit 0; findings/corrections rows above filled from greps on HEAD. | opencode:kalshi_deepbot | |
+| T15-01 | DONE | docs/POLY_US_MARKETS.md production table (four assets, BRTI/ETHUSD_RTI/SOLUSD_RTI/XRPUSD_RTI, tick 0.01, min 0.01, feeCoefficient 0.095, >= tie rule, live slugs). trader.py stale preprod comments corrected with evidence; POLYMARKET_ENABLED stays an explicit opt-in (default false) now that its comment records the verified live status - flipping it is an operator decision, not a stale-guess default. Fee tier confirmed from the venue's own field (fee_probe body carries no fee field). | opencode:kalshi_deepbot | |
+| T15-02 | OPEN | Secrets scan + VERTEX default check not yet run this round (F-10 already FIXED on HEAD). | | |
+| T15-03 | OPEN | Gate-change review (F-04 corners, F-05 V2 validation) needs a different reviewer identity; not started. | | |
+| T15-04 | OPEN | Band/window single-definition test (tests/test_config_consistency.py) not yet written. | | |
+| T15-05 | OPEN | Docs refresh not started. | | |
+| T15-10..13 | PARTIAL | tick_bus.py (+tests), BRTI tracker (config T15-11 tags), fair_value/decision tests exist in tree; verify per item before building further. | | |
+| T15-16 | OPEN | Promotion criteria doc exists in part (config comments); enforce per change. | | |
+| T15-20..25 | PARTIAL | T15 tags present in gates.py, crossvenue.py, sizing.py (T15-20/21/22/25); gbm/kl/fair-value modules exist. Verify per item. | | |
+| T15-30..32 | PARTIAL | T15-30/31/32 tags present (crossvenue.py, docs spec 2026-11-14-crossvenue-basis-scanner-spec.md); deviation study not yet the 14-day paper study. | | |
+| T15-40..43 | PARTIAL | T15-40 tags in sizing.py; ramp rules (T15-43) not yet in config. | | |
+| T15-50..53 | PARTIAL | docs/EVAL_PROTOCOL.md exists (pre-registration); forecast14d.py not yet built. | | |
+| T15-60..64 | PARTIAL | n8n workflows injected (4, per AGENTS.md); latency gate off, event-driven entry not built. | | |
+| T15-70..71 | OPEN | systemd units for the new services + compliance brief not yet done. | | |
 
 ---------------------------------------------------------------------------
 ## 9. APPENDIX - cross-venue equivalence table template (T15-31)

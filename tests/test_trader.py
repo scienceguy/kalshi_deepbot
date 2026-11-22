@@ -1878,3 +1878,40 @@ def test_place_poly_order_guarded_by_polymarket_enabled(monkeypatch):
 
     # Should return early (no exception) when credentials missing
     trader._place_poly_order(sig)
+
+
+def test_place_poly_order_poly_leg_places_nothing_until_slug_resolution_lands(monkeypatch, caplog):
+    """T15-01 money-path guard for _place_poly_order.
+
+    With Polymarket execution enabled and credentials present the Poly leg
+    must still place NO order: live 15m slug resolution is not built yet
+    (verified 2026-11-22: per-asset prefixes cpc-btc-/cpceth-/cpcsol-/cpcxrp-,
+    plain cpc-{asset}- guesses 404 outside BTC). Any future slug-resolution
+    change must flip this test deliberately.
+    """
+    import logging
+    from unittest.mock import MagicMock
+
+    import config
+    monkeypatch.setattr(config, "POLYMARKET_ENABLED", True, raising=False)
+    monkeypatch.setattr(config, "POLYMARKET_KEY_ID", "probe-key-id", raising=False)
+    monkeypatch.setattr(config, "POLYMARKET_SECRET_KEY", "probe-secret", raising=False)
+
+    placed = []
+    client = MagicMock()
+    client.place_order = MagicMock(side_effect=lambda *a, **k: placed.append((a, k)))
+    # force past the lazy import so the leg runs to its resolution check
+    monkeypatch.setattr(trader, "_poly_client", client, raising=False)
+
+    sig = MagicMock()
+    sig.market.ticker = "KXBTC15M-TEST"
+    sig.market.series = "KXBTC15M"
+    sig.side = "yes"
+    sig.entry_price = 95
+
+    with caplog.at_level(logging.DEBUG):
+        trader._place_poly_order(sig)
+
+    assert placed == [], "enabled Poly leg must place no order before slug resolution"
+    assert client.place_order.call_count == 0
+    assert any("unresolved live 15m" in r.getMessage() for r in caplog.records)
