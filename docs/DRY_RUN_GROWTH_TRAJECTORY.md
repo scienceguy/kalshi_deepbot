@@ -392,7 +392,9 @@ settled YES against the Kalshi API result, realized +$0.10 -- balance $10.34
 -> $10.44, n=1.** One trade proves nothing (win-rate SE at n=1 is ~50pp); the
 hit rate is the candidate's own (~5% of minute 0-5 rows in the 85-99c band
 with a 3c fair-above-ask gap), so the trajectory fills in as the collector
-accumulates. The venue comparison stays honest on the 15M lane: median
+accumulates. **Repriced after the data-source audit below, this entry's true
+fair against the settlement index is 0.9285 (gap +4.85c, not the feed's
+0.9994 / +11.9c); the realized +$0.10 is unchanged.** The venue comparison stays honest on the 15M lane: median
 divergence 1.00c (p90 5.30c, n=35 rows), the >2c rows clustered in minutes
 13-15 as one venue lags the opened strike, same-snapshot change corr 0.854,
 and no lead-lag resolvable at the 60s cadence -- consistent with the
@@ -431,6 +433,60 @@ fix that lab names (count a fill only when a real trade prints at or through
 the price) is what the recorded bid/ask rows cannot yet provide.
 Remaining lanes: vol-input calibration, trade-print fill confirmation, and
 the paired live/sim shadow run.
+
+**DECISIVE DATA-SOURCE AUDIT (2026-11-22) — "the edges lie in careful
+comparison between data sources": the live collector's fair values were priced
+off the wrong price source.** Measured directly (BRTI ticks fetched through
+`scripts/fetch_brti_history.py` for 00:00-03:00Z, 54,000 BTC ticks):
+
+- The composite spot feed (median of Binance/Coinbase/OKX/Kraken —
+  `binance_feed.composite_price`) sat **$118-149 above BRTI at every timestamp
+  checked** (00:50:02Z, 00:52:23Z, 00:54:42Z, 01:00:31Z, 01:46-01:51Z;
+  ~19-25bps). Root cause: BRTI's constituent exchanges are Coinbase, Kraken,
+  Gemini, Bitstamp, Bullish, Crypto.com and LMAX Digital (CF Benchmarks
+  Constituent Exchanges List v13.7) — **Binance and OKX are not
+  constituents**, so the composite carries the non-constituent/USDT basis the
+  settlement index never sees.
+- The strikes are exact. strike(212015) vs BRTI's settlement TWAP over the
+  212000 window's final minute: **+$0.37 error (+0.1bps)**; strike(212100) vs
+  the 212045 window's: **+$0.07 (+0.0bps)**. The collector's strike source is
+  the venue's own index, and the chain rule (strike(N) = 60s BRTI TWAP of
+  window N-1's final minute) is independently confirmed by DegenHedge's
+  27,834-window audit (27,366/27,370 consecutive pairs equal to the cent) and
+  CF Benchmarks' methodology (60 BRTI values in the last minute before
+  expiry, averaged).
+- The 57c "gap" row is fully explained: at 00:50:02Z BRTI was **$32.75 below
+  the recorded strike**, so the index-priced fair is ~32c against the venues'
+  ~35c quotes — both venues were pricing their own settlement index tightly,
+  and our fair input was the outlier.
+- Consequence for the lane: **the first booked entry's signal was ~2.5x
+  overstated.** Feed-priced fair 0.9994 (gap +11.9c) vs the index-priced fair
+  **0.9285** (gap **+4.85c**) — which lands inside the 13-day index replay's
+  own test verdict (+4.5..+6.0c). The candidate survives repricing; the
+  artifact does not. The realized +$0.10 stands (the settlement is the venue's
+  own record, feed-independent).
+- Fix shipped: `python scripts/paper_trades.py --file <day>.jsonl --settle api
+  --index-spot <brti.jsonl>` reprices every replayed row's fair with the
+  collector's own model (`binance_feed.prob_above`, zero-drift lognormal)
+  against the settlement index; rows with no index tick within 45s of the
+  snapshot instant are not replayed at all; the ledger records `fair` and
+  `fair_source` ("index" | "feed"). 13 tests in
+  `tests/test_paper_trades.py` pin the money paths (the index fair governs the
+  entry — the feed's +4c gap does not book when the index prices -40c; rows
+  without coverage are not replayed; the recorded fair equals prob_above on
+  the index price).
+- Independent corroboration: DegenHedge's Coinbase/Kraken spot reads sat a
+  **median $7.77** from Kalshi's official settlement values (0.13%) — an order
+  of magnitude below our composite's basis, because their reads were
+  constituents; a Feb-2025-to-Jan-2026 academic study measures
+  constituent-vs-non-constituent basis divergence in settlement windows (6.7
+  bps per SD of strike proximity, p=0.026); Kalshi BackTest's settlement-drift
+  study measures Coinbase leading BRTI by 8-14s in fast moves — a latency lane
+  our 60s cadence cannot use, consistent with the co-located literature.
+- Known remaining bias: the vol input (`sigma_min`) is still the feed's
+  estimate — only the spot level is repaired. The 13-day replay already
+  answers the EV question on index-priced data; the live lane now prices
+  entries the same way.
 
 Reproduce:
 

@@ -5,6 +5,7 @@ drawdown halt are all asserted against fees.py's own venue model.
 """
 
 import argparse
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ def cfg(**over):
 def row(event, ts, bid, ask, fair, strike, minutes_left):
     return {"ts": ts, "asset": "BTC", "event": event, "slug": "",
             "minutes_left": minutes_left, "strike": strike, "fair": fair,
+            "sigma_min": 0.0004, "spot": strike,
             "kalshi": round((bid + ask) / 2.0, 4), "kalshi_bid": bid,
             "kalshi_ask": ask, "poly": 0.5, "poly_bid": 0.49, "poly_ask": 0.51}
 
@@ -144,3 +146,56 @@ def test_minutes_elapsed_matches_the_sweeps_minute_column():
     assert pt.minutes_elapsed(11.0) == 4
     assert pt.minutes_elapsed(9.9) == 5
     assert pt.minutes_elapsed(0.2) == 15
+
+
+def _index(tmp_path, points, asset="BTC"):
+    """A BRTI tick file in fetch_brti_history.py's own output format."""
+    p = tmp_path / "brti.jsonl"
+    with open(p, "w") as fh:
+        for offset_s, px in points:
+            d = {"time": int((T0 + timedelta(seconds=offset_s)).timestamp() * 1000),
+                 "value": px}
+            if asset is not None:
+                d = {"asset": asset, **d}
+            fh.write(json.dumps(d) + "\n")
+    return pt.load_index_ticks(str(p))
+
+
+def test_index_priced_fair_governs_the_entry_not_the_feed(tmp_path):
+    # the collector's feed fair (0.94) clears the 3c gate, but the settlement
+    # index sits AT the strike -> index fair 0.4997 -> gap -40c: the feed's
+    # measured ~22bps basis must not book a paper trade (2026-11-22 audit:
+    # the feed printed an 11.9c gap where the index priced 7.5c)
+    index = _index(tmp_path, [(0, 60000.0)])
+    out = pt.simulate([window()], cfg(), lambda ev: {"result": "yes"}, index)
+    assert out["trades"] == [] and out["summary"]["entries"] == 0
+    # the artifact path stays available when no index is loaded
+    feed = pt.simulate([window()], cfg(), lambda ev: {"result": "yes"})
+    assert feed["trades"][0]["fair_source"] == "feed"
+    assert feed["trades"][0]["fair"] == 0.94
+
+
+def test_index_priced_entry_records_the_index_fair(tmp_path):
+    from binance_feed import prob_above
+    px = 60200.0
+    index = _index(tmp_path, [(0, px)])
+    out = pt.simulate([window()], cfg(), lambda ev: {"result": "yes"}, index)
+    t = out["trades"][0]
+    assert t["fair_source"] == "index"
+    assert t["fair"] == round(prob_above(px, 60000.0, 0.0004, 11.0), 4)
+    assert t["price"] == 0.90  # taker fills at the recorded ask either way
+
+
+def test_rows_without_index_coverage_are_not_replayed(tmp_path):
+    # a tick 10 minutes from the snapshot: no honest price at the instant,
+    # so the row is not replayed at all rather than repriced from the feed
+    index = _index(tmp_path, [(600, 60200.0)])
+    out = pt.simulate([window()], cfg(), lambda ev: {"result": "yes"}, index)
+    assert out["trades"] == [] and out["summary"]["entries"] == 0
+
+
+def test_index_ticks_without_an_asset_column_still_price(tmp_path):
+    # a single-asset BRTI dump (no "asset" column) falls in the default bucket
+    index = _index(tmp_path, [(0, 60200.0)], asset=None)
+    out = pt.simulate([window()], cfg(), lambda ev: {"result": "yes"}, index)
+    assert out["trades"][0]["fair_source"] == "index"

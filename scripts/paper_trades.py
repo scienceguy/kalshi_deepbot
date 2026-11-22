@@ -16,9 +16,19 @@ cost, not a PnL.
 Settlement comes from the Kalshi public API (result + close_time, never from
 a parsed ticker label). A window with no result yet is marked unrealized at
 the last recorded mid and never touches the realized PnL or the balance.
+
+Fair value defaults to the collector's recorded feed-priced value, which is
+WRONG BY CONSTRUCTION for entry decisions: the composite spot feed (median of
+Binance/Coinbase/OKX/Kraken) sat $118-149 above BRTI at every timestamp on
+2026-11-22, because BRTI's constituents (Coinbase/Kraken/Gemini/...) exclude
+Binance and OKX. Pass --index-spot (BRTI ticks from
+scripts/fetch_brti_history.py) to reprice fair against the venue's own
+settlement index; rows with no index price at the snapshot instant are not
+replayed at all.
 """
 
 import argparse
+import bisect
 import json
 import sys
 from datetime import datetime
@@ -41,6 +51,66 @@ def minutes_elapsed(minutes_left: float) -> int:
     return int(round(15.0 - float(minutes_left)))
 
 
+def load_index_ticks(path: str) -> dict:
+    """BRTI ticks from fetch_brti_history.py output, keyed by asset.
+
+    Rows are {"asset": "BTC", "time": <epoch ms>, "value": <price>}; a dump
+    with no asset column (single-asset fetch) lands in the "default" bucket.
+    """
+    out = {}
+    for line in open(path):
+        if not line.strip():
+            continue
+        d = json.loads(line)
+        out.setdefault(d.get("asset") or "default", []).append(
+            (float(d["time"]) / 1000.0, float(d["value"])))
+    for ticks in out.values():
+        ticks.sort()
+    return out
+
+
+def index_spot_at(ticks: dict, asset: str, ts: float, tol: float = 45.0):
+    """Nearest settlement-index price at ts, or None outside the tolerance."""
+    arr = ticks.get(asset) or ticks.get("default")
+    if not arr:
+        return None
+    i = bisect.bisect_left(arr, (ts,))
+    best = None
+    for j in (i - 1, i):
+        if 0 <= j < len(arr) and (best is None
+                                  or abs(arr[j][0] - ts) < abs(best[0] - ts)):
+            best = arr[j]
+    return best[1] if best is not None and abs(best[0] - ts) <= tol else None
+
+
+def row_fair(row: dict, index=None) -> tuple:
+    """(fair, source) for a row.
+
+    With index ticks loaded the fair is recomputed from the venue's own
+    settlement index (BRTI) with the same model (binance_feed.prob_above,
+    the function the collector prices with). Measured 2026-11-22: the
+    collector's composite spot feed (median of Binance/Coinbase/OKX/Kraken)
+    sat $118-149 above BRTI at every timestamp -- BRTI's constituents are
+    Coinbase/Kraken/Gemini/etc., and Binance/OKX are not constituents, so
+    the feed-priced fair carried a persistent ~22bps basis that inflated
+    every 15M fair by tens of cents (the feed booked an 11.9c gap where the
+    index priced 7.5c). shortcut: the vol input (sigma_min) stays the feed's
+    estimate -- only the spot level is repaired; upgrade when a BRTI-implied
+    vol estimator exists.
+    """
+    if index is None:
+        return float(row["fair"]), "feed"
+    from binance_feed import prob_above
+    px = index_spot_at(index, row.get("asset", "BTC"), row_ts(row))
+    if px is None:
+        return float(row["fair"]), "feed"
+    fair = prob_above(px, float(row["strike"]), float(row["sigma_min"]),
+                      float(row["minutes_left"]))
+    if fair != fair:  # NaN
+        return float(row["fair"]), "feed"
+    return fair, "index"
+
+
 def row_ts(row: dict) -> float:
     return datetime.fromisoformat(row["ts"].replace("Z", "+00:00")).timestamp()
 
@@ -53,7 +123,7 @@ def quote(row: dict, venue: str) -> tuple:
     return float(bid), float(ask), float(mid)
 
 
-def entry_row(rows: list, cfg) -> dict:
+def entry_row(rows: list, cfg, index=None) -> dict:
     """First row per window where the rule fires (as eval_cfg does: .first())."""
     for row in sorted(rows, key=row_ts):
         q = quote(row, cfg.venue)
@@ -66,7 +136,8 @@ def entry_row(rows: list, cfg) -> dict:
             continue
         if not (cfg.band_lo <= ask * 100.0 <= cfg.band_hi):
             continue
-        if (float(row["fair"]) - ask) * 100.0 < cfg.gate:
+        fair, _src = row_fair(row, index)
+        if (fair - ask) * 100.0 < cfg.gate:
             continue
         return row
     return None
@@ -85,7 +156,7 @@ def maker_fill(rows: list, entry: dict, resting: float, cfg) -> dict:
     return None
 
 
-def simulate(rows: list, cfg, settle) -> dict:
+def simulate(rows: list, cfg, settle, index=None) -> dict:
     """Replay the rule; settle(event) -> {"result": "yes"/"no"/None}."""
     trades, dropped, halted = [], 0, False
     balance, peak, max_dd = cfg.balance, cfg.balance, 0.0
@@ -94,20 +165,24 @@ def simulate(rows: list, cfg, settle) -> dict:
         # reviewed: only 15M up/down windows belong in this ledger -- the collector's daily ladder rows (KXBTCD/KXETHD, strikes spanning hundreds of dollars, venue mids diverging by up to 30c) are a different market family and must never book a paper trade as if they were the strategy under test (B6)
         if "15M" not in row["event"]:
             continue
+        if index is not None and index_spot_at(index, row.get("asset", "BTC"),
+                                               row_ts(row)) is None:
+            continue  # no settlement-index price at this instant: cannot price honestly
         windows.setdefault(row["event"], []).append(row)
 
     for event, wrows in sorted(windows.items()):
-        entry = entry_row(wrows, cfg)
+        entry = entry_row(wrows, cfg, index)
         if entry is None:
             continue
         if halted:
             dropped += 1  # reviewed: a halted book opens nothing -- that is what a drawdown halt means (B6)
             continue
         q = quote(entry, cfg.venue)
+        fair, fair_source = row_fair(entry, index)
         if cfg.mode == "taker":
             price = q[1]
         else:
-            price = round(float(entry["fair"]) - cfg.maker_offset, 2)
+            price = round(fair - cfg.maker_offset, 2)
             filled_at = maker_fill(wrows, entry, price, cfg)
             if filled_at is None:
                 continue  # no fill, no trade
@@ -142,6 +217,7 @@ def simulate(rows: list, cfg, settle) -> dict:
             "venue": cfg.venue, "minutes_left": entry["minutes_left"],
             "price": price, "contracts": contracts, "fee": fee, "cash": cash,
             "strike": entry.get("strike"), "result": result, "settled": settled,
+            "fair": round(fair, 4), "fair_source": fair_source,
             "realized": round(realized, 4), "unrealized": round(unrealized, 4),
             "balance_after": round(balance, 4), "halted_after": halted,
         })
@@ -200,6 +276,10 @@ def main() -> int:
     ap.add_argument("--dd-halt", type=float, default=0.25, help="halt trading at this drawdown")
     ap.add_argument("--settle", choices=("api", "none"), default="api",
                     help="settle against the Kalshi API or leave every window unrealized")
+    ap.add_argument("--index-spot", default=None,
+                    help="BRTI tick jsonl from scripts/fetch_brti_history.py: reprice "
+                         "every row's fair against the venue's own settlement index "
+                         "instead of the composite feed")
     ap.add_argument("--out", default="/tmp/opencode/paper_trades.jsonl")
     A = ap.parse_args()
 
@@ -209,7 +289,8 @@ def main() -> int:
                                  "maker_offset", "dd_halt")})
     rows = [json.loads(l) for l in open(A.file) if l.strip()]
     settle = settle_api if A.settle == "api" else (lambda ev: {"result": None})
-    out = simulate(rows, cfg, settle)
+    index = load_index_ticks(A.index_spot) if A.index_spot else None
+    out = simulate(rows, cfg, settle, index)
 
     with open(A.out, "w") as fh:
         for t in out["trades"]:
