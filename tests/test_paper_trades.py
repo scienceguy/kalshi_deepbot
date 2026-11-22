@@ -110,6 +110,16 @@ def test_unaffordable_and_halted_entries_are_dropped():
     assert all(t["halted_after"] for t in halted["trades"][1:])
 
 
+def test_daily_ladder_events_are_never_booked():
+    # a ladder row that passes every other filter must still be ignored: the
+    # collector's daily "above" ladders are a different market family
+    ladder = row("KXBTCD-26NOV2120", (T0 + timedelta(minutes=5)).isoformat(),
+                 0.889, 0.90, 0.94, 59899.99, 11.0)
+    out = pt.simulate([window(ts=T0 + timedelta(minutes=5)), ladder], cfg(),
+                      lambda ev: {"result": "yes"})
+    assert [t["event"] for t in out["trades"]] == [EV]
+
+
 def test_minutes_elapsed_matches_the_sweeps_minute_column():
     assert pt.minutes_elapsed(14.9) == 0
     assert pt.minutes_elapsed(11.0) == 4

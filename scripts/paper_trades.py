@@ -91,6 +91,9 @@ def simulate(rows: list, cfg, settle) -> dict:
     balance, peak, max_dd = cfg.balance, cfg.balance, 0.0
     windows = {}
     for row in rows:
+        # reviewed: only 15M up/down windows belong in this ledger -- the collector's daily ladder rows (KXBTCD/KXETHD, strikes spanning hundreds of dollars, venue mids diverging by up to 30c) are a different market family and must never book a paper trade as if they were the strategy under test (B6)
+        if "15M" not in row["event"]:
+            continue
         windows.setdefault(row["event"], []).append(row)
 
     for event, wrows in sorted(windows.items()):
