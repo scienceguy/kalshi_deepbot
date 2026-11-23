@@ -92,16 +92,13 @@ def _env_str(name, default):
 
 
 def _default_allow_no_buys(no_only: bool, dry_run: bool, configured: str) -> bool:
-    """NO buys are off unless explicitly configured; NO_ONLY turns them on in dry mode only.
-
-    T15-03 fixed and tested the NO-side floor on all four (side, price)
-    corners, so dry mode may buy NO without an explicit opt-in. A live run
-    must set ALLOW_NO_BUYS after recorded human approval -- the dry default
-    must never be inherited by DRY_RUN=false.
+    """NO buys are off unless explicitly configured; v17 keeps ALLOW_NO_BUYS off
+    until T17-03 verifies the NO-side floor (F-04) with recorded human approval.
+    NO_ONLY and dry_run must not turn ALLOW_NO_BUYS on by default.
     """
     if configured:
         return _env_bool("ALLOW_NO_BUYS", False)
-    return no_only and dry_run
+    return False
 
 # ═════════════════════════════════════════════════════════════════════
 # DATA DIRECTORY (V1: SUPERBOT_DATA_DIR isolation)

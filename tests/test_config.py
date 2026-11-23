@@ -243,15 +243,16 @@ def test_entry_window_consistent_with_band_evidence(monkeypatch):
     assert cfg.ENTRY_BAND_MAX == 99
 
 
-def test_allow_no_buys_defaults_on_only_in_dry_run():
-    """T15-03 fixed the NO-side floor, so NO entries default on in dry mode.
+def test_allow_no_buys_defaults_off_until_approved():
+    """v17 policy: ALLOW_NO_BUYS stays OFF when unset until T17-03 passes.
 
-    A live run must set ALLOW_NO_BUYS explicitly after recorded human approval,
-    so the dry-only default must never leak into DRY_RUN=false. An explicit
-    setting always wins.
+    NO buys are off unless explicitly configured. NO_ONLY and dry_run must not
+    turn ALLOW_NO_BUYS on by default, because NO-side entry must remain gated
+    until T17-03 verifies the NO-side floor (F-04) with recorded human
+    approval. An explicit setting always wins.
     """
     from config import _default_allow_no_buys
-    assert _default_allow_no_buys(True, True, "") is True
+    assert _default_allow_no_buys(True, True, "") is False
     assert _default_allow_no_buys(True, False, "") is False
     assert _default_allow_no_buys(False, True, "") is False
     assert _default_allow_no_buys(True, True, "false") is False
