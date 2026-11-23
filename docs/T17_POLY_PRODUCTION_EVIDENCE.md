@@ -283,6 +283,30 @@ for m in sorted(updown, key=lambda row: row.get('slug') or ''):
 PY
 ```
 
+## Polymarket fee schedule (from docs.polymarket.com/trading/fees)
+
+Fetched `2026-11-23` from the public documentation (no authentication).
+
+- Taker fee formula: `fee = C * feeRate * p * (1 - p)` where C = shares traded
+  and p = share price. Makers are never charged; only takers pay.
+- Fees rounded to 5 decimal places; smallest charged fee is 0.00001 USDC.
+- Fee peaks at 50% probability (p = 0.50) and decreases symmetrically toward
+  both extremes.
+
+| Category | Taker Fee Rate | Maker Fee Rate |
+|---|---|---|
+| Crypto - BTC 5-minute and 15-minute up/down | 0.05 | 0 |
+| Crypto - all other markets | 0.01 | 0 |
+
+For the BTC 15m Up/Down target market, `feeRate = 0.05`. Per-contract taker
+fee at price p is `0.05 * p * (1 - p)` USDC:
+- p = 0.05 -> 0.002375 USDC (~0.24c per contract)
+- p = 0.50 -> 0.0125 USDC (~1.25c per contract)
+- p = 0.95 -> 0.002375 USDC (~0.24c per contract)
+
+This per-contract fee is a real cost the T17-08 NO-only study must deduct from
+gross NO EV. It is distinct from the account-specific tier proof gap below.
+
 ## Gaps
 
 1. No current 4h market object was returned, so 4h status flags, index, tick,
@@ -295,7 +319,49 @@ PY
 3. The market-level `feeCoefficient=0.095` does not establish the fee tier
    applicable to any account. Account-tier proof remains open because this
    assignment prohibited authentication and order previews.
-4. Order-type verification, configuration changes, fee probes, and other
+4. Kalshi fee schedule captured via websearch
+   (https://kalshi.com/fee-schedule): per-contract taker fees are not a flat
+   percentage - they peak near p = 0.50 and drop toward 0/100 cents.
+
+   | Price per contract | Fee per contract | Fee per 100 contracts |
+   |---|---|---|
+   | $0.01 | $0.01 | $0.07 |
+   | $0.05 | $0.01 | $0.34 |
+   | $0.10 | $0.01 | $0.63 |
+   | $0.15 | $0.01 | $0.90 |
+   | $0.20 | $0.02 | $1.12 |
+   | $0.25 | $0.02 | $1.32 |
+   | $0.30 | $0.02 | $1.47 |
+   | $0.35 | $0.02 | $1.60 |
+   | $0.40 | $0.02 | $1.68 |
+   | $0.45 | $0.02 | $1.74 |
+   | $0.50 | $0.02 | $1.75 |
+   | $0.55 | $0.02 | $1.74 |
+   | $0.60 | $0.02 | $1.68 |
+   | $0.65 | $0.02 | $1.60 |
+   | $0.70 | $0.02 | $1.47 |
+   | $0.75 | $0.02 | $1.32 |
+   | $0.80 | $0.02 | $1.12 |
+   | $0.85 | $0.01 | $0.90 |
+   | $0.90 | $0.01 | $0.63 |
+   | $0.95 | $0.01 | $0.34 |
+   | $0.99 | $0.01 | $0.07 |
+
+   Per-contract Kalshi taker fee at key NO prices:
+   - p = 0.05 -> $0.01 (1c per contract)
+   - p = 0.50 -> $0.02 (2c per contract)
+   - p = 0.95 -> $0.01 (1c per contract)
+
+   As a percentage of trade value: ~0.7% at 1/99, rising to ~3.5% at 50/50.
+   Some series carry additional maker fees or series-specific multipliers; the
+   NO-only taker strategy pays the taker side above. A flat "maker fee" of
+   0.25% per contract applies to certain big-event series, but maker entry is
+   disabled under T17-50.
+
+   Source: https://kalshi.com/fee-schedule and linked CFTC rule filing
+   (rule091222kexdcm003.pdf). HTTP direct fetch returned 429 twice; websearch
+   returned the full schedule.
+5. Order-type verification, configuration changes, fee probes, and other
    T17-01 acceptance items were outside this read-only assignment. This report
    therefore does not close all of T17-01.
 
