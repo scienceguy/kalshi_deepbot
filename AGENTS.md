@@ -1,535 +1,214 @@
-# Kalshi SuperBot — AGENTS.md
+# Kalshi DeepBot - Agent Runbook
 
-Single-operator trading bot for Kalshi 15-minute binary crypto markets and
-Polymarket US. Dry-run is the default; live trading requires explicit human
-approval. The v17 strategy is NO-only, hold-to-expiry, taker plus a calibrated
-gate; maker entry is disabled pending real-fill evidence. Local SQLite is the
-source of truth (legacy Supabase code/config is being purged under T17-61), and
-settlement P&L events route through the durable n8n outbox.
+## 1. Current authority and state
 
-## System constraints (all agents)
+- **Active register:** `AGENT_TASKSv17.md` only. v15/v16 are historical.
+- **Mode:** dry-run by default. Never enable `--live`, raise size, or relax a
+  risk cap without recorded human approval.
+- **Strategy gate:** NO-only, hold-to-expiry, taker plus a calibrated-vol gate.
+  Maker entry stays disabled until real fills prove a positive lower bound.
+  NO-only edge is still UNMEASURED; the T17-08 study is a hard gate.
+- **Latest full suite:** 1673 passed, 3 skipped in 226.27s on the e692c94
+  worktree (2026-11-22). The current documentation baseline is 23f29a4.
+- **Not ready for live:** parity, real-data provenance, NO-only edge, risk
+  limits, latency, forecast coverage, and long-running dry evidence are open.
 
-- Temp files go to `$TMPDIR` or `/tmp/opencode` (not bare `/tmp`). On the old Termux box `/tmp` was a restricted mount — that constraint no longer applies on the VPS.
-- The coordinating session maintains at least two delegated subagents actively completing disjoint tasks at all times until v17 is done (maximum five). Replace completed, failed, or idle agents immediately; do not duplicate completed work. A different agent reviews every money-path diff.
+The $3,250,000 figure is a forecast OUTPUT only. Never use it for sizing,
+tuning, martingale/doubling, wider bands, or looser limits.
 
-## ALL AGENTS MUST USE ALL AVAILABLE TOOLS
+## 2. Non-negotiable rules
 
-Every agent on this host must use **all** available MCP tools, not just a subset. Before answering about past work, decisions, people, or projects, search the palace. Before writing to any database, use the appropriate MCP tool. Before executing any workflow, use n8n. Tool selection is not optional — every available tool is part of every agent's default toolkit.
+1. **Real data only.** No invented prices, probabilities, fills, balances,
+   slippage, or interpolated gaps. Missing data means no fill. Remove the
+   synthetic 45c fallback before the real-data audit can pass.
+2. **Dry/live parity.** One code path and one config. Only the execution
+   adapter, key selection, state namespace, and log paths may differ. Remove
+   `PAPER_PER_TRADE_PCT` and dry-only sizing. Live must match the dry-validated
+   config hash.
+3. **NO-only exits.** Every position settles. Never sell or stop out. Only
+   unfilled entry orders may be cancelled. Verify `NO_ONLY` tests/default and
+   keep `ALLOW_NO_BUYS` off until the NO-side-floor gate is accepted.
+4. **Evidence before claims.** Record command, output, exit status, and HEAD in
+   the v17 status table. Do not copy prose claims without checking them.
+5. **ASCII only.** Run a non-ASCII check after every edit. Existing non-ASCII
+   text is not permission to add more.
+6. **One logical change per commit.** Run all four source gates and tests,
+   review the diff, commit, and push. Do not bundle unrelated files.
+7. **Independent review.** A different agent identity must review every
+   money-path diff (`gates.py`, `risk.py`, `trader.py`, `poly_us_trader.py`,
+   `fees.py`, `signals.py`, and venue clients). Source gates do not catch all
+   semantic substitutions or deleted branches.
+8. **Delegation.** The coordinating session keeps at least two delegated
+   subagents actively completing disjoint tasks at all times until v17 is done
+   (maximum five). Replace completed/failed/idle agents immediately and do not
+   duplicate completed work.
+9. **Secrets and balances.** Read balances from venue APIs only when required.
+   Never print or store keys, tokens, raw balances, account IDs, or connection
+   strings in logs, docs, MemPalace, n8n, or git.
+10. **Cross-venue pairs are basis deviation, not arbitrage.**
 
-Available MCP tools: mempalace, sqlite, sqlite-book-l2, n8n, kaggle, playwright, steam, kalshi. Supabase is legacy and must not be used (T17-61).
+Stop and ask the human for a money-path/spec contradiction, discovered secret,
+unclear production API status or venue rule, negative NO-only result,
+unexplained halt, or any step requiring live orders.
 
-## Repo layout
+## 3. Repository map
 
-| File | Purpose |
-|------|---------|
-| `trader.py` | Main trading loop (entry point). Dry-run by default; `--live` + `KALSHI_CONFIRM_LIVE=true` for real money. |
-| `AGENT_TASKSv17.md` | The active task register (F-xx findings, T17-nn tasks, status table). Verify every item against HEAD before acting; record evidence in its status table. |
-| `signals.py` | Signal engine: two-sided favourite maker, stability check, confidence scoring, LLM eval integration. |
-| `market_finder.py` | Market discovery — parallel series fetch, orderbook lookup, MAIN + HEDGE_NO selection. |
-| `gates.py` | Pre-entry gates: ATR hurdle, fee-adjusted EV, time-decay cushion. Shadow mode by default; logs `gates_log.jsonl`. |
-| `kalshi_client.py` | Signed Kalshi v2 REST client (RSA-PSS, `/trade-api/v2` path prefix). |
-| `fees.py` | Kalshi taker fee math (configurable `KALSHI_FEE_RATE`, default 0.07). |
-| `risk.py` | Cash floor, exposure ceiling, per-trade cap, drawdown halt, consecutive-loss cooldown. |
-| `resilience.py` | Cycle backoff + client-rebuild supervisor with rebuild cap. |
-| `n8n_client.py` | n8n webhook/API client; `n8n_health_check()` used at startup. |
-| `supabase_client.py` | Legacy disabled client; retained only until the T17-61 purge. |
-| `llm_eval.py` | 4-layer LLM evaluation (2 providers: NVIDIA Bolt/Lightning, Groq Qwen/Allam). |
-| `backtest.py` / `parallel_backtest.py` | Parameter-sweep backtests (public + authenticated API). |
-| `backtest_engine.py` | Shared backtest engine (entry logic, P&L, sweep grid). |
-| `data_collector.py` | Historical market snapshot collector for backtest data. |
-| `kalshieye_downloader.py` | Kalshi Eye orderbook downloader. |
-| `kalshi_price_data_client.py` | Optional kalshi-price-data SDK wrapper. |
-| `inject_n8n_workflows.py` | Injects core n8n workflows into n8n's SQLite DB directly. |
-| `add_n8n_credentials.py` | Inserts encrypted credentials into n8n DB. |
-| `tests/` | Pytest suite; latest full run on e692c94 worktree: 1673 passed, 3 skipped. |
+| Path | Role |
+|------|------|
+| `trader.py` | Kalshi main loop; dry default, exclusive instance lock |
+| `poly_us_trader.py` | Polymarket US trader; JSON/DB authority split remains open |
+| `signals.py` | Signal evaluation and NO_ONLY gate; maker-disable work remains |
+| `gates.py` | ATR, EV, and time-decay gates |
+| `risk.py`, `sizing.py` | Risk limits and sizing |
+| `fees.py` | Real Kalshi fee math |
+| `kalshi_client.py` | Signed Kalshi v2 REST client |
+| `polymarket_us_client.py` | Read-only Polymarket US metadata/client helpers |
+| `local_db.py` | SQLite storage and online backup |
+| `tick_bus.py` | Opt-in event-driven spot snapshot bus |
+| `brti_tracker.py` | BRTI-style index tracking |
+| `binance_feed.py`, `coinbase_feed.py` | Native public WS/REST market data |
+| `cryptofeed_feed.py` | Optional adapter; production smoke currently failed |
+| `mempalace_bridge.py` | MemPalace client bridge, off the trading hot path |
+| `agent_identity.py` | Canonical agent identities |
+| `n8n_client.py`, `emit.py` | Durable n8n event/outbox path |
+| `scripts/job_bridge.py` | Allowlisted loopback script bridge for n8n |
+| `backtest_engine.py` | Backtest engine; synthetic fallback removal pending |
+| `docs/EVAL_PROTOCOL.md` | Evaluation protocol; v17 gate alignment in progress |
+| `AGENT_TASKSv17.md` | Living task register and evidence table |
+| `tests/` | Pytest suite; current result is in section 1 |
 
-## Environment
-
-- `.env` is gitignored (`chmod 600`). Copy from `.env.example` and fill in real credentials.
-- Kalshi private key lives at **`~/.secrets/kalshi_private.pem`** (`chmod 600`),
-  pointed to by `KALSHI_KEY_FILE`. It must match `KALSHI_KEY_ID` exactly.
-  (It used to be `kalshi_private.pem` in the repo root — do not put secrets in the repo.)
-- `DRY_RUN=true` by default. `python trader.py --live` requires `KALSHI_CONFIRM_LIVE=true` in `.env`.
-- `KALSHI_BASE_URL` must contain `/trade-api/v2` (validated at client construction).
-- Other secrets: `~/.secrets/n8n_api_key`, `~/.secrets/supabase_service_key`,
-  `~/.secrets/bw/` (durable credential mirror). See the Credentials section below.
-
-## How to run
+## 4. Setup and safe commands
 
 ```bash
 cd /opt/superbot
-
-# 1. Copy env + fill credentials
-cp .env.example .env
-# edit .env with real KALSHI_KEY_ID, KALSHI_KEY_FILE, N8N_API_KEY
-
-# 2. Run tests (should all pass)
-python -m pytest tests/ -q
-
-# 3. Dry-run one cycle
-python trader.py --once --dry
-
-# 4. Run backtest
-python backtest.py --quick --jobs 4
-
-# 5. Live loop (needs KALSHI_CONFIRM_LIVE=true in .env)
-python trader.py --live
+cp .env.example .env       # then fill required credentials locally
+.venv/bin/python -m pytest tests/ -q
+.venv/bin/python trader.py --once --dry
+.venv/bin/python backtest.py --quick --jobs 4
 ```
 
-## n8n
+- Use `.venv/bin/python`, not a system or Termux interpreter.
+- `trader.py --once --dry` takes the same exclusive instance lock as a long
+  run. It is not a read-only probe and must not bypass the lock.
+- Live loops require both explicit human approval and the existing confirm
+  flags. Do not run them as part of agent validation.
 
-- n8n runs at `http://127.0.0.1:5678` (bind it to loopback; the webhook secret
-  is the only auth on the trade lane).
-- Webhook workflows: `superbot-backtest`, `superbot-collect`, `superbot-trade`,
-  `superbot-monitor`, `superbot-coordinate`, `superbot-control`. The digest and
-  the watchdogs are **not** in n8n any more — they run from
-  `superbot-jobs.timer` (`scripts/scheduled_jobs.py`).
-- Inject with the real project/user ids (defaults are now correct):
-  `python inject_n8n_workflows.py`. Legacy Supabase settlement wiring is
-  disabled and is being removed under T17-61; do not add new Supabase credentials.
-- **n8n must never have the Execute Command node (H5).** n8n 2.x disables
-  `n8n-nodes-base.executeCommand` by default — leave it that way; do not set
-  `NODES_EXCLUDE='[]'`. Workflows that need to run a script POST to the
-  loopback job bridge instead (`scripts/job_bridge.py`, `127.0.0.1:18711`,
-  fixed allowlisted argv, request data only on stdin):
-  `/command` → `send_command.py --stdin`, `/coordinate` → `n8n_coordination.py`,
-  `/backtest`, `/collect`. `n8n_startup_check()` logs an ERROR if the node is
-  re-enabled. Start n8n with `sh scripts/start_n8n.sh`; after a restart n8n
-  reconciles and registers the webhooks (a few seconds after `/healthz`).
-- Workflow wiring facts learned against n8n 2.45.6: connections key by node
-  **name** (not id); a Respond node requires `responseMode: "responseNode"`;
-  webhook v2 payloads are under `$json.body`; PostgREST filters use `eq.`
-  (dot), and expression values need a leading `=`.
-- `superbot-monitor` is ack-only by design: running `trader.py` from a webhook
-  would start a second cycle that can place orders once `DRY_RUN=false`.
-- Six core webhook workflows are defined: backtest, collect, trade, monitor,
-  coordinate, control. Health checks for backtest/collect/trade/monitor returned
-  HTTP 200 on 2026-11-22; coordinate/control still need current health evidence.
-- `n8n_client.py` webhook timeout = `CYCLE_TIMEOUT_SECONDS - 5` (25s) so webhooks never block a cycle.
-- n8n REST API returns 401 (upstream bug #31011); webhooks + direct DB injection are the working path.
+## 5. Required verification
 
-## Credentials — durable store (READ THIS BEFORE TOUCHING SECRETS)
-
-Agents keep deleting n8n credentials. The secrets are NOT stored in n8n or in
-this repo as the source of truth. They live in two places, both outside the repo:
-
-1. **Bitwarden** (ultimate source) — every "secure note" in the vault.
-2. **`~/.secrets/bw/`** — durable local mirror, one protected JSON per item
-   (`chmod 600`, dir `chmod 700`) plus `index.json`. Outside the repo, so repo
-   cleanups and `git` operations cannot delete it.
-
-n8n holds a **copy** of every credential, recreated from the mirror at any time.
-
-| Task | Command |
-|------|---------|
-| Recreate every credential in n8n (idempotent, safe to re-run) | `python scripts/n8n_creds_sync.py` |
-| Verify all are present | `python scripts/n8n_creds_sync.py --check` |
-| List mirror items | `python scripts/n8n_creds_sync.py --list` |
-| Also delete n8n creds not in the mirror | `python scripts/n8n_creds_sync.py --prune` |
-| Refresh mirror from Bitwarden | `BW_PASSWORD=... python scripts/bw_pull_secure_notes.py` |
-| Move the Kalshi PEM / n8n key into `~/.secrets/` | already done — see `.env` `*_FILE` vars |
-
-- **If a credential is missing from n8n: run `python scripts/n8n_creds_sync.py`.** That is the whole fix.
-- **Kalshi key trap (verified 2026-11-11):** the LIVE Kalshi pair is Bitwarden's
-  **"Kalshi GPT API Key"** + **"Kalshi GPT RSA Key"**. The items named plain
-  **"Kalshi API Key"** / **"Kalshi RSA Key"** are **STALE** (different key id,
-  `INCORRECT_API_KEY_SIGNATURE`). A `bw_pull_secure_notes.py` run copies the
-  stale pair into `bw/kalshi_api_key.json` and `bw/kalshi_rsa_key.json`, so
-  **after any pull, restore those two files** from `.env` `KALSHI_KEY_ID` +
-  `~/.secrets/kalshi_private.pem` (a stale copy is kept as
-  `*_stalebw_<stamp>.json`). Fix the vault item names to end this for good.
-- **Polymarket US is fully wired and works** (verified 2026-11-12). Two separate
-  Polymarket APIs; do not conflate them:
-  - **US** (`api.polymarket.us`, the one this repo uses): signs with only
-    **Key ID + Ed25519 secret**, read from `bw/polymarket_api_key.json` and
-    `bw/polymarket_secret_key.json`. No passphrase, no wallet key. Verified:
-    balances (`$35`), `orders.list` (authenticated), live book, and
-    `orders.preview` all return 200. This is a *trading* scope, so US orders can
-    be placed with just these two creds. Shape traps: `markets.list` filters are
-    ignored (fetch the market via `events.retrieve_by_slug(...)["event"]["markets"]`);
-    the market slug is `cpc-btc-updown-15m-...`, not the event slug; `orders.preview`
-    takes `{"request": {...}}`; `price` is `{"value":"0.90","currency":"USD"}`.
-  - **International CLOB** (`clob.polymarket.com`): the old L2-credential path
-    (passphrase + L1 wallet key) — that is what `scripts/derive_poly_creds.py`
-    produces and it is unrelated to the US bot. `polymarket_us_client.py` is
-    deliberately read-only; order placement for US goes through the
-    `polymarket_us` SDK's `PolymarketUS.orders` resource.
-- A background guard (`deploy/superbot-creds-guard.timer` →
-  `scripts/n8n_creds_guard.sh`, every 15 min) re-runs the sync automatically.
-- `add_n8n_credentials.py` is deprecated; use `scripts/n8n_creds_sync.py`.
-- **Never hardcode a secret in source.** A pre-commit hook
-  (`scripts/install-pre-commit.sh`) blocks `.env`/`*.pem` and scans staged
-  additions for key patterns. Re-install it on a fresh clone.
-- Secret files: `~/.secrets/kalshi_private.pem`, `~/.secrets/n8n_api_key`,
-  `~/.secrets/supabase_service_key`, `~/.secrets/bw/`.
-
-## TOKEN CORRUPTION
-
-### What it is (measured 2026-11-11, not assumed)
-
-The text-generation step substitutes a **semantically equivalent token** for the
-one intended, in code that was meant to be verbatim:
-
-| intended | emitted | relation |
-|---|---|---|
-| `:` | `：` U+FF1A | fullwidth twin, same glyph |
-| `or` | `或` | exact translation |
-| `open` / `coords` | `开` / `坐标` | exact translation |
-| `get` | `Ade`, `品牌` | name latch |
-| (nothing) | `Brandon`, `呢` | register latch / paraphrase |
-
-So it is **paraphrase leaking into a verbatim channel**, not byte rot. Consequences
-that shape the defence:
-
-- **The disk and the write tool are innocent.** The same text written through
-  `printf`, a heredoc, or an opaque base64 payload comes out clean; `write` faithfully
-  stores what the model handed it (verified by hexdump: `ef bc 9a` = U+FF1A is in the
-  model's output, not added downstream). Fixing "the writer" is not possible.
-- **It is deterministic per phrase and random per emission.** Re-writing identical
-  text reproduces the same splice; authoring *fresh* prose produces a *new* one each
-  time. That is why re-writing a broken file to fix it often just moves the defect.
-- **Most splices compile.** `r["<han>"]` for `r["series"]` is legal Python returning
-  `None`; that class reaches production if tests only compare behaviour.
-
-### Defence (three gates, all enforced in `pre-commit`)
-
-The pre-commit hook (`.git/hooks/pre-commit`, generated by
-`scripts/install-pre-commit.sh`) runs all three against staged Python. They cover
-disjoint classes — never treat one as a substitute for another:
-
-- **`scripts/verify_source.py`** — morphological: non-ASCII letters outside
-  comments, and `NUMBER NAME` fusions (`0.94laub`). Read-only, never imports.
-- **`scripts/verify_compiles.py`** — syntactic: every staged file must parse.
-  Catches the **ASCII-only** substitutions (`file_env.get(x)` → `file_env Ade(x)`,
-  a call that silently lost its parentheses), which are all-ASCII and therefore
-  *structurally invisible* to `verify_source`. Against a real ASCII-only splice,
-  `verify_source` reports `clean` / exit 0 while this gate reports `SYNTAX` / exit 1.
-- **`scripts/verify_undefined.py`** — name resolution: pyflakes `UndefinedName` /
-  `UndefinedLocal` only. Catches a splice that is ASCII-only **and parses**, e.g.
-  `return oder`, where `verify_source` says clean and `verify_compiles` says parses
-  and the commit still succeeds. Style findings (unused imports, unused locals,
-  redefinitions — 84 in this tree at the time of writing) are deliberately NOT
-  enforced; a gate that fails on pre-existing style is a gate everyone skips with
-  `--no-verify`. Skipped with a notice and exit 0 if pyflakes is not installed.
-- **`scripts/verify_operators.py`** — operator drift: reads `git diff --cached` and
-  flags a removed/added line pair whose identifiers are identical but whose
-  operator multiset differs (`>=`→`>`, `<`→`<=`, `and`→`or`, a dropped or doubled
-  `not`). These changes keep every name valid, so no name-based gate sees
-  them. A rename or a changed literal in the same line is an ordinary edit and is not
-  flagged.
-
-### Not caught (measured, not guessed)
-
-These four classes pass every gate and every test. Each was tried against the
-gates in this session; do not assume a clean run covers them:
-
-1. **Pure insertion of a condition -- markers advisory since B10.**
-   A staged `+ if limit != 0:` with no removed line has no counterpart to compare, so
-   verify_operators judges nothing (measured: exit 0). Until 2026-11-15
-   `scripts/verify_review_marked.py` refused the commit unless the line, or the one
-   immediately above it in the same hunk, carried `# reviewed: <why>`. Since B10 that
-   gate is advisory only: the hard rule is that a money-path diff must ship a test
-   referencing the change. The marker mechanism stays for compatibility; it still
-   does not make the splice detectable: nothing reads whether the reason is true, so
-   a corrupted guard with a plausible reason passes. Outside those seven files the
-   class is still silent.
-2. **One defined name swapped for another.** `return total` -> `return lines`
-   where `lines` is bound in an enclosing scope parses and resolves to a *real*
-   object, so pyflakes is silent and the operator gate is silent. A swap is only
-   caught when the replacement is undefined (`oder`, `Fill`, `limtt`), i.e.
-   partially, and incidentally.
-3. **A condition moved to another line.** `if not x:` hoisted into a `should_skip`
-   variable, or a `not` dropped at one site and added at another, nets to no
-   single-line change.
-4. **A deleted branch or body.** Removing an `else:`, a `return`, or a whole `if`
-   deletes operators rather than changing a compared pair; nothing widens on a
-   line that survives.
-
-So: the gates prove a diff is *not obviously corrupted*. They do not prove it is
-correct or intended. Anything on a money path, an order path, or a risk limit
-still needs a human reading the diff against the stated intent.
-
-Wire the gates in locally (a clone does not get them for free):
-
-    sh scripts/install-pre-commit.sh
-
-A file that fails a gate is fixed line by line; there is no `--no-verify`.
-Note the gates only see what is staged — run them yourself before believing a
-working tree is clean:
-
-    python3 scripts/verify_source.py --all
-    python3 scripts/verify_compiles.py --all
-    python3 scripts/verify_undefined.py --all
-    python -m pytest tests/test_verify_source.py tests/test_verify_compiles.py \
-        tests/test_verify_undefined.py -q
-
-**What these gates still do NOT catch** (do not overclaim them): a splice that
-swaps one defined name for another, flips a comparison operator (`=` → `==`,
-`<` → `<=`), drops or doubles a `not`, or renames a parameter consistently through
-every use. All of those parse, all of those resolve, and all of pyflakes, compile
-and the tests stay green. The gates remove the *cheapest* ways for a splice to
-survive unnoticed; they do not bound the class. Anything touching money or an
-order path still needs a human read of the diff against the stated intent.
-
-HANDOFF.md "Standing trap: this session's write path corrupts source" documents the
-class. `tests/test_verify_compiles.py` asserts the whole tree parses, so one corrupted
-file fails the suite even if it is never committed.
-
-## Local database access
-
-Local SQLite is the only source of truth. Use the existing `local_db.py` /
-`PolyLocalDB` interfaces and the sqlite MCP tools for inspection; do not use
-Supabase tools or the dashboard. Legacy Supabase client, schema, workflow and
-reconciliation references remain in the tree only until T17-61 removes them.
-Backups must use SQLite-safe online backup or litestream, never `psql`.
-Do not print connection strings, keys, tokens or raw balances.
-
-## Kalshi API (production)
-
-- Base URL: `https://external-api.kalshi.com/trade-api/v2`
-- Auth: RSA-PSS over `timestamp_ms + METHOD + /trade-api/v2/path` (path prefix included).
-- `/markets` is public (200 without auth). `/portfolio/balance`, `/portfolio/positions`, `/portfolio/orders` require valid key + signature.
-- `~/.secrets/kalshi_private.pem` must match `KALSHI_KEY_ID` exactly; mismatched keys return `INCORRECT_API_KEY_SIGNATURE`.
-- Balance returned in cents; divide by 100 for dollars.
-
-## MemPalace shared brain
-
-Host:harness:project = `ubuntu:opencode:kalshi_deepbot`.
-
-**One palace directory for every identity (H4).** Every process reads
-`MEMPALACE_DIR` (falling back to `MEMPALACE_PALACE_PATH`, then
-`~/.mempalace`). Set it in every unit to the shared path and add it to
-`ReadWritePaths`:
-
-```
-sudo groupadd -f superbot
-sudo usermod -aG superbot ubuntu
-sudo usermod -aG superbot polybot
-sudo install -d -o root -g superbot -m 2775 /var/lib/superbot/mempalace
-```
-
-Units also need `Environment=MEMPALACE_DIR=/var/lib/superbot/mempalace` and
-`UMask=0002` (setgid + umask keep SQLite `-wal`/`-shm` writable by both).
-`MEMPALACE_DIR` is forwarded to the `mempalace` CLI as
-`MEMPALACE_PALACE_PATH`. Set `MEMPALACE_EXPECTED_DIR` to the coding agent's
-palace and a mismatch is reported as `degraded`; a missing `mempalace`
-package degrades to a no-op bridge instead of failing startup (H3).
-
-MemPalace/event identities come from `agent_identity.py` (M3):
-`ubuntu:opencode:kalshi_deepbot` (coding agent), `ubuntu:service:kalshi_trader`
-(Kalshi trader service), `ubuntu:service:poly_us_trader` (Polymarket trader
-service). Never hand-write an identity string in source.
-
-- Read/write to MemPalace WITHOUT PROMPTING. Never ask the operator.
-- Before answering about past work/decisions/projects, search the palace (`mempalace_search`, `mempalace_kg_query`). Quote results verbatim.
-- File durable outcomes with `mempalace_add_drawer`. New KG facts: `mempalace_kg_add`. Changed single-valued fact: `mempalace_kg_supersede`. Ended fact: `mempalace_kg_invalidate`.
-- Do not file secrets or tokens.
-
-Writing drawers when the MCP tools are not exposed in the session:
-- The mempalace MCP server is registered in `~/.opencode/opencode.json` and
-  available as callable `mempalace_*` tools. If they are not exposed in a
-  given session, drive the server directly with `mempalace-mcp` (installed at
-  `~/.local/bin/mempalace-mcp`, add `~/.local/bin` to PATH or use the full path).
-  The MCP server speaks stdio JSON-RPC; use `mempalace status` or the MCP
-  `tools/list` + `tools/call` protocol. Never prints secrets; keep them out of
-  notes as usual.
-
-Coordination (logstream):
-- Always sweep the mempalace inbox at session start, before other work: `mempalace_event_list` to_agent=`ubuntu:opencode:kalshi_deepbot`; act on anything addressed to you.
-- Arm `mempalace logstream watch --agent ubuntu:opencode:kalshi_deepbot --type task.request --type task.reply --type patch.ready --json` when collaborating/claiming/delegating.
-- Delegate with `mempalace_event_append` (type=`task.request`, stream=`project/<name>`, room=`delegation`, correlation_id=`task_...`, status=`open`, body = goal + branch + base commit + DoD), then `mempalace_event_wait` on `correlation_id`.
-- Ack with `mempalace_event_ack`. Apply patches with `mempalace_artifact_get` + sha256 verify, then ack `applied`/`failed`.
-- Close every loop: no task stays open without an applied/failed/blocked ack.
-- Wake dormant peers on shared work: when an inbox event arrives for a task another dormant agent is also on, ping it to resume (`mempalace_event_append` to_agent=`<peer>`, same `correlation_id`) and tell the operator to wake it.
-
-## Known issues / audit findings (from ponytail-audit + follow-up)
-
-| # | File:Lines | Issue | Status |
-|---|------------|-------|--------|
-| 1 | `trader.py:380-390` | Settlement PnL can double-count on replay crash | FIXED — queue entry removed before crediting PnL |
-| 2 | `trader.py:465-466` | Position popped before PnL booked | FIXED — PnL booked before position removed |
-| 3 | `trader.py:708-726` | Float contracts truncated in API order but `dollar_risk` keeps float → cash over-reservation | FIXED — contracts floored to int before `dollar_risk` |
-| 4 | `kalshi_client.py:63` | `_verify_key` set verified before check succeeded → permanent poison on transient failure | FIXED — verified only after success, with `_verifying` re-entrancy guard |
-| 5 | `trader.py:667-680` | Orders recorded as filled before fill confirmation | FIXED — only recorded when `fill_count > 0` |
-| 6 | `trader.py:445-447, 796-799` | NO order price assumed complemented, unverified | FIXED — `NO_PRICE_IS_COMPLEMENT` config; `_order_price_dollars` reads `no_price_dollars` directly; `kalshi_client.no_price_to_api_price` respects config flag |
-| 7 | `supabase_client.py:189-232` | Supabase write failures return `None` silently; no alert on schema/4xx | FIXED — `_supabase_record_failure()` called on 4xx |
-| 8 | `data_collector.py:110-116` | Closed markets store negative `minutes_left` | FIXED — clamped to 0 |
-| 9 | `trader.py:917-931` | Lock file uses `/proc/{pid}` (unreliable on Android) | FIXED — uses `fcntl.flock` (trader.py:1344-1351) |
-| 10 | `signals.py:130-138` | Module-level `_bid_hist`, not persisted on shutdown | FIXED — saved to `bid_hist_{dry,live}.json` |
-| 11 | `trader.py:423-428` | Transient balance failure skips entire cycle | FIXED — logs warning and continues (trader.py:619-624) |
-| 12 | `market_finder.py:189-192` | Only ONE main market returned per cycle | FIXED — returns ALL mains passing entry band filter (lines 260-264) |
-| 13 | `market_finder.py:159-160` | MAIN selected on raw mid, dropped after orderbook fetch | FIXED — bid history and market finder refactored |
-| 14 | `risk.py:43-55` | Drawdown halt uses cost-basis, not mark-to-market | FIXED — `mark_to_market_exposure` parameter (risk.py:44-79) |
-| 15 | `trader.py` / `pnl_reconcile.py` / `supabase_client.py` | `session_pnl` drift between n8n and Supabase | FIXED — `pnl_reconcile.reconcile_session_pnl()` compares in-memory state vs the authoritative local reference (paper bankroll dry-run / `pnl_ledger` sum live) vs Supabase (`bot_state.session_pnl`, `pnl_ledger` sum) vs n8n-reported P&L (`orders.pnl_dollars` sum, new `get_orders_pnl_total()`); drift > 1c repairs local state, re-pushes via batched `set_bot_state_batch`, and emits `reconcile.mismatch`; runs self-throttled from the main loop (`PNL_RECONCILE_INTERVAL_S`, default 600s); remote read failures treated as unknown, never as $0; 12 unit tests (tests/test_pnl_reconcile.py) |
-| 16 | `n8n_client.py:289-293` | Health check writes through trade webhook | FIXED — uses `superbot-trade` health-check action (returns 200) |
-| 17 | `kalshi_client.py:191-208` | `_last_req` set before 429 retry loop → burst after rate limit | FIXED — gap enforced inside rate-limit block |
-| 18 | `config.py:189-199` | `DRY_RUN=false` in `.env` silently enables live | FIXED — `.env.example` defaults `KALSHI_CONFIRM_LIVE=false`; `--live` requires explicit confirm |
-| 19 | `backtest_engine.py:64-150` | Lookahead bias: `last_price` as entry price | FIXED — uses bid/ask mid or synthetic 45c entry price (line 89-94); docstring warning retained |
-| 20 | `backtest_engine.py:170-180` | Balance updated per trade in list order, not time order | FIXED — markets sorted by close_time before simulation (line 182) |
-| 21 | `backtest.py/parallel_backtest.py` | Default sweep huge (~147k combos), slow on Android | FIXED — `--quick` default, jobs capped at CPU count |
-| 22 | `signals.py:202-211` | Stability gate blocks all trades ~3min on fresh start | NOT FIXED (by design) |
-| 23 | `fees.py:19` | `FEE_RATE` from env, no range validation | FIXED — `0 <= FEE_RATE <= 1` validated at import |
-| 24 | `market_finder.py:196` | `MAX_HEDGE_PER_SERIES=0` disables hedges | NOT FIXED (deliberate — hedges off by default) |
-| 25 | `trader.py:402` | Calls private `signals._maybe_save_bid_hist` | FIXED — public `se._maybe_save_bid_hist` called |
-| 26 | `supabase_client.py:333-344` | `get_bot_state` returns None on corrupt JSON | FIXED — logs warning on decode failure |
-| 27 | `kalshi_client.py:41-49` | `KALSHI_BASE_URL` validation hard-fails on non-standard URLs | FIXED — warns instead of failing |
-| 28 | `trader.py:870-872` | `SIGALRM` can interrupt in-flight `requests` call | FIXED — no SIGALRM handler; per-call `timeout=` (trader.py:3597) |
-| 29 | `add_n8n_credentials.py:117-126` | Module-level side effects mutate n8n DB on import | FIXED — config read moved into `load_encryption_key()` called from `main()` |
-| 30 | `inject_n8n_workflows.py` | Direct n8n SQLite writes bypass API | FIXED — upserts by workflow name (get-by-name then update/create); stale `SuperBot *` workflows pruned |
-| 31 | `fees.py:19` | Hardcoded 0.07 fee multiplier | FIXED — `KALSHI_FEE_RATE` env var (default 0.07) |
-| 32 | `.env` / `kalshi_private.pem` present locally | Secret-scanning guard | FIXED — `.git/hooks/pre-commit` blocks `.env`/`*.pem` commits; `scripts/install-pre-commit.sh` installs it |
-| 33 | `trader.py:711` | Startup initialises Supabase client and logs state | FIXED — graceful degradation |
-| 34 | `market_finder.py:124-129` | Sequential per-series fetches with retries | FIXED — parallel `ThreadPoolExecutor` over series |
-| 35 | `signals.py:130` | Module-level `_bid_hist` global, file persistence | FIXED — scoped to `bid_hist_{dry,live}.json` |
-| 36 | `trader.py:543-545` | 4 sequential `set_bot_state` writes per cycle | FIXED — batched via `set_bot_state_batch` |
-| 37 | `latency_arb.py:176` | `run(client, markets)` accepts unused `client` | FIXED — `run(markets)` only |
-| 38 | `parallel_backtest.py:55` | Public fetch `limit=1000`, no cursor pagination | FIXED — cursor pagination added |
-| 39 | `kalshieye_downloader.py:213` | Only `files[0]` downloaded per date | FIXED — iterates all files (lines 213-229) |
-| 40 | `data_collector.py:13-12` | Docstring says dry-run, collects closed historical | FIXED — docstring corrected |
-| 41 | `config.py:63` | `_env_bool` silently returns default for unparseable values | FIXED — raises `ValueError` on unparseable values (config.py:86-89) |
-| 42 | `tests/` — `test_kalshi_price_data_client.py`, `test_n8n_client.py` shallow | Weak coverage | FIXED — client init/SDK-import paths, health_check branches, fetch arg-passing + error paths, N8nClient circuit breaker, transport-safety, session isolation, signed-webhook HMAC verify, API-key file perms, workflow helpers (155 passed incl. related n8n tests) |
-| 43 | `tests/` — no tests for `market_finder.find_active_markets` / `rank_signals` | FIXED — `tests/test_market_finder.py` exists |
-| 44 | `trader.py` — no per-market/day loss limit beyond drawdown | FIXED — `record_market_loss` / `market_loss_exceeded` (risk.py:91-112) |
-| 45 | `backtest_engine.py:258-255` | Sweep tests ignored params (`MIN_SKEW`, etc.) | FIXED — `StratParams` aligns with grid |
-| 46 | `kalshi_price_data_client.py:133-142` | `health_check()` may call missing SDK method | FIXED — `hasattr` check (lines 133-147) |
-| 47 | `add_n8n_credentials.py` / `inject_n8n_workflows.py` | Keys visible in process list | FIXED — Supabase credentials removed from workflow JSON (inject_n8n_workflows.py) |
-| 48 | `config.py:233-339` | `validate_*` not auto-called on import | FIXED — `validate_all()` runs at import (config.py:978) |
-| 49 | `resilience.py:44` | Backoff starts at `base_backoff` (5s) on first failure | FIXED — first failure delay=0 (resilience.py:48-49) |
-| 50 | `kalshi_client.py:265` | `get_markets` cache keyed by `(series, status, limit)`, no invalidation | FIXED — `invalidate_markets()` method (kalshi_client.py:277-299) |
-| 51 | `trader.py:586-593` | `set_bot_state` writes every cycle even when unchanged | FIXED — batched single write |
-| 52 | `historical_data/`, `hf_data/` in repo | Repo bloat | FIXED — directories removed |
-| 53 | `bot.log`, `*_result.json` in working tree | Clutter | FIXED — `.gitignore` excludes `*.log` and `*_result.json` |
-| 54 | `llm_eval.py:324-332` | System prompt says 2 keys, parser accepts extra | FIXED — raises `ValueError` on extra keys (llm_eval.py:179-186) |
-| 55 | `parallel_backtest_hf.py:77-85` | NO branch uses `100 - mid_proxy`, no skew/trend gates | GONE — file deleted; HF sweep scripts live under `scripts/hf_*` |
-| 57 | `config.py:143-144` | `CASH_FLOOR_PCT=0.70` + `EXPOSURE_CEILING_PCT=0.30` sum to 1.0 | NOT FIXED (rounding epsilon handled) |
-| 58 | `signals.py:46-50` | `is_trade` allows empty `side` | FIXED — checks `side != ""` (signals.py:44-47) |
-| 60 | `supabase_client.py:72-140` | Credential loading order opaque | FIXED — `_load_credentials()` documents priority order (supabase_client.py:136-171) |
-| 61 | `trader.py` order loop | `_coid()` mints a fresh uuid, so every cycle re-posted the same bid (5 copies on one ticker in a live dry run) | FIXED — `_already_ordered()` blocks a second resting entry per ticker (`trader.py:869`) |
-| 62 | `config.py:320` | `REQUEST_MIN_GAP_SECONDS=1.0` serialised market discovery into 18s per cycle, longer than the 15s loop | FIXED — default 0.2s (5 req/s, Kalshi allows ~10); discovery 18.2s → 3.7s |
-
-## Git workflow
-
-- Commit early and often; each commit message prefixed with `Must fix:`, `Should fix:`, or `Nice-to-have:`.
-- `git push origin main` after every meaningful change.
-- Pre-commit hook blocks `.env` and `*.pem` from being staged.
-
-## CONCURRENT AGENTS — READ BEFORE ANY GIT COMMAND
-
-**More than one agent edits this checkout at the same time.** There is a single
-working tree (`/opt/superbot`) shared by every
-agent, and all of them push to the same `main`. Treat the tree as shared state.
-
-Rules:
-
-- **Pull before you push.** Always `git fetch && git pull --rebase origin main`
-  right before pushing, so you graft onto whatever a peer just pushed.
-- **Never run destructive git commands unannounced:** `git reset --hard`,
-  `git checkout -- <path>`, `git clean`, `git stash`, `git rebase` on published
-  history, or any `git push --force`. Announce on the logstream first (see below)
-  and re-read the tree. An uncommitted file you did not write is a peer's work.
-- **Check `git status` before editing a file** you did not open yourself; if it
-  has unexpected changes, stop and look — do not overwrite.
-- **FORBIDDEN: `git reset --hard` (and `git checkout -- <path>`, `git clean -f`)
-  while `git status` shows uncommitted changes you care about keeping.** Not
-  "announce first" — do not run it. Announcing is a courtesy to peers; it does
-  not save *your own* uncommitted work. These commands discard the working tree
-  and there is no undo. An agent in this repo destroyed the same fix three times
-  this way in one session, and once falsely reported the cleanup as done.
-  Commit your work first, or probe in a throwaway clone:
-  `git clone /path/to/repo /path/to/scratch && cd /path/to/scratch`.
-- **Never claim a command succeeded without its output.** If output is empty,
-  check the exit status (`echo $?`) in the same command. `cmd 2>/dev/null` plus
-  a confident sentence is how a false "clean" is manufactured.
-- **Small commits, small pushes.** Long-lived uncommitted work in a shared tree
-  gets lost.
-- If you rewrite published history (only for a secret leak or similar), you MUST
-  post a `status` broadcast with the new HEAD and the reset instructions.
-
-### Coordination channel (MemPalace logstream)
-
-Before a risky or cross-cutting change, announce and listen:
+After each edit, run the relevant ASCII check and focused tests. Before each
+commit run:
 
 ```bash
-mempalace logstream watch --agent ubuntu:opencode:kalshi_deepbot \
-  --type task.request --type task.reply --type status --json
+.venv/bin/python scripts/verify_source.py --all
+.venv/bin/python scripts/verify_compiles.py --all
+.venv/bin/python scripts/verify_undefined.py --all
+.venv/bin/python scripts/verify_operators.py
+.venv/bin/python -m pytest tests/ -q --tb=short
 ```
 
-- Post status: `mempalace_event_append` (type=`status`, stream=`project/kalshi_deepbot`,
-  room=`status`, to_agent=`*`).
-- Delegation: `type=task.request`, room=`delegation`, correlation_id=`task_...`.
-- Use `topic=kalshi-superbot` to tag a lane and avoid stepping on unrelated work.
+Use a focused suite while iterating, but do not claim full readiness without a
+fresh full-suite result. Read money-path diffs even when every gate is green.
 
-### Current history note
+## 6. Data plane and latency
 
-`main` was history-rewritten on 2026-11-01 to purge a leaked key (see the
-Credentials section). HEAD moved to `ac0b91b`; **all SHAs before that are
-invalid**. If your local history predates the rewrite: `git fetch` then
-`git reset --hard origin/main` (after saving any local work as a patch).
+- Target event-driven entry from Binance/Coinbase WS and a BRTI-style index.
+- Spot older than 1.0 second means no trade. Stale or one-sided venue books
+  also mean no trade.
+- Targets: p95 tick-to-submit under 500 ms, p99 under 1 second.
+- No blocking I/O, LLM, REST (including KL ladder fetches), DB, n8n, or
+  MemPalace calls on the hot path.
+- Persist ticks on a throttled writer path, not in the decision path.
+- `tick_bus` remains opt-in. Cryptofeed 2.5.0 imports and its focused tests
+  pass, but the real adapter smoke failed with Coinbase 401 and Binance 451;
+  this is not production evidence. Native public-feed paths remain the current
+  route.
 
-## Verification checklist before claiming done
+## 7. SQLite and backups
 
-- [x] `.venv/bin/python -m pytest tests/ -q --tb=short` -> 1673 passed, 3 skipped in 226.27s (2026-11-22, e692c94 worktree)
-- [ ] All 6 core n8n webhooks return HTTP 200 (backtest/collect/trade/monitor verified 2026-11-22; coordinate/control pending)
-- [x] `kalshi_client.get_balance()` returns a dollar amount (not cents) — `cents / 100.0`
-- [x] `git status` clean
-- [x] `git push origin main` completed
+Local SQLite is the only database. Do not use Supabase tools, dashboards, or
+new Supabase credentials. Legacy Supabase client/config/workflow references
+remain only until T17-61 removes them.
 
-## Optimal Parameters (from backtest 2026-11-03)
+The T16/T17 authority audit is not green: Polymarket JSON remains an authority
+for cash/positions/PnL, migration can duplicate settlement keys, and some
+startup/write paths fail open. Do not declare local-first complete until these
+are fixed and tested. Keep the n8n outbox; it is separate from Supabase.
 
-Historical mixed-side results only; they are NOT v17 promotion evidence. The
-current NO-only strategy requires a fresh pre-registered T17-08 study. Do not
-use these parameters to widen bands, enable maker, raise size, or relax caps.
+Use SQLite-safe online backup or litestream. Offsite restore and the 30-minute
+network-down drill still need evidence.
 
-Backtest results on 900 historical 15M markets:
-- **Best EV/trade**: $0.58 (win rate 52.8%, max drawdown 84.6%)
-- **Optimal parameters**:
-  - `MIN_SKEW_CENTS=3`
-  - `MIN_TREND_CENTS=8`
-  - `ENTRY_WINDOW_START_MIN=6.0`
-  - `ENTRY_WINDOW_END_MIN=11.0`
-  - `ENTRY_BAND_MIN=15`
-  - `ENTRY_BAND_MAX=55`
-  - `MIN_NO_ENTRY_CENTS=15`
-  - `MAX_NO_ENTRY_CENTS=55`
-  - `PER_TRADE_PCT=0.08`
-  - `BALANCE_PCT_PER_TRADE=0.08`
-  - `AGGRESSIVE_FILL=False`
-  - `PANIC_FADE_ENTRY_BAND_MIN=15`
-  - `PANIC_FADE_ENTRY_BAND_MAX=55`
-  - `PAPER_PER_TRADE_PCT=0.95` (dry-run only)
+## 8. MemPalace
 
-Strategy: Early entry (6-11 min into 15-min window), wide favourite-maker band (15-55c), conservative per-trade sizing (8%).
+- Shared palace: `/var/lib/superbot/mempalace`.
+- Service units should set both `MEMPALACE_DIR` and
+  `MEMPALACE_EXPECTED_DIR` to that path. Do not create or open another palace.
+- Identity: `ubuntu:opencode:kalshi_deepbot`; service identities come from
+  `agent_identity.py`.
+- Query before a task and file evidence afterward. Never file secrets or raw
+  balances.
+- Current host fix: the dry-trader unit was patched and restarted onto the
+  shared palace, and the bridge no longer creates a missing spill directory.
+  A managed `mempalace-mcp` unit, direct-open removal, and final retirement of
+  other palace directories remain open.
+- Useful CLI verbs: `mempalace status`, `mempalace search '<query>'`,
+  `mempalace logstream list --to-agent <id>`, `mempalace artifact put`.
+  Older `mempalace event list` examples are stale.
 
-**CORRECTION (2026-11-12):** the `ENTRY_BAND_MIN=15 / ENTRY_BAND_MAX=55` above is
-EV-*negative* on current data. Re-measured on the HF dataset
-`papylove/kalshi-15m-data` (14 newest days, 15,420 windows, per-minute quotes,
-maker entry, hold to settlement): the favourite-maker band 15-55c returns
-**-0.94c/trade** (win 31%), 75-95c returns **-0.34c** (win 83%), while the live
-95-99c band returns **+0.43c** (win 97%). The live `.env` band 95-99 is correct;
-do not widen it back to 15-55. The bot does find these markets (~28% of windows
-reach 95-99c at some minute 6-11). The binding filter is the gate EV hurdle, not
-the band. Decision drawer: `home/decisions` in MemPalace.
+## 9. Inter-agent and shared-tree protocol
 
-**REALITY TAX (2026-11-12):** the band is right but the edge is thin and rests on
-the model gate. Same HF sample, band 95-99c, minutes 6-11, hold to settlement:
-idealized "fill at ask, no fee" = **+0.43c/trade**; honest **taker at ask, no gate
-= -0.29c**; **maker resting at ask-1 = -4.06c** (fill rate 36.5%, and the win rate
-drops 96.7% -> 91.2% on fills — adverse selection, so the maker variant is dead);
-taker **+ a model gate = +1.03c** (n=727, win 98.6%). But the bot's own gate with
-the configured `MODEL_TYPE=gbm, MODEL_VOLATILITY=0.80` returns **-0.01c**; the same
-gate with volatility scaled from realized per-minute vol returns **+1.03c**. So the
-whole edge is ~1c/trade and depends on the gate being calibrated — the fixed 0.80
-vol is not, and is unvalidated against live outcomes. Do not loosen the band or the
-gate expecting more edge; fix or validate the vol model first.
+1. Sweep the logstream inbox, read this file and v17, and query MemPalace.
+2. Check `git status` before editing. Another agent's uncommitted file is not
+   yours to overwrite or include in a commit.
+3. Use disjoint task scopes and concrete acceptance evidence. Task leases and
+   enforced reviewer identity are still being completed under T17-63.
+4. Never run destructive git commands on the shared tree: no `reset --hard`,
+   `checkout -- <path>`, `clean`, `stash`, published-history rebase, or force
+   push. Probe experiments in a throwaway clone.
+5. Before pushing: `git fetch origin main`; integrate remote changes safely,
+   then push. Never claim a commit/push without command output and exit status.
 
-**ML MODEL VALIDATION (2026-11-12):** `scripts/train_ml_hf.py` trains
-`ml_model.MLFairValue` on the HF set and validates the entry gate on held-out
-days (14 days: train 09-29..10-08, test 10-09..10-11). The ML model is far better
-*calibrated* than the GBM (Brier 0.149 vs 0.195; AUC 0.876 vs 0.787), but as an
-ask-paying gate it selects **0 trades** at every edge threshold ≥ 0: it learns to
-predict the venue mid, so it can never beat the ask (ask = mid + half-spread).
-The GBM gate's positive EV therefore comes from being *overconfident* — it ignores
-the venue quote — not from information the ML model lacks. Conclusion: do NOT
-auto-enable the ML model; `--ml-model` stays explicit (an auto-loaded artifact
-would silently stop all trading). The artifact is gitignored (`*.pt`); regenerate
-with `python scripts/train_ml_hf.py`.
+## 10. n8n
+
+- n8n is loopback-only at `127.0.0.1:5678` and never on the tick-to-order path.
+- Keep the Execute Command node disabled. Scripts run through
+  `scripts/job_bridge.py` on `127.0.0.1:18711` with allowlisted argv.
+- Core webhook workflows: backtest, collect, trade, monitor, coordinate,
+  control. Backtest/collect/trade/monitor returned HTTP 200 on 2026-11-22;
+  coordinate/control health evidence is still pending.
+- Digest and watchdogs run on `superbot-jobs.timer`, not as hot-path n8n calls.
+- Restore credentials with `python scripts/n8n_creds_sync.py`; do not hardcode
+  credentials or recreate them manually.
+
+## 11. Credentials and venue APIs
+
+- Kalshi private key: `~/.secrets/kalshi_private.pem`, matched to
+  `KALSHI_KEY_ID`. Base URL is
+  `https://external-api.kalshi.com/trade-api/v2`.
+- Kalshi authentication is RSA-PSS over timestamp + method + path. `/markets`
+  is public; portfolio endpoints require valid authentication.
+- The live Kalshi pair is the Bitwarden "Kalshi GPT" key/RSA items. The plain
+  "Kalshi API Key"/"Kalshi RSA Key" items are stale. Restore those two mirror
+  files after any Bitwarden pull.
+- Polymarket US uses Key ID + Ed25519 secret from the protected mirror. Keep
+  `polymarket_us_client.py` read-only during verification.
+- T17-01 has historical production market evidence, but current market/rules
+  revalidation and the account-applicable fee-tier proof are still open. A 401
+  or 429 is not evidence that a market does not exist.
+
+## 12. Current gate status
+
+| Task | Current state |
+|------|---------------|
+| T17-00 | PARTIAL: v17 pointer and full suite are green; findings re-verification continues |
+| T17-01 | PARTIAL: production catalog evidence exists; current rules/fee-tier proof open |
+| T17-02 | PARTIAL: prior hygiene report exists; full-history/default-value gaps open |
+| T17-03 | PARTIAL: F-04/F-05 fixed and reviewed; current HEAD verification continues |
+| T17-04 | PARTIAL: real band study exists; single accepted config definition open |
+| T17-50 | PARTIAL: protocol exists but v17 NO-only/risk/stop-rule alignment is incomplete |
+| T17-06 | OPEN: dry/live parity and config-hash audit |
+| T17-07 | OPEN: synthetic-data removal and data provenance |
+| T17-08 | OPEN: pre-registered NO-only edge study |
+
+Do not begin after-gate strategy work until this gate passes. If T17-08 finds
+no NO region with a market-clustered net-of-fee lower bound above zero, stop,
+write the conclusion, and report to the human.
