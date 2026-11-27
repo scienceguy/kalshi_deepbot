@@ -7,7 +7,8 @@ Reads only cached real data:
 
 Every row is the same rule: enter once per market, taker, inside the late window,
 band 98-99c (Kalshi) / 98-100c (Polymarket), hold to settlement, 1c adverse slip,
-30% of balance per trade. Fees: Kalshi taker formula, Polymarket 0.
+30% of balance per trade, capped by executable depth. Polymarket uses gross
+production US taker fees; missing depth suppresses equity/compounding claims.
 
 Usage:
   python3 scripts/cross_market_table.py                 # Kalshi + Polymarket
@@ -85,8 +86,8 @@ def poly_rows(assets: str) -> list[dict]:
                 continue
             out.append({"platform": "poly", "tf": tf, "scope": asset,
                         "n": r["n"], "win": r["win"], "net_c": r["net_c"],
-                        "final": r["final"], "dd": r["dd"], "fees": 0.0,
-                        "cap": r.get("liq")})
+                        "final": r["final"], "dd": r["dd"], "fees": r["fees"],
+                        "cap": r.get("depth")})
     return out
 
 
@@ -110,10 +111,13 @@ def main() -> int:
     print(f"{'platform':8} {'tf':4} {'scope':26} {'n':>5} {'win%':>6} {'net_c':>7} "
           f"{'final$':>11} {'dd':>6} {'fees$':>8} {'capacity$':>10} {'10k':>4}")
     for r in rows:
+        final = f"{r['final']:11.2f}" if r["final"] is not None else f"{'n/a':>11}"
+        dd = f"{r['dd']:5.1f}%" if r["dd"] is not None else f"{'n/a':>6}"
+        fees = f"{r['fees']:8.2f}" if r["fees"] is not None else f"{'n/a':>8}"
+        clears = r["final"] is not None and r["final"] >= 10000
         print(f"{r['platform']:8} {r['tf']:4} {r['scope'][:26]:26} {r['n']:>5} "
-              f"{r['win']:>6.2f} {r['net_c']:>+7.2f} {r['final']:>11.2f} "
-              f"{r['dd']:>5.1f}% {r['fees']:>8.2f} {r['cap']:>10.0f} "
-              f"{'YES' if r['final'] >= 10000 else 'no':>4}")
+              f"{r['win']:>6.2f} {r['net_c']:>+7.2f} {final} "
+              f"{dd} {fees} {r['cap']:>10.0f} {'YES' if clears else 'no':>4}")
     yes = int(t.clears_10k.sum())
     print(f"\n{len(rows)} configurations tested; {yes} clear $10,000 after reality tax")
     return 0
