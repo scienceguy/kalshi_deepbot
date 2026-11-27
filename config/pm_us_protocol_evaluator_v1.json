@@ -2,10 +2,10 @@
   "schema_version": 2,
   "evaluator": {
     "path": "scripts/pm_us_protocol_evaluator.py",
-    "sha256": "ed03a6f1bfd628d5bbc2458833ed925328ba468b564ea6dbb70bac2cfd198db5"
+    "sha256": "9ebc2c7bd6425969a7b33469f24ca7afd9511908437bb8c0f5e1bd4630419513"
   },
   "utc_scope": {
-    "start": "2026-11-25T00:00:00Z",
+    "start": "2026-11-13T00:00:00Z",
     "end": "2026-11-27T00:00:00Z",
     "mode": "dry_research"
   },
