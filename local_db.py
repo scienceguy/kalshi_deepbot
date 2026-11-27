@@ -159,6 +159,40 @@ def default_backup_dir() -> str:
     return str(Path(config.SUPERBOT_DATA_DIR) / "backups" / "sqlite")
 
 
+def _init_unified_fills(conn: sqlite3.Connection) -> None:
+    """Create/migrate only the shared unified-fill authority."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS fills (
+            id TEXT PRIMARY KEY,
+            ts TEXT NOT NULL,
+            venue TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT '',
+            ticker TEXT NOT NULL,
+            side TEXT NOT NULL,
+            price_cents INTEGER NOT NULL,
+            qty INTEGER NOT NULL,
+            fee_dollars REAL NOT NULL DEFAULT 0,
+            order_id TEXT NOT NULL,
+            maker_taker TEXT NOT NULL DEFAULT 'taker',
+            raw_json TEXT NOT NULL DEFAULT '{}',
+            settled INTEGER DEFAULT 0,
+            settlement_price_cents INTEGER,
+            settlement_pnl_dollars REAL,
+            synced INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(fills)")}
+    if "raw_json" not in columns:
+        conn.execute("ALTER TABLE fills ADD COLUMN raw_json TEXT NOT NULL DEFAULT '{}'")
+    if "mode" not in columns:
+        conn.execute("ALTER TABLE fills ADD COLUMN mode TEXT NOT NULL DEFAULT ''")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_fills_venue_ticker_ts ON fills(venue, ticker, ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_fills_venue_settled ON fills(venue, settled)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_fills_order_id ON fills(order_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_fills_synced ON fills(synced)")
+
+
 class LocalDB:
     """Local SQLite database with background Supabase sync."""
 
@@ -487,6 +521,9 @@ class LocalDB:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_settlement_venue_market_ts ON settlement_data(venue, market_id, ts)")
+
+            # One shared unified-fill authority for Kalshi and Poly.
+            _init_unified_fills(conn)
 
     # H9: write-ahead order intent — pending_send records the intent
             # to place an order BEFORE the REST call. If the process crashes,
@@ -2415,6 +2452,73 @@ class LocalDB:
             self._sync_thread.start()
             log.info("Background Supabase sync started (interval: %ds)", SYNC_INTERVAL)
 
+    @staticmethod
+    def _fid(parts: str) -> str:
+        return hashlib.sha256(parts.encode("utf-8", errors="replace")).hexdigest()[:32]
+
+    def record_fill_unified(self, fill: Dict[str, Any], venue: str,
+                            mode: str | None = None) -> bool:
+        """Record one real fill with venue/mode provenance and idempotent replay."""
+        try:
+            if mode is None:
+                mode = getattr(self, "mode", None)
+            if mode is None:
+                mode = "dry" if config.DRY_RUN else "live"
+            if mode not in ("dry", "live"):
+                return False
+            oid = str(fill.get("order_id", ""))
+            ts = fill.get("ts") or datetime.now(timezone.utc).isoformat()
+            fid = self._fid(f"{venue}|{oid}|{fill.get('ticker','')}|"
+                            f"{fill.get('side','')}|{fill.get('qty',0)}|"
+                            f"{fill.get('price_cents',0)}")
+            raw_payload = fill.get("raw")
+            raw_json = (json.dumps(raw_payload, sort_keys=True)
+                        if isinstance(raw_payload, dict) else "{}")
+            conn = self._get_conn()
+            with self._lock:
+                conn.execute("""
+                    INSERT INTO fills (id, ts, venue, mode, ticker, side, price_cents, qty,
+                                       fee_dollars, order_id, maker_taker, raw_json,
+                                       settled, settlement_price_cents,
+                                       settlement_pnl_dollars, synced, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    ON CONFLICT(id) DO UPDATE SET
+                        ts = excluded.ts, mode = excluded.mode, side = excluded.side,
+                        price_cents = excluded.price_cents, qty = excluded.qty,
+                        fee_dollars = excluded.fee_dollars,
+                        maker_taker = excluded.maker_taker,
+                        raw_json = excluded.raw_json,
+                        settled = CASE WHEN excluded.settled = 1 THEN 1 ELSE fills.settled END,
+                        settlement_price_cents = CASE WHEN excluded.settled = 1
+                            THEN excluded.settlement_price_cents ELSE fills.settlement_price_cents END,
+                        settlement_pnl_dollars = CASE WHEN excluded.settled = 1
+                            THEN excluded.settlement_pnl_dollars ELSE fills.settlement_pnl_dollars END,
+                        synced = 0
+                """, (
+                    fid, ts, venue, mode, fill.get("ticker", ""), fill.get("side", ""),
+                    int(fill.get("price_cents", 0) or 0), float(fill.get("qty", 0) or 0),
+                    float(fill.get("fee_dollars", 0) or 0), oid,
+                    fill.get("maker_taker", "taker"), raw_json,
+                    int(fill.get("settled", 0) or 0),
+                    fill.get("settlement_price_cents"),
+                    fill.get("settlement_pnl_dollars"), 0,
+                ))
+                conn.commit()
+                return True
+        except Exception as e:
+            log.warning("record_fill_unified failed: %s", e)
+            return False
+
+    def record_settlement_unified(self, fill: Dict[str, Any], venue: str) -> bool:
+        """Record one newly settled fill without inventing missing evidence."""
+        required = ("order_id", "ticker", "side", "qty", "price_cents",
+                    "settlement_price_cents", "settlement_pnl_dollars")
+        if any(fill.get(key) is None for key in required):
+            return False
+        if float(fill["qty"]) <= 0 or float(fill["price_cents"]) <= 0:
+            return False
+        return self.record_fill_unified({**fill, "settled": 1}, venue)
+
     def stop_sync(self):
         """Stop background sync thread."""
         self._stop_sync.set()
@@ -2486,9 +2590,10 @@ class PolyLocalDB(LocalDB):
                          auto_sync=auto_sync, backup_dir=backup_dir)
 
     def _init_db(self):
-        """Poly tables only; the kalshi schema is not created here."""
+        """Poly tables plus the shared unified-fill authority, not Kalshi tables."""
         conn = self._get_conn()
         with self._lock:
+            _init_unified_fills(conn)
             # X1: Tables for Polymarket US edge measurement (measure_edge_poly.py)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS poly_markets (

@@ -10,6 +10,9 @@ Acceptance (AGENT_TASKS_v7.md §D2):
 """
 import json
 
+import pytest
+
+import config
 import local_db
 
 
@@ -162,3 +165,51 @@ def test_record_fill_marks_order_filled_idempotently(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM poly_fills").fetchone()[0] == 1
     status = conn.execute("SELECT status FROM poly_orders WHERE id = 'o-7'").fetchone()
     assert status["status"] == "filled"
+
+
+def test_record_fill_unified_distinguishes_dry_and_live_modes(tmp_path, monkeypatch):
+    db = local_db.LocalDB(db_path=str(tmp_path / "fill.db"))
+    base = {"ticker": "KXBTC15M-X", "side": "no", "price_cents": 95, "qty": 1.5}
+    monkeypatch.setattr(config, "DRY_RUN", True)
+    assert db.record_fill_unified({**base, "order_id": "dry-order"}, venue="kalshi")
+    monkeypatch.setattr(config, "DRY_RUN", False)
+    assert db.record_fill_unified({**base, "order_id": "live-order"}, venue="kalshi")
+    rows = db._get_conn().execute("SELECT order_id, mode, qty FROM fills ORDER BY order_id").fetchall()
+    assert [tuple(row) for row in rows] == [("dry-order", "dry", 1.5), ("live-order", "live", 1.5)]
+
+
+@pytest.mark.parametrize("mode", ["dry", "live"])
+def test_poly_local_db_unified_fill_uses_shared_schema_and_mode(tmp_path, mode):
+    db = local_db.PolyLocalDB(db_path=str(tmp_path / "poly-unified.db"), mode=mode, auto_sync=False)
+    assert db.record_fill_unified({
+        "ticker": "poly-market", "side": "no", "price_cents": 95,
+        "qty": 1.5, "order_id": f"{mode}-order", "raw": {"source": mode},
+    }, venue="polymarket_us")
+    row = db._get_conn().execute(
+        "SELECT mode, qty, raw_json FROM fills WHERE order_id = ?", (f"{mode}-order",)).fetchone()
+    assert row["mode"] == mode
+    assert row["qty"] == 1.5
+    assert json.loads(row["raw_json"]) == {"source": mode}
+    assert db._get_conn().execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'orders'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("qty", [0.5, 1.5])
+def test_record_fill_unified_preserves_fractional_quantity(tmp_path, qty):
+    db = local_db.LocalDB(db_path=str(tmp_path / "fill.db"))
+    assert db.record_fill_unified({
+        "ticker": "KXBTC15M-X", "side": "no", "price_cents": 95,
+        "qty": qty, "order_id": "fractional-order",
+    }, venue="kalshi")
+    row = db._get_conn().execute("SELECT qty, typeof(qty) AS storage_type FROM fills").fetchone()
+    assert row["qty"] == qty
+    assert row["storage_type"] == "real"
+
+
+def test_record_fill_unified_idempotent(tmp_path):
+    db = local_db.LocalDB(db_path=str(tmp_path / "fill.db"))
+    fill = {"ticker": "KXBTC15M-X", "side": "yes", "price_cents": 50,
+            "qty": 1.5, "order_id": "same-order", "raw": {"source": "test"}}
+    assert db.record_fill_unified(fill, venue="kalshi")
+    assert db.record_fill_unified(fill, venue="kalshi")
+    assert db._get_conn().execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 1
