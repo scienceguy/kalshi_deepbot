@@ -9,6 +9,10 @@ Tests with mocked mempalace library calls:
 - Writer thread delivers via mempalace library
 """
 
+import json
+import subprocess
+import sys
+import threading
 import time
 from unittest.mock import patch
 
@@ -230,7 +234,8 @@ def test_full_queue_spills_to_durable_file(tmp_path, monkeypatch):
     assert b._outbound.empty()
     items = b._drain_spill()
     assert [it[1] for it in items] == ["x", "add"]
-    # spill file consumed after drain
+    b._ack_spill(True)
+    # spill file consumed after acknowledgement
     assert b._drain_spill() == []
 
 
@@ -265,6 +270,7 @@ def test_writer_drains_spill_before_queue(tmp_path, monkeypatch):
     # writer semantics: drain the spill first (oldest first), then the queue
     for spilled in b._drain_spill():
         b._deliver(*spilled[:4])
+    b._ack_spill(True)
     while True:
         try:
             b._deliver(*b._outbound.get_nowait()[:4])
@@ -297,9 +303,130 @@ def test_flood_10x_capacity_zero_lost_order_preserved(tmp_path, monkeypatch):
     assert b.get_metrics()["outbound_dropped"] == 0
     # spill drained first (oldest), then whatever remains in the queue
     delivered = [it[2]["i"] for it in b._drain_spill()]
+    b._ack_spill(True)
     while True:
         try:
             delivered.append(b._outbound.get_nowait()[2]["i"])
         except mempalace_bridge.queue.Empty:
             break
     assert delivered == list(range(n))  # zero lost, order preserved
+
+
+def _write_spill(bridge, subtype="spilled"):
+    item = ["status", subtype, {"n": 1}, "cid-spill", time.time()]
+    with open(bridge._spill_path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(item) + "\n")
+    return item
+
+
+def test_spill_batch_is_retained_until_ack(tmp_path):
+    b = _make_bridge()
+    b._spill_path = str(tmp_path / "spill.jsonl")
+    item = _write_spill(b)
+    assert b._drain_spill() == [item]
+    b._ack_spill(False)
+    assert b._drain_spill() == [item]
+    b._ack_spill(True)
+    assert b._drain_spill() == []
+
+
+def test_spill_claim_is_process_safe_and_crash_recoverable(tmp_path):
+    b = _make_bridge()
+    b._spill_path = str(tmp_path / "spill.jsonl")
+    item = _write_spill(b)
+    child_code = (
+        "import sys; from mempalace_bridge import MemPalaceBridge; "
+        f"b=MemPalaceBridge('child'); b._spill_path={b._spill_path!r}; "
+        "items=b._drain_spill(); print(len(items), flush=True); sys.stdin.read()"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    assert child.stdout.readline().strip() == "1"
+    assert b._drain_spill() == []
+    child.kill()
+    child.wait(timeout=5)
+    assert b._drain_spill() == [item]
+    b._ack_spill(True)
+
+
+def test_stop_drains_queue_and_spill(tmp_path):
+    b = _make_bridge()
+    b._spill_path = str(tmp_path / "spill.jsonl")
+    spilled = _write_spill(b)
+    queued = ["status", "queued", {}, "cid-queue", time.time()]
+    b._outbound.put(queued)
+    delivered = []
+    b._deliver = lambda *args: delivered.append(args)
+    b._writer = threading.Thread(target=b._writer_loop)
+    b._writer.start()
+    b.stop(timeout=2.0)
+    assert [list(item[:4]) for item in delivered] == [spilled[:4], queued[:4]]
+
+
+def test_failed_queue_item_spills_and_retries_before_next_item(tmp_path):
+    b = _make_bridge()
+    b._spill_path = str(tmp_path / "spill.jsonl")
+    delivered = []
+
+    def fail_first(*args):
+        delivered.append(args[1])
+        if delivered == ["first"]:
+            raise RuntimeError("transient failure")
+
+    b._deliver = fail_first
+    b._outbound.put(("status", "first", {}, "cid-first", time.time()))
+    b._outbound.put(("status", "second", {}, "cid-second", time.time()))
+    b._writer = threading.Thread(target=b._writer_loop)
+    b._writer.start()
+    deadline = time.monotonic() + 3.0
+    while len(delivered) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    b.stop(timeout=2.0)
+    assert delivered == ["first", "first", "second"]
+    assert b.get_metrics()["outbound_sent"] == 2
+    assert not (tmp_path / "spill.jsonl").exists()
+
+
+def test_failed_spill_item_restores_only_failed_suffix_in_order(tmp_path):
+    b = _make_bridge()
+    b._spill_path = str(tmp_path / "spill.jsonl")
+    with open(b._spill_path, "w", encoding="utf-8") as fh:
+        for name in ("first", "second", "third"):
+            fh.write(json.dumps(["status", name, {}, f"cid-{name}", time.time()]) + "\n")
+    b._outbound.put(("status", "queued", {}, "cid-queued", time.time()))
+    delivered = []
+
+    def fail_second_once(*args):
+        delivered.append(args[1])
+        if args[1] == "second" and delivered.count("second") == 1:
+            raise RuntimeError("transient failure")
+
+    b._deliver = fail_second_once
+    b._writer = threading.Thread(target=b._writer_loop)
+    b._writer.start()
+    deadline = time.monotonic() + 4.0
+    while "queued" not in delivered and time.monotonic() < deadline:
+        time.sleep(0.01)
+    b.stop(timeout=2.0)
+    assert delivered == ["first", "second", "second", "third", "queued"]
+    assert delivered.count("first") == 1
+    assert delivered.count("second") == 2
+    assert delivered.count("third") == 1
+    assert b.get_metrics()["outbound_sent"] == 4
+    assert not (tmp_path / "spill.jsonl").exists()
+
+
+def test_unavailable_library_is_failed_delivery_not_success():
+    b = _make_bridge()
+    with patch.object(mempalace_bridge, "_MEMPALACE_AVAILABLE", False):
+        try:
+            b._deliver("status", "heartbeat", {}, "cid")
+        except RuntimeError as exc:
+            assert "unavailable" in str(exc)
+        else:
+            raise AssertionError("unavailable MemPalace acknowledged delivery")
+        assert mempalace_bridge.degraded_reason() == "mempalace library not installed"
+    assert b.get_metrics()["outbound_sent"] == 0
+    assert b.get_metrics()["outbound_failed"] == 1
