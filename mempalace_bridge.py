@@ -20,6 +20,7 @@ Usage:
     bridge.stop()                  # flush pending writes on shutdown
 """
 
+import fcntl
 import json
 import logging
 import os
@@ -27,13 +28,16 @@ import queue
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import agent_identity
 
-# H3: Make mempalace imports optional with no-op fallback
+# H3: Make mempalace imports optional with no-op fallback. Its package init
+# removes PYTHONPATH entries from sys.path; hide that variable during import.
+_pythonpath = os.environ.pop("PYTHONPATH", None)
 try:
     from mempalace.logstream import Logstream, LOGSTREAM_DB_FILENAME
     from mempalace.knowledge_graph import KnowledgeGraph
@@ -44,6 +48,10 @@ except ImportError:
     Logstream = None
     LOGSTREAM_DB_FILENAME = "logstream.sqlite3"
     KnowledgeGraph = None
+finally:
+    if _pythonpath is not None:
+        os.environ["PYTHONPATH"] = _pythonpath
+    del _pythonpath
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +144,8 @@ class MemPalaceBridge:
         # in-memory queue, preserving order. Heartbeats are the only lossy
         # telemetry and may still be dropped when the spill write fails.
         self._spill_path = os.path.join(PALACE_DIR, "bridge_outbound_spill.jsonl")
+        self._spill_io_lock = threading.RLock()
+        self._spill_batch_path = None
         self.metrics = {
             "outbound_queued": 0,
             "outbound_dropped": 0,
@@ -165,15 +175,14 @@ class MemPalaceBridge:
             self._subscriber.start()
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Signal shutdown and flush pending outbound writes."""
-        self._stop.set()
-        # Unblock the writer if it's waiting on the queue
-        try:
-            self._outbound.put_nowait(None)
-        except queue.Full:
-            pass
+        """Signal shutdown after queued and spilled outbound writes drain."""
         if self._writer:
+            try:
+                self._outbound.put(None, timeout=timeout)
+            except queue.Full:
+                pass
             self._writer.join(timeout=timeout)
+        self._stop.set()
         if self._subscriber:
             self._subscriber.join(timeout=timeout)
 
@@ -294,7 +303,7 @@ class MemPalaceBridge:
             try:
                 # T16-62: never mint a second palace for a bad MEMPALACE_DIR;
                 # an absent spill directory drops only this telemetry, loudly.
-                with open(self._spill_path, "a", encoding="utf-8") as fh:
+                with self._spill_locked(), open(self._spill_path, "a", encoding="utf-8") as fh:
                     while True:
                         try:
                             fh.write(json.dumps(self._outbound.get_nowait()) + "\n")
@@ -310,21 +319,85 @@ class MemPalaceBridge:
                 log.warning("MemPalace outbound spill failed; dropping %s/%s",
                             cmd_type, subtype)
 
-    def _drain_spill(self) -> list:
-        """Read and remove spilled items, oldest first (T13-04)."""
-        items: list = []
+    @contextmanager
+    def _spill_locked(self):
+        with self._spill_io_lock:
+            with open(f"{self._spill_path}.lock", "a", encoding="utf-8") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    @staticmethod
+    def _batch_pid(path) -> int:
         try:
-            with open(self._spill_path, "r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line:
-                        items.append(json.loads(line))
-            os.remove(self._spill_path)
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            log.warning("MemPalace spill drain failed: %s", e)
-        return items
+            return int(Path(path).name.split(".")[-3])
+        except (ValueError, IndexError):
+            return 0
+
+    def _restore_spill(self, batch_path) -> None:
+        if os.path.exists(self._spill_path):
+            tmp = f"{self._spill_path}.restore.{uuid.uuid4().hex}"
+            with open(batch_path, "r", encoding="utf-8") as old, \
+                    open(self._spill_path, "r", encoding="utf-8") as new, \
+                    open(tmp, "w", encoding="utf-8") as out:
+                out.write(old.read())
+                out.write(new.read())
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(tmp, self._spill_path)
+            os.remove(batch_path)
+        else:
+            os.replace(batch_path, self._spill_path)
+
+    def _drain_spill(self) -> list:
+        """Claim one batch; only a later acknowledgement may delete it."""
+        with self._spill_locked():
+            if self._spill_batch_path is not None:
+                return []
+            batches = sorted(Path(self._spill_path).parent.glob(
+                f"{Path(self._spill_path).name}.*.batch"))
+            for batch in batches:
+                pid = self._batch_pid(batch)
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    self._restore_spill(batch)
+                except PermissionError:
+                    pass
+            if not os.path.exists(self._spill_path):
+                return []
+            batch = f"{self._spill_path}.{os.getpid()}.{uuid.uuid4().hex}.batch"
+            os.replace(self._spill_path, batch)
+            try:
+                with open(batch, "r", encoding="utf-8") as fh:
+                    items = [json.loads(line) for line in fh if line.strip()]
+            except Exception as e:
+                self._restore_spill(batch)
+                log.warning("MemPalace spill drain failed: %s", e)
+                return []
+            self._spill_batch_path = batch
+            return items
+
+    def _ack_spill(self, success: bool, remaining_items=None) -> None:
+        with self._spill_locked():
+            batch = self._spill_batch_path
+            self._spill_batch_path = None
+            if batch is None:
+                return
+            if success:
+                os.remove(batch)
+                return
+            if remaining_items is not None:
+                tmp = f"{batch}.remaining"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    for item in remaining_items:
+                        fh.write(json.dumps(item) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, batch)
+            self._restore_spill(batch)
 
     # -- circuit breaker ------------------------------------------------
 
@@ -355,9 +428,8 @@ class MemPalaceBridge:
     def _deliver(self, cmd_type: str, subtype: str, payload: dict,
                  correlation_id: str) -> None:
         if not _MEMPALACE_AVAILABLE:
-            # No-op when mempalace library is not available (H3)
-            self._breaker_success()  # Track as successful no-op
-            return
+            self._breaker_failure()
+            raise RuntimeError("MemPalace unavailable: durable delivery not acknowledged")
         try:
             if cmd_type == "status":
                 self._deliver_status(subtype, payload, correlation_id)
@@ -480,13 +552,26 @@ class MemPalaceBridge:
             try:
                 # T13-04: drain the durable spill before the in-memory queue
                 # so nothing queued is ever lost.
-                for spilled in self._drain_spill():
+                spilled_items = self._drain_spill()
+                spilled_ok = True
+                failed_index = None
+                for index, spilled in enumerate(spilled_items):
                     try:
                         self._deliver(*spilled[:4])
                         self.metrics["outbound_sent"] += 1
                     except Exception as e:
                         log.warning("MemPalace spilled delivery failed: %s", e)
                         self.metrics["outbound_failed"] += 1
+                        spilled_ok = False
+                        failed_index = index
+                        break
+                if spilled_items:
+                    remaining = (spilled_items[failed_index:]
+                                 if failed_index is not None else None)
+                    self._ack_spill(spilled_ok, remaining)
+                    if not spilled_ok:
+                        time.sleep(1.0)
+                        continue
                 item = self._outbound.get(timeout=1.0)
                 if item is None:  # shutdown signal
                     break
@@ -496,6 +581,17 @@ class MemPalaceBridge:
                     self.metrics["outbound_sent"] += 1
                 except Exception as e:
                     log.warning("MemPalace delivery failed: %s", e)
+                    self.metrics["outbound_failed"] += 1
+                    try:
+                        with self._spill_locked(), open(self._spill_path, "a", encoding="utf-8") as fh:
+                            fh.write(json.dumps(item) + "\n")
+                            fh.flush()
+                            os.fsync(fh.fileno())
+                        self.metrics["outbound_spilled"] += 1
+                    except Exception:
+                        self.metrics["outbound_dropped"] += 1
+                        log.warning("MemPalace failed-item spill failed; dropping %s/%s",
+                                    cmd_type, subtype)
                 finally:
                     self._outbound.task_done()
             except queue.Empty:

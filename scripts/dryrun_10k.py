@@ -5,10 +5,10 @@ This is the goal artifact: replay the recorded Kalshi 15m ticks day by day,
 compound a bankroll through taker fills at the venue ask, charge the Kalshi
 taker fee on every fill, and report the moment the balance crosses $10,000.
 
-Nothing is synthesised. Quotes are the recorded book, settlement is the
-recorded outcome (last yes_ask >= 50, validated 203/203 elsewhere), and the
-entry filter is the BRTI fair-value gate from naru_sweep (spot vs strike priced
-from trailing realised 1s volatility).
+Nothing is synthesised. Quotes are the recorded book and settlement requires
+an explicit official yes/no outcome. The entry filter is the BRTI fair-value
+gate from naru_sweep. No contracts are created without recorded executable
+depth; without depth, only per-contract observations are supportable.
 
 Reality tax is itemised: fees paid, fills, and the honest taker price.
 
@@ -17,6 +17,8 @@ Usage:
 """
 import argparse
 import json
+import math
+import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,6 +27,24 @@ import sys
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import naru_sweep as N  # noqa: E402
+
+
+def fill_row(row, balance, frac, slip=0.0):
+    """Return a production-priced fill only when recorded depth supports it."""
+    depth = row.get("depth") if hasattr(row, "get") else getattr(row, "depth", None)
+    try:
+        depth = float(depth)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(depth) or depth <= 0:
+        return None
+    price = min(0.99, float(row.price) + slip / 100.0)
+    contracts = min(balance * frac / price, depth)
+    buy = N.supported_buy_cash(contracts, price, N._series(row.ticker), depth)
+    if buy is None or buy > balance:
+        return None
+    fee = buy - contracts * price
+    return contracts, price, buy, fee
 
 
 def main() -> int:
@@ -63,38 +83,44 @@ def main() -> int:
     cross = None
     ledger = []
 
-    for row in t.itertuples():
-        # Deterministic partial-fill: a stable hash of the ticker decides, so a
-        # rerun selects the same markets instead of resampling.
-        if a.fill < 1.0 and (hash(str(row.ticker)) % 1000) / 1000.0 >= a.fill:
-            continue
-        price = min(0.99, float(row.price) + a.slip / 100.0)
-        stake = bal * a.frac
-        contracts = stake / price
-        if contracts <= 0:
-            continue
-        cost = contracts * price
-        fee = contracts * 0.07 * price * (1.0 - price)  # Kalshi taker fee on the paid price
-        if cost + fee > bal:
-            continue
-        bal -= cost + fee
-        fees += fee
-        filled += 1
-        if bool(row.yes_win):
-            bal += contracts * 1.0
+    candidates = [row for row in t.itertuples()
+                  if a.fill >= 1.0 or (hash(str(row.ticker)) % 1000) / 1000.0 < a.fill]
+    events = []
+    for i, row in enumerate(candidates):
+        events.append((row.close_s, 0, i))
+        events.append((row.entry_ts, 1, i))
+    events.sort(key=lambda event: (event[0], event[1]))
+    positions = {}
+    for ts, kind, i in events:
+        row = candidates[i]
+        if kind == 1:
+            fill = fill_row(row, bal, a.frac, a.slip)
+            if fill is None:
+                continue
+            contracts, price, buy, fee = fill
+            bal -= buy
+            fees += fee
+            filled += 1
+            positions[i] = (contracts, price, fee)
+        else:
+            open_fill = positions.pop(i, None)
+            if open_fill is None:
+                continue
+            contracts, price, fee = open_fill
+            if bool(row.yes_win):
+                bal += N.fees.sell_cash_in(
+                    contracts, 1.0, taker=False, series=N._series(row.ticker))
+            if cross is None and bal >= a.target:
+                cross = row.close_s
+            ledger.append({"ts": int(row.close_s), "ticker": row.ticker,
+                           "price": round(price, 4),
+                           "contracts": round(contracts, 2),
+                           "fee": round(fee, 4), "win": bool(row.yes_win),
+                           "balance": round(bal, 2)})
         peak = max(peak, bal)
-        dd = 1.0 - bal / peak
-        maxdd = max(maxdd, dd)
-        if bal < 1.0 and not wiped:
-            wiped = True
-            break
-        if cross is None and bal >= a.target:
-            cross = row.close_s
-        ledger.append({"ts": int(row.close_s), "ticker": row.ticker,
-                       "price": round(price, 4),
-                       "contracts": round(contracts, 2),
-                       "fee": round(fee, 4), "win": bool(row.yes_win),
-                       "balance": round(bal, 2)})
+        maxdd = max(maxdd, 1.0 - bal / peak)
+        if bal < 1.0:
+            wiped = True  # entries now fail cash checks; open settlements continue
 
     out = Path(a.ledger)
     out.parent.mkdir(parents=True, exist_ok=True)

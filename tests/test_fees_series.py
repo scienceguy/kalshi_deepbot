@@ -21,8 +21,11 @@ def _clean_series_cache():
     fees.clear_series_fees()
 
 
-def test_standard_series_unchanged():
-    raw = math.ceil((0.07 * 1 * 0.95 * 0.05 + 1e-12) * 1_000_000) / 1_000_000
+def test_standard_series_unchanged(monkeypatch):
+    # Pin the production-verified direct-member grid (T19-11) so the test does
+    # not depend on ambient env: 0.07*0.95*0.05 = 0.003325 -> ceil to 0.0034.
+    monkeypatch.setenv("KALSHI_FEE_ROUNDING_DOLLARS", "0.0001")
+    raw = math.ceil(0.07 * 1 * 0.95 * 0.05 / 0.0001 - 1e-9) * 0.0001
     assert fees.taker_fee_dollars(1, 0.95) == raw
     # No series data at all and an unknown series: both equal the raw model.
     assert fees.taker_fee_dollars(1, 0.95, series="KXBTC15M") == raw

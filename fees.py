@@ -11,11 +11,22 @@ For a plain buy this means the cash leaving the account is
 ``ceil_to_cent(price * contracts + trade_fee)`` — i.e. the effective fee is the
 model fee rounded up to the next cent.
 """
+import decimal
 import logging
 import math
 import os
 
 log = logging.getLogger(__name__)
+
+
+def _fee_rounding() -> float:
+    """Resolve raw-fee precision after config has loaded the environment."""
+    return float(os.environ.get("KALSHI_FEE_ROUNDING_DOLLARS", "0.000001"))
+
+
+def _cash_grid() -> float:
+    """Resolve cash-grid precision after config has loaded the environment."""
+    return float(os.environ.get("KALSHI_CASH_GRID_DOLLARS", "0.01"))
 
 
 # Kalshi taker fee rate (0.07 = 7% of contracts * price * (1-price)).
@@ -124,7 +135,8 @@ def maker_fee_dollars(contracts: float, price_dollars: float, series: str | None
         return 0.0
     raw = (MAKER_FEE_RATE * float(info.get("fee_multiplier", 1.0))
            * contracts * price_dollars * (1.0 - price_dollars))
-    return math.ceil((raw + 1e-12) * 1_000_000) / 1_000_000
+    rounding = decimal.Decimal(str(_fee_rounding()))
+    return float((decimal.Decimal(repr(raw)) / rounding - decimal.Decimal("1e-9")).to_integral_value(rounding=decimal.ROUND_CEILING)) * _fee_rounding()
 
 
 def taker_fee_dollars(contracts: float, price_dollars: float, multiplier: float = 1.0,
@@ -139,7 +151,8 @@ def taker_fee_dollars(contracts: float, price_dollars: float, multiplier: float 
     if series is not None:  # reviewed: unknown series keep multiplier 1.0 — standard taker model unchanged (B6)
         multiplier = multiplier * taker_multiplier(series)
     raw = multiplier * FEE_RATE * contracts * price_dollars * (1.0 - price_dollars)
-    return math.ceil((raw + 1e-12) * 1_000_000) / 1_000_000
+    rounding = decimal.Decimal(str(_fee_rounding()))
+    return float((decimal.Decimal(repr(raw)) / rounding - decimal.Decimal("1e-9")).to_integral_value(rounding=decimal.ROUND_CEILING)) * _fee_rounding()
 
 
 def taker_fee_cents(contracts: float, price_dollars: float, multiplier: float = 1.0) -> float:
@@ -149,24 +162,76 @@ def taker_fee_cents(contracts: float, price_dollars: float, multiplier: float = 
 
 
 def buy_cash_out(contracts: float, price_dollars: float, multiplier: float = 1.0,
-                 taker: bool = True) -> float:
+                 taker: bool = True, series: str | None = None) -> float:
     """Exact cash leaving the balance for a buy, per the rounding rules.
 
-    Kalshi charges the fee to the taker only, and settlement is not a trade.
-    A maker limit order therefore pays no fee: pass taker=False for our own
-    posted orders and for settlement payouts.
+    Taker buys pay the taker fee. Resting maker buys pay the series maker fee
+    only when the venue's fee_type includes maker fees; standard series and
+    settlement payouts remain free.
     """
     cost = contracts * price_dollars
-    fee = taker_fee_dollars(contracts, price_dollars, multiplier) if taker else 0.0
-    return math.ceil((cost + fee) * 100 - 1e-9) / 100.0
+    if taker:  # reviewed: taker buys pay the taker fee; resting buys pay only the listed series maker fee
+        fee = taker_fee_dollars(contracts, price_dollars, multiplier, series=series)
+    else:
+        fee = maker_fee_dollars(contracts, price_dollars, series=series)
+    return math.ceil((cost + fee) / _cash_grid() - 1e-9) * _cash_grid()
 
 
 def sell_cash_in(contracts: float, price_dollars: float, multiplier: float = 1.0,
-                 taker: bool = True) -> float:
+                 taker: bool = True, series: str | None = None) -> float:
     """Exact cash credited for a sell (revenue minus fee, floored to the cent grid)."""
     proceeds = contracts * price_dollars
-    fee = taker_fee_dollars(contracts, price_dollars, multiplier) if taker else 0.0
-    return math.floor((proceeds - fee) * 100 + 1e-9) / 100.0
+    fee = taker_fee_dollars(contracts, price_dollars, multiplier,
+                            series=series) if taker else 0.0
+    return math.floor((proceeds - fee) / _cash_grid() + 1e-9) * _cash_grid()
+
+
+POLY_US_API_TAKER_THETA = 0.0695
+
+
+def _poly_taker_theta() -> float:
+    """Resolve the flat API taker coefficient or an explicit env override."""
+    explicit = os.environ.get("POLY_US_TAKER_THETA")
+    # reviewed: explicit env coefficient overrides the tier ladder when set.
+    if explicit:
+        try:
+            return float(explicit)
+        except (TypeError, ValueError):
+            pass
+    return POLY_US_API_TAKER_THETA
+
+
+def _poly_bankers_cent(x: float) -> float:
+    """Round to the nearest $0.01, half to even."""
+    return float(decimal.Decimal(repr(x)).quantize(
+        decimal.Decimal("0.01"), rounding=decimal.ROUND_HALF_EVEN))
+
+
+def poly_taker_fee_dollars(contracts: float, price_dollars: float,
+                           theta: float | None = None) -> float:
+    """Return one fill's gross API taker charge, rounded half to even."""
+    if contracts <= 0 or not 0.0 < price_dollars < 1.0:  # reviewed: zero/invalid price or contracts means no fee (T20-12)
+        return 0.0
+    t = _poly_taker_theta() if theta is None else float(theta)
+    raw = t * contracts * price_dollars * (1.0 - price_dollars)
+    return _poly_bankers_cent(raw)
+
+
+def poly_taker_fills_fee_dollars(fills, theta: float | None = None) -> float:
+    """Total standard taker fee for ``(contracts, price)`` fills of one order.
+
+    Each fill starts with its own banker's-rounded charge. The aggregate is
+    capped at banker's-rounded cumulative exact fees, so the documented
+    multi-fill adjustment can only reduce the total.
+    """
+    items = list(fills)
+    t = _poly_taker_theta() if theta is None else float(theta)
+    rounded_total = sum(poly_taker_fee_dollars(c, p, theta=t) for c, p in items)
+    exact_total = sum(
+        t * c * p * (1.0 - p)
+        for c, p in items if c > 0 and 0.0 < p < 1.0
+    )
+    return min(rounded_total, _poly_bankers_cent(exact_total))
 
 
 def net_profit_roundtrip(qty: int, entry_cents: int, exit_cents: int) -> tuple:

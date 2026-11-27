@@ -54,6 +54,8 @@ WS_URLS = {
 # Kalshi WS message types (from actual API)
 WS_CMD_SUBSCRIBE = "subscribe"
 WS_CMD_UNSUBSCRIBE = "unsubscribe"
+WS_CMD_UPDATE_SUBSCRIPTION = "update_subscription"
+ORDERBOOK_RESYNC_COOLDOWN_SECONDS = 1.0
 WS_MSG_TICKER = "ticker"
 WS_MSG_ORDERBOOK_SNAPSHOT = "orderbook_snapshot"
 WS_MSG_ORDERBOOK_DELTA = "orderbook_delta"
@@ -231,6 +233,15 @@ class KalshiWebSocket:
         # CF Benchmarks index cache: index_id -> (value, receive_timestamp)
         self._cfb_cache: Dict[str, Tuple[float, float]] = {}
 
+        # One subscription's sequence baseline; stale markets wait for snapshots.
+        self._ob_last_seq: Optional[int] = None
+        self._ob_sid: Optional[int] = None
+        self._ob_desynced: set[str] = set()
+        self._ob_gaps_detected = 0
+        self._ob_resync_inflight = False
+        self._ob_last_resync = 0.0
+        self._orderbook_gap_callback: Optional[Callable[[int, int], None]] = None
+
     def _load_private_key(self) -> rsa.RSAPrivateKey:
         """Load RSA private key from file or inline content."""
         # Try file path first
@@ -294,6 +305,10 @@ class KalshiWebSocket:
     def set_orderbook_delta_callback(self, callback: Callable[[OrderbookDelta], None]) -> None:
         """Set callback for orderbook deltas."""
         self._orderbook_delta_callback = callback
+
+    def set_orderbook_gap_callback(self, callback: Callable[[int, int], None]) -> None:
+        """Set callback fired as (gaps_total, seq) when a seq gap is detected."""
+        self._orderbook_gap_callback = callback
 
     def set_trade_callback(self, callback: Callable[[Dict], None]) -> None:
         """Set callback for public trade notifications."""
@@ -596,6 +611,8 @@ class KalshiWebSocket:
 
     async def _resubscribe_all(self) -> None:
         """Resubscribe to all previously subscribed channels."""
+        self._ob_last_seq = None
+        self._ob_desynced.clear()
         for channel, params in self._subscriptions.items():
             if params:
                 # CF Benchmarks channels use index_ids, others use market_tickers
@@ -631,6 +648,11 @@ class KalshiWebSocket:
             log.debug("WebSocket welcome: %s", data)
         elif msg_type == WS_MSG_SUBSCRIBED:
             log.info("Subscribed to %s: %s", data.get("channel"), data.get("market_tickers"))
+            channel = data.get("channel") or data.get("msg", {}).get("channel")
+            if channel == "orderbook_delta":
+                self._ob_sid = data.get("sid") or data.get("msg", {}).get("sid")
+                self._ob_last_seq = None
+                self._ob_desynced.clear()
         elif msg_type == WS_MSG_UNSUBSCRIBED:
             log.info("Unsubscribed from %s: %s", data.get("channel"), data.get("market_tickers"))
         elif msg_type == WS_MSG_ERROR:
@@ -688,7 +710,7 @@ class KalshiWebSocket:
             log.warning("Failed to handle ticker: %s", e)
 
     async def _handle_orderbook_snapshot(self, data: Dict) -> None:
-        """Handle orderbook snapshot."""
+        """Replace one market's book and clear only that market's desync flag."""
         try:
             msg = data.get("msg", {})
             ticker = msg.get("market_ticker")
@@ -697,10 +719,15 @@ class KalshiWebSocket:
 
             snapshot = OrderbookSnapshot(
                 ticker=ticker,
-                yes_levels=msg.get("yes", []),
-                no_levels=msg.get("no", []),
+                yes_levels=msg.get("yes_dollars_fp", msg.get("yes", [])),
+                no_levels=msg.get("no_dollars_fp", msg.get("no", [])),
             )
             self._orderbook_cache[ticker] = snapshot
+
+            seq = data.get("seq")
+            if seq is not None:
+                self._ob_last_seq = int(seq)
+                self._ob_desynced.discard(ticker)
 
             if self._orderbook_snapshot_callback:
                 try:
@@ -710,12 +737,39 @@ class KalshiWebSocket:
         except Exception as e:
             log.warning("Failed to handle orderbook snapshot: %s", e)
 
+    def _track_seq(self, data: Dict) -> bool:
+        """Validate top-level seq and mark only the affected market stale."""
+        seq = data.get("seq")
+        if seq is None:
+            return False
+        seq = int(seq)
+        if self._ob_last_seq is not None and seq != self._ob_last_seq + 1:
+            self._ob_gaps_detected += 1
+            ticker = data.get("msg", {}).get("market_ticker") or ""
+            self._ob_desynced.add(ticker)
+            log.warning(
+                "orderbook seq gap: expected %d, got %d (gaps=%d) - requesting get_snapshot resync",
+                self._ob_last_seq + 1, seq, self._ob_gaps_detected,
+            )
+            if self._orderbook_gap_callback:
+                try:
+                    self._orderbook_gap_callback(self._ob_gaps_detected, seq)
+                except Exception as e:
+                    log.warning("Orderbook gap callback error: %s", e)
+            self._ob_last_seq = seq
+            return True
+        self._ob_last_seq = seq
+        return False
+
     async def _handle_orderbook_delta(self, data: Dict) -> None:
-        """Handle orderbook delta update."""
+        """Apply only ordinary deltas from currently synced markets."""
         try:
+            gapped = self._track_seq(data)
+            if gapped and self._ws:
+                await self._request_orderbook_resync()
             msg = data.get("msg", {})
             ticker = msg.get("market_ticker")
-            if not ticker:
+            if not ticker or ticker in self._ob_desynced:
                 return
 
             delta = OrderbookDelta(
@@ -731,6 +785,40 @@ class KalshiWebSocket:
                     log.warning("Orderbook delta callback error: %s", e)
         except Exception as e:
             log.warning("Failed to handle orderbook delta: %s", e)
+
+    async def _request_orderbook_resync(self) -> None:
+        """Request fresh snapshots with bounded backpressure."""
+        tickers = sorted(self._subscriptions.get("orderbook_delta", set()))
+        if not tickers or not self._ws:
+            return
+        if self._ob_sid is None:
+            log.warning("Cannot resync orderbook before subscription sid is known")
+            return
+        now = time.monotonic()
+        if (self._ob_resync_inflight or
+                now - self._ob_last_resync < ORDERBOOK_RESYNC_COOLDOWN_SECONDS):
+            return
+        self._ob_resync_inflight = True
+        self._ob_last_resync = now
+        msg = {
+            "cmd": WS_CMD_UPDATE_SUBSCRIPTION,
+            "params": {
+                "sid": self._ob_sid,
+                "action": "get_snapshot",
+                "market_tickers": tickers,
+            },
+        }
+        try:
+            await self._ws.send(json.dumps(msg))
+            log.info("Requested orderbook get_snapshot for %d markets", len(tickers))
+        except Exception as e:
+            log.warning("get_snapshot request failed: %s", e)
+        finally:
+            self._ob_resync_inflight = False
+
+    def orderbook_desynced(self) -> bool:
+        """True when any market is waiting for a post-gap snapshot."""
+        return bool(self._ob_desynced)
 
     async def _handle_trade(self, data: Dict) -> None:
         """Handle public trade notification."""

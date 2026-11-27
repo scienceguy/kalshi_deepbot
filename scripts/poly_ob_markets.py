@@ -18,9 +18,8 @@ it is a quoted price, not an executable ask, so it cannot be taken as free of
 spread. The Kalshi-side test pays the recorded ask; this one pays the recorded
 quote and the difference is stated rather than hidden.
 
-Resolution: recorded decisive vector where the file has one, else real Binance
-1m closes at the window boundaries (Polymarket settles on a Chainlink feed; the
-proxy is validated against the decisive subset and printed as a %.
+Resolution: only immutable binary result/settlement records from the official
+US venue are accepted. Price vectors are quotes, never settlement evidence.
 
 Usage:
   python3 scripts/poly_ob_markets.py --assets btc,eth,sol,xrp --tf 15m
@@ -30,12 +29,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
+import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from execution_realism import evaluate_poly_quotes, official_poly_outcomes  # noqa: E402
 
 HF = Path(os.path.expanduser(
     "~/.cache/huggingface/hub/datasets--Solal9--polymarket-crypto-updown-binary/"
@@ -43,8 +45,6 @@ HF = Path(os.path.expanduser(
 LOCAL = Path(os.path.expanduser("~/tmp/opencode/poly"))
 START = 104.48
 SEG = {"5m": 300, "15m": 900, "1h": 3600, "1d": 86400}
-BINANCE_SYMBOL = {"btc": "btcusdt", "eth": "ethusdt", "sol": "solusdt",
-                  "xrp": "xrpusdt", "bnb": "bnbusdt"}
 COLS = ["collection_timestamp_utc", "slug", "window_start_unix",
         "implied_probability", "outcome_prices",
         "liquidity", "ask_depth_usdc", "volume"]
@@ -58,99 +58,38 @@ def _file(asset: str, tf: str, kind: str) -> Path | None:
     return None
 
 
-def spot(asset: str = "btc") -> pd.Series:
-    """Real Binance 1m closes; both cached windows are concatenated."""
-    sym = BINANCE_SYMBOL.get(asset, "btcusdt")
-    parts = []
-    for name in (f"{sym}_1m.parquet", f"{sym}_1m_mar.parquet"):
-        p = Path(os.path.expanduser(f"~/tmp/opencode/binance/{name}"))
-        if p.exists():
-            parts.append(pd.read_parquet(p))
-    if not parts:
-        raise SystemExit(f"no binance 1m parquet for {sym}")
-    bn = pd.concat(parts, ignore_index=True).drop_duplicates("ts_ns").sort_values("ts_ns")
-    idx = (bn.ts_ns // 10**9).astype("int64").to_numpy()
-    return pd.Series(bn.value.to_numpy(float), index=idx)
+def _official_outcomes(df: pd.DataFrame) -> pd.Series:
+    return official_poly_outcomes(df)
 
 
 def build(asset: str, tf: str) -> pd.DataFrame:
     f = _file(asset, tf, "snapshots")
     if f is None:
         raise SystemExit(f"missing snapshots for {asset} {tf}")
-    df = pd.read_csv(f, usecols=COLS, low_memory=False)
+    df = pd.read_csv(
+        f, low_memory=False)
     df = df.dropna(subset=["implied_probability", "window_start_unix"])
     df["t"] = pd.to_datetime(df.collection_timestamp_utc, utc=True, format="mixed")
     df["minute"] = ((df.t - pd.Timestamp(0, tz="UTC")).dt.total_seconds()
                     - df.window_start_unix) / 60.0
     df["up_price"] = df.implied_probability.astype(float)
 
-    seg = SEG[tf]
-    px = spot(asset)
-
-    def at(ts: int) -> float:
-        i = int(px.index.searchsorted(ts, side="right")) - 1
-        return float(px.iloc[max(i, 0)])
-
-    def decisive(s) -> bool:
-        try:
-            a = json.loads(s)
-            return max(float(a[0]), float(a[1])) > 0.99
-        except (TypeError, ValueError, IndexError):
-            return False
-
-    # A decisive (>0.99) price vector only settles the market if it was printed
-    # at/after the window close. A 0.99 print with hours still to run is just a
-    # strong favourite and can reverse, which is why using every decisive row
-    # agreed with spot only 70% of the time on 1d markets.
-    end_ts = (df.window_start_unix + seg).astype("int64")
-    t_unix = ((df.t - pd.Timestamp(0, tz="UTC")).dt.total_seconds()).astype("int64")
-    settled = df.outcome_prices.map(decisive) & (t_unix >= end_ts - 120)
-    def _up(s):
-        if not isinstance(s, str) or not s.startswith("["):
-            return np.nan
-        try:
-            return float(json.loads(s)[0]) > 0.5
-        except (TypeError, ValueError, IndexError):
-            return np.nan
-    up_val = df.outcome_prices.map(_up)
-    df["decisive_up"] = up_val.where(settled)
-    rec_by_slug = df[df.decisive_up.notna()].groupby("slug").decisive_up.last()
-    proxy_by_slug = pd.Series(
-        [at(int(s) + seg) >= at(int(s)) for s in
-         df.drop_duplicates("slug").set_index("slug").window_start_unix],
-        index=df.drop_duplicates("slug").slug.to_numpy())
-    df["up_won"] = df.slug.map(rec_by_slug).where(
-        df.slug.map(rec_by_slug).notna(), df.slug.map(proxy_by_slug))
-    ok = rec_by_slug.dropna()
-    if len(ok):
-        prox = proxy_by_slug.reindex(ok.index).to_numpy(bool)
-        agree = (ok.to_numpy(bool) == prox).mean()
-        print(f"resolve check {asset} {tf}: {len(ok)}/{df.slug.nunique()} markets "
-              f"settled by a post-close quote; binance proxy agrees {agree * 100:.1f}%",
-              flush=True)
-    return df
+    df["up_won"] = _official_outcomes(df)
+    return df[df.up_won.notna()].copy()
 
 
 def run(df: pd.DataFrame, band: tuple[float, float], win: tuple[float, float],
         slip_c: float, frac: float) -> dict:
+    result = evaluate_poly_quotes(
+        df, "up_price", band, win, slip_c, frac, START, 0.995)
+    if result["n"] == 0:
+        return result
     ask_c = df.up_price * 100.0
-    d = df[(df.minute >= win[0]) & (df.minute <= win[1]) & ask_c.between(*band)]
-    if d.empty:
-        return {"n": 0}
-    t = d.sort_values(["slug", "t"]).groupby("slug", as_index=False).first()
-    p = ((t.up_price * 100 + slip_c) / 100.0).clip(0.01, 0.995)
-    net = t.up_won.astype(float) * (1 - p) - (~t.up_won.astype(bool)).astype(float) * p
-    bal, peak, dd = START, START, 0.0
-    for n, pr in zip(net, p):
-        bal += bal * frac * n / pr
-        peak = max(peak, bal)
-        dd = max(dd, 1 - bal / peak)
-        if bal <= 1:
-            break
+    t = (df[(df.minute >= win[0]) & (df.minute <= win[1]) & ask_c.between(*band)]
+         .sort_values(["slug", "t"]).drop_duplicates("slug", keep="first"))
     num = lambda c: pd.to_numeric(t[c], errors="coerce").median()  # noqa: E731
-    return {"n": len(t), "win": t.up_won.mean() * 100, "net_c": net.mean() * 100,
-            "final": bal, "dd": dd * 100, "liq": num("liquidity"),
-            "depth": num("ask_depth_usdc"), "vol": num("volume")}
+    return {**result, "liq": num("liquidity"), "depth": num("ask_depth_usdc"),
+            "vol": num("volume")}
 
 
 def main() -> int:
@@ -179,10 +118,13 @@ def main() -> int:
             if r["n"] < 5:
                 continue
             tag = f"{band[0]:g}-{band[1]:g} m{w[0]:g}-{w[1]:g}"
-            rows.append((asset, tag, r))
+            final = f"{r['final']:10.2f}" if r["final"] is not None else f"{'n/a':>10}"
+            dd = f"{r['dd']:5.1f}%" if r["dd"] is not None else f"{'n/a':>6}"
             print(f"{asset:6} {tag:20} {r['n']:>5} {r['win']:>6.2f} "
-                  f"{r['net_c']:>+7.2f} {r['final']:>10.2f} {r['dd']:>5.1f}% "
+                  f"{r['net_c']:>+7.2f} {final} {dd} "
                   f"{r['liq']:>8.0f} {r['depth']:>10.0f} {r['vol']:>8.0f}")
+            if r["final"] is not None:
+                rows.append((asset, tag, r))
     if rows:
         b = max(rows, key=lambda x: x[2]["final"])
         print(f"\nbest: {b[0]} {b[1]} n={b[2]['n']} win={b[2]['win']:.2f}% "

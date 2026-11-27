@@ -11,13 +11,14 @@ beats the venue ask by the required edge after the Kalshi taker fee.
 That measures the actual lag between the settlement index and the venue's
 quote, which is where the edge either exists or does not.
 
-Reality tax: taker fee 0.07*C*P*(1-P) (Kalshi's published schedule, rounded up
-per order), fills at the recorded ask, optional --slip cents for adverse fills.
+Reality tax uses the production fee/cash helpers for every series. Quotes alone
+produce per-contract observations; compounding requires recorded depth per row.
 
 Usage:
   python scripts/naru_tick.py --edges 0,1,2,3 --fracs 0.35,0.70 --slip 0,1
 """
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -29,7 +30,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import naru_sweep as N  # noqa: E402
 
-COLS = ["ticker", "ts_ns", "yes_ask_cents", "no_ask_cents", "strike_price"]
+COLS = ["ticker", "ts_ns", "yes_ask_cents", "no_ask_cents", "strike_price", "result"]
+DEPTH_COLS = ("depth", "yes_ask_depth", "no_ask_depth", "depth_ts_ns",
+              "received_ts_ns", "venue_ts_ms")
 
 
 def ticks_for_day(date: str) -> pd.DataFrame | None:
@@ -40,7 +43,13 @@ def ticks_for_day(date: str) -> pd.DataFrame | None:
         return None
     bts, bspot, bvol = br
 
-    k = pd.read_parquet(fp, columns=COLS).dropna(subset=["ticker"])
+    try:
+        import pyarrow.parquet as pq
+        available = set(pq.read_schema(fp).names)
+        depth_cols = [c for c in DEPTH_COLS if c in available]
+        k = pd.read_parquet(fp, columns=COLS + depth_cols).dropna(subset=["ticker"])
+    except (KeyError, ValueError):
+        return None  # official outcomes are mandatory
     k["ts_ns"] = pd.to_numeric(k.ts_ns, errors="coerce")
     for c in ["yes_ask_cents", "no_ask_cents", "strike_price"]:
         k[c] = pd.to_numeric(k[c], errors="coerce")
@@ -48,23 +57,26 @@ def ticks_for_day(date: str) -> pd.DataFrame | None:
     if k.empty:
         return None
 
+    k["official_result"] = k.result.map(N._result_yes)
     g = k.groupby("ticker", sort=False)
     close = g.ts_ns.max().rename("close_ts")
-    last_ya = g.yes_ask_cents.last().rename("last_ya")
     strike = g.strike_price.last().rename("strike")
-    k = k.join(close, on="ticker").join(last_ya, on="ticker").join(strike, on="ticker")
-    k = k[k.close_ts > k.ts_ns]  # drop ticks at/after own expiry
+    outcome = g.official_result.last().rename("result_yes")
+    k = k.join(close, on="ticker").join(strike, on="ticker").join(outcome, on="ticker")
+    k = k[(k.close_ts > k.ts_ns) & k.result_yes.notna()]
 
     sec = (k.ts_ns.to_numpy() // 10**9).astype(np.int64)
-    idx = np.searchsorted(bts, sec, side="right") - 1
-    idx = np.clip(idx, 0, len(bspot) - 1)
-    spot = bspot[idx]
-    vol = bvol[idx]
+    idx = N._bounded_previous_indices(bts, sec)
+    valid = idx >= 0
+    safe = np.clip(idx, 0, len(bspot) - 1)
+    spot = np.full(len(k), np.nan)
+    vol = np.full(len(k), np.nan)
+    spot[valid] = bspot[safe[valid]]
+    vol[valid] = bvol[safe[valid]]
     ml = (k.close_ts.to_numpy() - k.ts_ns.to_numpy()) / 6e10  # minutes left
     k["fair"] = N._fair(spot, k.strike.to_numpy(float), vol, ml)
-    k["result_yes"] = k.last_ya >= 50
     return k[["ticker", "ts_ns", "yes_ask_cents", "no_ask_cents", "fair",
-              "close_ts", "result_yes"]]
+              "close_ts", "result_yes"] + depth_cols]
 
 
 def first_entries(k: pd.DataFrame, bmin: int, bmax: int, edge: float,
@@ -72,13 +84,13 @@ def first_entries(k: pd.DataFrame, bmin: int, bmax: int, edge: float,
     """Earliest tick per ticker whose fair value clears the ask plus fee plus edge."""
     q = k.yes_ask_cents if side == "yes" else k.no_ask_cents
     p = q / 100.0
-    fee = 0.07 * p * (1.0 - p)
+    fee = N._entry_fees(k.ticker.to_numpy(), p.to_numpy())
     fv = k.fair if side == "yes" else (1.0 - k.fair)
     keep = q.between(bmin, bmax) & fv.notna() & (((fv - p - fee) * 100.0) >= edge)
     sel = k[keep]
     if sel.empty:
         return sel
-    sel = sel.sort_values("ts_ns").groupby("ticker", as_index=False).first()
+    sel = sel.sort_values("ts_ns").drop_duplicates("ticker", keep="first")
     p = (sel.yes_ask_cents if side == "yes" else sel.no_ask_cents) / 100.0
     win = sel.result_yes if side == "yes" else ~sel.result_yes
     out = pd.DataFrame({
@@ -86,56 +98,65 @@ def first_entries(k: pd.DataFrame, bmin: int, bmax: int, edge: float,
         "close_s": sel.close_ts // 10**9, "price": p.to_numpy(),
         "yes_win": win.to_numpy(),
     })
-    out["fee"] = 0.07 * out.price * (1.0 - out.price)
-    out["net"] = out.yes_win.astype(float) * (1.0 - out.price) \
-        - (~out.yes_win).astype(float) * out.price - out.fee
+    if "depth" in sel:
+        out["depth"] = sel.depth.to_numpy()
+    else:
+        depth_col = "yes_ask_depth" if side == "yes" else "no_ask_depth"
+        if depth_col in sel:
+            out["depth"] = sel[depth_col].to_numpy()
+    for col in ("yes_ask_depth", "no_ask_depth", "depth_ts_ns",
+                "received_ts_ns", "venue_ts_ms"):
+        if col in sel:
+            out[col] = sel[col].to_numpy()
+    out["fee"] = N._entry_fees(out.ticker.to_numpy(), out.price.to_numpy())
+    out["net"] = [N._settlement_net(row.ticker, row.price, row.yes_win)
+                  for row in out.itertuples()]
     return out
 
 
 def compound(t: pd.DataFrame, start: float, frac: float, slip: float = 0.0) -> dict:
-    """Event-driven, cash-limited compounding with integer contracts (Kalshi reality).
-
-    Entry: stake = frac * free cash, contracts = floor(stake/price), cash -= cost.
-    Settlement: credit $1/contract on a win, $0 on a loss. Skipped when
-    free cash cannot buy one contract.
-    """
+    """Cash-limited fills only when every row has recorded executable depth."""
+    if "depth" not in t:
+        return {"final": None, "maxdd": None, "fees": 0.0, "fills": 0}
     if t.empty:
         return {"final": start, "maxdd": 0.0, "fees": 0.0, "fills": 0}
-    trades = [(r.close_s, float(r.price), bool(r.yes_win)) for r in t.itertuples()]
+    trades = [(r.entry_ts, r.close_s, float(r.price), bool(r.yes_win), r.ticker, r.depth)
+              for r in t.itertuples()]
     ev = []
-    for i, (c_ts, price, win) in enumerate(trades):
-        ev.append((c_ts, 0, i))
-        ev.append((c_ts + 1, 1, i))  # settlement immediately after close in this model
-    ev.sort(key=lambda x: (x[0], x[1]))
+    for i, (entry_ts, close_s, price, win, ticker, depth) in enumerate(trades):
+        ev.append((close_s, 0, i))
+        ev.append((entry_ts, 1, i))
+    ev.sort(key=lambda x: (x[0], x[1]))  # settlements fund same-time entries
     bal, peak, maxdd, fees = start, start, 0.0, 0.0
     fills = 0
     step = slip / 100.0
     pos = {}
     for ts, kind, i in ev:
-        c_ts, price, win = trades[i]
-        if kind == 0:
+        entry_ts, close_s, price, win, ticker, depth = trades[i]
+        if kind == 1:
+            if depth is None or not math.isfinite(float(depth)) or depth <= 0:
+                continue
             price = min(0.99, price + step)
             stake = min(frac * bal, bal)
-            contracts = int(stake / price)
-            if contracts < 1:
+            contracts = min(stake / price, float(depth))
+            buy = N.supported_buy_cash(
+                contracts, price, N._series(ticker), depth)
+            if buy is None or buy > bal:
                 continue
             cost = contracts * price
-            fee = contracts * 0.07 * price * (1.0 - price)
-            if cost + fee > bal:
-                continue
-            bal -= cost + fee
+            fee = buy - cost
+            bal -= buy
             fees += fee
             fills += 1
             pos[i] = (contracts, price)
         else:
             contracts, entry_price = pos.pop(i, (0, 0.0))
             if win and contracts:
-                bal += contracts * 1.0
+                bal += N.fees.sell_cash_in(
+                    contracts, 1.0, taker=False, series=N._series(ticker))
         peak = max(peak, bal)
         if peak > 0:
             maxdd = max(maxdd, 1.0 - bal / peak)
-        if bal < 1.0:
-            break
     return {"final": bal, "maxdd": maxdd, "fees": fees, "fills": fills}
 
 
@@ -174,21 +195,17 @@ def main() -> int:
             continue
         for slip in slips:
             for f in fracs:
-                r = compound(ent, a.start, f, slip)
+                r = N.evaluate(ent, a.start, f)
                 rows.append({"edge": e, "slip": slip, "frac": f, "n": len(ent),
                              "win": ent.yes_win.mean() * 100,
-                             "net_c": ent.net.mean() * 100, **r,
-                             "x": r["final"] / a.start})
-    rows.sort(key=lambda r: -r["final"])
-    hdr = (f"{'edge':>5} {'slip':>5} {'frac':>5} {'n':>6} {'win%':>6} {'net_c':>7} "
-           f"{'final$':>12} {'x':>7} {'maxdd':>6} {'fees$':>9} {'hit':>4}")
+                             "net_c": ent.net.mean() * 100, **r})
+    rows.sort(key=lambda r: -r["net_c"])
+    hdr = (f"{'edge':>5} {'slip':>5} {'frac':>5} {'n':>6} {'win%':>6} {'net_c':>7}")
     print(hdr)
     print("-" * len(hdr))
     for r in rows[:a.top]:
         print(f"{r['edge']:>5.0f} {r['slip']:>5.0f} {r['frac']:>5.2f} {r['n']:>6} "
-              f"{r['win']:>6.1f} {r['net_c']:>+7.3f} {r['final']:>12.2f} "
-              f"{r['x']:>7.2f} {r['maxdd']*100:>5.1f}% {r['fees']:>9.2f} "
-              f"{'YES' if r['final']>=a.target else 'no':>4}")
+              f"{r['win']:>6.1f} {r['net_c']:>+7.3f}")
     assert rows, "no tick-level configs traded"
     return 0
 

@@ -4,7 +4,8 @@
 Signal: over L minutes the favourite's mid has risen by >= thr cents and the
 ask sits in the band -> buy the ask, exit H minutes later at the then-current
 bid (both legs pay the Kalshi taker fee). A hold that runs past the window
-close holds to settlement instead. All reported results are net of fees.
+close holds to settlement instead. Without recorded depth this script reports
+per-contract observations only; it does not simulate fills or a bankroll.
 
 Inputs are the recorded yes_ask / no_ask per minute and the recorded outcome;
 yes_bid is taken as 100 - no_ask, which is exact under a one-tick book. Nothing
@@ -25,12 +26,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import naru_sweep as N  # noqa: E402
 
-FEE = 0.07
-
-
 def simulate(mt: pd.DataFrame, look: int, hold: int, thr: int,
              b0: int, b1: int, start: float, frac: float) -> dict:
-    """One momentum config, compounded on a cash-limited ledger."""
+    """One momentum config as per-contract, production-fee observations."""
     wide = mt.pivot_table(index="ticker", columns="minute",
                           values=["yes_ask_cents", "no_ask_cents"], aggfunc="last")
     if wide.empty:
@@ -41,10 +39,8 @@ def simulate(mt: pd.DataFrame, look: int, hold: int, thr: int,
     mid = (ya + yb) / 2.0
 
     buy = ya                                   # entry pays the ask
-    fee_in = FEE * (buy / 100.0) * (1 - buy / 100.0)
     # exit at the bid `hold` minutes later
     bid = yb.shift(-hold, axis=1)
-    fee_out = FEE * (bid / 100.0) * (1 - bid / 100.0)
 
     mom = mid - mid.shift(look, axis=1)
     shot = mt.pivot_table(index="ticker", columns="minute",
@@ -59,29 +55,21 @@ def simulate(mt: pd.DataFrame, look: int, hold: int, thr: int,
             "entry_min": m,
             "price": buy[m][ok] / 100.0,
             "exit": bid[m][ok] / 100.0,
-            "fee_in": fee_in[m][ok],
-            "fee_out": fee_out[m][ok],
             "win_settle": shot[15 - hold][ok] if (15 - hold) in shot else np.nan,
         }))
     if not rows:
         return {"n": 0}
     t = pd.concat(rows)
-    t["fee"] = t.fee_in + t.fee_out            # both taker legs, per contract
-    t["net"] = (t.exit - t.price) - t.fee          # round trip, never held to settle
+    t["ticker"] = t.index
+    t["fee_in"] = N._entry_fees(t.ticker.to_numpy(), t.price.to_numpy())
+    t["fee_out"] = [N.production_sell_cash(1.0, row.exit, N._series(row.ticker)) - row.exit
+                    for row in t.itertuples()]
+    t["fee"] = t.fee_in + t.fee_out
+    t["net"] = [N.production_sell_cash(1.0, row.exit, N._series(row.ticker))
+                - N.production_buy_cash(1.0, row.price, N._series(row.ticker))
+                for row in t.itertuples()]
     t = t.sort_values("entry_min").reset_index(drop=True)
-
-    bal, peak, dd = start, start, 0.0
-    for r in t.itertuples():
-        c = bal * frac / r.price
-        if c <= 0:
-            continue
-        bal -= c * r.price + c * r.fee_in      # buy leg: ask + taker fee
-        bal += c * r.exit - c * r.fee_out      # sell leg: bid - taker fee
-        peak = max(peak, bal)
-        dd = max(dd, 1 - bal / peak)
-        if bal < 1:
-            break
-    return {"n": len(t), "net_c": t.net.mean() * 100, "final": bal, "maxdd": dd}
+    return {"n": len(t), "net_c": t.net.mean() * 100}
 
 
 def main() -> int:
@@ -108,19 +96,18 @@ def main() -> int:
                     r["cfg"] = (look, hold, thr, b0, b1)
                     rows.append(r)
 
-    rows.sort(key=lambda r: -(r.get("final") or 0))
-    hdr = (f"{'look':>4} {'hold':>4} {'thr':>3} {'band':>7} {'n':>6} {'net_c':>7} "
-           f"{'final$':>10} {'maxdd':>6}")
+    rows.sort(key=lambda r: -r["net_c"])
+    hdr = (f"{'look':>4} {'hold':>4} {'thr':>3} {'band':>7} {'n':>6} {'net_c':>7}")
     print(hdr)
     print("-" * len(hdr))
     for r in rows[:a.top]:
         look, hold, thr, b0, b1 = r["cfg"]
         print(f"{look:>4} {hold:>4} {thr:>3} {b0:>3}-{b1:<3} {r['n']:>6} "
-              f"{r['net_c']:>+7.2f} {r['final']:>10.2f} {r['maxdd']*100:>5.1f}%")
+              f"{r['net_c']:>+7.2f}")
     assert rows, "no momentum configs traded"
-    pos = [r for r in rows if r["final"] > a.start]
-    print(f"\n{len(rows)} configs tested, {len(pos)} profitable net of fees (both taker legs)")
-    print(f"best final ${rows[0]['final']:.2f} vs start ${a.start:.2f} (net of fees)")
+    pos = [r for r in rows if r["net_c"] > 0]
+    print(f"\n{len(rows)} configs tested, {len(pos)} positive per-contract observations")
+    print(f"best per-contract net {rows[0]['net_c']:+.3f}c")
     return 0
 
 

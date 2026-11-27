@@ -988,6 +988,14 @@ def validate_credentials():
             "Kalshi credentials are missing or incomplete.\n\n" + "\n".join(errors)
         )
 
+# DepthFeed is a secondary, non-hot-path orderbook snapshot source.
+DEPTHFEED_ENABLED = _env_bool("DEPTHFEED_ENABLED", False)
+DEPTHFEED_MCP_URL = os.environ.get("DEPTHFEED_MCP_URL", "https://api.depthfeed.com/mcp")
+DEPTHFEED_REQUEST_TIMEOUT_SECONDS = _env_int("DEPTHFEED_REQUEST_TIMEOUT_SECONDS", 10)
+DEPTHFEED_SOURCE_PREFERENCE = _env_str("DEPTHFEED_SOURCE_PREFERENCE", "kalshi")
+DEPTHFEED_RECON_ENABLED = _env_bool("DEPTHFEED_RECON_ENABLED", False)
+
+
 def validate_dry_run(live_explicit: bool = False) -> bool:
     """Block live trading unless --live is explicitly passed AND KALSHI_CONFIRM_LIVE=true.
 
