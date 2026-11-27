@@ -56,9 +56,9 @@ def test_max_trade_dollars_skips_ceiling_when_mtm_none():
     r.state.session_high = 100.0
     # portfolio=195, cost-basis exposure=95. If the ceiling were applied with
     # cost-basis it would cap at max(0, 58.5-95)=0. With mtm=None the ceiling is
-    # skipped, so the result is min(cash_room=100, per_trade=50, MAX=50)=50.
+    # skipped; the attached 15% shield still caps exposure, leaving min(100, 50, 29.25).
     result = r.max_trade_dollars(100.0, 95.0)
-    assert result == 50.0
+    assert result == 29.25
 
 
 def test_max_trade_dollars_uses_mtm_for_ceiling_when_given():
@@ -73,10 +73,10 @@ def test_max_trade_dollars_uses_mtm_for_ceiling_when_given():
     r = RiskManager()
     r.state.start_balance = 100.0
     r.state.session_high = 100.0
-    # portfolio=195, mtm=20 -> exposure_room = max(0, 58.5-20)=38.5, which binds
-    # below per_trade (50): the ceiling is what caps the trade at 38.5.
+    # portfolio=195, mtm=20 -> 15% shield exposure_room = 29.25-20 = 9.25,
+    # which binds below per_trade (50).
     result = r.max_trade_dollars(100.0, 95.0, mark_to_market_exposure=20.0)
-    assert result == 38.5
+    assert result == 9.25
 
 
 def test_risk_check_blocks():
@@ -153,8 +153,9 @@ def test_drawdown_halt_does_not_auto_resume_by_default(monkeypatch):
     assert r.state.halted is True
 
 
-def test_drawdown_halt_auto_resumes_with_flag_after_min_minutes(monkeypatch):
-    """B3: HALT_AUTO_RESUME=true lifts the halt after HALT_MIN_MINUTES."""
+def test_red_drawdown_requires_operator_review_after_min_minutes(monkeypatch):
+    """Red never time-resumes; the existing operator review releases it."""
+    import control
     import risk
     clock = {"t": 1000.0}
     monkeypatch.setattr(risk.time, "time", lambda: clock["t"])
@@ -166,6 +167,9 @@ def test_drawdown_halt_auto_resumes_with_flag_after_min_minutes(monkeypatch):
     assert r.state.halted is True
     clock["t"] += (config.HALT_MIN_MINUTES + 1) * 60.0
     r.update_balance(cash=60.0, exposure=0.0, mark_to_market_exposure=0.0)
+    assert r.state.halted is True
+    r.update_balance(cash=96.0, exposure=0.0, mark_to_market_exposure=0.0)
+    assert control.approve_risk_review("operator") is True
     assert r.state.halted is False
     assert r.state.halted_at == 0.0
 

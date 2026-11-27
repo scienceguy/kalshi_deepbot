@@ -87,6 +87,7 @@ py-modules = [
     "signals",
     "sizing",
     "spot_consensus",
+    "supabase_client",
     "tick_bus",
     "trader",
 ]
