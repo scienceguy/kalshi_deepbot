@@ -10,6 +10,7 @@ polars>=1.0                 # scripts/ dataset loaders (HF parquet)
 huggingface_hub>=0.20       # hf_backtest.py, dataset loaders
 scipy>=1.11                 # scripts/hf_fairvalue.py
 cryptofeed==2.5.0           # cryptofeed_feed.py normalized Coinbase/Binance WS feeds
+websockets                  # kalshi_ws.py unconditional WebSocket client import
 
 # Optional -- ml_model.py / train_xgboost.py detect these at import and the
 # trading loop runs without them (the ML gate is opt-in via --ml-model).
@@ -17,14 +18,12 @@ cryptofeed==2.5.0           # cryptofeed_feed.py normalized Coinbase/Binance WS 
 # xgboost
 # lightgbm
 
-# Optional -- binance_feed.stream_trades (live WS streaming). The trading loop
-# uses the REST path and does not need this.
-# websockets>=12
-
 # Optional -- legacy/kalshi_price_data_client.py only.
 # kalshi-price-data
 
 # Test + pre-commit gates (scripts/verify_*.py). Not needed to run the bot.
 pytest>=7.4
+pytest-randomly
 pyflakes>=3.1
 mempalace>=0.1.0
+mutmut==3.8.1
