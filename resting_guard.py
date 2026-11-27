@@ -30,6 +30,7 @@ J6: Event-driven wake-ups + A1 latency baseline integration.
 import logging
 import threading
 import time
+import weakref
 
 import config
 
@@ -41,6 +42,14 @@ TRIGGER_BBO_AWAY = "bbo_moved_away"
 TRIGGER_SPOT_MOVE = "spot_move"
 
 PM_TICK = 0.01
+
+_GUARDS = weakref.WeakSet()
+
+
+def evaluate_all() -> None:
+    """Run every live guard after a process-wide red risk transition."""
+    for guard in list(_GUARDS):
+        guard.evaluate()
 
 
 # J6: Event-driven wake-up support
@@ -112,6 +121,7 @@ class RestingGuard:
         if int(bbo_ticks) < 1:
             raise ValueError("bbo_ticks must be >= 1")
         self._lock = lock
+        _GUARDS.add(self)
         self._list_orders = list_orders       # () -> list of order dicts
         self._cancel_one = cancel_one          # (order, reason) -> bool
         self._spot_for = spot_for              # (symbol) -> float | None

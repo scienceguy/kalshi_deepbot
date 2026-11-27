@@ -1,0 +1,75 @@
+# DeepBot Equity Shield & Go-Live Scorecard Configuration
+# Target path: /opt/superbot/config/risk_shield.yaml
+# Enforced by: risk.py, sizing.py, session_limits.py, kill_switch.py, resting_guard.py
+
+version: 5
+phase: 1_dry_run
+
+portfolio:
+  venues:
+    - kalshi
+    - polymarket_us
+  contract_duration: 15m
+  correlated_series:
+    - BTC
+    - ETH
+    - SOL
+    - XRP
+    - DOGE
+    - BNB
+    - HYPE
+    - NEAR
+    - ZEC
+  correlated_exposure_cap_pct: 15.0
+
+hwm_sizing:
+  enabled: true
+  basis: settled_equity
+  ratchet_up_on_new_hwm: true
+  scale_down_immediately_on_loss: true
+
+drawdown_throttles:
+  tier_1_yellow:
+    drawdown_pct: -3.0
+    kelly_multiplier_scale: 0.50
+    halt_new_box_arb_legs: true
+    recovery_drawdown_pct: -1.5
+  tier_2_orange:
+    drawdown_pct: -5.0
+    kelly_multiplier_scale: 0.25
+    min_net_ev_multiplier: 1.50
+    kl_divergence_gate_multiplier: 1.50
+    allowed_series:
+      - BTC
+      - ETH
+  tier_3_red:
+    drawdown_pct: -8.0
+    kill_switch_action: pause_entries
+    cancel_resting_maker_orders: true
+    zero_order_safety_mode: true
+    requires_operator_review: true
+
+scorecard_thresholds:
+  min_trades: 500
+  min_days: 7
+  min_profit_factor: 1.30
+  max_drawdown_pct: 8.0
+  min_daily_turnover_x: 1.50
+  max_parity_drift_usd: 0.01
+
+rollout_stages:
+  stage_1_canary:
+    days: [1, 3]
+    kelly_scale: 0.10
+    max_per_market_usd: 25.0
+    live_confirm_env: KALSHI_CONFIRM_LIVE=true
+  stage_2_scaled:
+    days: [4, 10]
+    kelly_scale: 0.50
+    min_live_fills: 150
+    max_parity_drift_usd: 0.01
+    max_drawdown_pct: 3.0
+  stage_3_full:
+    kelly_scale: 1.00
+    hwm_scaling: true
+    equity_shield_active: true
