@@ -67,6 +67,14 @@ class ControlState:
 
 
 STATE = ControlState()
+RISK_REVIEW_APPROVER = None
+
+
+def approve_risk_review(reviewer: str) -> bool:
+    """Let the existing second-confirmation path release a red risk review."""
+    if RISK_REVIEW_APPROVER is None:
+        return False
+    return bool(RISK_REVIEW_APPROVER(reviewer))
 
 
 def verify_command(row: dict) -> tuple:

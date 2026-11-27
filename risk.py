@@ -12,9 +12,27 @@ from dataclasses import dataclass, field
 from typing import Tuple
 
 import config
+import control
 import fees
+import resting_guard
 
 log = logging.getLogger(__name__)
+
+
+def _load_risk_shield():
+    """Load the attached governance record once; absence preserves current limits."""
+    import yaml
+    from pathlib import Path
+    try:
+        data = yaml.safe_load(
+            (Path(__file__).resolve().parent / "config/risk_shield.yaml").read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, yaml.YAMLError) as exc:
+        log.warning("risk_shield.yaml unavailable: %s", exc)
+        return {}
+
+
+_RISK_SHIELD = _load_risk_shield()
 
 # Known assets from the 9 supported series (must match gates.SERIES_ASSET)
 _KNOWN_ASSETS = {"BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE", "ZEC", "NEAR"}
@@ -64,6 +82,9 @@ class RiskState:
     # Daily P&L tracking for daily loss circuit breaker (Pillar B)
     daily_pnl: float = 0.0
     daily_pnl_reset_ts: float = 0.0
+    shield_tier: str = "none"
+    operator_review_required: bool = False
+    last_drawdown: float = 0.0
 
     @property
     def peak(self) -> float:
@@ -79,6 +100,60 @@ class RiskManager:
         self.state = RiskState()
         self.active_risk = 0.0
         self.position_risk: dict = {}
+        control.RISK_REVIEW_APPROVER = self.approve_operator_review
+
+    @staticmethod
+    def _tier(key: str) -> dict:
+        return _RISK_SHIELD.get("drawdown_throttles", {}).get(key, {})
+
+    def _update_shield_tier(self, drawdown: float) -> None:
+        choices = (("red", "tier_3_red"), ("orange", "tier_2_orange"),
+                   ("yellow", "tier_1_yellow"))
+        previous = self.state.shield_tier
+        self.state.last_drawdown = drawdown
+        for name, key in choices:
+            threshold = self._tier(key).get("drawdown_pct")
+            if threshold is not None and drawdown <= float(threshold) / 100.0:  # reviewed: choose the most severe tier whose negative drawdown fraction crosses its threshold
+                self.state.shield_tier = name
+                break
+        else:
+            self.state.shield_tier = "none"
+        if self.state.shield_tier == "red":  # reviewed: red tier always requires explicit operator review
+            self.state.operator_review_required = True
+            if not self.state.halted:  # reviewed: preserve the original halt timestamp on repeated red updates
+                self.state.halted = True
+                self.state.halted_at = time.time()
+            self.state.halt_reason = "drawdown risk tier red: operator review required"
+            control.STATE.pause_entries = True
+            if previous != "red":  # reviewed: cancel resting orders only on transition into red
+                resting_guard.evaluate_all()
+
+    def shield_kelly_scale(self) -> float:
+        tier = self._tier({"yellow": "tier_1_yellow", "orange": "tier_2_orange",
+                           "red": "tier_3_red"}.get(self.state.shield_tier, ""))
+        return float(tier.get("kelly_multiplier_scale", 1.0))
+
+    def shield_min_ev_multiplier(self) -> float:
+        return float(self._tier("tier_2_orange").get("min_net_ev_multiplier", 1.0)) \
+            if self.state.shield_tier in ("orange", "red") else 1.0  # reviewed: orange/red tiers apply the configured minimum EV multiplier
+
+    def shield_series_allowed(self, ticker: str) -> bool:
+        if self.state.shield_tier not in ("orange", "red"):  # reviewed: only orange/red tiers restrict entry series
+            return True
+        allowed = self._tier("tier_2_orange").get("allowed_series") or []
+        return not allowed or market_asset(ticker) in allowed
+
+    def approve_operator_review(self, reviewer: str) -> bool:
+        red = self._tier("tier_3_red")
+        if (not reviewer or not self.state.operator_review_required  # reviewed: release only a recovered red halt with a named reviewer
+                or self.state.last_drawdown <= float(red["drawdown_pct"]) / 100.0):
+            return False
+        self.state.operator_review_required = False
+        self.state.halted = False
+        self.state.halted_at = 0.0
+        self.state.halt_reason = ""
+        control.STATE.pause_entries = False
+        return True
 
     def initialize(self, starting_balance: float):
         self.state.start_balance = starting_balance
@@ -124,6 +199,9 @@ class RiskManager:
         # fired, which is the drawdown this is supposed to stop.
         peak = max(self.state.session_high, self.state.start_balance)
         drawdown = (total_value - peak) / peak
+        self._update_shield_tier(drawdown)
+        if self.state.operator_review_required:  # reviewed: red-tier operator lock supersedes generic halt management
+            return
 
         # Paper experiments may raise the halt threshold (PAPER_DRAWDOWN_HALT_PCT)
         # so a losing streak cannot deadlock the run. # reviewed: paper-only
@@ -270,8 +348,8 @@ class RiskManager:
         q = 1.0 - p
         kelly_fraction = (p * b - q) / b if b > 0 else 0.0
         
-        # Apply fractional Kelly multiplier
-        kelly_fraction *= config.KELLY_FRACTION
+        # Apply fractional Kelly multiplier and the active drawdown tier scale.
+        kelly_fraction *= config.KELLY_FRACTION * self.shield_kelly_scale()
         
         # Must have positive edge after fees
         # Net EV per contract = p * profit - q * loss - fee
@@ -281,8 +359,9 @@ class RiskManager:
         net_ev = p * (profit_cents / 100.0) - q * (loss_cents / 100.0) - fee_per_contract
         
         # Use small epsilon for floating-point comparison (net_ev can be 0.009999... vs 0.01)
-        if net_ev < config.MIN_EV_EDGE_PCT - 1e-10:  # reviewed: epsilon avoids FP rejection at exact threshold
-            log.debug("Kelly rejected: net EV $%.4f < min edge $%.4f (aggressive_fill=%s)", net_ev, config.MIN_EV_EDGE_PCT, aggressive_fill)
+        min_ev = config.MIN_EV_EDGE_PCT * self.shield_min_ev_multiplier()
+        if net_ev < min_ev - 1e-10:  # reviewed: epsilon avoids FP rejection at exact threshold
+            log.debug("Kelly rejected: net EV $%.4f < min edge $%.4f (aggressive_fill=%s)", net_ev, min_ev, aggressive_fill)
             return 0.0
         
         # Kelly bet in dollars (rounded to cents to avoid floating-point edge
@@ -463,6 +542,9 @@ class RiskManager:
         min_cash = config.PAPER_MIN_CASH_ABSOLUTE if paper else config.MIN_CASH_ABSOLUTE
         ceiling_pct = (config.PAPER_EXPOSURE_CEILING_PCT if paper
                        else config.EXPOSURE_CEILING_PCT)
+        shield_cap = float(_RISK_SHIELD.get("portfolio", {}).get(
+            "correlated_exposure_cap_pct", 100.0)) / 100.0
+        ceiling_pct = min(ceiling_pct, shield_cap)
         per_trade_pct = config.PAPER_PER_TRADE_PCT if paper else config.PER_TRADE_PCT
 
         # Exposure room under ceiling — use mark-to-market if available for
@@ -520,6 +602,8 @@ class RiskManager:
               market=None,
               side: str = "") -> Tuple[bool, str]:
         """Final pre-order check. Returns (allowed, reason)."""
+        if not self.shield_series_allowed(ticker):  # reviewed: orange-tier series allowlist is a pre-order guard
+            return False, "risk tier orange: only BTC/ETH entries allowed"
         # Paper-only guard bypass (PAPER_GUARDS_ENABLED=false); the live path
         # still enforces the halt, cooldown and per-market loss limit.
         if not _paper_guards_relaxed():  # reviewed: bypass is paper-only, live always runs the guards
@@ -618,6 +702,9 @@ class RiskManager:
             "halted": self.state.halted,
             "halt_reason": self.state.halt_reason,
             "halted_at": self.state.halted_at,
+            "shield_tier": self.state.shield_tier,
+            "operator_review_required": self.state.operator_review_required,
+            "last_drawdown": self.state.last_drawdown,
         }
 
     def load_state_dict(self, data):
@@ -636,6 +723,14 @@ class RiskManager:
         hr = data.get("halt_reason")
         if isinstance(hr, str):  # reviewed: halt reason is free text persisted for the operator
             self.state.halt_reason = hr
+        tier = data.get("shield_tier")
+        if tier in ("none", "yellow", "orange", "red"):  # reviewed: restore only recognized shield tiers
+            self.state.shield_tier = tier
+        self.state.operator_review_required = (
+            data.get("operator_review_required") is True)
+        last_dd = data.get("last_drawdown")
+        if isinstance(last_dd, (int, float)) and not isinstance(last_dd, bool):  # reviewed: restore only numeric drawdown values, never booleans
+            self.state.last_drawdown = float(last_dd)
         ha = data.get("halted_at")
         if isinstance(ha, (int, float)) and not isinstance(ha, bool) and ha > 0:  # reviewed: restore only a plausible positive halt time
             self.state.halted_at = float(ha)
