@@ -246,6 +246,31 @@ class LocalDB:
             self._local.conn = conn
         return self._local.conn
 
+    def _run_migrations(self, conn: sqlite3.Connection) -> None:
+        """Apply numbered SQL migrations exactly once, in filename order."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        applied = {
+            row[0] for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            ).fetchall()
+        }
+        migration_dir = Path(__file__).resolve().parent / "migrations"
+        for path in sorted(migration_dir.glob("[0-9][0-9][0-9]_*.sql")):
+            version = int(path.name.split("_", 1)[0])
+            if version in applied:
+                continue
+            conn.executescript(path.read_text(encoding="utf-8"))
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+                (version, path.name),
+            )
+
     def _init_db(self):
         """Create tables if they don't exist."""
         conn = self._get_conn()
@@ -592,7 +617,8 @@ class LocalDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_synced ON orders(synced)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_state_synced ON bot_state(synced)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_synced ON backtest_runs(synced)")
-            
+
+            self._run_migrations(conn)
             conn.commit()
             log.info("Local database initialized at %s", self.db_path)
 
