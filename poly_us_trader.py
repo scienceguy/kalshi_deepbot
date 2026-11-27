@@ -1324,7 +1324,7 @@ class PolyUSPaperTrader:
             try:
                 pdb = self._poly_db()
                 if pdb is not None:
-                    pdb.record_fill({
+                    fill_ok = pdb.record_fill({
                         "order_id": oid,
                         "slug": o.get("slug", ""),
                         "side": o.get("side", ""),
@@ -1334,6 +1334,20 @@ class PolyUSPaperTrader:
                         "fee": float(o.get("fee", 0.0) or 0.0),
                         "ts": datetime.now(timezone.utc).isoformat(),
                     })
+                    unified_ok = pdb.record_fill_unified({
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "ticker": o.get("slug", ""),
+                        "side": o.get("side", ""),
+                        "price_cents": int(round(fill_price * 100)),
+                        "qty": filled_qty,
+                        "fee_dollars": float(o.get("fee", 0.0) or 0.0),
+                        "order_id": oid,
+                        "maker_taker": "maker",
+                        "settled": 0,
+                    }, venue="polymarket_us")
+                    if not (fill_ok and unified_ok):
+                        self.state["venue_recon_halted"] = True
+                        log.error("Live fill persistence failed for %s", oid)
             except Exception as e:
                 log.debug("Poly DB fill record failed: %s", e)
             o["state"] = "filled"
@@ -1798,10 +1812,29 @@ class PolyUSPaperTrader:
                 venue="polymarket_us",
                 mode="live" if self.live_mode else "dry",
             )
+            unified_settlement = {
+                "order_id": pos.get("order_id", ""), "ticker": slug,
+                "side": pos["side"], "qty": pos["qty"],
+                "price_cents": int(round(100 * float(
+                    pos.get("fill_price", pos.get("price", 0.0))))),
+                "fee_dollars": float(pos.get("fee", 0.0) or 0.0),
+                "settlement_price_cents": int(round(100 * payout_per_contract)),
+                "settlement_pnl_dollars": pnl,
+                "maker_taker": ("maker" if self.live_mode or self.paper_fill_model == "maker"
+                                else "taker"),
+                "raw": {"settlement": settlement},
+            }
+            unified_db = self._poly_db()
 
             if applied is True:
                 # Newly applied — adopt post-settlement state and book daily loss.
                 self.state = post_state
+                if unified_db is None or not unified_db.record_settlement_unified(
+                        unified_settlement, venue="polymarket_us"):
+                    self.state["venue_recon_halted"] = True
+                    log.error("Unified settlement fill write failed for %s", slug)
+                    remaining_positions.append(pos)
+                    continue
                 self._track_daily_realized(pnl)
                 # Task 2: reconcile settlement for rolling Brier calibration.
                 outcome = 1 if settlement >= 0.5 else 0  # 1 = Yes won
@@ -1839,8 +1872,13 @@ class PolyUSPaperTrader:
                             "pnl_dollars": pnl, "settle_key": settle_key},
                            key=f"position.settled:{settle_key}")
             elif applied is False:
-                # Duplicate — already applied in a prior cycle. Don't re-credit.
-                # Just detach the position from memory; cash/pnl already reflect it.
+                # Duplicate — record idempotently before detaching the position.
+                if unified_db is None or not unified_db.record_settlement_unified(
+                        unified_settlement, venue="polymarket_us"):
+                    self.state["venue_recon_halted"] = True
+                    log.error("Unified settlement retry failed for %s", slug)
+                    remaining_positions.append(pos)
+                    continue
                 self.state["positions"] = [p for p in self.state.get("positions", []) if p is not pos]
                 log.info(
                     "🏆 SETTLED (dup) %s %s: already applied, position removed, PnL not re-credited",
