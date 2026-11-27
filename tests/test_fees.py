@@ -1,4 +1,6 @@
 """Tests for fees.py — Kalshi fee math."""
+import fees
+
 from fees import (
     taker_fee_dollars,
     taker_fee_cents,
@@ -48,6 +50,24 @@ def test_net_profit_roundtrip_loss():
     # entry_value = 6.00, exit_value = 0.00, fee ≈ 0.168, pnl ≈ -6.168
     assert abs(profit + 6.168) < 0.001
     assert pct < 0
+
+
+def test_cash_helpers_accept_series_and_use_configured_grid(monkeypatch):
+    series = "KXTEST15M"
+    fees.clear_series_fees()
+    fees.set_series_fees({series: {
+        "fee_multiplier": 2.0, "fee_type": "quadratic_with_maker_fees"}})
+    monkeypatch.setattr(fees, "_cash_grid", lambda: 0.01)
+    monkeypatch.setattr(fees, "FEE_RATE", 0.07)
+    try:
+        assert fees.buy_cash_out(2.5, 0.5, series=series) == 1.34
+        assert fees.sell_cash_in(2.5, 0.5, series=series) == 1.16
+        assert fees.buy_cash_out(
+            2.5, 0.5, taker=False, series=series) == 1.28
+        assert fees.sell_cash_in(
+            0.505, 1.0, taker=False, series=series) == 0.50
+    finally:
+        fees.clear_series_fees()
 
 
 def test_fees_never_negative():

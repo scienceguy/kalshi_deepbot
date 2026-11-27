@@ -6,11 +6,10 @@ papylove quote_history horizon, so the favourite-taker edge can be checked on
 dates the papylove sweep never saw. Nothing is synthesised: yes_ask / no_ask are
 the recorded venue quotes and the win/loss is the recorded settlement.
 
-Settlement derivation (validated 203/203 against papylove's recorded ``result``):
-each ticker covers one 15-minute window ending at its last tick; the market
-resolves YES when the book's final yes_ask sat at >= 50c (the book converges to
-99/1 at expiry). The ticker's encoded HHMM carries a fixed clock offset, so the
-window is taken from the data (expiry = max ts per ticker), never from the string.
+Settlement requires the recorded official ``result`` (yes/no); rows without it
+are excluded. Quotes and spot values never proxy outcomes. Each ticker covers
+one 15-minute window ending at its last tick. The ticker's encoded HHMM carries
+a fixed clock offset, so the window is taken from the data, never the string.
 
 Fair-value / lag filter (--edges): the underlying is the recorded BRTI index
 (Kalshi's own Bitcoin Real-Time settlement index, 1s cadence). P(BRTI_expiry >
@@ -34,11 +33,68 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from hf_sweep import _compound  # noqa: E402
+import fees  # noqa: E402
 
-FEE_RATE = 0.07
 KDATA = Path.home() / "tmp/opencode/naru/kalshi"
 BDATA = Path.home() / "tmp/opencode/naru/brti"
+
+
+def _result_yes(value):
+    """Return the explicit official YES/NO outcome, never a quote proxy."""
+    if not isinstance(value, str):
+        return None
+    outcome = value.strip().lower()
+    if outcome == "yes":
+        return True
+    if outcome == "no":
+        return False
+    return None
+
+
+def _bounded_previous_indices(source_ts, query_ts, tolerance_s=1.0):
+    """Previous-tick indices, or -1 for pre-first/future/stale joins."""
+    source = np.asarray(source_ts)
+    query = np.asarray(query_ts)
+    indices = np.searchsorted(source, query, side="right") - 1
+    invalid = indices < 0
+    safe = np.clip(indices, 0, len(source) - 1)
+    invalid |= (query - source[safe] < 0) | (query - source[safe] > tolerance_s)
+    return np.where(invalid, -1, indices)
+
+
+def production_buy_cash(quantity, price, series):
+    return fees.buy_cash_out(quantity, price, taker=True, series=series)
+
+
+def production_sell_cash(quantity, price, series):
+    return fees.sell_cash_in(quantity, price, taker=True, series=series)
+
+
+def supported_buy_cash(quantity, price, series, depth):
+    if depth is None or quantity <= 0 or quantity > depth:
+        return None
+    return production_buy_cash(quantity, price, series)
+
+
+def _series(ticker):
+    return fees.series_from_ticker(str(ticker))
+
+
+def _entry_fee(price, series):
+    return production_buy_cash(1.0, float(price), series) - float(price)
+
+
+def _entry_fees(tickers, prices):
+    return np.array([_entry_fee(price, _series(ticker))
+                     for ticker, price in zip(tickers, prices)])
+
+
+def _settlement_net(ticker, price, won):
+    series = _series(ticker)
+    buy = production_buy_cash(1.0, float(price), series)
+    payout = 1.0 if won else 0.0
+    settled = fees.sell_cash_in(1.0, payout, taker=False, series=series)
+    return settled - buy
 
 
 def all_dates():
@@ -59,8 +115,7 @@ def _brti_day(date: str):
     b["ts_ns"] = pd.to_numeric(b.ts_ns, errors="coerce")
     b["value"] = pd.to_numeric(b.value, errors="coerce")
     b = b.dropna().sort_values("ts_ns").reset_index(drop=True)
-    # Sparse days (a few hundred rows) make the searchsorted lookup clamp to one
-    # constant spot for the whole day, which silently prices every market wrong.
+    # Sparse days cannot support bounded decision-time joins and fair values.
     if len(b) < 20000:
         return None
     ret = np.log(b.value.to_numpy(float)).dot(1.0)  # copy
@@ -82,19 +137,25 @@ def build_minute_table(attach_fv: bool) -> pd.DataFrame:
     """One row per (ticker, minute): last quote in the minute + settlement (+ fair)."""
     parts = []
     for d in all_dates():
-        k = pd.read_parquet(KDATA / f"{d}.parquet",
-                            columns=["ticker", "ts_ns", "yes_ask_cents",
-                                     "no_ask_cents", "strike_price"]).dropna(subset=["ticker"])
+        try:
+            k = pd.read_parquet(
+                KDATA / f"{d}.parquet",
+                columns=["ticker", "ts_ns", "yes_ask_cents", "no_ask_cents",
+                         "strike_price", "result"]).dropna(subset=["ticker"])
+        except (KeyError, ValueError):
+            continue  # no official outcome column means no usable evidence
         k["ts_ns"] = pd.to_numeric(k.ts_ns, errors="coerce")
         for c in ["yes_ask_cents", "no_ask_cents", "strike_price"]:
             k[c] = pd.to_numeric(k[c], errors="coerce")
         k = k.dropna(subset=["ts_ns"]).sort_values("ts_ns")
         g = k.groupby("ticker", sort=False)
+        k["official_result"] = k.result.map(_result_yes)
+        g = k.groupby("ticker", sort=False)
         k = k.join(g.ts_ns.max().rename("close_ts"), on="ticker")
-        k = k.join(g.yes_ask_cents.last().rename("last_ya"), on="ticker")
         k = k.join(g.strike_price.last().rename("strike"), on="ticker")
+        k = k.join(g.official_result.last().rename("result_yes"), on="ticker")
+        k = k[k.result_yes.notna()]
         k["minute"] = ((k.ts_ns - (k.close_ts - 900 * 10**9)) // (60 * 10**9)).clip(0, 14)
-        k["result_yes"] = k.last_ya >= 50
         k = (k.sort_values("ts_ns").groupby(["ticker", "minute"], as_index=False).last())
         k = k[["ticker", "minute", "yes_ask_cents", "no_ask_cents", "strike",
                "close_ts", "result_yes"]]
@@ -106,10 +167,13 @@ def build_minute_table(attach_fv: bool) -> pd.DataFrame:
                 k["fair"] = np.nan
             else:
                 bts, bspot, bvol = br
-                idx = np.searchsorted(bts, k.entry_ts.to_numpy(), side="right") - 1
-                idx = np.clip(idx, 0, len(bspot) - 1)
-                spot = bspot[idx]
-                vol = bvol[idx]
+                idx = _bounded_previous_indices(bts, k.entry_ts.to_numpy())
+                valid = idx >= 0
+                safe = np.clip(idx, 0, len(bspot) - 1)
+                spot = np.full(len(k), np.nan)
+                vol = np.full(len(k), np.nan)
+                spot[valid] = bspot[safe[valid]]
+                vol[valid] = bvol[safe[valid]]
                 ml = (15 - k.minute.to_numpy()).clip(0.5, None)
                 k["fair"] = _fair(spot, k.strike.to_numpy(float), vol, ml)
         parts.append(k)
@@ -125,7 +189,7 @@ def trades(mt: pd.DataFrame, bmin, bmax, wstart, wend, sides,
     frames = []
     if "yes" in sides:
         p = m.yes_ask_cents / 100.0
-        fee = FEE_RATE * p * (1.0 - p)
+        fee = _entry_fees(m.ticker.to_numpy(), p.to_numpy())
         keep = m.yes_ask_cents.between(bmin, bmax)
         if edge is not None:
             keep &= ((m.fair - p - fee) * 100.0 >= edge)
@@ -133,7 +197,7 @@ def trades(mt: pd.DataFrame, bmin, bmax, wstart, wend, sides,
         frames.append(f)
     if "no" in sides:
         p = m.no_ask_cents / 100.0
-        fee = FEE_RATE * p * (1.0 - p)
+        fee = _entry_fees(m.ticker.to_numpy(), p.to_numpy())
         keep = m.no_ask_cents.between(bmin, bmax)
         if edge is not None:
             keep &= (((1.0 - m.fair) - p - fee) * 100.0 >= edge)
@@ -146,21 +210,20 @@ def trades(mt: pd.DataFrame, bmin, bmax, wstart, wend, sides,
     if t.empty:
         return pd.DataFrame()
     t = t.sort_values(["ticker", "minute"]).groupby("ticker", as_index=False).first()
-    t["fee"] = FEE_RATE * t.price * (1.0 - t.price)
+    t["fee"] = _entry_fees(t.ticker.to_numpy(), t.price.to_numpy())
     t["yes_win"] = t.win.astype(bool)
-    t["net"] = t.yes_win.astype(float) * (1.0 - t.price) \
-        - (~t.yes_win).astype(float) * t.price - t.fee
+    t["net"] = [_settlement_net(row.ticker, row.price, row.yes_win)
+                for row in t.itertuples()]
     return t[["ticker", "entry_ts", "close_s", "price", "yes_win", "fee", "net"]]
 
 
 def evaluate(t: pd.DataFrame, start: float, frac: float) -> dict:
-    comp = _compound(t.rename(columns={"close_s": "close_ts"}), start, frac)
+    """Per-contract observations only until recorded depth supports fills."""
     n = len(t)
     ad = int(pd.Series(pd.to_datetime(t.entry_ts, unit="s")).dt.date.nunique()) if n else 0
     return {"n": n, "winrate": float(t.yes_win.mean()) if n else 0.0,
             "mean_net_c": float(t.net.mean()) * 100.0 if n else 0.0,
-            "final": comp["final"], "maxdd": comp["maxdd"], "taken": comp["taken"],
-            "x": comp["final"] / start, "activedays": ad}
+            "activedays": ad}
 
 
 def main():
@@ -200,22 +263,21 @@ def main():
                         r["cfg"] = (b0, b1, w0, w1, "+".join(sides),
                                     "band" if edge is None else f"e{edge:g}", f)
                         rows.append(r)
-    rows.sort(key=lambda r: -r["final"])
+    rows.sort(key=lambda r: -r["mean_net_c"])
     hdr = (f"{'band':>7} {'win':>6} {'side':>7} {'filter':>6} {'frac':>4} {'n':>6} "
-           f"{'win%':>5} {'net_c':>6} {'final$':>11} {'x':>7} {'maxdd':>6} {'act':>4}")
+           f"{'win%':>5} {'net_c':>6} {'act':>4}")
     print(hdr)
     print("-" * len(hdr))
     for r in rows[:a.top]:
         b0, b1, w0, w1, side, filt, f = r["cfg"]
         print(f"{b0:>3}-{b1:<3} {w0:>2}-{w1:<3} {side:>7} {filt:>6} {f:>4.2f} "
               f"{r['n']:>6} {r['winrate']*100:>5.1f} {r['mean_net_c']:>+6.3f} "
-              f"{r['final']:>11.2f} {r['x']:>7.2f} {r['maxdd']*100:>5.1f}% "
               f"{r['activedays']:>4}")
     assert rows, "no naru configs traded"
     best = rows[0]
-    print(f"\nbest: band {best['cfg'][0]}-{best['cfg'][1]} win {best['cfg'][2]}-"
-          f"{best['cfg'][3]} {best['cfg'][4]} {best['cfg'][5]} frac {best['cfg'][6]} "
-          f"-> ${best['final']:.2f} ({best['x']:.2f}x)")
+    print(f"\nbest per-contract observation: band {best['cfg'][0]}-{best['cfg'][1]} "
+          f"win {best['cfg'][2]}-{best['cfg'][3]} {best['cfg'][4]} {best['cfg'][5]} "
+          f"-> {best['mean_net_c']:+.3f}c")
 
 
 if __name__ == "__main__":
