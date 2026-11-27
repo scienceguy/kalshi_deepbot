@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "evaluator": {
+    "path": "scripts/pm_us_protocol_evaluator.py",
+    "sha256": "ed03a6f1bfd628d5bbc2458833ed925328ba468b564ea6dbb70bac2cfd198db5"
+  },
+  "utc_scope": {
+    "start": "2026-11-25T00:00:00Z",
+    "end": "2026-11-27T00:00:00Z",
+    "mode": "dry_research"
+  },
+  "study": {
+    "asset": "BTC",
+    "venue": "POLYMARKET_US",
+    "side": "NO_DOWN",
+    "execution": "taker",
+    "registered_looks": 1,
+    "exact_m": 100
+  },
+  "inference": {
+    "seed": 17008,
+    "repetitions": 10000,
+    "minimum_markets": 300,
+    "minimum_utc_days": 14
+  },
+  "required_evidence": {
+    "fills": "book-simulated NO/Down evidence held to settlement; never production execution",
+    "fill_provenance": "book_simulated",
+    "real_fill": false,
+    "entry_evidence": "actual entry_ts, entry_price, quantity and real_depth >= quantity",
+    "pnl": "finite and net of production fees",
+    "outcomes": "official_settlement",
+    "fees": "production",
+    "depth": "official_book with real_depth >= quantity",
+    "timestamps": "finite venue_ts and order_arrival_ts >= venue_ts"
+  },
+  "promotion": {
+    "human_versioned_evaluation_required": false,
+    "technical_gates_required": true,
+    "live_orders": "separately_human_gated",
+    "positive_result_implied": false
+  }
+}

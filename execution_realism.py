@@ -253,15 +253,24 @@ def clustered_lower_bound(rows: list[dict], confidence: float = 0.95,
 def protocol_clustered_lower_bound(rows: list[dict], *, exact_m: int) -> float | None:
     """Frozen-protocol net-EV bound, or None without real-fill eligibility.
 
-    Each row must prove a real NO/Down fill held to settlement, with positive
-    finite quantity, finite net PnL and a canonical UTC YYYY-MM-DD settle day.
+    Each row must prove a real production fill or an explicitly book-simulated
+    dry fill held to settlement, with finite quantity/PnL and a UTC settle day.
     """
     if isinstance(exact_m, bool) or not isinstance(exact_m, int) or exact_m <= 0:
         return None
     by_market: dict[str, list] = {}
     market_days: dict[str, str] = {}
     for row in rows:
-        if row.get("real_fill") is not True or row.get("held_to_settlement") is not True:
+        provenance = row.get("fill_provenance", "production")
+        if provenance == "book_simulated":
+            if row.get("real_fill") is not False:
+                return None
+        elif provenance == "production":
+            if row.get("real_fill") is not True:
+                return None
+        else:
+            return None
+        if row.get("held_to_settlement") is not True:
             return None
         if str(row.get("side", "")).lower() not in ("no", "down"):
             return None
