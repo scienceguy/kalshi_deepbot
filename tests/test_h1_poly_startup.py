@@ -282,16 +282,6 @@ def _stub_main(monkeypatch, tmp_path, control_db, drain_behavior):
     monkeypatch.setattr(poly_us_stream, "get_poly_stream", lambda *a, **k: None)
     monkeypatch.setattr(polymarket_us_client, "prewarm", lambda *a, **k: None)
 
-    # The QueueHandler swap in main() would replace the root handlers and
-    # swallow caplog for the rest of the session — make it fail into the
-    # except branch (inline logging stays).
-    import logging
-
-    def _qh_boom(*a, **k):
-        raise RuntimeError("queue logging disabled in test")
-
-    monkeypatch.setattr(logging.handlers, "QueueHandler", _qh_boom)
-
     # The bus would bind a loopback port — replace with no-op fakes.
     class _FakeBus:
         def __init__(self, *a, **k):
@@ -335,6 +325,30 @@ def _stub_main(monkeypatch, tmp_path, control_db, drain_behavior):
                         drain_behavior)
     monkeypatch.setattr(sys, "argv", ["poly_us_trader.py"])
     return holder
+
+
+def test_main_logging_does_not_construct_queue(control_db, tmp_path, monkeypatch):
+    pytest.importorskip("polymarket_us")
+    import logging
+
+    import poly_us_trader
+
+    holder = _stub_main(monkeypatch, tmp_path, control_db, lambda state: None)
+    constructions = []
+
+    def _record_queue(*args, **kwargs):
+        constructions.append((args, kwargs))
+        return object()
+
+    def _keep_logging_inline(*args, **kwargs):
+        raise RuntimeError("avoid replacing test root handlers")
+
+    monkeypatch.setattr(poly_us_trader.queue, "Queue", _record_queue)
+    monkeypatch.setattr(logging.handlers, "QueueHandler", _keep_logging_inline)
+    poly_us_trader.main()
+
+    assert constructions == []
+    assert holder["trader"].cycle_calls == 1
 
 
 def test_main_persisted_pause_holds_cycle_loop_until_resume(control_db,

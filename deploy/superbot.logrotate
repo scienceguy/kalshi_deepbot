@@ -1,10 +1,10 @@
 # Log rotation for the Polymarket US paper engine on the VPS.
 # Install: sudo cp deploy/superbot.logrotate /etc/logrotate.d/superbot
 # copytruncate because the engine keeps its log/ledger files open (append mode).
-/opt/superbot/local_data/*.log /opt/superbot/local_data/*.jsonl /opt/superbot/*.log /opt/superbot/*.jsonl {
-    weekly
+/opt/superbot/local_data/*.log /opt/superbot/local_data/poly_us/*.log /opt/superbot/local_data/*.jsonl /opt/superbot/*.log /opt/superbot/*.jsonl /opt/superbot-releases/current/local_data/*.log /opt/superbot-releases/current/local_data/poly_us/*.log /opt/superbot-releases/current/local_data/*.jsonl /opt/superbot-releases/current/*.log /opt/superbot-releases/current/*.jsonl {
+    daily
     rotate 4
-    size 20M
+    maxsize 20M
     compress
     delaycompress
     missingok

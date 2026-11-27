@@ -30,6 +30,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
+from log_sanitizer import SanitizingFormatter
+
 def _load_bs_calibration():
     """Lazy import of scripts/bs_calibration.
 
@@ -3507,16 +3509,21 @@ def _wait_for_resume(trader, interval: float) -> bool:
     return False
 
 
-def main():
+def _configure_logging():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(POLY_US_LOG_FILE, mode="a"),
-        ],
-    )
+    handlers = [
+        logging.StreamHandler(sys.stdout),
+        logging.handlers.RotatingFileHandler(
+            POLY_US_LOG_FILE, maxBytes=config.LOG_MAX_BYTES,
+            backupCount=config.LOG_BACKUP_COUNT),
+    ]
+    for handler in handlers:
+        handler.setFormatter(SanitizingFormatter(
+            "%(asctime)s %(levelname)-8s %(name)s - %(message)s"))
+    logging.basicConfig(level=logging.INFO, handlers=handlers)
+
+
+def main():
     parser = argparse.ArgumentParser(description="Polymarket US Paper Trader ($35 Bankroll)")
     parser.add_argument("--once", action="store_true", help="Run single cycle and exit")
     parser.add_argument("--interval", type=int, default=15, help="Seconds between cycles (default 15)")
@@ -3547,6 +3554,8 @@ def main():
     if args.status:
         _print_status(_read_state_for_status(STATE_FILE, init_cash), init_cash)
         return
+
+    _configure_logging()
 
     # D2: one-shot legacy import — state JSON + JSONL ledgers, idempotent.
     if args.import_legacy:
@@ -3667,20 +3676,6 @@ def main():
             signal.signal(sig, _request_stop)
         except (ValueError, OSError):
             pass  # not main thread / unsupported platform: KeyboardInterrupt still works
-    # L6: logging moves off the trading thread — a QueueHandler hands records
-    # to a listener thread running the original stdout/file handlers. Failures
-    # here keep inline logging (better duplicated than lost).
-    _log_listener = None
-    try:
-        _log_queue = queue.Queue()
-        _queue_handler = logging.handlers.QueueHandler(_log_queue)
-        _root_logger = logging.getLogger()
-        _old_handlers = _root_logger.handlers[:]
-        _root_logger.handlers = [_queue_handler]
-        _log_listener = logging.handlers.QueueListener(_log_queue, *_old_handlers)
-        _log_listener.start()
-    except Exception as e:
-        log.warning("QueueHandler setup failed (%s) — logging stays inline", e)
     guard_stop = threading.Event()
     guard_thread = None
     try:
@@ -3801,13 +3796,6 @@ def main():
                 _b.stop(timeout=5.0)
         except Exception as e:
             log.warning("MemPalace bridge stop failed: %s", e)
-        # L6: logging goes through a QueueHandler/listener above the trading
-        # thread — stop it after the last log call so shutdown output stays.
-        if _log_listener is not None:
-            try:
-                _log_listener.stop()
-            except Exception:
-                pass
         if lock_fd is not None:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)

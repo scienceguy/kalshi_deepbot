@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 import config  # noqa: E402
+from log_sanitizer import SanitizingFormatter
 
 def parse_args(argv=None):
     """Parse CLI args. B16: called from main(), never at import time."""
@@ -155,14 +156,16 @@ def _configure_logging():
     if not lf.is_absolute():  # reviewed: ensure log file path is anchored to repo directory
         lf = Path(__file__).resolve().parent / lf
     lf.parent.mkdir(parents=True, exist_ok=True)
+    handlers = [logging.StreamHandler(sys.stdout),
+                logging.handlers.RotatingFileHandler(
+                    lf, maxBytes=config.LOG_MAX_BYTES,
+                    backupCount=config.LOG_BACKUP_COUNT)]
+    for handler in handlers:
+        handler.setFormatter(SanitizingFormatter(
+            "%(asctime)s %(levelname)-8s %(name)s - %(message)s", datefmt="%H:%M:%S"))
     logging.basicConfig(
         level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-        datefmt="%H:%M:%S",
-        handlers=[logging.StreamHandler(sys.stdout),
-                  logging.handlers.RotatingFileHandler(
-                      lf, maxBytes=config.LOG_MAX_BYTES,
-                      backupCount=config.LOG_BACKUP_COUNT)],
+        handlers=handlers,
     )
 
 log = logging.getLogger("trader")
