@@ -9,16 +9,30 @@ description = "Kalshi SuperBot automated trading engine"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "requests",
-    "cryptography",
-    "pytest",
+    "requests>=2.31.0",
+    "cryptography>=41.0.0",
+    "numpy>=1.24",
+    "pandas>=2.1",
+    "pyarrow>=14.0.1",
+    "polymarket-us>=2.4.1",
+    "python-dateutil>=2.9",
+    "polars>=1.0",
+    "huggingface_hub>=0.20",
+    "scipy>=1.11",
     "websockets",
     "cryptofeed==2.5.0",
     "mempalace>=0.1.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest", "pytest-randomly", "pyflakes>=3.1", "mutmut==3.8.1"]
+
 [tool.setuptools]
 py-modules = [
+    "agent_bus",
+    "agent_identity",
+    "backtest",
+    "backtest_engine",
     "kalshi_client",
     "trader",
     "signals",
@@ -36,17 +50,80 @@ py-modules = [
     "llm_eval",
     "binance_feed",
     "binance_client",
-    "paper_mode",
-    "resilience",
-    "market_types",
-    "ml_model",
-    "fund_tracker",
+    "binance_feed",
+    "box_arbitrage",
+    "brti_tracker",
+    "cfbenchmarks_feed",
+    "coinbase_feed",
+    "composite_spot",
+    "config",
+    "control",
     "crossvenue",
-    "cfb_monitor",
+    "crossvenue_edge",
+    "crossvenue_history",
+    "depthfeed_client",
+    "emit",
+    "events",
+    "execution_realism",
+    "fees",
+    "fund_tracker",
+    "gates",
+    "gbm",
+    "historical_ingestion_catalog",
+    "kalshi_client",
+    "kalshi_mcp_client",
+    "kalshi_ws",
+    "kl_tools",
     "ladder_strategy",
+    "latency",
+    "latency_report",
+    "llm_eval",
+    "local",
+    "local_db",
+    "market_finder",
+    "market_types",
+    "mempalace_bridge",
+    "ml_model",
+    "model",
+    "n8n_client",
+    "n8n_webhook_auth",
+    "paper_mode",
+    "parallel_backtest",
+    "pnl_reconcile",
+    "poly_us_stream",
+    "poly_us_trader",
     "polymarket_portfolio",
     "polymarket_us_client",
-    "backtest_engine",
-    "backtest",
-    "parallel_backtest",
+    "rate_limit",
+    "report_state",
+    "resilience",
+    "resting_guard",
+    "risk",
+    "rolling_vol",
+    "signals",
+    "sizing",
+    "spot_consensus",
+    "supabase_client",
+    "tick_bus",
+    "trader",
 ]
+
+[tool.setuptools.packages.find]
+include = ["config", "migrations", "scripts"]
+namespaces = true
+
+[tool.setuptools.package-data]
+config = ["*.yaml", "*.json"]
+migrations = ["*.sql"]
+
+[tool.mutmut]
+source_paths = [
+    "risk.py",
+    "gates.py",
+    "signals.py",
+    "fees.py",
+    "trader.py",
+    "poly_us_trader.py",
+]
+pytest_add_cli_args_test_selection = ["tests/"]
+process_isolation = "forkserver"

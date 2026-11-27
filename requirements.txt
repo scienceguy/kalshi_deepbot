@@ -26,5 +26,7 @@ cryptofeed==2.5.0           # cryptofeed_feed.py normalized Coinbase/Binance WS 
 
 # Test + pre-commit gates (scripts/verify_*.py). Not needed to run the bot.
 pytest>=7.4
+pytest-randomly
 pyflakes>=3.1
 mempalace>=0.1.0
+mutmut==3.8.1
