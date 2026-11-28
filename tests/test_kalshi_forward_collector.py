@@ -194,6 +194,21 @@ def test_second_writer_fails_closed_without_corrupting_existing_data(tmp_path, m
     assert f"{expected}  trades.jsonl" in (first.directory / "manifest.sha256").read_text()
 
 
+def test_sequential_stale_writer_fails_without_corrupting_manifest(tmp_path):
+    first = WindowWriter(tmp_path, "KXBTC15M-TEST")
+    second = WindowWriter(tmp_path, "KXBTC15M-TEST")
+    first.append("trades", {"trade_id": "first"})
+
+    with pytest.raises(collector_module.CapacityError, match="stale dataset writer"):
+        second.append("trades", {"trade_id": "second"})
+
+    target = first.directory / "trades.jsonl"
+    records = target.read_text().splitlines()
+    assert [json.loads(line)["raw"]["trade_id"] for line in records] == ["first"]
+    expected = hashlib.sha256(target.read_bytes()).hexdigest()
+    assert f"{expected}  trades.jsonl" in (first.directory / "manifest.sha256").read_text()
+
+
 def test_capacity_failure_releases_writer_lock(tmp_path, monkeypatch):
     writer = WindowWriter(tmp_path, "KXBTC15M-TEST")
     monkeypatch.setattr(collector_module, "MAX_WINDOW_BYTES", 1, raising=False)

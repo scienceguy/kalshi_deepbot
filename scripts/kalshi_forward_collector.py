@@ -99,8 +99,16 @@ class WindowWriter:
                 for line in content.splitlines():
                     if line.strip():
                         self._trade_ids.add(json.loads(line)["raw"].get("trade_id"))
+        self._manifest_version = self._current_manifest_version()
         if metadata is not None and not (self.directory / "metadata.jsonl").exists():
             self.append("metadata", metadata)
+
+    def _current_manifest_version(self):
+        try:
+            stat = (self.directory / "manifest.sha256").stat()
+        except FileNotFoundError:
+            return None
+        return stat.st_ino, stat.st_size, stat.st_mtime_ns
 
     def append(self, kind, raw, executable=None, transport=None):
         self.append_many(kind, [raw], executable=executable, transport=transport)
@@ -115,6 +123,8 @@ class WindowWriter:
         raws = list(raws)
         if not raws:
             return
+        if self._current_manifest_version() != self._manifest_version:
+            raise CapacityError(f"stale dataset writer for {self.ticker}")
         path = self.directory / f"{kind}.jsonl"
         encoded = []
         for raw in raws:
@@ -153,6 +163,7 @@ class WindowWriter:
         lines = [f"{self._hash_states[name].hexdigest()}  {name}"
                  for name in sorted(self._hash_states)]
         _atomic_write(self.directory / "manifest.sha256", "\n".join(lines) + ("\n" if lines else ""))
+        self._manifest_version = self._current_manifest_version()
 
 
 def append_trades(writer, trades):
