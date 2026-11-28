@@ -180,6 +180,36 @@ def test_accepted_command_writes_audit_row(control_db, monkeypatch):
     assert applied[2]["command"] == "pause_entries"
 
 
+def test_pause_persistence_failure_rejects_without_state_or_applied(control_db, monkeypatch):
+    monkeypatch.setattr(control_db, "set_control_state", lambda *args: False)
+    monkeypatch.setattr(emit, "emit_event",
+                        lambda source, kind, payload, **kw: pytest.fail(
+                            "no applied ack allowed") if kind == "control.applied" else None)
+    row_id, *_ = _signed_row(control_db, "pause_entries", agent_id="operator")
+    results = control.drain_and_apply(control_db, risk_halted=False)
+    assert results[0]["status"] == "rejected"
+    assert "persistence" in results[0]["reason"]
+    assert control.STATE.pause_entries is False
+    status, _ = _row(control_db, row_id)
+    assert status == "rejected"
+
+
+def test_resume_persistence_failure_rejects_without_state_or_applied(control_db, monkeypatch):
+    control.STATE.pause_entries = True
+    control_db.set_control_state("pause_entries", {"paused": True})
+    monkeypatch.setattr(control_db, "set_control_state", lambda *args: False)
+    monkeypatch.setattr(emit, "emit_event",
+                        lambda source, kind, payload, **kw: pytest.fail(
+                            "no applied ack allowed") if kind == "control.applied" else None)
+    row_id, *_ = _signed_row(control_db, "resume_entries", agent_id="operator")
+    results = control.drain_and_apply(control_db, risk_halted=False)
+    assert results[0]["status"] == "rejected"
+    assert "persistence" in results[0]["reason"]
+    assert control.STATE.pause_entries is True
+    status, _ = _row(control_db, row_id)
+    assert status == "rejected"
+
+
 # ── ingest side refuses non-allowlisted senders before enqueue ───────────
 
 def _load_send_command():

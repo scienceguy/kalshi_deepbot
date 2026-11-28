@@ -361,6 +361,11 @@ def test_claim_recovers_from_stale_snapshot(tmp_path):
     assert status == "sending"
 
 
+def test_mark_sent_returns_false_for_missing_event_id(tmp_path):
+    db = _db(tmp_path)
+    assert db.mark_outbox_sent(999999999) is False
+
+
 def test_mark_sent_recovers_from_stale_snapshot(tmp_path):
     """A concurrent commit must not strand a delivered row in sending."""
     db = _db(tmp_path)

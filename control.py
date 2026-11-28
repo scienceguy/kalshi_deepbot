@@ -181,8 +181,7 @@ def apply_command(db, row: dict, *, risk_halted: bool = False,
 
         context = {"risk_halted": risk_halted, "positions": positions}
         if command == "pause_entries":
-            STATE.pause_entries = True
-            # H1: persist pause state so it survives restarts
+            # H1: persist pause state so it survives restarts; never apply if it fails.
             persisted = _persist_pause(db, {
                 "paused": True,
                 "paused_by": agent_id,
@@ -190,6 +189,9 @@ def apply_command(db, row: dict, *, risk_halted: bool = False,
                 "reason": payload.get("reason") or "",
                 "command_nonce": row.get("nonce"),
             })
+            if not persisted:
+                return _reject(db, row, "control state persistence failed", source)
+            STATE.pause_entries = True
             result = _apply(db, row, source, {"paused": True,
                                               "reason": payload.get("reason") or "",
                                               "persisted": persisted})
@@ -205,16 +207,20 @@ def apply_command(db, row: dict, *, risk_halted: bool = False,
                         source)
                 # second confirmation accepted: lift the control pause only; the
                 # risk halt itself still needs HALT_AUTO_RESUME / VPS --resume.
-                STATE.pause_entries = False
-                # H1: clear persisted pause state
+                # H1: clear persisted pause state before changing memory.
                 persisted = _persist_pause(db, {"paused": False})
+                if not persisted:
+                    return _reject(db, row, "control state persistence failed", source)
+                STATE.pause_entries = False
                 return _apply(db, row, source,
                               {"paused": False, "confirmed_by": confirm_by,
                                "risk_halt_still_active": True,
                                "persisted": persisted})
-            STATE.pause_entries = False
-            # H1: clear persisted pause state
+            # H1: clear persisted pause state before changing memory.
             persisted = _persist_pause(db, {"paused": False})
+            if not persisted:
+                return _reject(db, row, "control state persistence failed", source)
+            STATE.pause_entries = False
             return _apply(db, row, source, {"paused": False,
                                             "confirmed_by": confirm_by or "",
                                             "persisted": persisted})
