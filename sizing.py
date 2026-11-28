@@ -211,8 +211,8 @@ def calculate_net_ev(win_prob: float, entry_price_cents: int,
     q = 1.0 - win_prob
     
     # Fee
-    fee_rate = fees.FEE_RATE if aggressive_fill else 0.0
-    fee = fee_rate * p_dollars * profit
+    fee = (fees.taker_fee_dollars(1.0, p_dollars, series=series)
+           if aggressive_fill else 0.0)
     
     net_ev = win_prob * profit - q * loss - fee
     return net_ev
