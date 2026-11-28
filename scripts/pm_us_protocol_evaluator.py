@@ -16,7 +16,7 @@ def _load_manifest(path=None):
     try:
         manifest = json.loads(Path(path or MANIFEST_PATH).read_text())
         expected = {
-            "start": "2026-11-25T00:00:00Z",
+            "start": "2026-11-13T00:00:00Z",
             "end": "2026-11-27T00:00:00Z",
             "mode": "dry_research",
         }
@@ -49,6 +49,8 @@ def _load_manifest(path=None):
 
 def _eligible_evidence(row, start, end):
     try:
+        if row["venue"] != "POLYMARKET_US" or row["asset"] != "BTC":
+            return False
         if row["fill_provenance"] != "book_simulated" or row["real_fill"] is not False:
             return False
         if row["outcome_provenance"] != "official_settlement":
