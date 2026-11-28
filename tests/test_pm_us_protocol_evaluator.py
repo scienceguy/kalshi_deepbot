@@ -24,6 +24,8 @@ def _evaluator():
 def _row():
     return {
         "market": "fixture-market",
+        "venue": "POLYMARKET_US",
+        "asset": "BTC",
         "settled_day": "2026-11-26",
         "quantity": 1.0,
         "pnl": 0.01,
@@ -50,7 +52,7 @@ def test_manifest_registers_exact_protocol_and_current_evaluator_hash():
     assert manifest["evaluator"]["path"] == "scripts/pm_us_protocol_evaluator.py"
     assert manifest["evaluator"]["sha256"] == hashlib.sha256(EVALUATOR_PATH.read_bytes()).hexdigest()
     assert manifest["utc_scope"] == {
-        "start": "2026-11-25T00:00:00Z",
+        "start": "2026-11-13T00:00:00Z",
         "end": "2026-11-27T00:00:00Z",
         "mode": "dry_research",
     }
@@ -65,6 +67,36 @@ def test_manifest_registers_exact_protocol_and_current_evaluator_hash():
     assert manifest["promotion"]["technical_gates_required"] is True
     assert manifest["promotion"]["live_orders"] == "separately_human_gated"
     assert manifest["promotion"]["positive_result_implied"] is False
+
+
+def test_manifest_scope_spans_the_required_fourteen_utc_days():
+    evaluator = _evaluator()
+    manifest = evaluator._load_manifest()
+    assert manifest is not None
+    start = evaluator.date.fromisoformat(manifest["utc_scope"]["start"][:10])
+    end = evaluator.date.fromisoformat(manifest["utc_scope"]["end"][:10])
+    assert (end - start).days >= manifest["inference"]["minimum_utc_days"]
+
+
+def test_impossible_short_scope_is_rejected_before_evaluation(tmp_path):
+    evaluator = _evaluator()
+    manifest = json.loads(MANIFEST_PATH.read_text())
+    manifest["utc_scope"]["start"] = "2026-11-25T00:00:00Z"
+    path = tmp_path / "short_scope.json"
+    path.write_text(json.dumps(manifest))
+    with patch.object(evaluator.execution_realism, "protocol_clustered_lower_bound") as strict:
+        assert evaluator.evaluate_rows([_row()], manifest_path=path) is None
+    strict.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [("venue", "KALSHI"), ("asset", "ETH")])
+def test_wrong_venue_or_asset_is_rejected_before_helper(field, value):
+    evaluator = _evaluator()
+    row = _row()
+    row[field] = value
+    with patch.object(evaluator.execution_realism, "protocol_clustered_lower_bound") as strict:
+        assert evaluator.evaluate_rows([row]) is None
+    strict.assert_not_called()
 
 
 def test_tracked_evaluator_calls_strict_helper_and_rejects_legacy_fallback():

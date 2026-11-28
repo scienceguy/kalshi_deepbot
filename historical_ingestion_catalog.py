@@ -349,6 +349,7 @@ def _kalshi_l2_window(directory, max_gap_seconds):
     if book_path.exists():
         records = [line for line in book_path.read_text().splitlines() if line.strip()]
     previous = None
+    previous_venue = None
     timestamp_provenance = "capture_only"
     for line in records:
         record = json.loads(line)
@@ -359,9 +360,14 @@ def _kalshi_l2_window(directory, max_gap_seconds):
             reasons.append("capture_gap")
         previous = capture_ns
         venue_ns = None
-        if record["raw"].get("sending_ts_ms") is not None:
+        if record["raw"].get("sending_ts_ms") is None:
+            reasons.append("missing_venue_timestamp")
+        else:
             venue_ns = int(record["raw"]["sending_ts_ms"]) * 1_000_000
             timestamp_provenance = "venue+capture"
+            if previous_venue is not None and venue_ns < previous_venue:
+                reasons.append("venue_out_of_order")
+            previous_venue = venue_ns
             if abs(capture_ns - venue_ns) > 2_000_000_000:
                 reasons.append("timestamp_mismatch")
         try:
@@ -403,9 +409,22 @@ def _kalshi_l2_window(directory, max_gap_seconds):
     return levels, window
 
 
-def _poly_l2_window(path, max_gap_seconds):
+def _poly_l2_window(path, settlement_files, max_gap_seconds):
     path = Path(path)
-    raw_sha256 = _digest(path)
+    settlement_hashes = {str(Path(item)): _digest(item) for item in settlement_files}
+    raw_sha256 = hashlib.sha256(json.dumps({
+        "books": _digest(path), "settlements": settlement_hashes,
+    }, sort_keys=True).encode()).hexdigest()
+    outcomes_by_market = {}
+    for settlement_file in settlement_files:
+        for line in Path(settlement_file).read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            outcome = {"1": "yes", "1.0": "yes", "0": "no", "0.0": "no"}.get(
+                str(row.get("settlement")))
+            if outcome is not None:
+                outcomes_by_market.setdefault(row["slug"], set()).add(outcome)
     by_market = {}
     for line in path.read_text().splitlines():
         if not line.strip():
@@ -417,7 +436,7 @@ def _poly_l2_window(path, max_gap_seconds):
     for market_id, records in sorted(by_market.items()):
         levels, reasons = [], []
         previous = None
-        outcomes = set()
+        previous_venue = None
         for line, record, book in records:
             capture_ns = int(round(float(record["ts"]) * 1_000_000_000))
             if previous is not None and capture_ns < previous:
@@ -426,29 +445,29 @@ def _poly_l2_window(path, max_gap_seconds):
                 reasons.append("capture_gap")
             previous = capture_ns
             if book.get("updated_at") is None:
-                reasons.append("timestamp_provenance")
+                reasons.append("missing_venue_timestamp")
+                update_ns = None
             else:
                 update_ns = int(round(float(book["updated_at"]) * 1_000_000_000))
+                if previous_venue is not None and update_ns < previous_venue:
+                    reasons.append("venue_out_of_order")
+                previous_venue = update_ns
                 if abs(capture_ns - update_ns) > 2_000_000_000:
                     reasons.append("timestamp_mismatch")
-            result = book.get("result")
-            if result in ("yes", "up"):
-                outcomes.add("yes")
-            elif result in ("no", "down"):
-                outcomes.add("no")
             executable = {side: {action: book.get(f"{side}_{action}") or []
                                  for action in ("bids", "asks")}
                           for side in ("yes", "no")}
             try:
                 levels.extend(_level_rows(
                     "polymarket_us", market_id.split("-")[1] if "-" in market_id else market_id,
-                    market_id, capture_ns, None, executable, "websocket",
+                    market_id, capture_ns, update_ns, executable, "websocket",
                     raw_sha256, line))
             except (ValueError, TypeError, InvalidOperation):
                 reasons.append("invalid_quantity")
-        if len(outcomes) > 1:
+        market_outcomes = outcomes_by_market.get(market_id, set())
+        if len(market_outcomes) > 1:
             reasons.append("outcome_conflict")
-        outcome = outcomes.pop() if len(outcomes) == 1 else None
+        outcome = market_outcomes.pop() if len(market_outcomes) == 1 else None
         if outcome is None:
             reasons.append("missing_outcome")
         if len(records) < 2:
@@ -465,7 +484,7 @@ def _poly_l2_window(path, max_gap_seconds):
             "last_capture_ts_ns": int(round(float(last[1]["ts"]) * 1_000_000_000)) if last else None,
             "eligible": int(bool(records) and not reasons),
             "gap_reason": ",".join(sorted(set(reasons))),
-            "outcome": outcome, "timestamp_provenance": "local_book_update+capture",
+            "outcome": outcome, "timestamp_provenance": "venue+capture",
             "raw_sha256": raw_sha256, "parquet_sha256": None,
         }
         results.append((levels, window))
@@ -495,14 +514,14 @@ def _atomic_parquet(root, relative, rows, schema):
     return path
 
 
-def ingest_local_l2(store, root, kalshi_dirs=(), poly_files=(), max_gap_seconds=7.0):
+def ingest_local_l2(store, root, kalshi_dirs=(), poly_files=(), poly_settlement_files=(), max_gap_seconds=7.0):
     """Seal bounded recorded WS captures as locally recorded historical full depth."""
     root = Path(root)
     datasets = []
     for directory in kalshi_dirs:
         datasets.append(_kalshi_l2_window(directory, max_gap_seconds))
     for path in poly_files:
-        datasets.extend(_poly_l2_window(path, max_gap_seconds))
+        datasets.extend(_poly_l2_window(path, poly_settlement_files, max_gap_seconds))
     windows = []
     for levels, window in datasets:
         relative = Path("data") / "l2" / window["venue"] / window["series"] / (
@@ -511,10 +530,10 @@ def ingest_local_l2(store, root, kalshi_dirs=(), poly_files=(), max_gap_seconds=
         window["parquet_sha256"] = _digest(path)
         windows.append(window)
         checkpoint, _ = store.load_cursor(window["venue"], window["market_id"], "local_l2")
+        if checkpoint != window["raw_sha256"] and levels:
+            store._upsert("l2_book_levels", levels)
+        store._upsert("l2_windows", [window])
         if checkpoint != window["raw_sha256"]:
-            if levels:
-                store._upsert("l2_book_levels", levels)
-            store._upsert("l2_windows", [window])
             store.save_cursor(window["venue"], window["market_id"], "local_l2",
                               window["raw_sha256"], int(time.time()))
     windows.sort(key=lambda row: (row["first_capture_ts_ns"] is None,

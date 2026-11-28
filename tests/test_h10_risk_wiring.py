@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 
 import config
+import control
 import risk
 
 REPO = Path(__file__).resolve().parents[1]
@@ -39,9 +40,31 @@ def test_every_public_risk_method_has_a_caller():
         # attribute access only: `self.kelly_size(` / `r.kelly_size(` — the
         # definition line `def kelly_size(` does not count as a caller
         pat = re.compile(rf"\.{re.escape(name)}\(")
-        if not any(pat.search(src) for src in sources):
-            missing.append(name)
+        if any(pat.search(src) for src in sources):
+            continue
+        callback_registered = any(
+            "RISK_REVIEW_APPROVER = self.approve_operator_review" in src
+            for src in sources)
+        callback_invoked = any("RISK_REVIEW_APPROVER(reviewer)" in src
+                               for src in sources)
+        if (name == "approve_operator_review" and callback_registered
+                and callback_invoked):
+            continue
+        missing.append(name)
     assert missing == [], f"no caller for RiskManager methods: {missing}"
+
+
+def test_operator_review_callback_releases_recovered_red_halt(monkeypatch):
+    r = _manager(monkeypatch)
+    r.state.operator_review_required = True
+    r.state.halted = True
+    r.state.last_drawdown = -0.05
+    control.STATE.pause_entries = True
+
+    assert control.approve_risk_review("Zeta") is True
+    assert r.state.operator_review_required is False
+    assert r.state.halted is False
+    assert control.STATE.pause_entries is False
 
 
 def test_sizing_guards_are_reachable_from_the_traders_check():
@@ -93,10 +116,8 @@ def test_kelly_guard_shrinks_a_thin_edge(monkeypatch):
     monkeypatch.setattr(config, "MIN_EV_EDGE_PCT", 0.01)
     r = _manager(monkeypatch)
     market = _market(94, 95, 100)
-    fat = r.max_trade_dollars(100.0, 0.0, win_prob=0.95, entry_price_cents=80,
-                              ticker="KXBTC15M-YES")
-    thin = r.max_trade_dollars(100.0, 0.0, win_prob=0.87, entry_price_cents=80,
-                               ticker="KXBTC15M-YES")
+    fat = r.kelly_size(0.95, 80, 100.0)
+    thin = r.kelly_size(0.87, 80, 100.0)
     assert fat > thin > 0.0
     # Below the EV floor Kelly returns 0 -> check() refuses any trade cost.
     ok, reason = r.check(100.0, 0.0, 1.0, "KXBTC15M-YES", 100.0,
