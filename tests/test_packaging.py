@@ -95,6 +95,23 @@ def test_wheel_installs_both_traders_and_runtime_resources(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
 
 
+def test_websockets_is_required_for_unconditional_kalshi_ws_import():
+    root = Path(__file__).resolve().parents[1]
+    runtime = set()
+    for raw in (root / "requirements.txt").read_text().splitlines():
+        if raw.startswith("# Test + pre-commit"):
+            break
+        requirement = raw.split("#", 1)[0].strip()
+        if requirement:
+            runtime.add(requirement)
+    assert any(req == "websockets" or req.startswith("websockets>=")
+               for req in runtime)
+    result = subprocess.run([
+        sys.executable, "-I", "-c", "import websockets, kalshi_ws",
+    ], cwd=root, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr[-2000:]
+
+
 def test_pytest_randomly_is_a_test_dependency():
     root = Path(__file__).resolve().parents[1]
     test_requirements = (root / "requirements.txt").read_text().split(
