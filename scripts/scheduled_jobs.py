@@ -19,8 +19,10 @@ Per-job timeouts are configurable via SUPERBOT_JOB_TIMEOUT_SECONDS (default
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -43,6 +45,53 @@ JOBS = (
 )
 
 GLOBAL_TIMEOUT_SECONDS = float(os.environ.get("SUPERBOT_JOB_TIMEOUT_SECONDS", "300"))
+STDOUT_TAIL_BYTES = 2000
+STDERR_TAIL_BYTES = 1000
+
+
+def _read_tail(stream, tail: bytearray, limit: int) -> None:
+    """Drain one child stream while retaining only its final bytes."""
+    try:
+        while True:
+            chunk = stream.read1(65536)
+            if not chunk:
+                break
+            tail.extend(chunk)
+            if len(tail) > limit:
+                del tail[:-limit]
+    finally:
+        stream.close()
+
+
+def _run_bounded(argv, timeout: float):
+    """Run a child without buffering its total stdout or stderr."""
+    proc = subprocess.Popen(
+        argv, cwd=str(BASE_DIR), stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={**os.environ, "PYTHONPATH": str(BASE_DIR)},
+        start_new_session=True)
+    stdout = bytearray()
+    stderr = bytearray()
+    readers = [
+        threading.Thread(target=_read_tail, args=(proc.stdout, stdout, STDOUT_TAIL_BYTES)),
+        threading.Thread(target=_read_tail, args=(proc.stderr, stderr, STDERR_TAIL_BYTES)),
+    ]
+    for reader in readers:
+        reader.daemon = True
+        reader.start()
+    try:
+        returncode = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        raise
+    finally:
+        for reader in readers:
+            reader.join(timeout=1.0)
+    return returncode, bytes(stdout), bytes(stderr)
 
 # Alert de-dup window: don't re-send same alert within this many seconds
 ALERT_DEDUP_WINDOW_S = float(os.environ.get("SUPERBOT_ALERT_DEDUP_WINDOW_S", "3600"))
@@ -56,22 +105,27 @@ def due(now_s: float, every_s: int, offset_s: int) -> bool:
 def run_job(argv: list, timeout: float) -> dict:
     """Run one job and parse its JSON stdout. Never raises."""
     try:
-        proc = subprocess.run(
-            [sys.executable, *argv], cwd=str(BASE_DIR), capture_output=True,
-            timeout=timeout, env={**os.environ, "PYTHONPATH": str(BASE_DIR)})
+        returncode, stdout, stderr = _run_bounded(
+            [sys.executable, *argv], timeout)
     except subprocess.TimeoutExpired:
         return {"alert": True, "error": f"{argv[0]} timed out after {timeout}s"}
     except Exception as e:
         return {"alert": True, "error": f"{argv[0]} failed to start: {e}"}
-    out = proc.stdout.decode(errors="replace").strip()
-    if proc.returncode != 0 and not out:
-        return {"alert": True, "error": f"{argv[0]} exited {proc.returncode}",
-                "stderr": proc.stderr.decode(errors="replace")[-800:]}
+    out = stdout.decode(errors="replace").strip()
+    if returncode != 0 and not out:
+        return {"alert": True, "error": f"{argv[0]} exited {returncode}",
+                "stdout": out[-800:],
+                "stderr": stderr.decode(errors="replace")[-800:]}
     try:
         parsed = json.loads(out)
     except ValueError:
         return {"alert": True, "error": f"{argv[0]} printed non-JSON",
                 "stdout": out[-800:]}
+    if returncode != 0:
+        result = parsed if isinstance(parsed, dict) else {"result": parsed}
+        return {**result, "alert": True, "error": f"{argv[0]} exited {returncode}",
+                "stdout": out[-800:],
+                "stderr": stderr.decode(errors="replace")[-800:]}
     return parsed if isinstance(parsed, dict) else {"alert": True, "result": parsed}
 
 
