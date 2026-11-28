@@ -1280,13 +1280,13 @@ class LocalDB:
         conn = self._get_conn()
         with self._lock:
             try:
-                self._execute_outbox_write(
+                rows = self._execute_outbox_write(
                     conn,
                     "UPDATE event_outbox SET status = 'sent', "
-                    "delivered_at = datetime('now') WHERE id = ?",
+                    "delivered_at = datetime('now') WHERE id = ? RETURNING id",
                     (event_id,),
                 )
-                return True
+                return len(rows) == 1
             except Exception as e:
                 log.warning("mark_outbox_sent(%s) error: %s", event_id, e)
                 return False
